@@ -18,11 +18,11 @@ export type WebDesktopBackgroundServiceHandoffContentProps = Readonly<{
 export function WebDesktopBackgroundServiceHandoffContent(props: WebDesktopBackgroundServiceHandoffContentProps) {
     const installAndSetupCommand = React.useMemo(() => buildCliInstallAndRunCommandForCurrentApp({
         action: 'setup',
-        args: ['--relay-url', props.relayUrl, '--skip-providers', '--yes'],
+        args: ['--home-url', props.relayUrl, '--skip-providers'],
     }), [props.relayUrl]);
     const installAndSetupWindowsCommand = React.useMemo(() => buildCliInstallAndRunPowershellCommandForCurrentApp({
         action: 'setup',
-        args: ['--relay-url', props.relayUrl, '--skip-providers', '--yes'],
+        args: ['--home-url', props.relayUrl, '--skip-providers'],
     }), [props.relayUrl]);
     const steps = React.useMemo(() => buildWebDesktopBackgroundServiceHandoffSteps({
         installAndSetupCommand,

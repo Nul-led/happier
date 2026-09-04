@@ -5,14 +5,8 @@ import {
 } from '@happier-dev/protocol';
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { createServerFetchAtEndpoint, type ServerFetch } from '@/sync/http/client';
-import {
-    acquireBrowserIrohHomeCarrier,
-    resolveBrowserIrohHomeCarrierEligibility,
-} from '@/sync/runtime/browserIroh/homeCarrier/browserHomeCarrier';
-import { resolveBrowserIrohHostDecision } from '@/sync/runtime/browserIroh/hostEligibility';
 import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
-import { acquireIrohHomeRuntimeOrigin } from '@/sync/runtime/nativeIrohTunnels/runtime';
-import { classifyIrohHomeTunnelSwitchFailure } from '@/sync/runtime/nativeIrohTunnels/fallback';
+import { acquireEligibleHomeCarrier } from '@/sync/runtime/homeCarrierPolicy';
 import type { IrohHomeTunnelVerification } from '@/sync/runtime/nativeIrohTunnels/types';
 
 export type HomeEnrollmentTransportFailureReason =
@@ -72,13 +66,6 @@ export async function resolveHomeEnrollmentTransport(
     const resolvedRuntimeOrigin = options.runtimeOrigin
         ? approvedApplicationOrigin(options.runtimeOrigin)
         : null;
-    const candidates = descriptor.endpoints.flatMap((endpoint) => {
-        if (endpoint.kind !== 'https') return [];
-        const approved = approvedApplicationOrigin(endpoint.url);
-        return approved ? [approved] : [];
-    });
-    const independentHttpsEndpoint = candidates.find((candidate) => candidate.startsWith('https://')) ?? null;
-    const standardEndpoint = independentHttpsEndpoint ?? candidates[0] ?? null;
     const irohEndpoint = descriptor.endpoints.find((endpoint) => endpoint.kind === 'iroh') ?? null;
 
     let endpointUrl: string | null = null;
@@ -89,148 +76,57 @@ export async function resolveHomeEnrollmentTransport(
     let close = async (): Promise<void> => {};
 
     if (resolvedRuntimeOrigin) {
-        endpointUrl = canonicalEndpointUrl ?? standardEndpoint;
+        endpointUrl = canonicalEndpointUrl;
         runtimeOrigin = resolvedRuntimeOrigin;
         carrier = options.runtimeCarrier ?? (irohEndpoint ? 'iroh' : 'https');
-        if (carrier === 'https' && endpointUrl) {
-            authenticatedCredentialDestination = { kind: 'https', applicationUrl: endpointUrl };
+        if (carrier === 'https') {
+            authenticatedCredentialDestination = { kind: 'https', applicationUrl: resolvedRuntimeOrigin };
         }
-    } else if (irohEndpoint && canonicalEndpointUrl) {
-        try {
-            const browserRequest = options.verification?.kind === 'authenticated'
-                ? {
-                    purpose: 'authenticated_home' as const,
-                    credentials: { token: options.verification.token },
-                    homeServerIdentityId: descriptor.homeServerIdentityId,
-                    endpoint: irohEndpoint,
-                    canonicalServerUrl: descriptor.canonicalServerUrl,
-                }
-                : {
-                    purpose: 'enrollment' as const,
-                    homeServerIdentityId: descriptor.homeServerIdentityId,
-                    endpoint: irohEndpoint,
-                    canonicalServerUrl: descriptor.canonicalServerUrl,
-                };
-            const browserHostDecision = resolveBrowserIrohHostDecision();
-            const browserEligibility = resolveBrowserIrohHomeCarrierEligibility(
-                browserRequest,
-                browserHostDecision,
-            );
-            if (
-                browserHostDecision.eligible
-                && !browserEligibility.eligible
-                && browserEligibility.reason !== 'relays_missing'
-            ) {
+    } else if (canonicalEndpointUrl) {
+        const acquired = await acquireEligibleHomeCarrier({
+            descriptor,
+            verification: options.verification ?? { kind: 'enrollment' },
+        });
+        if (acquired.kind === 'fail_closed' || acquired.kind === 'unavailable') {
+            return {
+                ok: false,
+                homeServerIdentityId: descriptor.homeServerIdentityId,
+                reason: acquired.kind === 'unavailable' || acquired.fallbackAllowed
+                    ? 'iroh_transport_unavailable'
+                    : 'iroh_transport_failed_closed',
+            };
+        }
+        endpointUrl = canonicalEndpointUrl;
+        if (acquired.kind === 'https') {
+            runtimeOrigin = acquired.runtimeOrigin;
+            authenticatedCredentialDestination = {
+                kind: 'https',
+                applicationUrl: acquired.runtimeOrigin,
+            };
+        } else if (acquired.kind === 'browser_iroh') {
+            homeCarrier = acquired.carrier;
+            carrier = 'iroh';
+            close = acquired.release;
+            authenticatedCredentialDestination = {
+                kind: 'iroh',
+                endpointId: acquired.carrier.endpointId,
+            };
+        } else {
+            runtimeOrigin = approvedApplicationOrigin(acquired.lease.runtimeOrigin);
+            carrier = 'iroh';
+            close = acquired.release;
+            if (!runtimeOrigin) {
+                await close().catch(() => {});
                 return {
                     ok: false,
                     homeServerIdentityId: descriptor.homeServerIdentityId,
                     reason: 'iroh_transport_failed_closed',
                 };
             }
-            if (browserEligibility.eligible) {
-                const acquiredCarrier = await acquireBrowserIrohHomeCarrier(browserRequest);
-                homeCarrier = acquiredCarrier;
-                endpointUrl = canonicalEndpointUrl;
-                runtimeOrigin = null;
-                carrier = 'iroh';
-                let released = false;
-                let closePromise: Promise<void> | null = null;
-                close = () => {
-                    if (released) return Promise.resolve();
-                    closePromise ??= acquiredCarrier.release().then(
-                        () => {
-                            released = true;
-                            closePromise = null;
-                        },
-                        (error: unknown) => {
-                            closePromise = null;
-                            throw error;
-                        },
-                    );
-                    return closePromise;
-                };
-                if (acquiredCarrier.endpointId !== irohEndpoint.endpointId) {
-                    await close().catch(() => {});
-                    return {
-                        ok: false,
-                        homeServerIdentityId: descriptor.homeServerIdentityId,
-                        reason: 'iroh_transport_failed_closed',
-                    };
-                }
-                authenticatedCredentialDestination = {
-                    kind: 'iroh',
-                    endpointId: acquiredCarrier.endpointId,
-                };
-            } else if (!browserHostDecision.eligible) {
-                const lease = await acquireIrohHomeRuntimeOrigin({
-                    homeServerIdentityId: descriptor.homeServerIdentityId,
-                    endpoint: irohEndpoint,
-                    descriptorRevision: descriptor.revision,
-                    canonicalServerUrl: descriptor.canonicalServerUrl,
-                    verification: options.verification ?? { kind: 'enrollment' },
-                });
-                endpointUrl = canonicalEndpointUrl;
-                runtimeOrigin = approvedApplicationOrigin(lease.runtimeOrigin);
-                carrier = 'iroh';
-                let released = false;
-                let closePromise: Promise<void> | null = null;
-                close = () => {
-                    if (released) return Promise.resolve();
-                    closePromise ??= lease.release().then(
-                        () => {
-                            released = true;
-                            closePromise = null;
-                        },
-                        (error: unknown) => {
-                            closePromise = null;
-                            throw error;
-                        },
-                    );
-                    return closePromise;
-                };
-                if (!runtimeOrigin || lease.endpointId !== irohEndpoint.endpointId) {
-                    await close().catch(() => {});
-                    return {
-                        ok: false,
-                        homeServerIdentityId: descriptor.homeServerIdentityId,
-                        reason: 'iroh_transport_failed_closed',
-                    };
-                }
-                authenticatedCredentialDestination = { kind: 'iroh', endpointId: lease.endpointId };
-            } else {
-                endpointUrl = independentHttpsEndpoint;
-                runtimeOrigin = independentHttpsEndpoint;
-                carrier = 'https';
-                if (independentHttpsEndpoint) {
-                    authenticatedCredentialDestination = {
-                        kind: 'https',
-                        applicationUrl: independentHttpsEndpoint,
-                    };
-                }
-            }
-        } catch (error) {
-            if (!classifyIrohHomeTunnelSwitchFailure(error).fallbackAllowed) {
-                return {
-                    ok: false,
-                    homeServerIdentityId: descriptor.homeServerIdentityId,
-                    reason: 'iroh_transport_failed_closed',
-                };
-            }
-            endpointUrl = independentHttpsEndpoint;
-            runtimeOrigin = independentHttpsEndpoint;
-            carrier = 'https';
-            if (independentHttpsEndpoint) {
-                authenticatedCredentialDestination = {
-                    kind: 'https',
-                    applicationUrl: independentHttpsEndpoint,
-                };
-            }
-        }
-    } else {
-        endpointUrl = standardEndpoint;
-        runtimeOrigin = standardEndpoint;
-        if (standardEndpoint) {
-            authenticatedCredentialDestination = { kind: 'https', applicationUrl: standardEndpoint };
+            authenticatedCredentialDestination = {
+                kind: 'iroh',
+                endpointId: acquired.lease.endpointId,
+            };
         }
     }
 

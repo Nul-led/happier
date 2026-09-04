@@ -19,11 +19,11 @@ import {
     resolveDefaultNativeSshSystemTaskCapability,
 } from './bridges/native';
 import {
-    readNativeSshBootstrapDedupeKey,
     readNativeSshTaskCredentials,
     runNativeRemoteSshBootstrapTask,
     type RunNativeRemoteSshBootstrapTaskParams,
 } from './remoteSshBootstrap/nativeTask';
+import { readNativeSshBootstrapDedupeKey } from './remoteSshBootstrap/nativeTaskIdentity';
 import {
     createDefaultNativeSshBridgeInterruptionStore,
     createNativeSshBridgeInterruptionStore,

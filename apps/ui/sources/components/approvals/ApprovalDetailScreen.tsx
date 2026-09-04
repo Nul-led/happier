@@ -18,7 +18,12 @@ import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { Modal } from '@/modal';
 import { t } from '@/text';
 import { sync } from '@/sync/sync';
-import { storage, useArtifact, useMachine, useSession } from '@/sync/domains/state/storage';
+import {
+  storage,
+  useArtifact,
+  useServerScopedMachine,
+  useSessionListRenderableWithServerScope,
+} from '@/sync/domains/state/storage';
 import {
   createDefaultActionExecutor,
   replayApprovalRequestAtExactDaemon,
@@ -245,18 +250,35 @@ export const ApprovalDetailScreen = React.memo((props: Readonly<{ artifactId: st
 
   const request = parsed?.request ?? null;
   const sessionId = request?.createdBy.sessionId ?? (typeof artifact?.header?.sessionId === 'string' ? artifact.header.sessionId : '');
-  const session = useSession(sessionId || '');
+  const approvalServerId = React.useMemo(() => {
+    if (!parsed) return null;
+    const requestServerId = parsed.kind === 'built_in' && typeof (parsed.request as { serverId?: unknown }).serverId === 'string'
+      ? String((parsed.request as { serverId?: string }).serverId).trim()
+      : '';
+    if (requestServerId.length > 0) return requestServerId;
+    const headerServerId = typeof artifact?.header?.serverId === 'string' ? String(artifact.header.serverId).trim() : '';
+    if (headerServerId.length > 0) return headerServerId;
+    return sessionId ? resolvePreferredServerIdForSessionId(sessionId) : null;
+  }, [artifact?.header?.serverId, parsed, sessionId]);
+  const session = useSessionListRenderableWithServerScope(
+    approvalServerId,
+    approvalServerId ? sessionId : '',
+  );
   const ownerMetadata = session ? readSessionOwnerMetadataView(session) : null;
   const machineId = readDisplayMachineIdForSession({
-    sessionId,
+    sessionId: null,
     metadata: ownerMetadata,
   });
-  const machine = useMachine(machineId || '');
+  const machine = useServerScopedMachine(approvalServerId, approvalServerId ? machineId : '');
   const handoffTargetApproval = parsed?.kind === 'built_in'
     ? parsed.request.handoffTargetReplacementApproval ?? null
     : null;
   const handoffTargetActionArgs = parsed?.kind === 'built_in' ? parsed.request.actionArgs : null;
-  const handoffTargetMachine = useMachine(handoffTargetApproval?.machineId ?? '');
+  const handoffTargetServerId = handoffTargetApproval?.serverId ?? approvalServerId;
+  const handoffTargetMachine = useServerScopedMachine(
+    handoffTargetServerId,
+    handoffTargetServerId ? handoffTargetApproval?.machineId ?? '' : '',
+  );
   const handoffTargetPresentation = React.useMemo(() => (
     handoffTargetApproval
       ? describeHandoffTargetApproval({
@@ -271,17 +293,6 @@ export const ApprovalDetailScreen = React.memo((props: Readonly<{ artifactId: st
       })
       : null
   ), [handoffTargetApproval, handoffTargetActionArgs, handoffTargetMachine, machine, machineId, session]);
-  const approvalServerId = React.useMemo(() => {
-    if (!parsed) return null;
-    const requestServerId = parsed?.kind === 'built_in' && typeof (parsed.request as { serverId?: unknown }).serverId === 'string'
-      ? String((parsed.request as { serverId?: string }).serverId).trim()
-      : '';
-    if (requestServerId.length > 0) return requestServerId;
-    const headerServerId = typeof artifact?.header?.serverId === 'string' ? String(artifact.header.serverId).trim() : '';
-    if (headerServerId.length > 0) return headerServerId;
-    return sessionId ? resolvePreferredServerIdForSessionId(sessionId) : null;
-  }, [artifact?.header?.serverId, parsed, sessionId]);
-
   const decide = React.useCallback(
     async (decision: 'approve' | 'reject' | 'cancel') => {
       if (!parsed || decisionInFlightRef.current || parsed.request.status !== 'open') return;
@@ -455,6 +466,7 @@ export const ApprovalDetailScreen = React.memo((props: Readonly<{ artifactId: st
           <ApprovalSessionContextCard
             session={session}
             machine={machine}
+            serverId={approvalServerId}
             requesterAgentId={parsed.request.createdBy.agentId ?? null}
             requesterSurface={parsed.request.createdBy.surface}
           />

@@ -1,6 +1,10 @@
 import * as React from 'react';
 import { View } from 'react-native';
-import { evaluateSessionHandoffWorkspaceTransferSourcePathSafety, getActionSpec } from '@happier-dev/protocol';
+import {
+    evaluateSessionHandoffWorkspaceTransferSourcePathSafety,
+    getActionSpec,
+    HandoffWorkspaceActionV1Schema,
+} from '@happier-dev/protocol';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import type { CustomModalInjectedProps } from '@/modal';
@@ -51,6 +55,9 @@ import { readSessionMetadataLayoutVersion } from '@/sync/engine/sessions/parsePl
 import { useStableRecentPathsForMachine } from '@/utils/sessions/useStableRecentPathsForMachine';
 import { machineMetadataPlatformToTarget } from '@/utils/path/machinePlatform';
 import { resolveAbsolutePath } from '@/utils/path/pathUtils';
+import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
+import { resolveServerScopedMachines } from '@/sync/domains/machines/resolveServerScopedMachines';
+import { getServerProfileLegacyServerIds } from '@/sync/domains/server/serverProfiles';
 
 import type { SessionHandoffPickerResult } from './openSessionHandoffPicker';
 import { Icon } from '@/components/ui/icons/Icon';
@@ -89,26 +96,6 @@ function relationshipEndpointTitle(summary: WorkspaceSyncRelationshipSummary): s
 const EMPTY_PATH_SELECTION_FAVORITES = [] as const;
 const ignorePathSelectionRequestClose = () => {};
 
-function mergeMachinesById(machineGroups: readonly (readonly any[] | null | undefined)[]): any[] {
-    const merged = new Map<string, any>();
-    for (const group of machineGroups) {
-        if (!Array.isArray(group)) continue;
-        for (const machine of group) {
-            const machineId = normalizeId(machine?.id);
-            if (!machineId) continue;
-            if (!merged.has(machineId)) {
-                merged.set(machineId, machine);
-                continue;
-            }
-            merged.set(machineId, {
-                ...merged.get(machineId),
-                ...machine,
-            });
-        }
-    }
-    return Array.from(merged.values());
-}
-
 export function SessionHandoffPickerModal({ onClose, setChrome, onResolve, sessionId, sourceMachineId, serverId }: SessionHandoffPickerModalProps) {
     const { theme } = useUnistyles();
     const styles = stylesheet;
@@ -119,6 +106,7 @@ export function SessionHandoffPickerModal({ onClose, setChrome, onResolve, sessi
     const sessionRenderable = useSessionListRenderable(sessionId);
     const machineListByServerId = useMachineListByServerId();
     const activeServerMachines = useMachineRecordValues() ?? [];
+    const activeServer = useActiveServerSnapshot();
     const [favoriteMachinesRaw, setFavoriteMachinesRaw] = useSettingMutable('favoriteMachines');
     const [recentMachinePaths] = useSettingMutable('recentMachinePaths');
     const [sessionHandoffDefaultsRaw] = useSettingMutable('sessionHandoffDefaultsV1');
@@ -135,11 +123,15 @@ export function SessionHandoffPickerModal({ onClose, setChrome, onResolve, sessi
 
     const allServerMachines = React.useMemo(() => {
         const sid = normalizeId(serverId);
-        return mergeMachinesById([
-            sid ? (machineListByServerId[sid] ?? []) : [],
-            activeServerMachines,
-        ]);
-    }, [activeServerMachines, machineListByServerId, serverId]);
+        if (!sid) return [];
+        return [...(resolveServerScopedMachines({
+            serverId: sid,
+            serverIdAliases: getServerProfileLegacyServerIds(sid),
+            activeServerId: normalizeId(activeServer.serverId),
+            activeMachines: activeServerMachines,
+            machineListByServerId,
+        }) ?? [])];
+    }, [activeServer.serverId, activeServerMachines, machineListByServerId, serverId]);
     const currentSessionMetadata = React.useMemo(() => {
         if (sessionRecord) return readSessionOwnerMetadataView(sessionRecord);
         if (readSessionMetadataLayoutVersion(sessionRenderable?.metadataLayoutVersion) !== 0) return null;
@@ -184,38 +176,14 @@ export function SessionHandoffPickerModal({ onClose, setChrome, onResolve, sessi
             return true;
         });
     }, [allServerMachines, resolvedSourceMachineId]);
-    const hasSelectableMachine = React.useMemo(
-        () => machines.some((machine: any) => normalizeId(machine?.id).length > 0),
-        [machines],
-    );
-
     React.useEffect(() => {
-        // The picker can open before Sync has hydrated credentials (common in QA flows that inject
-        // credentials into storage and then immediately navigate to the handoff UI). A one-shot
-        // refresh would no-op in that window and the modal would render only the local machine.
-        //
-        // Retry for a short bounded window so newly-registered machines appear deterministically.
-        let cancelled = false;
-
-        const run = async () => {
-            const startedAt = Date.now();
-            while (!cancelled && (Date.now() - startedAt) < 10_000) {
-                if (sync.getCredentials()) {
-                    await sync.refreshMachinesThrottled({ force: true });
-                    if (cancelled) return;
-                    if (hasSelectableMachine) return;
-                }
-                if (cancelled) return;
-                await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
-            }
-        };
-
-        void run();
-
-        return () => {
-            cancelled = true;
-        };
-    }, [hasSelectableMachine]);
+        // Machine storage is the authoritative hydration/event boundary. Its
+        // subscription rerenders this picker when the first machine snapshot
+        // arrives, so one credential-backed refresh is sufficient.
+        if (sync.getCredentials()) {
+            void sync.refreshMachinesThrottled({ force: true });
+        }
+    }, [serverId]);
 
     const favoriteMachineIds = Array.isArray(favoriteMachinesRaw) ? favoriteMachinesRaw : [];
     const favoriteMachines = React.useMemo(() => {
@@ -323,6 +291,19 @@ export function SessionHandoffPickerModal({ onClose, setChrome, onResolve, sessi
         onClose();
     }, [onClose, onResolve]);
 
+    const parsedWorkspaceAction = React.useMemo(() => {
+        const candidate = buildSessionHandoffWorkspaceAction({
+            workspaceSyncRelationshipId: selectedRelationshipSummary?.relationshipId,
+            workspaceSyncMode,
+            contentSelection,
+            includeIgnoredMode,
+            ignoredIncludeGlobs,
+        });
+        if (!candidate) return null;
+        const parsed = HandoffWorkspaceActionV1Schema.safeParse(candidate);
+        return parsed.success ? parsed.data : null;
+    }, [contentSelection, ignoredIncludeGlobs, includeIgnoredMode, selectedRelationshipSummary?.relationshipId, workspaceSyncMode]);
+
     const handleStart = React.useCallback(() => {
         const targetMachineId = normalizeId(selectedMachineId);
         const sourceRootPath = normalizeId(currentSessionMetadata?.path);
@@ -331,14 +312,7 @@ export function SessionHandoffPickerModal({ onClose, setChrome, onResolve, sessi
         if (selectedRelationshipId && !selectedRelationshipSummary) return;
         if ((selectedRelationshipSummary || workspaceSyncMode !== 'none') && !workspaceSourcePathSafety.allowed) return;
         if ((selectedRelationshipSummary || workspaceSyncMode !== 'none') && !workspaceTargetPathSafety.allowed) return;
-        const workspaceAction = buildSessionHandoffWorkspaceAction({
-            workspaceSyncRelationshipId: selectedRelationshipSummary?.relationshipId,
-            workspaceSyncMode,
-            contentSelection,
-            includeIgnoredMode,
-            ignoredIncludeGlobs,
-        });
-        if (!workspaceAction) return;
+        if (!parsedWorkspaceAction) return;
         onResolve({
             targetMachineId,
             targetMachineLabel: normalizeId(selectedMachine?.metadata?.displayName) || targetMachineId,
@@ -347,23 +321,16 @@ export function SessionHandoffPickerModal({ onClose, setChrome, onResolve, sessi
             targetSessionStorageMode: isExternalSession
                 ? (directTargetMode === 'convert_to_persisted' ? 'persisted' : 'direct')
                 : 'persisted',
-            ...(workspaceAction ? { workspaceAction } : {}),
+            workspaceAction: parsedWorkspaceAction,
         });
-    }, [canAttemptSelectedMachine, contentSelection, currentSessionMetadata?.path, directTargetMode, ignoredIncludeGlobs, includeIgnoredMode, isExternalSession, onResolve, resolvedTargetPath, selectedMachine?.metadata?.displayName, selectedMachineId, selectedRelationshipId, selectedRelationshipSummary, workspaceSourcePathSafety.allowed, workspaceSyncMode, workspaceTargetPathSafety.allowed]);
+    }, [canAttemptSelectedMachine, currentSessionMetadata?.path, directTargetMode, isExternalSession, onResolve, parsedWorkspaceAction, resolvedTargetPath, selectedMachine?.metadata?.displayName, selectedMachineId, selectedRelationshipId, selectedRelationshipSummary, workspaceSourcePathSafety.allowed, workspaceSyncMode, workspaceTargetPathSafety.allowed]);
 
     const canStart = Boolean(selectedMachine && canAttemptSelectedMachine
         && (!selectedRelationshipId || selectedRelationshipSummary)
         && (
         (!selectedRelationshipSummary && workspaceSyncMode === 'none')
         || (workspaceSourcePathSafety.allowed && workspaceTargetPathSafety.allowed && (
-            selectedRelationshipSummary
-            || workspaceSyncMode !== 'copy_once'
-            || buildSessionHandoffWorkspaceAction({
-                workspaceSyncMode,
-                contentSelection,
-                includeIgnoredMode,
-                ignoredIncludeGlobs,
-            })
+            parsedWorkspaceAction
         ))
     ));
 

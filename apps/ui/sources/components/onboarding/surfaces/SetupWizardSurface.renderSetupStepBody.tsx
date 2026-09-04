@@ -2,6 +2,7 @@ import * as React from 'react';
 import { View } from 'react-native';
 
 import type { AgentId } from '@happier-dev/agents';
+import type { HomeConnectionDescriptorV1 } from '@happier-dev/protocol';
 import type { RelayAccessProviderId } from '@happier-dev/cli-common/relayAccess/catalog';
 import type { RelayAccessTaskTarget } from '@happier-dev/cli-common/systemTasks';
 import type { SystemTaskRunState } from '@/components/systemTasks/types';
@@ -33,6 +34,7 @@ import { RemoteSshChecklistStep } from '@/components/onboarding/checklists/remot
 import type { ProviderReadinessPill } from '@/components/onboarding/detection/useProviderReadiness';
 
 import type { SshCredentialsDraft } from '@/components/ssh/SshCredentialsFields';
+import type { ServerProfileSource } from '@/sync/domains/server/serverProfiles';
 import { ConfirmSwitchRelayStep, type RelaySwitchDecision } from '../steps/ConfirmSwitchRelayStep';
 import type { WizardBackOverride, WizardPrimaryOverride, WizardSkipOverride } from '../hooks/useWizardChromeOverrides';
 import type { WizardStepId } from '../state/wizardTypes';
@@ -57,6 +59,8 @@ export function renderSetupStepBody(params: Readonly<{
     webRemoteSshDraft: SshCredentialsDraft;
     onWebRemoteSshDraftChange: (next: SshCredentialsDraft) => void;
     activeServerUrl: string | null;
+    activeHomeConnectionDescriptor: HomeConnectionDescriptorV1 | null;
+    activeServerProfileSource: ServerProfileSource | null;
     activeLocalRelayUrl: string | null;
     relayUrl: string | null;
     webRelayHostUrlDraft: string;
@@ -227,6 +231,8 @@ export function renderSetupStepBody(params: Readonly<{
                         draft={params.webRemoteSshDraft}
                         onDraftChange={params.onWebRemoteSshDraftChange}
                         relayUrl={params.activeServerUrl}
+                        homeConnectionDescriptor={params.activeHomeConnectionDescriptor}
+                        homeProfileSource={params.activeServerProfileSource}
                         installRelayRuntime={params.remoteSetupIntent === 'remoteRelayHost'}
                     />
                 );

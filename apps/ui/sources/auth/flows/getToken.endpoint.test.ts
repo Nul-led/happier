@@ -152,11 +152,10 @@ describe('explicit endpoint authentication foundations', () => {
         })).resolves.toEqual({ token: 'home-b-token' });
         expect(runtimeFetchMock.mock.calls.map((call) => String(call[0]))).toEqual([
             'https://home-b.example.test/api/v1/features',
-            'https://home-b.example.test/api/health',
             'https://home-b.example.test/api/v1/auth/challenge',
             'https://home-b.example.test/api/v1/auth',
         ]);
-        const authInit = runtimeFetchMock.mock.calls[3]?.[1] as RequestInit;
+        const authInit = runtimeFetchMock.mock.calls[2]?.[1] as RequestInit;
         const authBody = JSON.parse(String(authInit.body)) as Record<string, unknown>;
         expect(authBody).toMatchObject({
             challengeId: 'challenge-home-b',
@@ -208,11 +207,99 @@ describe('explicit endpoint authentication foundations', () => {
 
         expect(runtimeFetchMock.mock.calls.map((call) => String(call[0]))).toEqual([
             'https://accounts.example.test/v1/features',
-            'https://accounts.example.test/health',
             'https://accounts.example.test/v1/auth/account-directory/challenge',
             'https://accounts.example.test/v1/auth/account-directory',
         ]);
         expect(activeSnapshotMock).not.toHaveBeenCalled();
+    });
+
+    it('reuses an already verified Account Service discovery snapshot instead of probing twice', async () => {
+        runtimeFetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+            const url = String(input);
+            if (url.endsWith('/v1/auth/account-directory/challenge')) {
+                return jsonResponse({
+                    challengeId: 'account-directory:challenge-discovered',
+                    nonce: 'nonce-directory',
+                    issuedAt: '2026-08-22T12:00:00.000Z',
+                    expiresAt: '2026-08-22T12:05:00.000Z',
+                    audience: {
+                        origin: 'https://accounts.example.test',
+                        serverIdentityId: 'srv_directory',
+                    },
+                });
+            }
+            if (url.endsWith('/v1/auth/account-directory')) {
+                return jsonResponse({ token: 'restricted-directory-token' });
+            }
+            throw new Error(`Unexpected test request: ${url}`);
+        });
+
+        const { authGetTokenAtEndpoint } = await import('./getToken');
+        await expect(authGetTokenAtEndpoint({
+            endpointUrl: 'https://accounts.example.test',
+            canonicalServerUrl: 'https://accounts.example.test',
+            serverIdentityId: 'srv_directory',
+            secret: new Uint8Array(32).fill(9),
+            requireKeyChallengeV2: true,
+            credentialTarget: 'account_directory',
+            verifiedServerFeaturesSnapshot: {
+                status: 'ready',
+                serverIdentityId: 'srv_directory',
+                features: {
+                    features: {},
+                    capabilities: keyChallengeV2Capabilities('srv_directory'),
+                },
+            },
+        })).resolves.toEqual({ token: 'restricted-directory-token' });
+
+        expect(runtimeFetchMock.mock.calls.map((call) => String(call[0]))).toEqual([
+            'https://accounts.example.test/v1/auth/account-directory/challenge',
+            'https://accounts.example.test/v1/auth/account-directory',
+        ]);
+    });
+
+    it('authenticates through a semantic Iroh carrier while signing the canonical Home audience', async () => {
+        const carrierRequest = vi.fn(async (url: string) => {
+            if (url.endsWith('/v1/features')) return jsonResponse({
+                features: {},
+                capabilities: keyChallengeV2Capabilities('srv_iroh_home'),
+            });
+            if (url.endsWith('/health')) return jsonResponse({ status: 'ok' });
+            if (url.endsWith('/v1/auth/challenge')) return jsonResponse({
+                challengeId: 'challenge-iroh',
+                nonce: 'nonce-iroh',
+                issuedAt: new Date(Date.now() - 1_000).toISOString(),
+                expiresAt: new Date(Date.now() + 300_000).toISOString(),
+                audience: {
+                    origin: 'https://canonical-iroh-home.example.test',
+                    serverIdentityId: 'srv_iroh_home',
+                },
+            });
+            if (url.endsWith('/v1/auth')) return jsonResponse({ token: 'iroh-home-token' });
+            throw new Error(`Unexpected carrier request: ${url}`);
+        });
+        const { authGetTokenAtEndpoint } = await import('./getToken');
+
+        await expect(authGetTokenAtEndpoint({
+            endpointUrl: 'https://canonical-iroh-home.example.test',
+            canonicalServerUrl: 'https://canonical-iroh-home.example.test',
+            serverIdentityId: 'srv_iroh_home',
+            homeCarrier: {
+                endpointId: 'a'.repeat(64),
+                readObservedPath: () => 'relay',
+                request: carrierRequest,
+                createWebSocket: () => ({}),
+            },
+            secret: new Uint8Array(32).fill(5),
+            requireKeyChallengeV2: true,
+        })).resolves.toEqual({ token: 'iroh-home-token' });
+
+        expect(carrierRequest.mock.calls.map(([url]) => url)).toEqual([
+            'https://canonical-iroh-home.example.test/v1/features',
+            'https://canonical-iroh-home.example.test/v1/auth/challenge',
+            'https://canonical-iroh-home.example.test/v1/auth',
+        ]);
+        expect(runtimeFetchMock).not.toHaveBeenCalled();
     });
 
     it('keeps explicit require-v2 authentication fail closed when feature discovery is unavailable', async () => {

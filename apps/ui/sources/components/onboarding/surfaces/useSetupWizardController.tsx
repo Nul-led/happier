@@ -13,8 +13,13 @@ import {
     type StepTransitionDirection,
 } from '@/components/ui/motion/StepTransitionFrame';
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
+import { useServerProfilesGeneration } from '@/hooks/server/useServerProfilesGeneration';
 import { setPendingSetupIntent } from '@/sync/domains/pending/pendingSetupIntent';
 import { normalizeServerUrl, upsertActivateAndSwitchServer } from '@/sync/domains/server/activeServerSwitch';
+import {
+    buildHomeConnectionDescriptorForProfile,
+    getServerProfileById,
+} from '@/sync/domains/server/serverProfiles';
 import { upsertServerProfileOnly } from '@/sync/domains/server/serverRuntime';
 import type { Machine } from '@/sync/domains/state/storageTypes';
 import { useAllSessions, useMachine } from '@/sync/store/hooks';
@@ -152,6 +157,11 @@ export function useSetupWizardController(props: SetupWizardSurfaceProps): SetupW
         isDesktopShell: props.isDesktopShell,
     }), [props.isDesktopShell, wizardPlatform]);
     const activeServerSnapshot = useActiveServerSnapshot();
+    useServerProfilesGeneration();
+    const activeServerProfile = getServerProfileById(activeServerSnapshot.serverId);
+    const activeHomeConnectionDescriptor = activeServerProfile
+        ? buildHomeConnectionDescriptorForProfile(activeServerProfile)
+        : null;
     // Keep a stable testID prefix for internal wizard controls, regardless of the outer container testID.
     // The route uses `testID="setupWizard.surface"` for the shell; child controls should remain addressable
     // via `setupWizard-*` for unit and Playwright tests.
@@ -829,6 +839,8 @@ export function useSetupWizardController(props: SetupWizardSurfaceProps): SetupW
                 webRemoteSshDraft,
                 onWebRemoteSshDraftChange: setWebRemoteSshDraft,
                 activeServerUrl: activeServerSnapshot.serverUrl ? String(activeServerSnapshot.serverUrl).trim() : null,
+                activeHomeConnectionDescriptor,
+                activeServerProfileSource: activeServerProfile?.source ?? null,
                 activeLocalRelayUrl: activeServerSnapshot.activeLocalRelayUrl
                     ? String(activeServerSnapshot.activeLocalRelayUrl).trim()
                     : null,

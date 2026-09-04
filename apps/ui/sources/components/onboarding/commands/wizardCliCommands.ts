@@ -1,5 +1,7 @@
 import { config } from '@/config';
 import type { SshCredentialsDraft } from '@/components/ssh/SshCredentialsFields';
+import type { HomeConnectionDescriptorV1 } from '@happier-dev/protocol';
+import type { ServerProfileSource } from '@/sync/domains/server/serverProfiles';
 import { resolveAppVariant } from '@/sync/runtime/appVariant';
 import { resolveCliInvokerNameForCurrentApp, resolvePreferredPublicReleaseRingIdForCurrentApp } from '@/sync/runtime/resolvePublicReleaseRing';
 
@@ -94,12 +96,40 @@ export function buildHappierSetupCommand(params: Readonly<{
 }>): string {
     const invoker = resolveCliInvokerNameForCurrentApp();
     const relayUrl = String(params.relayUrl ?? '').trim();
-    const base = relayUrl ? `${invoker} setup --relay-url ${relayUrl}` : `${invoker} setup`;
+    const base = relayUrl ? `${invoker} setup --home-url ${relayUrl}` : `${invoker} setup`;
     const flags: string[] = [];
     if (params.skipDaemon) flags.push('--skip-daemon');
     if (params.skipProviders) flags.push('--skip-providers');
-    if (params.yes) flags.push('--yes');
     return flags.length > 0 ? `${base} ${flags.join(' ')}` : base;
+}
+
+export type WebDesktopSetupHandoffTarget =
+    | Readonly<{ kind: 'https'; homeUrl: string }>
+    | Readonly<{ kind: 'account_service' }>
+    | Readonly<{ kind: 'descriptor_file_required' }>;
+
+/**
+ * Selects only a descriptor-proven setup carrier for the copy/paste handoff.
+ * The installer script already occupies stdin, so this surface cannot safely
+ * pipe a strict descriptor to `happier setup --home-descriptor-file -`.
+ */
+export function resolveWebDesktopSetupHandoffTarget(params: Readonly<{
+    descriptor: HomeConnectionDescriptorV1 | null;
+    profileSource: ServerProfileSource | null;
+    fallbackHomeUrl: string | null;
+}>): WebDesktopSetupHandoffTarget {
+    if (params.descriptor) {
+        const httpsEndpoint = params.descriptor.endpoints.find((endpoint) => endpoint.kind === 'https');
+        if (httpsEndpoint) return { kind: 'https', homeUrl: httpsEndpoint.url };
+        return params.profileSource === 'account-directory'
+            ? { kind: 'account_service' }
+            : { kind: 'descriptor_file_required' };
+    }
+
+    const fallbackHomeUrl = String(params.fallbackHomeUrl ?? '').trim();
+    return fallbackHomeUrl
+        ? { kind: 'https', homeUrl: fallbackHomeUrl }
+        : { kind: 'account_service' };
 }
 
 function buildRemoteSshArgs(params: Readonly<{
@@ -134,7 +164,7 @@ export function buildRemoteMachineSetupCommand(params: Readonly<{
     const invoker = resolveCliInvokerNameForCurrentApp();
     return [
         `${invoker} machine setup`,
-        ...buildRemoteSshArgs(params),
+        ...buildRemoteSshArgs({ draft: params.draft }),
         '--yes',
     ].join(' ');
 }

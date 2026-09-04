@@ -42,15 +42,20 @@ const styles = StyleSheet.create((theme) => ({
  */
 export const PersonalHomeRecoveryStrip = React.memo(function PersonalHomeRecoveryStrip(props: Readonly<{
     kind: 'profile' | 'computer';
+    pending?: boolean;
     activeTask?: SystemTaskRunState | null;
     detail?: NormalizedSetupDetail;
     onOpenDetails?: () => void;
     onRetry?: () => void;
 }>) {
     const [detailsOpen, setDetailsOpen] = React.useState(false);
-    const message = props.kind === 'computer'
-        ? t('personalHome.bootstrap.computerRecoveryBody')
-        : t('personalHome.bootstrap.profileRecoveryBody');
+    const message = props.pending
+        ? props.kind === 'computer'
+            ? t('personalHome.bootstrap.preparingComputerStatus')
+            : t('personalHome.bootstrap.ensuringHomeStatus')
+        : props.kind === 'computer'
+            ? t('personalHome.bootstrap.computerRecoveryBody')
+            : t('personalHome.bootstrap.profileRecoveryBody');
     const hasDetails = props.onOpenDetails != null || props.activeTask != null || props.detail != null;
     const openDetails = React.useCallback(() => {
         if (props.onOpenDetails) {
@@ -61,13 +66,13 @@ export const PersonalHomeRecoveryStrip = React.memo(function PersonalHomeRecover
     }, [props.onOpenDetails]);
     return (
         <View
-            testID="personal-home-recovery-strip"
+            testID={props.pending ? 'personal-home-bootstrap-pending-strip' : 'personal-home-recovery-strip'}
             accessibilityLiveRegion="polite"
             style={styles.root}
         >
             <Text style={styles.message}>{message}</Text>
             <View style={styles.actions}>
-                {props.onRetry ? (
+                {!props.pending && props.onRetry ? (
                     <Pressable
                         testID="personal-home-recovery-retry"
                         accessibilityRole="button"
@@ -78,7 +83,7 @@ export const PersonalHomeRecoveryStrip = React.memo(function PersonalHomeRecover
                         <Text style={styles.buttonText}>{t('common.retry')}</Text>
                     </Pressable>
                 ) : null}
-                {hasDetails ? (
+                {!props.pending && hasDetails ? (
                     <Pressable
                         testID="personal-home-recovery-details"
                         accessibilityRole="button"

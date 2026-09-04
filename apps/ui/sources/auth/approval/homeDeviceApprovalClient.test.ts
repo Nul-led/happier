@@ -22,6 +22,7 @@ const TARGET = {
         endpointUrl: 'https://canonical.home-b.test',
         runtimeOrigin: 'http://127.0.0.1:55432',
         carrier: 'iroh',
+        authenticatedCredentialDestination: { kind: 'iroh', endpointId: 'iroh-home-b' },
         createRequest: createRequestMock,
         close: async () => {},
     } satisfies HomeEnrollmentTransport,

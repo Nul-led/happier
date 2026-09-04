@@ -23,6 +23,7 @@ import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { HappyError } from '@/utils/errors/errors';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { getServerProfileById } from '@/sync/domains/server/serverProfiles';
+import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
 
 const CONTENT_KEY_BINDING_PREFIX = new TextEncoder().encode('Happy content key v1\u0000');
 
@@ -315,6 +316,11 @@ export async function authGetToken(
 
 export type AuthGetTokenAtEndpointParams = Readonly<{
     endpointUrl: string;
+    /** Ephemeral request address; never used as the signed auth audience. */
+    runtimeOrigin?: string;
+    /** Semantic browser/native carrier for this exact Home request. */
+    homeCarrier?: HomeCarrier;
+    signal?: AbortSignal;
     serverId?: string;
     canonicalServerUrl?: string;
     serverIdentityId?: string;
@@ -323,6 +329,8 @@ export type AuthGetTokenAtEndpointParams = Readonly<{
     requireKeyChallengeV2: boolean;
     /** Selects the dedicated server-controlled restricted mint route. */
     credentialTarget?: 'account_directory';
+    /** Reuse the exact ready snapshot already verified during explicit endpoint discovery. */
+    verifiedServerFeaturesSnapshot?: ServerFeaturesSnapshot & { status: 'ready' };
 }>;
 
 /**
@@ -335,10 +343,14 @@ export async function authGetTokenAtEndpoint(
 ): Promise<AuthCredentials> {
     const canonicalUrl = String(params.canonicalServerUrl ?? params.endpointUrl ?? '').trim();
     const expectedServerIdentityId = String(params.serverIdentityId ?? '').trim() || null;
+    const targetServerId = String(params.serverId ?? expectedServerIdentityId ?? '').trim() || undefined;
     const request = serverHttp.createServerFetchAtEndpoint({
         endpointUrl: params.endpointUrl,
-        serverId: params.serverId,
+        ...(params.runtimeOrigin ? { runtimeOrigin: params.runtimeOrigin } : {}),
+        ...(params.homeCarrier ? { homeCarrier: params.homeCarrier } : {}),
+        serverId: targetServerId,
         credentials: null,
+        signal: params.signal,
     });
     return await authGetTokenCore({
         secret: params.secret,
@@ -347,11 +359,14 @@ export async function authGetTokenAtEndpoint(
         requireKeyChallengeV2: params.requireKeyChallengeV2,
         credentialTarget: params.credentialTarget ?? 'ordinary_home',
         request,
-        probe: async () => await probeServerFeaturesAtUrl({
-            endpointUrl: params.endpointUrl,
-            serverId: params.serverId,
-            force: true,
-        }),
+        probe: async () => params.verifiedServerFeaturesSnapshot ?? await probeServerFeaturesAtUrl({
+                endpointUrl: params.endpointUrl,
+                ...(params.runtimeOrigin ? { runtimeOrigin: params.runtimeOrigin } : {}),
+                ...(params.homeCarrier ? { homeCarrier: params.homeCarrier } : {}),
+                serverId: targetServerId,
+                signal: params.signal,
+                force: true,
+            }),
         resolveAudience: (snapshot) => {
             const origin = canonicalizeKeyChallengeV2AudienceOrigin(canonicalUrl);
             const observedIdentity = readObservedServerIdentityId(snapshot);

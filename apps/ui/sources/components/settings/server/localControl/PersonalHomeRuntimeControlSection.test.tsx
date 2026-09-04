@@ -315,6 +315,21 @@ describe('PersonalHomeRuntimeControlSection Personal Home operations', () => {
         alertRef().mockReset();
     });
 
+    it('offers the canonical Home search repair operation under Advanced', async () => {
+        const harness = createScriptedRunnerHarness();
+        const repairSearch = vi.fn(async () => {});
+        const { PersonalHomeRuntimeControlSection } = await import('./PersonalHomeRuntimeControlSection');
+        const screen = await renderScreen(React.createElement(PersonalHomeRuntimeControlSection, {
+            runner: harness.runner,
+            operations: { repairSearch },
+        }));
+
+        expect(screen.findByTestId('settings.personalHomeRuntime.repairSearch')?.props.title)
+            .toBe('Rebuild Home search');
+        await screen.pressByTestIdAsync('settings.personalHomeRuntime.repairSearch');
+        expect(repairSearch).toHaveBeenCalledTimes(1);
+    });
+
     it('composes the canonical runtime owner once and presents inspect facts from the inspect task', async () => {
         const harness = createScriptedRunnerHarness();
         const { PersonalHomeRuntimeControlSection } = await import('./PersonalHomeRuntimeControlSection');
@@ -563,6 +578,7 @@ describe('PersonalHomeRuntimeControlSection Personal Home operations', () => {
             purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
             archivePath: '/a.tar',
             confirmOverwrite: true,
+            expectedHomeServerIdentityId: 'home-identity-1',
         });
         const kinds = harness.startedSpecs.map((spec) => spec.kind);
         expect(kinds.indexOf('relay.runtime.personal_home.verify_backup.v1')).toBeLessThan(kinds.indexOf('relay.runtime.personal_home.restore.v1'));
@@ -635,6 +651,7 @@ describe('PersonalHomeRuntimeControlSection Personal Home operations', () => {
             mode: 'user',
             purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
             archivePath: '/empty-home.tar',
+            expectedHomeServerIdentityId: 'home-identity-1',
         });
     });
 

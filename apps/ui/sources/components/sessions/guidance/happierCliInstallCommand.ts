@@ -37,7 +37,7 @@ export function buildHappierCliInstallCommand(input: Readonly<{
 }
 
 export type HappierInstallerRunAction =
-    | 'setup-relay'
+    | 'home-create'
     | 'setup'
     | 'auth-login'
     | 'daemon-install'
@@ -71,6 +71,8 @@ function buildCliRunCommandForChannel(
     switch (run.action) {
         case 'setup':
             return `${invoker} setup${args}`;
+        case 'home-create':
+            return `${invoker} home create${args}`;
         case 'auth-login':
             return `${invoker} auth login${args}`;
         case 'providers-setup':
@@ -97,14 +99,11 @@ export function buildHappierCliInstallAndRunCommand(
     if (channel === 'preview') args.push('--channel preview');
     if (channel === 'dev') args.push('--channel dev');
 
-    if (run.action === 'setup-relay') {
-        args.push('--setup-relay');
-    } else {
-        return `curl -fsSL https://happier.dev/install | bash -s -- ${args.join(' ')}`.trim()
-            + ` && ${buildCliRunCommandForChannel(channel, run)}`;
-    }
-
-    return `curl -fsSL https://happier.dev/install | bash -s -- ${args.join(' ')}`.trim();
+    const installer = args.length > 0
+        ? `curl -fsSL https://happier.dev/install | bash -s -- ${args.join(' ')}`
+        : 'curl -fsSL https://happier.dev/install | bash';
+    return installer
+        + ` && ${buildCliRunCommandForChannel(channel, run)}`;
 }
 
 export function buildHappierCliInstallPowershellCommand(input: Readonly<{
@@ -129,11 +128,6 @@ export function buildHappierCliInstallAndRunPowershellCommand(
 ): string {
     const channel = resolveInstallChannel(input);
     const parts: string[] = [buildPowershellInstallerInvocation({ channel })];
-
-    if (run.action === 'setup-relay') {
-        parts.push('-SetupRelay');
-        return parts.join(' ');
-    }
 
     return `${parts.join(' ')}; if ($?) { ${buildCliRunCommandForChannel(channel, run)} }`;
 }

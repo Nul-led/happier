@@ -47,7 +47,7 @@ describe('AddTargetsSection accessibility', () => {
             accessibilityLiveRegion: 'assertive',
         });
         expect(screen.findByTestId('server-settings-add-validating')?.props).toMatchObject({
-            accessibilityRole: 'status',
+            role: 'status',
             accessibilityLiveRegion: 'polite',
         });
     });

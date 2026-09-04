@@ -273,6 +273,82 @@ describe('AuthContext.login', () => {
         }
     });
 
+    it('does not publish exact-target credentials after focus changes while suppression clears', async () => {
+        const homeA = {
+            id: 'home-a',
+            serverUrl: 'https://home-a.example.test',
+            name: 'Home A',
+            serverIdentityId: 'srv_home_a',
+        };
+        const homeB = {
+            id: 'home-b',
+            serverUrl: 'https://home-b.example.test',
+            name: 'Home B',
+            serverIdentityId: 'srv_home_b',
+        };
+        serverProfilesState.profiles = [homeA, homeB];
+        activeServerSnapshotState.serverId = homeA.serverIdentityId;
+        activeServerSnapshotState.serverUrl = homeA.serverUrl;
+        activeServerSnapshotState.generation = 1;
+        const homeACredentials = { token: buildTokenWithSub('home-a') };
+        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+        let releaseSuppression!: () => void;
+        const suppressionGate = new Promise<boolean>((resolve) => {
+            releaseSuppression = () => resolve(true);
+        });
+        const suppressionSpy = vi
+            .spyOn(TokenStorage, 'setAuthAutoRedirectSuppressedUntil')
+            .mockImplementation(async () => {
+                activeServerSnapshotState.serverId = homeB.serverIdentityId;
+                activeServerSnapshotState.serverUrl = homeB.serverUrl;
+                activeServerSnapshotState.generation = 2;
+                activeServerListener?.({
+                    serverId: homeB.serverIdentityId,
+                    serverUrl: homeB.serverUrl,
+                    generation: 2,
+                });
+                return await suppressionGate;
+            });
+
+        const { AuthProvider, getCurrentAuth } = await import('./AuthContext');
+        const screen = await renderScreen(React.createElement(AuthProvider, {
+            initialCredentials: null,
+            children: React.createElement(React.Fragment, null),
+        }));
+
+        try {
+            const auth = getCurrentAuth();
+            if (!auth) throw new Error('Expected current auth to be set');
+            let loginPromise!: Promise<unknown>;
+            let switchCallsWhileFocusChanged = 0;
+            await act(async () => {
+                loginPromise = auth.loginWithCredentials(homeACredentials, {
+                    target: {
+                        serverUrl: homeA.serverUrl,
+                        serverId: homeA.serverIdentityId,
+                    },
+                });
+                await vi.waitFor(() => expect(suppressionSpy).toHaveBeenCalledTimes(1));
+                switchCallsWhileFocusChanged = switchConnectionToActiveServerSpy.mock.calls.length;
+                releaseSuppression();
+                await expect(loginPromise).resolves.toEqual({ kind: 'completed' });
+            });
+
+            await expect(TokenStorage.getCredentialsForServerUrl(
+                homeA.serverUrl,
+                { serverId: homeA.serverIdentityId },
+            )).resolves.toEqual(homeACredentials);
+            expect(getCurrentAuth()).toMatchObject({
+                isAuthenticated: false,
+                credentials: null,
+            });
+            expect(switchConnectionToActiveServerSpy).toHaveBeenCalledTimes(switchCallsWhileFocusChanged);
+        } finally {
+            suppressionSpy.mockRestore();
+            await screen.unmount();
+        }
+    });
+
     it('rebinds the same focused Home when its connection descriptor revision changes', async () => {
         vi.useRealTimers();
         const credentials = { token: buildTokenWithSub('server-test'), secret: 'secret-test' };

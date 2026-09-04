@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { buildServerFeaturesResponse } from '@/hooks/server/serverFeaturesTestUtils';
 
 const pendingSet = vi.hoisted(() => vi.fn(async (_value: unknown) => true));
 const pendingClear = vi.hoisted(() => vi.fn(async () => true));
@@ -41,15 +42,19 @@ vi.mock('@/auth/storage/tokenStorage', async () => {
     };
 });
 
+import { accountDirectoryAuthClient as loadedAccountDirectoryAuthClient } from './accountDirectoryAuthClient';
+
 function supportedFeatures(serverIdentityId = 'directory-1') {
+    const features = buildServerFeaturesResponse();
     return {
         status: 'ready' as const,
         serverIdentityId,
         features: {
-            features: {},
+            ...features,
             capabilities: {
+                ...features.capabilities,
                 accountDirectory: {
-                    version: 1,
+                    version: 1 as const,
                     homeDirectory: true,
                     homeEnrollment: true,
                     homeLoginAssertion: {
@@ -60,8 +65,9 @@ function supportedFeatures(serverIdentityId = 'directory-1') {
                 server: { canonicalServerUrl: 'https://canonical-directory.example.test' },
                 serverIdentity: { serverIdentityId },
                 auth: {
+                    ...features.capabilities.auth,
                     methods: [
-                        { id: 'github', actions: [{ id: 'provision', enabled: true, mode: 'keyed' }] },
+                        { id: 'github', actions: [{ id: 'provision' as const, enabled: true, mode: 'keyed' as const }] },
                     ],
                     keyChallenge: { v2: true },
                     signup: { methods: [] },
@@ -78,9 +84,8 @@ function supportedFeatures(serverIdentityId = 'directory-1') {
 }
 
 describe('accountDirectoryAuthClient', () => {
-    it('does not expose a competing directory reconciliation operation', async () => {
-        const { accountDirectoryAuthClient } = await import('./accountDirectoryAuthClient');
-        expect(accountDirectoryAuthClient).not.toHaveProperty('reconcileHomes');
+    it('does not expose a competing directory reconciliation operation', () => {
+        expect(loadedAccountDirectoryAuthClient).not.toHaveProperty('reconcileHomes');
     });
 
     beforeEach(() => {
@@ -201,6 +206,11 @@ describe('accountDirectoryAuthClient', () => {
             endpointUrl: 'https://accounts.example.test',
             expectedServerIdentityId: 'directory-1',
             observedServerIdentityId: 'directory-other',
+        });
+        expect(probeServerFeaturesAtUrlMock).toHaveBeenCalledWith({
+            endpointUrl: 'https://accounts.example.test',
+            serverId: 'directory-1',
+            force: true,
         });
         expect(directoryCredentialsSet).not.toHaveBeenCalled();
         expect(pendingSet).not.toHaveBeenCalled();
@@ -327,12 +337,14 @@ describe('accountDirectoryAuthClient', () => {
     it('logs in by key through the restricted endpoint routes and stores only Directory credentials', async () => {
         const { accountDirectoryAuthClient } = await import('./accountDirectoryAuthClient');
         const secret = new Uint8Array(32).fill(11);
+        const verifiedServerFeaturesSnapshot = supportedFeatures('directory-1');
 
         await expect(accountDirectoryAuthClient.loginWithKey({
             endpointUrl: 'https://accounts.example.test/',
             endpointServerIdentityId: 'directory-1',
             canonicalServerUrl: 'https://canonical-directory.example.test/',
             secret,
+            verifiedServerFeaturesSnapshot,
         })).resolves.toEqual({ token: 'restricted-directory-token' });
 
         expect(authGetTokenAtEndpointMock).toHaveBeenCalledWith({
@@ -343,6 +355,7 @@ describe('accountDirectoryAuthClient', () => {
             secret,
             requireKeyChallengeV2: true,
             credentialTarget: 'account_directory',
+            verifiedServerFeaturesSnapshot,
         });
         expect(directoryCredentialsSet).toHaveBeenCalledWith(
             {
@@ -363,6 +376,7 @@ describe('accountDirectoryAuthClient', () => {
             endpointServerIdentityId: 'directory-1',
             canonicalServerUrl: 'https://canonical-directory.example.test',
             secret: new Uint8Array(32).fill(12),
+            verifiedServerFeaturesSnapshot: supportedFeatures('directory-1'),
         })).rejects.toThrow('persist Account Service credentials');
     });
 

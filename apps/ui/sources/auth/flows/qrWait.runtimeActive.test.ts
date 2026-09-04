@@ -62,6 +62,10 @@ describe('authQRWait runtime active gating', () => {
             endpointUrl: descriptor.canonicalServerUrl,
             runtimeOrigin: descriptor.canonicalServerUrl,
             carrier: 'https',
+            authenticatedCredentialDestination: {
+                kind: 'https',
+                applicationUrl: descriptor.canonicalServerUrl,
+            },
             createRequest: () => endpointFetchMock,
             close: async () => {},
         }, {
@@ -106,6 +110,10 @@ describe('authQRWait runtime active gating', () => {
             endpointUrl: descriptor.canonicalServerUrl,
             runtimeOrigin: descriptor.canonicalServerUrl,
             carrier: 'https',
+            authenticatedCredentialDestination: {
+                kind: 'https',
+                applicationUrl: descriptor.canonicalServerUrl,
+            },
             createRequest: () => endpointFetchMock,
             close: async () => {},
         }, {

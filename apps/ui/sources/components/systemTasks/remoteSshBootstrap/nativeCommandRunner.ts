@@ -3,6 +3,7 @@ import {
     type NativeSshExecResult,
     type NativeSshHostKeyVerification,
     type NativeSshModule,
+    normalizeNativeSshStdoutEvent,
 } from '@happier-dev/ssh-native';
 
 import type { NativeSshTaskCredentials } from '../bridges/native';
@@ -24,6 +25,8 @@ export type NativeRemoteSshCommandRunner = Readonly<{
         signal?: AbortSignal;
         requestIdPrefix?: string;
         execTimeoutMs?: number;
+        input?: string;
+        onStdoutChunk?: (text: string) => void;
     }>) => Promise<Readonly<{
         status: number;
         stdout: string;
@@ -65,6 +68,8 @@ export function createNativeRemoteSshCommandRunner(): NativeRemoteSshCommandRunn
         signal?: AbortSignal;
         requestIdPrefix?: string;
         execTimeoutMs?: number;
+        input?: string;
+        onStdoutChunk?: (text: string) => void;
     }>): Promise<NativeSshExecResult> {
         if (params.signal?.aborted) {
             throw new Error('native_ssh_task_cancelled');
@@ -76,6 +81,7 @@ export function createNativeRemoteSshCommandRunner(): NativeRemoteSshCommandRunn
             port: params.credentials.port,
             username: params.credentials.username,
             command: params.command,
+            ...(params.input !== undefined ? { input: params.input } : {}),
             auth: params.credentials.auth,
             hostKeyVerification: params.hostKeyDecision ?? {
                 decision: 'prompt',
@@ -87,6 +93,17 @@ export function createNativeRemoteSshCommandRunner(): NativeRemoteSshCommandRunn
         const cancelNativeRequest = () => {
             void params.nativeModule.cancelRequest(requestId).catch(() => {});
         };
+        if (params.onStdoutChunk && !params.nativeModule.addListener) {
+            throw new Error('native_ssh_stdout_stream_unavailable');
+        }
+        const stdoutSubscription = params.onStdoutChunk
+            ? params.nativeModule.addListener?.('stdout', (event) => {
+                const stdoutEvent = normalizeNativeSshStdoutEvent(event);
+                if (stdoutEvent?.requestId === requestId) {
+                    params.onStdoutChunk?.(stdoutEvent.chunk);
+                }
+            })
+            : undefined;
         params.signal?.addEventListener('abort', cancelNativeRequest, { once: true });
         try {
             const result = await params.nativeModule.exec(request);
@@ -96,6 +113,7 @@ export function createNativeRemoteSshCommandRunner(): NativeRemoteSshCommandRunn
             return result;
         } finally {
             params.signal?.removeEventListener('abort', cancelNativeRequest);
+            stdoutSubscription?.remove();
         }
     }
 

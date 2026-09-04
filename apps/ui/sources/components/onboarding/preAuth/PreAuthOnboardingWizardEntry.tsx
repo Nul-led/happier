@@ -21,7 +21,6 @@ import {
     authenticateSelectedAccountServiceWithKey,
     refreshAndEnrollAccountServiceDirectory,
 } from '@/auth/accountDirectory/accountDirectoryKeyAuth';
-import { finalizePreferredHomeEnrollmentEntryIntent } from '@/sync/ops/accountDirectory/enrollPreferredDirectoryHome';
 import { isSelectedAccountServiceKey } from '@/sync/domains/accountDirectory/accountServiceSelection';
 import { createAccountDirectoryServiceKey } from '@/sync/domains/accountDirectory/accountDirectorySession';
 import { useAuthEntryOptions } from '@/components/account/auth/useAuthEntryOptions';
@@ -31,7 +30,6 @@ import { setAccountServiceEndpoint } from '@/sync/domains/server/serverProfiles'
 import { useIsLandscape } from '@/utils/platform/responsive';
 import { isSafeExternalAuthUrl } from '@/auth/providers/externalAuthUrl';
 import { formatOperationFailedDebugMessage } from '@/utils/errors/formatOperationFailedDebugMessage';
-import { fireAndForget } from '@/utils/system/fireAndForget';
 import { resolveAppUrlScheme } from '@/utils/url/appScheme';
 import { trackAccountCreated } from '@/track';
 import { t } from '@/text';
@@ -278,7 +276,6 @@ export const PreAuthOnboardingWizardEntry = React.memo(function PreAuthOnboardin
     const accountServiceDiscovery = accountServiceEntry.discovery;
     const [accountServiceApprovalPending, setAccountServiceApprovalPending] = React.useState(false);
     const applyBrandHeroSeen = useApplyBrandHeroSeen();
-    const autoRedirectAttemptedRef = React.useRef(false);
     const shellChromeHost = resolveAppShellChromeHost({
         isAuthenticated: false,
         isWeb: Platform.OS === 'web',
@@ -557,24 +554,21 @@ export const PreAuthOnboardingWizardEntry = React.memo(function PreAuthOnboardin
             shouldInvalidateContinuation: serviceSuperseded,
         });
         if (serviceSuperseded()) return;
-        if (enrollment?.kind === 'enrolled') {
-            // One explicit post-enrollment intent finalizer (A10): open the exact enrolled Home.
-            // The enrollment owner finalizes only its own approval-resume path, so this immediate
-            // result is finalized here exactly once.
-            const applied = await finalizePreferredHomeEnrollmentEntryIntent(
-                enrollment.homeServerIdentityId,
-                'enter_preferred_home',
-                auth.serviceKey,
-            );
-            if (applied === 'blocked') {
-                await Modal.alert(t('common.error'), t('errors.operationFailed'));
-            }
-            return;
-        }
-        if (enrollment?.kind === 'approval_required') {
+        if (enrollment?.kind === 'enrolled') return;
+        if (
+            enrollment?.kind === 'approval_required'
+            || (enrollment?.kind === 'transport_unavailable' && enrollment.resume && enrollment.cancel)
+        ) {
             // The enrollment owner retained the credential-bearing continuation. Welcome stays
             // mounted as its destination-owned presenter and lets that owner resume/open/cancel.
             setAccountServiceApprovalPending(true);
+            return;
+        }
+        if (enrollment?.kind === 'unavailable' && enrollment.reason === 'no_preferred_home') {
+            await Modal.alert(
+                t('settingsAccount.accountServiceOAuth.stages.accountServiceConnected'),
+                t('settingsAccount.accountServiceOAuth.errors.homeEnrollment.body'),
+            );
             return;
         }
         if (
@@ -657,48 +651,6 @@ export const PreAuthOnboardingWizardEntry = React.memo(function PreAuthOnboardin
             await Modal.alert(t('common.error'), message);
         }
     }, [auth]);
-
-    React.useEffect(() => {
-        const autoRedirect = authEntryOptions.autoRedirect;
-        const providerId = autoRedirect.providerId;
-        const nonMtlsProviderId =
-            typeof providerId === 'string' && providerId.trim().length > 0
-                ? providerId
-                : null;
-        if (!autoRedirect.enabled) {
-            return;
-        }
-        if (autoRedirectAttemptedRef.current) {
-            return;
-        }
-        if (authEntryOptions.showAnonymousSignup) {
-            return;
-        }
-        if (!autoRedirect.toMtls && !autoRedirect.toKeyedProvision && !autoRedirect.toKeylessLogin && !autoRedirect.toLegacySignupProvider) {
-            return;
-        }
-        if (!autoRedirect.toMtls && nonMtlsProviderId == null) {
-            return;
-        }
-
-        autoRedirectAttemptedRef.current = true;
-        fireAndForget((async () => {
-            const suppressedUntil = await TokenStorage.getAuthAutoRedirectSuppressedUntil();
-            if (Date.now() < suppressedUntil) return;
-            if (autoRedirect.toMtls) {
-                await loginWithMtls();
-                return;
-            }
-            if (nonMtlsProviderId == null) {
-                return;
-            }
-            if (autoRedirect.toKeylessLogin) {
-                await loginWithKeylessProvider(nonMtlsProviderId);
-                return;
-            }
-            await createAccountViaProvider(nonMtlsProviderId);
-        })(), { tag: 'PreAuthOnboardingWizardEntry.autoRedirect' });
-    }, [authEntryOptions, createAccountViaProvider, loginWithKeylessProvider, loginWithMtls]);
 
     const resolvedInitialStepId = React.useMemo((): WizardStepId | undefined => {
         if (props.initialStepId) {

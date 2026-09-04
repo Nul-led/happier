@@ -305,6 +305,26 @@ describe('authQRWait explicit-target enrollment', () => {
         expect(endpointFetchMock).toHaveBeenCalledTimes(1);
     });
 
+    it('aborts an in-flight status request at the invite deadline', async () => {
+        vi.useFakeTimers();
+        const keypair = generateAuthKeyPair();
+        const issuedAtMs = Date.now();
+        const context = createV2Context({ issuedAtMs, expiresAtMs: issuedAtMs + 500 });
+        let requestSignal: AbortSignal | null = null;
+        endpointFetchMock.mockImplementationOnce((_path: string, init: RequestInit) => new Promise((_resolve, reject) => {
+            requestSignal = init.signal ?? null;
+            init.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
+        }));
+
+        const resultPromise = authQRWait(keypair, HOME_B_TARGET, { v2Context: context });
+        await vi.waitFor(() => expect(endpointFetchMock).toHaveBeenCalledTimes(1));
+        await vi.advanceTimersByTimeAsync(500);
+
+        expect(requestSignal?.aborted).toBe(true);
+        await expect(resultPromise).resolves.toEqual({ ok: false, reason: 'expired' });
+        expect(endpointFetchMock).toHaveBeenCalledTimes(1);
+    });
+
     it('never falls back from V2 to V1 or accepts plaintext token response', async () => {
         vi.useFakeTimers();
         const keypair = generateAuthKeyPair();

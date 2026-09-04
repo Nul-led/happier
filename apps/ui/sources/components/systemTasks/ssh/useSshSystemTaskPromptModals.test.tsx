@@ -97,6 +97,7 @@ describe('useSshSystemTaskPromptModals', () => {
             message: 'Erase this remote Personal Home?',
             data: {
                 promptId: 'erase-task-1',
+                sshHost: 'home-admin@example.test',
                 canonicalServerUrl: 'https://home.example.test',
                 homeServerIdentityId: 'home_1',
                 paths: ['/srv/happier/home.db', '/srv/happier/uploads'],
@@ -104,6 +105,11 @@ describe('useSshSystemTaskPromptModals', () => {
             },
         });
 
+        expect(modalSpies.confirm).toHaveBeenCalledWith(
+            'Erase this remote Personal Home?',
+            expect.stringContaining('home-admin@example.test'),
+            expect.any(Object),
+        );
         expect(modalSpies.confirm).toHaveBeenCalledWith(
             'Erase this remote Personal Home?',
             expect.stringContaining('/srv/happier/home.db'),
@@ -123,6 +129,7 @@ describe('useSshSystemTaskPromptModals', () => {
             kind: 'personal_home.confirm_remote_erase.v1',
             message: 'Erase this remote Personal Home?',
             data: {
+                sshHost: 'home-admin@example.test',
                 canonicalServerUrl: 'https://home.example.test',
                 homeServerIdentityId: 'home_1',
                 paths: ['/srv/happier/home.db'],
@@ -134,13 +141,13 @@ describe('useSshSystemTaskPromptModals', () => {
         expect(cancel).not.toHaveBeenCalled();
     });
 
-    it('fails a malformed remote Personal Home ownership prompt closed without showing approval UI', async () => {
+    it('fails a remote Personal Home ownership prompt without an exact SSH host closed', async () => {
         const { taskId, respond } = await renderPrompt({
             kind: 'personal_home.confirm_remote_erase.v1',
             message: 'Erase this remote Personal Home?',
             data: {
                 canonicalServerUrl: 'https://home.example.test',
-                homeServerIdentityId: '',
+                homeServerIdentityId: 'home_1',
                 paths: ['/srv/happier/home.db'],
                 estimatedBytes: 1,
             },

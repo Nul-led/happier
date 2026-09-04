@@ -178,6 +178,41 @@ describe('TokenStorage Account Directory namespaces', () => {
         ).resolves.toEqual(pending);
     });
 
+    it('resolves callback custody by provider and fails closed when more than one target matches', async () => {
+        const { TokenStorage } = await import('./tokenStorage');
+        const now = 1_000_000;
+        vi.spyOn(Date, 'now').mockReturnValue(now);
+        const first = bindCanonicalServerUrl({
+            endpoint: 'https://directory-a.example.test',
+            serverIdentityId: 'directory-a',
+            credentialTarget: 'account_directory' as const,
+            provider: 'github',
+            purpose: 'account_directory' as const,
+            pending: 'oauth-pending-a',
+            createdAt: now - 100,
+            expiresAt: now + 10_000,
+        });
+        await TokenStorage.setPendingAccountDirectoryAuth(first);
+        await expect(TokenStorage.resolvePendingAccountDirectoryAuthCustody('github')).resolves.toEqual({
+            kind: 'matched',
+            pending: first,
+        });
+
+        await TokenStorage.setPendingAccountDirectoryAuth(bindCanonicalServerUrl({
+            ...first,
+            endpoint: 'https://directory-b.example.test',
+            serverIdentityId: 'directory-b',
+            pending: 'oauth-pending-b',
+            createdAt: now,
+        }));
+        await expect(TokenStorage.resolvePendingAccountDirectoryAuthCustody('github')).resolves.toEqual({
+            kind: 'ambiguous',
+        });
+        await expect(TokenStorage.resolvePendingAccountDirectoryAuthCustody('google')).resolves.toEqual({
+            kind: 'absent',
+        });
+    });
+
     it('persists only the canonical pre-redirect Directory target fields without inventing a server pending handle', async () => {
         const { TokenStorage } = await import('./tokenStorage');
         const now = 1_000_000;

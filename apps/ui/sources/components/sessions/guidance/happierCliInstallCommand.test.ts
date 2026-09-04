@@ -41,17 +41,17 @@ describe('buildHappierCliInstallCommand', () => {
 });
 
 describe('buildHappierCliInstallAndRunCommand', () => {
-    it('builds a stable-channel setup-relay one-liner for production builds', () => {
+    it('builds Personal Home creation as an explicit post-install command', () => {
         const appVariant: AppVariant = 'production';
-        expect(buildHappierCliInstallAndRunCommand({ appVariant }, { action: 'setup-relay' })).toBe(
-            'curl -fsSL https://happier.dev/install | bash -s -- --setup-relay',
+        expect(buildHappierCliInstallAndRunCommand({ appVariant }, { action: 'home-create' })).toBe(
+            'curl -fsSL https://happier.dev/install | bash && happier home create',
         );
     });
 
     it('includes the dev channel when a public release ring override is provided', () => {
         const appVariant: AppVariant = 'production';
-        expect(buildHappierCliInstallAndRunCommand({ appVariant, publicReleaseRingOverride: 'publicdev' }, { action: 'setup-relay' })).toBe(
-            'curl -fsSL https://happier.dev/install | bash -s -- --channel dev --setup-relay',
+        expect(buildHappierCliInstallAndRunCommand({ appVariant, publicReleaseRingOverride: 'publicdev' }, { action: 'home-create' })).toBe(
+            'curl -fsSL https://happier.dev/install | bash -s -- --channel dev && hdev home create',
         );
     });
 
@@ -93,10 +93,10 @@ describe('buildHappierCliInstallPowershellCommand', () => {
 });
 
 describe('buildHappierCliInstallAndRunPowershellCommand', () => {
-    it('builds a setup-relay one-liner using the -SetupRelay switch', () => {
+    it('builds Personal Home creation as an explicit post-install command', () => {
         const appVariant: AppVariant = 'production';
-        expect(buildHappierCliInstallAndRunPowershellCommand({ appVariant }, { action: 'setup-relay' })).toBe(
-            '& ([ScriptBlock]::Create((irm https://happier.dev/install.ps1))) -SetupRelay',
+        expect(buildHappierCliInstallAndRunPowershellCommand({ appVariant }, { action: 'home-create' })).toBe(
+            '& ([ScriptBlock]::Create((irm https://happier.dev/install.ps1))); if ($?) { happier home create }',
         );
     });
 

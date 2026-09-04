@@ -119,7 +119,18 @@ vi.mock('@/sync/api/capabilities/serverFeaturesClient', () => ({
     getCachedServerFeaturesSnapshot: () => ({
         status: 'ready',
         serverIdentityId: 'srv_test',
-        features: { capabilities: { server: { canonicalServerUrl: activeServerUrl } } },
+        features: {
+            features: { auth: { pairing: { boundQrV2: { enabled: true } } } },
+            capabilities: { server: { canonicalServerUrl: activeServerUrl } },
+        },
+    }),
+    getServerFeaturesSnapshot: async () => ({
+        status: 'ready',
+        serverIdentityId: 'srv_test',
+        features: {
+            features: { auth: { pairing: { boundQrV2: { enabled: true } } } },
+            capabilities: { server: { canonicalServerUrl: activeServerUrl } },
+        },
     }),
 }));
 
@@ -255,8 +266,8 @@ describe('AddPhoneSettingsView', () => {
 
         const textContent = screen.getTextContent();
         expect(textContent).not.toContain('connect.serverUrlNotEmbeddedTitle');
-        expect(screen.findByTestId('add-phone-qr')?.findAllByType('QRCode')).toHaveLength(0);
-        expect(textContent).toContain('common.unavailable');
+        expect(screen.findAllByTestId('add-phone-qr')).toHaveLength(0);
+        expect(textContent).toContain('errors.operationFailed');
     });
 
     it('keeps the secret-bearing pairing link hidden until the user reveals it, then copies it', async () => {
@@ -387,6 +398,7 @@ describe('AddPhoneSettingsView', () => {
                 requestedPublicKey: encodeBase64(requestedPublicKey), requestedDeviceLabel: null,
                 homeServerIdentityId: 'srv_test',
                 bindingProof: computeHomeQrBindingProofV2({
+                    direction: 'trusted_home_displays',
                     qrSecret: new Uint8Array(32).fill(7), pairId: 'pair_123',
                     homeServerIdentityId: 'srv_test', requesterPublicKey: requestedPublicKey,
                     expiresAtMs: Date.parse(expiresAt),

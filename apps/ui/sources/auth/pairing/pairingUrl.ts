@@ -55,16 +55,21 @@ export function classifyLegacyPairingDeepLink(rawLink: string): LegacyPairingDee
     }
 
     if (!isValidPairingLinkTarget(url)) return null;
+    if (url.hash) return null;
 
-    const version = url.searchParams.get('v');
-    if (version != null && version !== '1') return null;
+    const entries = [...url.searchParams.entries()];
+    const allowedKeys = new Set(['v', 'pairId', 'secret', 'server']);
+    if (entries.some(([key]) => !allowedKeys.has(key))) return null;
+    const count = (key: string) => entries.filter(([entryKey]) => entryKey === key).length;
+    if (count('v') !== 1 || count('pairId') !== 1 || count('secret') !== 1 || count('server') > 1) return null;
+    if (url.searchParams.get('v') !== '1') return null;
 
     const pairId = url.searchParams.get('pairId');
     const secret = url.searchParams.get('secret');
     if (!pairId || !secret) return null;
 
     const server = url.searchParams.get('server');
-    if (server && !isValidLegacyServerUrl(server)) return null;
+    if (count('server') === 1 && (!server || !isValidLegacyServerUrl(server))) return null;
 
     return { kind: 'legacy_pairing_update_required' };
 }

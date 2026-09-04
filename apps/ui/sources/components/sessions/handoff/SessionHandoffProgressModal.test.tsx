@@ -66,6 +66,31 @@ async function expandProgressDetails(screen: Awaited<ReturnType<typeof renderScr
 }
 
 describe('SessionHandoffProgressModal', () => {
+    const completedOperation = (workspace: unknown) => ({
+        version: 1 as const,
+        operationId: 'handoff-operation-outcome',
+        requestId: 'handoff-request-outcome',
+        revision: 2,
+        actionId: 'session.handoff' as const,
+        state: 'succeeded' as const,
+        scope: { accountId: 'account-1', machineId: 'machine-1', sessionId: 'session-1' },
+        title: 'Hand off session',
+        createdAt: 1,
+        startedAt: 2,
+        settledAt: 3,
+        cancellation: 'supported' as const,
+        result: {
+            handoffId: 'handoff-1',
+            status: {
+                handoffId: 'handoff-1',
+                status: 'completed' as const,
+                phase: 'finalizing' as const,
+                recoveryActions: [],
+            },
+            workspace,
+        },
+    });
+
     it('keeps the shared operation Stop and Collapse controls in the rich running presentation', async () => {
         const { SessionHandoffProgressModal } = await import('./SessionHandoffProgressModal');
         const setChrome = vi.fn();
@@ -991,6 +1016,50 @@ describe('SessionHandoffProgressModal', () => {
         expect(textContent).not.toContain('+2');
         expect(textContent).not.toContain('~1');
         expect(textContent).not.toContain('-3');
+    });
+
+    it('confirms the daemon-owned committed workspace outcome and keeps its cleanup warning visible', async () => {
+        const { SessionHandoffProgressModal } = await import('./SessionHandoffProgressModal');
+        const screen = await renderScreen(
+            <SessionHandoffProgressModal
+                onClose={() => {}}
+                operation={completedOperation({
+                    kind: 'relationship',
+                    relationshipId: 'relationship-1',
+                    created: true,
+                    cleanupWarning: { code: 'staging_release_failed', message: 'Staging could not be released.' },
+                })}
+            />,
+        );
+
+        expect(screen.findByTestId('session-handoff-workspace-outcome')).toBeTruthy();
+        const textContent = screen.getTextContent();
+        expect(textContent).toContain('sessionHandoff.workspaceOutcome.relationshipCreated');
+        expect(textContent).not.toContain('sessionHandoff.workspaceOutcome.relationshipReused');
+        expect(screen.findByTestId('session-handoff-workspace-outcome-cleanup-warning')).toBeTruthy();
+        expect(textContent).toContain('Staging could not be released.');
+        // Raw relationship identity stays diagnostic-only (A4.5).
+        expect(textContent).not.toContain('relationship-1');
+    });
+
+    it('distinguishes a reused relationship from a committed one-shot copy', async () => {
+        const { SessionHandoffProgressModal } = await import('./SessionHandoffProgressModal');
+        const reused = await renderScreen(
+            <SessionHandoffProgressModal
+                onClose={() => {}}
+                operation={completedOperation({ kind: 'relationship', relationshipId: 'relationship-1', created: false })}
+            />,
+        );
+        expect(reused.getTextContent()).toContain('sessionHandoff.workspaceOutcome.relationshipReused');
+        expect(reused.findByTestId('session-handoff-workspace-outcome-cleanup-warning')).toBeNull();
+
+        const copied = await renderScreen(
+            <SessionHandoffProgressModal
+                onClose={() => {}}
+                operation={completedOperation({ kind: 'copied', operationId: 'operation-1' })}
+            />,
+        );
+        expect(copied.getTextContent()).toContain('sessionHandoff.workspaceOutcome.copied');
     });
 
 });

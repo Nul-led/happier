@@ -39,6 +39,7 @@ export function useSshSystemTaskPromptModals(params: Readonly<{
             void (async () => {
                 const rawPaths = Array.isArray(prompt.data.paths) ? prompt.data.paths : [];
                 const paths = rawPaths.filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+                const sshHost = typeof prompt.data.sshHost === 'string' ? prompt.data.sshHost.trim() : '';
                 const canonicalServerUrl = typeof prompt.data.canonicalServerUrl === 'string'
                     ? prompt.data.canonicalServerUrl.trim()
                     : '';
@@ -48,7 +49,8 @@ export function useSshSystemTaskPromptModals(params: Readonly<{
                     ? prompt.data.homeServerIdentityId
                     : undefined;
                 const estimatedBytes = prompt.data.estimatedBytes;
-                const factsAreExact = canonicalServerUrl.length > 0
+                const factsAreExact = sshHost.length > 0
+                    && canonicalServerUrl.length > 0
                     && homeServerIdentityId !== undefined
                     && paths.length > 0
                     && paths.length === rawPaths.length
@@ -61,6 +63,7 @@ export function useSshSystemTaskPromptModals(params: Readonly<{
                 const accepted = await Modal.confirm(
                     prompt.message || personalHomeCopy('eraseDataTitle', 'Delete Personal Home data?'),
                     [
+                        `${t('settings.machineSetupRemoteSshHostLabel')}: ${sshHost}`,
                         `${personalHomeCopy('canonicalServerUrl', 'Home URL')}: ${canonicalServerUrl}`,
                         `${personalHomeCopy('identityTitle', 'Home identity')}: ${homeServerIdentityId || personalHomeCopy('notAvailable', 'Not available')}`,
                         `${personalHomeCopy('estimatedSize', 'Estimated size')}: ${estimatedBytes === null ? personalHomeCopy('unknownSize', 'Unknown size') : String(estimatedBytes)}`,

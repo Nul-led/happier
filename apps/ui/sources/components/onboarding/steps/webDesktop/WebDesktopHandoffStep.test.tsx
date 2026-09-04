@@ -8,7 +8,7 @@ describe('WebDesktopHandoffStep', () => {
         standardCleanup();
     });
 
-    it('includes guided desktop handoff steps for hosting a relay on this computer', async () => {
+    it('creates a Personal Home instead of installing a generic relay runtime', async () => {
         const { WebDesktopHandoffStep } = await import('./WebDesktopHandoffStep');
         const screen = await renderScreen(React.createElement(WebDesktopHandoffStep, {
             testID: 'web-desktop-handoff',
@@ -21,6 +21,10 @@ describe('WebDesktopHandoffStep', () => {
         expect(screen.findByTestId('web-desktop-handoff-divider')).toBeTruthy();
 
         expect(screen.findByTestId('web-desktop-handoff-terminal-step-relay-setup')).toBeTruthy();
+        const commands = screen.getTextContent();
+        expect(commands).toContain('happier home create');
+        expect(commands).not.toContain('setup-relay');
+        expect(commands).not.toContain('relay host install');
     });
 
     it('includes a single setup command for the background-service handoff', async () => {
@@ -36,6 +40,10 @@ describe('WebDesktopHandoffStep', () => {
         expect(screen.findByTestId('web-background-service-handoff-terminal-step-setup')).toBeTruthy();
         expect(screen.findByTestId('web-background-service-handoff-terminal-step-daemon-install')).toBeNull();
         expect(screen.findByTestId('web-background-service-handoff-terminal-step-daemon-start')).toBeNull();
+        const commands = screen.getTextContent();
+        expect(commands).toContain('setup --home-url https://relay.example.test --skip-providers');
+        expect(commands).not.toContain('setup --relay-url');
+        expect(commands).not.toContain('--yes');
     });
 
 });

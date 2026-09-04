@@ -1,22 +1,140 @@
+import * as React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { renderScreen } from '@/dev/testkit';
+import type { ActionOperationSnapshotV1 } from '@happier-dev/protocol';
+import { createActionOperationStore } from '@/sync/domains/actionOperations/actionOperationStore';
+
+import { installSessionHandoffCommonModuleMocks } from './sessionHandoffTestHelpers';
 
 const modalShowMock = vi.hoisted(() => vi.fn((..._args: unknown[]) => 'handoff-progress-modal'));
 const modalHideMock = vi.hoisted(() => vi.fn((..._args: unknown[]) => {}));
 const modalUpdateMock = vi.hoisted(() => vi.fn((..._args: unknown[]) => {}));
 
-vi.mock('@/modal', async () => {
-    const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
-    return createModalModuleMock({
-        spies: {
-            show: (...args: unknown[]) => modalShowMock(...args),
-            hide: (...args: unknown[]) => modalHideMock(...args),
-            update: (...args: unknown[]) => modalUpdateMock(...args),
-        },
-    }).module;
+// The common helper owns the react-native/unistyles/text mock registrations.
+// The modal factory keeps the same spy triples the direct component tests
+// assert against; it is read lazily when `@/modal` is first imported.
+installSessionHandoffCommonModuleMocks({
+    modal: async () => {
+        const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+        return createModalModuleMock({
+            spies: {
+                show: (...args: unknown[]) => modalShowMock(...args),
+                hide: (...args: unknown[]) => modalHideMock(...args),
+                update: (...args: unknown[]) => modalUpdateMock(...args),
+            },
+        }).module;
+    },
 });
 
-import { createActionOperationStore } from '@/sync/domains/actionOperations/actionOperationStore';
-import { openObservedSessionHandoffProgressModal } from './openSessionHandoffProgressModal';
+vi.mock('@/components/inbox/actionOperations/requestActionOperationStop', () => ({
+    requestActionOperationStop: vi.fn(async () => ({ kind: 'requested' as const })),
+}));
+
+vi.mock('@/components/ui/buttons/RoundButton', () => ({
+    RoundButton: (props: Record<string, unknown>) => React.createElement('RoundButton', props),
+}));
+
+vi.mock('@/components/ui/lists/ItemGroup', () => ({
+    ItemGroup: (props: React.PropsWithChildren<Record<string, unknown>>) => React.createElement('ItemGroup', props, props.children),
+}));
+
+vi.mock('@/components/ui/lists/Item', () => ({
+    Item: (props: React.PropsWithChildren<Record<string, unknown>>) => React.createElement('Item', props, props.children),
+}));
+
+vi.mock('@/components/ui/lists/ExpandableItem', () => ({
+    ExpandableItem: (props: React.PropsWithChildren<Record<string, unknown> & {
+        expanded: boolean;
+        onExpandedChange: (next: boolean) => void;
+        header: (state: Readonly<{
+            expanded: boolean;
+            headerProps: Readonly<{
+                onPress: () => void;
+                accessibilityRole: 'button';
+                accessibilityState: Readonly<{ expanded: boolean }>;
+            }>;
+        }>) => React.ReactNode;
+    }>) => React.createElement(
+        'ExpandableItem',
+        props,
+        props.header({
+            expanded: props.expanded,
+            headerProps: {
+                onPress: () => props.onExpandedChange(!props.expanded),
+                accessibilityRole: 'button',
+                accessibilityState: { expanded: props.expanded },
+            },
+        }),
+        props.expanded ? props.children : null,
+    ),
+}));
+
+(globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+type ProgressModalComponent = React.ComponentType<Record<string, unknown> & {
+    onClose?: () => void;
+    setChrome?: (chrome: unknown) => void;
+    operation?: ActionOperationSnapshotV1;
+}>;
+
+function findProgressIndicators(screen: Awaited<ReturnType<typeof renderScreen>>) {
+    return screen.findAll((node) => node.props?.accessibilityRole === 'progressbar');
+}
+
+async function expandProgressDetails(screen: Awaited<ReturnType<typeof renderScreen>>) {
+    const toggle = screen.findByTestId('session-handoff-progress-details-toggle');
+    if (toggle?.props.accessibilityState?.expanded !== true) {
+        await screen.pressByTestIdAsync('session-handoff-progress-details-toggle');
+    }
+}
+
+/**
+ * Renders the exact component/props pair the modal host mounts for the
+ * observed handoff operation, including the latest operation the live
+ * subscription pushed through `Modal.update`.
+ */
+async function renderObservedModal(operation: ActionOperationSnapshotV1) {
+    const shown = modalShowMock.mock.calls[0]?.[0] as {
+        component: ProgressModalComponent;
+        props?: Record<string, unknown>;
+    } | undefined;
+    if (!shown) throw new Error('openObservedSessionHandoffProgressModal never showed the modal');
+    const setChrome = vi.fn();
+    const screen = await renderScreen(
+        React.createElement(shown.component, {
+            ...(shown.props ?? {}),
+            operation,
+            onClose: () => {},
+            setChrome,
+        }),
+    );
+    return { screen, setChrome };
+}
+
+function runningSnapshot(overrides: Partial<ActionOperationSnapshotV1> = {}): ActionOperationSnapshotV1 {
+    return {
+        version: 1,
+        operationId: 'handoff-operation-terminal',
+        requestId: 'handoff-request-terminal',
+        revision: 1,
+        actionId: 'session.handoff',
+        state: 'running',
+        scope: { accountId: 'account-1', machineId: 'machine-1', sessionId: 'session-1' },
+        title: 'Hand off session',
+        createdAt: 1,
+        startedAt: 2,
+        progress: { kind: 'determinate', current: 1, total: 4, label: 'Transferring' },
+        cancellation: 'supported',
+        ...overrides,
+    };
+}
+
+function lastPushedOperation(): ActionOperationSnapshotV1 {
+    const update = modalUpdateMock.mock.calls.at(-1)?.[1] as { operation?: ActionOperationSnapshotV1 } | undefined;
+    if (!update?.operation) throw new Error('the live observation never pushed an operation to the modal');
+    return update.operation;
+}
 
 describe('observed session handoff progress presentation', () => {
     beforeEach(() => {
@@ -26,6 +144,7 @@ describe('observed session handoff progress presentation', () => {
     });
 
     it('streams pushed operation revisions into the modal and detaches observation when collapsed', async () => {
+        const { openObservedSessionHandoffProgressModal } = await import('./openSessionHandoffProgressModal');
         const store = createActionOperationStore();
         const presentation = openObservedSessionHandoffProgressModal({
             requestId: 'handoff-request-1',
@@ -63,5 +182,116 @@ describe('observed session handoff progress presentation', () => {
 
         expect(presentation.isAttached()).toBe(false);
         expect(modalUpdateMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('derives one terminal failure presentation from the live operation when no legacy status exists', async () => {
+        const { openObservedSessionHandoffProgressModal } = await import('./openSessionHandoffProgressModal');
+        const store = createActionOperationStore();
+        openObservedSessionHandoffProgressModal({
+            requestId: 'handoff-request-terminal',
+            sessionId: 'session-1',
+            store,
+        });
+
+        // While the operation runs, the modal presents active progress.
+        store.mergeSnapshots([runningSnapshot()]);
+        const running = await renderObservedModal(lastPushedOperation());
+        expect(running.setChrome).toHaveBeenLastCalledWith(
+            expect.objectContaining({ title: 'sessionHandoff.progress.title' }),
+        );
+        expect(findProgressIndicators(running.screen).length).toBeGreaterThanOrEqual(1);
+
+        // A failed terminal revision must stop the spinner and present the
+        // bounded actionable failure, with the technical error under Details.
+        store.mergeSnapshots([runningSnapshot({
+            revision: 2,
+            state: 'failed',
+            settledAt: 3,
+            progress: undefined,
+            error: {
+                errorCode: 'handoff_prepare_failed',
+                error: 'The target machine rejected the handoff preparation',
+            },
+        })]);
+        const failed = await renderObservedModal(lastPushedOperation());
+        expect(lastPushedOperation().state).toBe('failed');
+        expect(failed.setChrome).toHaveBeenLastCalledWith(
+            expect.objectContaining({ title: 'sessionHandoff.failure.title' }),
+        );
+        expect(failed.screen.getTextContent()).toContain('sessionHandoff.failure.message');
+        expect(findProgressIndicators(failed.screen)).toHaveLength(0);
+
+        await expandProgressDetails(failed.screen);
+        expect(failed.screen.getTextContent()).toContain('The target machine rejected the handoff preparation');
+        expect(failed.screen.findByTestId('session-handoff-operation-error')).toBeTruthy();
+    });
+
+    it('derives one terminal cancelled presentation from the live operation when no legacy status exists', async () => {
+        const { openObservedSessionHandoffProgressModal } = await import('./openSessionHandoffProgressModal');
+        const store = createActionOperationStore();
+        openObservedSessionHandoffProgressModal({
+            requestId: 'handoff-request-terminal',
+            sessionId: 'session-1',
+            store,
+        });
+
+        store.mergeSnapshots([runningSnapshot()]);
+        const running = await renderObservedModal(lastPushedOperation());
+        expect(findProgressIndicators(running.screen).length).toBeGreaterThanOrEqual(1);
+
+        store.mergeSnapshots([runningSnapshot({
+            revision: 2,
+            state: 'cancelled',
+            settledAt: 3,
+            progress: undefined,
+        })]);
+        const cancelled = await renderObservedModal(lastPushedOperation());
+        expect(lastPushedOperation().state).toBe('cancelled');
+        expect(cancelled.setChrome).toHaveBeenLastCalledWith(
+            expect.objectContaining({ title: 'sessionHandoff.cancelled.title' }),
+        );
+        expect(cancelled.screen.getTextContent()).toContain('sessionHandoff.cancelled.message');
+        expect(findProgressIndicators(cancelled.screen)).toHaveLength(0);
+        await expandProgressDetails(cancelled.screen);
+        expect(cancelled.screen.findByTestId('session-handoff-operation-error')).toBeNull();
+    });
+
+    it('renders the committed workspace outcome from the canonical Action operation result', async () => {
+        const { openObservedSessionHandoffProgressModal } = await import('./openSessionHandoffProgressModal');
+        const store = createActionOperationStore();
+        openObservedSessionHandoffProgressModal({
+            requestId: 'handoff-request-outcome',
+            sessionId: 'session-1',
+            workspaceSyncEnabled: true,
+            store,
+        });
+
+        store.mergeSnapshots([runningSnapshot({
+            requestId: 'handoff-request-outcome',
+            revision: 2,
+            state: 'succeeded',
+            settledAt: 3,
+            progress: undefined,
+            result: {
+                handoffId: 'handoff-1',
+                status: {
+                    handoffId: 'handoff-1',
+                    status: 'completed',
+                    phase: 'finalizing',
+                    recoveryActions: [],
+                },
+                workspace: {
+                    kind: 'relationship',
+                    relationshipId: 'relationship-1',
+                    created: true,
+                    cleanupWarning: { code: 'staging_release_failed', message: 'Staging could not be released.' },
+                },
+            },
+        })]);
+        const completed = await renderObservedModal(lastPushedOperation());
+
+        expect(completed.screen.getTextContent()).toContain('sessionHandoff.workspaceOutcome.relationshipCreated');
+        expect(completed.screen.getTextContent()).toContain('Staging could not be released.');
+        expect(modalHideMock).not.toHaveBeenCalled();
     });
 });

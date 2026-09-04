@@ -149,6 +149,7 @@ function parseRestoreRedirectReason(value: unknown): RestoreRedirectReason | nul
 
 export type RestoreQrViewProps = Readonly<{
     entryIntent: HomeQrEntryIntent;
+    targetProfileId?: string | null;
     embedded?: boolean;
     onBack?: () => void;
     onOpenSecretKeyLogin?: () => void;
@@ -164,7 +165,7 @@ export const RestoreQrView = React.memo(function RestoreQrView(props: RestoreQrV
     const [providerResetEnabled, setProviderResetEnabled] = useState(false);
     const embedded = props.embedded === true;
     const canOpenScanner = typeof props.onOpenScanQr === 'function' && canUseCurrentDeviceQrScanner();
-    const reversePairing = useReversePairingSession({ enabled: true });
+    const reversePairing = useReversePairingSession({ enabled: true, targetProfileId: props.targetProfileId ?? null });
     const pairing = reversePairing.presentation;
     const [shellNavigationRequested, setShellNavigationRequested] = React.useState(false);
     const openGenerationRef = React.useRef(0);

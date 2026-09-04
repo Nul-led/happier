@@ -29,9 +29,11 @@ const adoptHomeProfileMock = vi.hoisted(() => vi.fn<(...args: unknown[]) => Prom
 const preflightHomeProfileAdoptionMock = vi.hoisted(() => vi.fn<(...args: unknown[]) => {
     canonicalServerUrl: string;
     serverIdentityId: string;
+    credentialWrite: 'required';
 }>(() => ({
     canonicalServerUrl: 'https://home-b.test',
     serverIdentityId: 'srv_home_b',
+    credentialWrite: 'required',
 })));
 const reconcileServerProfileHomeConnectionDescriptorMock = vi.hoisted(() => vi.fn<
     (...args: unknown[]) => Promise<{
@@ -91,7 +93,6 @@ vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
         profile: { id: 'profile-b', serverUrl: 'https://home-b.test', serverIdentityId: 'srv_home_b' },
     }),
     resolveServerProfileScopeId: () => 'srv_home_b',
-    withHomeCredentialWriteAuthorization: async <T,>(authorization: unknown, run: (value: unknown) => Promise<T>) => await run(authorization),
 }));
 vi.mock('@/sync/domains/server/activeServerSwitch', () => ({
     setActiveServerAndSwitch: (...args: unknown[]) => setActiveServerAndSwitchMock(...args),
@@ -181,14 +182,14 @@ function makeSession(): Parameters<typeof enrollPreferredDirectoryHome>[0] {
             error: null,
             reconciliation: { kind: 'not_run' },
         },
-        requestLoginAssertion: async () => ({
+        requestLoginAssertion: async (_homeServerIdentityId: string, clientBoxPublicKeyBase64: string) => ({
             v: 1,
             purpose: 'happier.home-login',
             issuerServerIdentityId: 'srv_dir_1',
             issuerSubjectId: 'account-1',
             audienceHomeServerIdentityId: HOME_B.homeServerIdentityId,
             credentialDestinationDigestBase64Url: createHomeCredentialDestinationDigestV1(HOME_B.connectionDescriptor),
-            clientBoxPublicKeyBase64: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+            clientBoxPublicKeyBase64,
             issuedAtMs: Date.now() - 1_000,
             expiresAtMs: Date.now() + 120_000,
             keyId: 'a'.repeat(64),
@@ -221,7 +222,7 @@ describe('AccountServiceOAuthJourney approval continuation', () => {
             url: 'https://directory.test', serverIdentityId: 'srv_dir_1', source: 'user',
         });
         createServerFetchAtEndpointMock.mockImplementation(() => async (path: string, ...args: unknown[]) => {
-            if (path === '/v1/features') {
+            if (path === '/v1/features' || path === '/v1/features/authenticated') {
                 return json(200, {
                     features: {},
                     capabilities: { serverIdentity: { serverIdentityId: HOME_B.homeServerIdentityId } },

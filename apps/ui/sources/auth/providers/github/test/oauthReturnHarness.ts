@@ -31,6 +31,9 @@ export const resumeAccountEncryptionFirstKeyExternalAuthSpy =
 export const accountDirectoryCredentialSetSpy = vi.fn(async () => true);
 export const accountDirectoryCredentialGetSpy = vi.fn(async () => null as AuthCredentials | null);
 export const pendingAccountDirectoryAuthGetSpy = vi.fn(async () => null as PendingAccountDirectoryAuth | null);
+export const pendingAccountDirectoryAuthCustodyResolveSpy = vi.fn<
+    () => Promise<import('@/auth/storage/tokenStorage').PendingAccountDirectoryAuthCustodyResolution>
+>(async () => ({ kind: 'absent' }));
 export const pendingAccountDirectoryAuthClearSpy = vi.fn(async () => true);
 const hoistedModal = vi.hoisted(() => ({
     show: vi.fn((config: { onRequestClose?: () => void }) => {
@@ -226,6 +229,7 @@ vi.mock('@/auth/storage/tokenStorage', async () => {
             ) => storedCredentialsState
                 ?? await actual.TokenStorage.getCredentialsForServerUrl(...args),
             getPendingAccountDirectoryAuth: pendingAccountDirectoryAuthGetSpy,
+            resolvePendingAccountDirectoryAuthCustody: pendingAccountDirectoryAuthCustodyResolveSpy,
             clearPendingAccountDirectoryAuth: pendingAccountDirectoryAuthClearSpy,
             accountDirectoryAuthCredentials: {
                 ...actual.TokenStorage.accountDirectoryAuthCredentials,
@@ -318,6 +322,10 @@ export function resetOAuthHarness() {
     accountDirectoryCredentialGetSpy.mockResolvedValue(null);
     pendingAccountDirectoryAuthGetSpy.mockReset();
     pendingAccountDirectoryAuthGetSpy.mockImplementation(async () => pendingAccountDirectoryAuthState);
+    pendingAccountDirectoryAuthCustodyResolveSpy.mockReset();
+    pendingAccountDirectoryAuthCustodyResolveSpy.mockImplementation(async () => pendingAccountDirectoryAuthState
+        ? { kind: 'matched' as const, pending: pendingAccountDirectoryAuthState }
+        : { kind: 'absent' as const });
     pendingAccountDirectoryAuthClearSpy.mockReset();
     pendingAccountDirectoryAuthClearSpy.mockResolvedValue(true);
     if (typeof modal.alert.mockReset === 'function') {

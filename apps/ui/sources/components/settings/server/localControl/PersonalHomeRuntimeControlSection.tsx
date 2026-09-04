@@ -5,7 +5,6 @@ import type { SystemTaskSpec } from '@happier-dev/protocol';
 import { Modal } from '@/modal';
 import { SystemTaskProgressCard } from '@/components/systemTasks';
 import { resolveSystemTaskStepLabel } from '@/components/systemTasks/resolveSystemTaskStepLabel';
-import { readLatestSystemTaskPrompt } from '@/components/systemTasks/prompts/readLatestSystemTaskPrompt';
 import type { SystemTaskPromptContinuation, SystemTaskRunner } from '@/components/systemTasks/types';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
@@ -37,6 +36,7 @@ export type PersonalHomeRelocationRecovery = Readonly<{
 }>;
 
 export type PersonalHomeRuntimeControlOperations = Readonly<{
+    repairSearch?: () => Promise<void>;
     removeProfile?: () => Promise<void>;
     uninstallRuntime?: () => Promise<void>;
     openDataLocation?: (path: string) => Promise<void>;
@@ -181,8 +181,39 @@ export const PersonalHomeRuntimeControlSection = React.memo(function PersonalHom
     }, [control, props.operations]);
 
     const erase = React.useCallback(async () => {
-        await control.erasePersonalHomeData();
+        const promptContinuation: SystemTaskPromptContinuation = async (prompt) => {
+            if (prompt.kind !== 'personal_home.confirm_erase.v1') return undefined;
+            const rawPaths = prompt.data.paths;
+            const paths = Array.isArray(rawPaths)
+                ? rawPaths.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+                : [];
+            const estimatedBytes = typeof prompt.data.estimatedBytes === 'number'
+                && Number.isFinite(prompt.data.estimatedBytes) && prompt.data.estimatedBytes >= 0
+                ? prompt.data.estimatedBytes : null;
+            const canonicalServerUrl = typeof prompt.data.canonicalServerUrl === 'string'
+                ? prompt.data.canonicalServerUrl.trim() : '';
+            const homeServerIdentityId = prompt.data.homeServerIdentityId === null
+                || (typeof prompt.data.homeServerIdentityId === 'string' && prompt.data.homeServerIdentityId.trim().length > 0)
+                ? prompt.data.homeServerIdentityId : undefined;
+            if (!Array.isArray(rawPaths) || paths.length === 0 || paths.length !== rawPaths.length
+                || !canonicalServerUrl || homeServerIdentityId === undefined) return { confirmed: false };
+            const confirmed = await Modal.confirm(
+                copy('eraseDataTitle', 'Delete Personal Home data?'),
+                `${copy('eraseHomeTarget', 'Home')}: ${canonicalServerUrl}\n${copy('identityTitle', 'Home identity')}: ${homeServerIdentityId ?? copy('identityUnavailable', 'Identity unavailable')}\n\n${copy('eraseDataBody', 'This is separate from uninstall and permanently deletes only these resolved Home paths:')}\n\n${paths.map((path) => `• ${path}`).join('\n')}\n\n${copy('estimatedSize', 'Estimated size')}: ${formatBytes(estimatedBytes)}`,
+                { confirmText: tLoose('common.delete'), destructive: true },
+            );
+            return { confirmed };
+        };
+        await control.erasePersonalHomeData(promptContinuation);
     }, [control]);
+
+    const repairSearch = React.useCallback(async () => {
+        await props.operations?.repairSearch?.();
+        await Modal.alert(
+            copy('repairSearchCompleteTitle', 'Home search rebuilt'),
+            copy('repairSearchCompleteBody', 'The search index was recreated from this Home’s conversations.'),
+        );
+    }, [props.operations]);
 
     const [relocationMenuOpen, setRelocationMenuOpen] = React.useState(false);
     const startRelocationTask = React.useCallback(async (prepared: PreparedPersonalHomeRelocationTask) => {
@@ -224,51 +255,7 @@ export const PersonalHomeRuntimeControlSection = React.memo(function PersonalHom
         if (confirmed) await control.recoverPersonalHomeRestore();
     }, [control]);
 
-    const handledErasePromptRef = React.useRef<string | null>(null);
     const [operationDetailsOpen, setOperationDetailsOpen] = React.useState(false);
-    const operationPrompt = readLatestSystemTaskPrompt(control.operationSnapshot);
-    React.useEffect(() => {
-        if (!control.operationSnapshot?.awaitingInput
-            || operationPrompt?.kind !== 'personal_home.confirm_erase.v1') return;
-        const promptKey = `${control.operationSnapshot.taskId}:${JSON.stringify(operationPrompt.data)}`;
-        if (handledErasePromptRef.current === promptKey) return;
-        handledErasePromptRef.current = promptKey;
-        const taskId = control.operationSnapshot.taskId;
-        void (async () => {
-            const rawPaths = operationPrompt.data.paths;
-            const paths = Array.isArray(rawPaths)
-                ? rawPaths.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
-                : [];
-            const estimatedBytes = typeof operationPrompt.data.estimatedBytes === 'number'
-                && Number.isFinite(operationPrompt.data.estimatedBytes)
-                && operationPrompt.data.estimatedBytes >= 0
-                ? operationPrompt.data.estimatedBytes
-                : null;
-            const canonicalServerUrl = typeof operationPrompt.data.canonicalServerUrl === 'string'
-                ? operationPrompt.data.canonicalServerUrl.trim()
-                : '';
-            const homeServerIdentityId = operationPrompt.data.homeServerIdentityId === null
-                || (typeof operationPrompt.data.homeServerIdentityId === 'string' && operationPrompt.data.homeServerIdentityId.trim().length > 0)
-                ? operationPrompt.data.homeServerIdentityId
-                : undefined;
-            let confirmed = false;
-            try {
-                if (Array.isArray(rawPaths)
-                    && paths.length > 0
-                    && paths.length === rawPaths.length
-                    && canonicalServerUrl
-                    && homeServerIdentityId !== undefined) {
-                    confirmed = await Modal.confirm(
-                        copy('eraseDataTitle', 'Delete Personal Home data?'),
-                        `${copy('eraseHomeTarget', 'Home')}: ${canonicalServerUrl}\n${copy('identityTitle', 'Home identity')}: ${homeServerIdentityId ?? copy('identityUnavailable', 'Identity unavailable')}\n\n${copy('eraseDataBody', 'This is separate from uninstall and permanently deletes only these resolved Home paths:')}\n\n${paths.map((path) => `• ${path}`).join('\n')}\n\n${copy('estimatedSize', 'Estimated size')}: ${formatBytes(estimatedBytes)}`,
-                        { confirmText: tLoose('common.delete'), destructive: true },
-                    );
-                }
-            } finally {
-                await control.respondToTaskPrompt(taskId, { confirmed });
-            }
-        })().catch(() => {});
-    }, [control, operationPrompt]);
 
     const disabled = control.isBusy || control.isUnavailable || control.status?.purpose?.kind !== 'personal-home';
     const terminalRelocationRecovery = control.operationSnapshot?.result?.ok
@@ -478,6 +465,13 @@ export const PersonalHomeRuntimeControlSection = React.memo(function PersonalHom
             <Item testID="settings.localRelayRuntime.start" title={copy('startAction', 'Start Personal Home')} onPress={() => void control.startRelay()} disabled={!canStart} />
             <Item testID="settings.localRelayRuntime.stop" title={copy('stopAction', 'Stop Personal Home')} onPress={() => void control.stopRelay()} disabled={!canStop} />
             <Item testID="settings.personalHomeRuntime.restart" title={copy('restartAction', 'Restart Personal Home')} onPress={() => void control.restartRelay()} disabled={disabled} />
+            {operations?.repairSearch ? <Item
+                testID="settings.personalHomeRuntime.repairSearch"
+                title={copy('repairSearchAction', 'Rebuild Home search')}
+                subtitle={copy('repairSearchSubtitle', 'Recreates the search index from this Home’s conversations.')}
+                onPress={() => void runExternalOperation(repairSearch)}
+                disabled={disabled || control.status?.service.active !== true || control.status.healthy !== true}
+            /> : null}
             {operations?.openDataLocation ? <Item testID="settings.personalHomeRuntime.openDataLocation" title={copy('openDataLocationAction', 'Open Home data location')} onPress={() => void runExternalOperation(() => operations.openDataLocation!(control.inspection?.layoutPaths.dataDir ?? ''))} disabled={!control.inspection?.layoutPaths.dataDir} /> : null}
             {operations?.openLogs ? <Item testID="settings.personalHomeRuntime.openLogs" title={copy('openLogsAction', 'Open runtime logs')} onPress={() => void runExternalOperation(() => operations.openLogs!(control.inspection?.layoutPaths.logsDir ?? ''))} disabled={!control.inspection?.layoutPaths.logsDir} /> : null}
             {operations?.removeProfile ? <Item testID="settings.personalHomeRuntime.removeProfile" title={copy('removeProfileAction', 'Remove Home from Happier')} subtitle={copy('removeProfileSubtitle', 'Removes this profile and this device’s saved Home credential; runtime data stays on this computer.')} onPress={() => void operations.removeProfile?.()} destructive /> : null}

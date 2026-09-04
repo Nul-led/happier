@@ -4,6 +4,7 @@ import {
 } from '@/auth/accountDirectory/accountDirectoryAuthClient';
 import { normalizeSecretKey } from '@/auth/recovery/secretKeyBackup';
 import type { AccountServiceEntryIntent } from '@/auth/storage/tokenStorage';
+import type { AccountDirectoryCapabilities } from '@happier-dev/protocol';
 import { decodeBase64 } from '@/encryption/base64';
 import { Modal } from '@/modal';
 import {
@@ -18,9 +19,11 @@ import {
 } from '@/sync/domains/server/serverProfiles';
 import {
     enrollPreferredDirectoryHome,
+    finalizePreferredHomeEnrollmentEntryIntent,
     type PreferredDirectoryHomeEnrollmentResult,
 } from '@/sync/ops/accountDirectory/enrollPreferredDirectoryHome';
 import { refreshAccountHomeDirectory } from '@/sync/ops/accountDirectory/refreshAccountHomeDirectory';
+import { provisionAuthenticatedHomeLink } from '@/sync/ops/accountDirectory/provisionAuthenticatedHomeLink';
 import { t } from '@/text';
 
 export type AccountServiceKeyAuthOutcome =
@@ -110,6 +113,7 @@ export async function authenticateSelectedAccountServiceWithKey(input: Readonly<
             endpointServerIdentityId: discovery.serverIdentityId,
             canonicalServerUrl: discovery.canonicalServerUrl,
             secret,
+            verifiedServerFeaturesSnapshot: discovery.snapshot,
         });
         if (input.shouldCancel?.()) return { kind: 'cancelled' };
         return {
@@ -145,7 +149,60 @@ export async function refreshAndEnrollAccountServiceDirectory(
     snapshot: AccountDirectorySessionSnapshot;
     enrollment: PreferredDirectoryHomeEnrollmentResult | null;
 }>> {
-    const refreshed = await refreshAccountHomeDirectory(session, options);
+    const completed = await completeAccountServicePostAuth(session, options);
+    return { snapshot: completed.snapshot, enrollment: completed.enrollment };
+}
+
+export type AccountServicePostAuthResult = Readonly<{
+    snapshot: AccountDirectorySessionSnapshot;
+    enrollment: PreferredDirectoryHomeEnrollmentResult | null;
+    failure?: 'home_link_failed' | 'directory_refresh_failed' | 'home_enrollment_failed';
+    entryIntentOutcome?: 'completed' | 'blocked' | 'superseded';
+}>;
+
+/**
+ * Sole Lane 02 coordinator after either key or OAuth authentication commits.
+ * It owns link -> refresh -> enrollment -> semantic entry intent ordering;
+ * callbacks and screens only present this typed result.
+ */
+export async function completeAccountServicePostAuth(
+    session: AccountDirectorySession,
+    options: Readonly<{
+        entryIntent: AccountServiceEntryIntent;
+        shouldCancel?: () => boolean;
+        shouldInvalidateContinuation?: () => boolean;
+        enroll?: boolean;
+        homeServerIdentityId?: string;
+        issuerServerIdentityId?: string;
+        capability?: AccountDirectoryCapabilities;
+    }>,
+): Promise<AccountServicePostAuthResult> {
+    if (options.homeServerIdentityId) {
+        if (!options.issuerServerIdentityId || !options.capability) {
+            return { snapshot: session.snapshot, enrollment: null, failure: 'home_link_failed' };
+        }
+        try {
+            const linked = await provisionAuthenticatedHomeLink({
+                session,
+                homeServerIdentityId: options.homeServerIdentityId,
+                issuerServerIdentityId: options.issuerServerIdentityId,
+                capability: options.capability,
+                shouldCancel: options.shouldCancel,
+            });
+            if (linked.kind !== 'linked') {
+                return { snapshot: session.snapshot, enrollment: null, failure: 'home_link_failed' };
+            }
+        } catch {
+            return { snapshot: session.snapshot, enrollment: null, failure: 'home_link_failed' };
+        }
+    }
+
+    let refreshed: AccountDirectorySessionSnapshot;
+    try {
+        refreshed = await refreshAccountHomeDirectory(session, options);
+    } catch {
+        return { snapshot: session.snapshot, enrollment: null, failure: 'directory_refresh_failed' };
+    }
     let enrollment: PreferredDirectoryHomeEnrollmentResult | null = null;
     if (
         refreshed.status === 'ready'
@@ -153,7 +210,19 @@ export async function refreshAndEnrollAccountServiceDirectory(
         && options.enroll !== false
         && options.shouldCancel?.() !== true
     ) {
-        enrollment = await enrollPreferredDirectoryHome(session, options);
+        try {
+            enrollment = await enrollPreferredDirectoryHome(session, options);
+        } catch {
+            return { snapshot: refreshed, enrollment: null, failure: 'home_enrollment_failed' };
+        }
     }
-    return { snapshot: refreshed, enrollment };
+    const entryIntentOutcome = enrollment?.kind === 'enrolled'
+        ? await finalizePreferredHomeEnrollmentEntryIntent(
+            enrollment.homeServerIdentityId,
+            options.entryIntent,
+            session.serviceKey,
+            options.shouldCancel,
+        )
+        : undefined;
+    return { snapshot: refreshed, enrollment, ...(entryIntentOutcome ? { entryIntentOutcome } : {}) };
 }

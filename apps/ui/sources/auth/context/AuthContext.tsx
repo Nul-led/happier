@@ -13,7 +13,7 @@ import {
 } from '@/sync/domains/server/serverProfiles';
 import { createServerUrlComparableKey } from '@/sync/domains/server/url/serverUrlCanonical';
 import {
-    disconnectActiveServerConnection,
+    disconnectActiveServerConnectionIfCurrent,
     switchConnectionToActiveServer,
 } from '@/sync/runtime/orchestration/connectionManager';
 import { startConcurrentSessionCacheSync, stopConcurrentSessionCacheSync } from '@/sync/runtime/orchestration/concurrentSessionCache';
@@ -190,6 +190,12 @@ export function AuthProvider({ children, initialCredentials }: { children: React
             // the endpoint-scoped setter deliberately leaves that active-scoped
             // fact alone because it also serves non-focused Homes.
             await TokenStorage.setAuthAutoRedirectSuppressedUntil(0);
+            // Focus can change while suppression persistence is in flight. Do
+            // not publish this Home's credentials into the newly focused
+            // runtime after that await.
+            if (!isSameServerTarget(target, getActiveServerSnapshot())) {
+                return { kind: 'completed' };
+            }
         }
         setCredentials(newCredentials);
         setIsAuthenticated(true);
@@ -381,10 +387,15 @@ export function AuthProvider({ children, initialCredentials }: { children: React
                 === 'first_key_recovery_required'
             ) {
                 fireAndForget((async () => {
+                    const disconnected = await disconnectActiveServerConnectionIfCurrent({
+                        serverId: event.serverId,
+                        serverUrl: event.serverUrl,
+                        ...(event.generation === undefined ? {} : { generation: event.generation }),
+                    });
+                    if (!disconnected) return;
                     loginSyncServerKeyRef.current = null;
                     setCredentials(null);
                     setIsAuthenticated(false);
-                    await disconnectActiveServerConnection();
                 })(), {
                     tag: 'AuthContext.authCredentialsInvalidated.firstKeyRecovery',
                 });

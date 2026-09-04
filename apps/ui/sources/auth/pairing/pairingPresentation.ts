@@ -25,6 +25,7 @@ export type HomeEnrollmentPresentationModel = Readonly<{
         | 'connect.scanComputerQrUnavailableBody'
         | 'connect.securingCredentials'
         | 'connect.showRequesterQrInstructions'
+        | 'connect.updateRequiredBody'
         | 'errors.operationFailed';
     contextualFacts: 'none' | 'target' | 'target_and_expiry' | 'target_and_requester';
     recoveryAction: 'none' | 'automatic_retry' | 'retry' | 'create_new_qr';
@@ -35,11 +36,11 @@ export type HomeEnrollmentPresentationModel = Readonly<{
 type HomeEnrollmentPresentationSource =
     | Readonly<{
         kind: 'trusted_home_display';
-        phase: 'generating' | 'ready' | 'verifying' | 'adding' | 'retryable_error' | 'expired' | 'invalid_request' | 'succeeded';
+        phase: 'generating' | 'ready' | 'adding' | 'retryable_error' | 'expired' | 'invalid_request' | 'succeeded';
     }>
     | Readonly<{
         kind: 'requester_display';
-        phase: 'generating' | 'ready' | 'connecting' | 'adding' | 'retryable_error' | 'expired' | 'invalid' | 'succeeded';
+        phase: 'generating' | 'ready' | 'connecting' | 'adding' | 'retryable_error' | 'expired' | 'invalid' | 'update_required' | 'succeeded';
         partialCommit?: boolean;
     }>
     | Readonly<{
@@ -171,6 +172,12 @@ export function resolveHomeEnrollmentPresentation(
                 recoveryAction: 'retry', liveRegion: 'assertive', activity: false,
             };
         }
+        if (source.phase === 'update_required') {
+            return {
+                phase: 'invalid_request', primaryTranslationKey: 'connect.updateRequiredBody', contextualFacts: 'target',
+                recoveryAction: 'none', liveRegion: 'assertive', activity: false,
+            };
+        }
         return {
             phase: 'succeeded', primaryTranslationKey: 'connect.homeAddedPreservedFocusBody', contextualFacts: 'target',
             recoveryAction: 'none', liveRegion: 'polite', activity: false,
@@ -189,7 +196,7 @@ export function resolveHomeEnrollmentPresentation(
             recoveryAction: 'none', liveRegion: 'polite', activity: false,
         };
     }
-    if (source.phase === 'verifying' || source.phase === 'adding' || source.phase === 'retryable_error') {
+    if (source.phase === 'adding' || source.phase === 'retryable_error') {
         return {
             phase: source.phase,
             primaryTranslationKey: source.phase === 'retryable_error' ? 'connect.homeEnrollmentRetryBody' : 'connect.securingCredentials',

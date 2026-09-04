@@ -100,7 +100,9 @@ describe('/oauth/[provider] (auth flow)', () => {
         await runWithOAuthScreen(async () => {
             await flushOAuthEffects();
             expect(fetchMock).toHaveBeenCalled();
-            expect(loginSpy).toHaveBeenCalledWith('tok_1', OAUTH_SECRET);
+            expect(loginSpy).toHaveBeenCalledWith('tok_1', OAUTH_SECRET, {
+                target: { serverUrl: 'http://api.example.test' },
+            });
             expect(replaceSpy).toHaveBeenCalledWith('/');
         });
     });
@@ -396,7 +398,9 @@ describe('/oauth/[provider] (auth flow)', () => {
                 expect.anything(),
             );
             expect(upsertAndActivateServerSpy).not.toHaveBeenCalled();
-            expect(loginSpy).toHaveBeenCalledWith('tok_1', OAUTH_SECRET);
+            expect(loginSpy).toHaveBeenCalledWith('tok_1', OAUTH_SECRET, {
+                target: { serverUrl: 'http://api.example.test' },
+            });
         });
     });
 
@@ -429,7 +433,8 @@ describe('/oauth/[provider] (auth flow)', () => {
         });
 
         vi.resetModules();
-        setRuntimeFetch(fetchMock as unknown as typeof fetch);
+        const { setRuntimeFetch: setFreshRuntimeFetch } = await import('@/utils/system/runtimeFetch');
+        setFreshRuntimeFetch(fetchMock as unknown as typeof fetch);
         const { default: Screen } = await import('@/app/(app)/oauth/[provider]');
 
         let tree: ReturnType<typeof renderer.create> | undefined;
@@ -495,7 +500,8 @@ describe('/oauth/[provider] (auth flow)', () => {
         });
 
         vi.resetModules();
-        setRuntimeFetch(fetchMock as unknown as typeof fetch);
+        const { setRuntimeFetch: setFreshRuntimeFetch } = await import('@/utils/system/runtimeFetch');
+        setFreshRuntimeFetch(fetchMock as unknown as typeof fetch);
         const { default: Screen } = await import('@/app/(app)/oauth/[provider]');
 
         let tree: ReturnType<typeof renderer.create> | undefined;

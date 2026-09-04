@@ -6,7 +6,6 @@ describe('resolveHomeEnrollmentPresentation', () => {
     it.each([
         ['generating', 'generating', 'common.loading', 'none', 'none', 'polite'],
         ['ready', 'ready', 'connect.addPhoneQrInstructions', 'target_and_expiry', 'none', 'polite'],
-        ['verifying', 'verifying', 'connect.securingCredentials', 'target_and_requester', 'automatic_retry', 'polite'],
         ['adding', 'adding', 'connect.securingCredentials', 'target_and_requester', 'none', 'polite'],
         ['retryable_error', 'retryable_error', 'connect.homeEnrollmentRetryBody', 'target_and_requester', 'automatic_retry', 'polite'],
         ['expired', 'expired', 'connect.pairingQrExpired', 'target_and_expiry', 'create_new_qr', 'assertive'],
@@ -21,7 +20,7 @@ describe('resolveHomeEnrollmentPresentation', () => {
                 contextualFacts,
                 recoveryAction,
                 liveRegion,
-                activity: phase === 'generating' || phase === 'verifying' || phase === 'adding' || phase === 'retryable_error',
+                activity: phase === 'generating' || phase === 'adding' || phase === 'retryable_error',
             });
         },
     );
@@ -35,6 +34,7 @@ describe('resolveHomeEnrollmentPresentation', () => {
         [{ phase: 'retryable_error', partialCommit: true }, 'partial_commit', 'connect.homeEnrollmentPartialCommitBody', 'target', 'none'],
         [{ phase: 'expired' }, 'expired', 'connect.pairingQrExpired', 'target', 'retry'],
         [{ phase: 'invalid' }, 'invalid_request', 'connect.scanComputerQrUnavailableBody', 'target', 'retry'],
+        [{ phase: 'update_required' }, 'invalid_request', 'connect.updateRequiredBody', 'target', 'none'],
         [{ phase: 'succeeded' }, 'succeeded', 'connect.homeAddedPreservedFocusBody', 'target', 'none'],
     ] as const)(
         'maps requester-display %s to one semantic presentation model',

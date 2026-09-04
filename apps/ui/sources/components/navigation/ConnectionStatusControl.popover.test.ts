@@ -13,6 +13,8 @@ import { installConnectionStatusControlCommonModuleMocks } from './connectionSta
 
 type PopoverCaptureProps = {
     open?: boolean;
+    autoFocusOnOpen?: boolean;
+    focusReturnRef?: React.RefObject<unknown>;
     portal?: {
         web?: boolean;
         native?: boolean;
@@ -89,6 +91,7 @@ const syncMocks = vi.hoisted(() => ({
 
 const irohDiagnosticsState = vi.hoisted(() => ({
     values: [] as Array<Record<string, unknown>>,
+    revision: 0,
     listeners: new Set<() => void>(),
 }));
 
@@ -290,12 +293,9 @@ vi.mock('@/sync/runtime/orchestration/connectionManager', () => ({
     },
 }));
 
-vi.mock('@/sync/runtime/nativeIrohTunnels/runtime', () => ({
-    readIrohHomeTransportDiagnostics: () => irohDiagnosticsState.values,
-}));
-
 vi.mock('@/sync/runtime/irohHomeTransportDiagnostics', () => ({
     readIrohHomeTransportDiagnostics: () => irohDiagnosticsState.values,
+    readIrohHomeTransportDiagnosticsRevision: () => irohDiagnosticsState.revision,
     subscribeIrohHomeTransportDiagnostics: (listener: () => void) => {
         irohDiagnosticsState.listeners.add(listener);
         return () => irohDiagnosticsState.listeners.delete(listener);
@@ -363,6 +363,7 @@ afterEach(() => {
     connectionState.syncError = null;
     connectionState.lastSyncAt = null;
     irohDiagnosticsState.values = [];
+    irohDiagnosticsState.revision = 0;
     irohDiagnosticsState.listeners.clear();
     clipboardMock.setClipboardStringSafe.mockClear();
     machineListStatusState.byServerId = {};
@@ -384,6 +385,7 @@ describe('ConnectionStatusControl (native popover config)', () => {
         const screen = await renderScreen(React.createElement(ConnectionStatusControl, { variant: 'sidebar' }));
 
         expect(capture.popoverProps).toBeNull();
+        expect(tokenStorageMock.getCredentialsForServerUrl).not.toHaveBeenCalled();
 
         const trigger = screen.findByProps({ accessibilityRole: 'button' });
         await act(async () => {
@@ -391,6 +393,21 @@ describe('ConnectionStatusControl (native popover config)', () => {
         });
 
         expect(capture.popoverProps?.open).toBe(true);
+        await vi.waitFor(() => {
+            expect(tokenStorageMock.getCredentialsForServerUrl).toHaveBeenCalled();
+        });
+    });
+
+    it('uses the shared popover autofocus and trigger focus-return contract', async () => {
+        const ConnectionStatusControl = await importConnectionStatusControl();
+        const screen = await renderScreen(React.createElement(ConnectionStatusControl, { variant: 'sidebar' }));
+        const trigger = screen.findByProps({ accessibilityRole: 'button' });
+
+        await act(async () => pressTestInstanceAsync(trigger));
+
+        expect(capture.popoverProps?.autoFocusOnOpen).toBe(true);
+        expect(capture.popoverProps?.focusReturnRef).toBeDefined();
+        await act(async () => screen.tree?.unmount());
     });
 
     it('toggles the popover when pressing the trigger twice', async () => {
@@ -581,13 +598,17 @@ describe('ConnectionStatusControl (native popover config)', () => {
             tree = screen.tree;
 
             await vi.waitFor(() => {
-                expect(tokenStorageMock.getCredentialsForServerUrl).toHaveBeenCalledWith('https://local.example.test', { serverId: local.id });
-                expect(tokenStorageMock.getCredentialsForServerUrl).toHaveBeenCalledWith('https://company.example.test', { serverId: company.id });
+                expect(tokenStorageMock.getCredentialsForServerUrl).not.toHaveBeenCalled();
             });
 
             const trigger = screen.findByProps({ accessibilityRole: 'button' });
             await act(async () => {
                 await pressTestInstanceAsync(trigger);
+            });
+
+            await vi.waitFor(() => {
+                expect(tokenStorageMock.getCredentialsForServerUrl).toHaveBeenCalledWith('https://local.example.test', { serverId: local.id });
+                expect(tokenStorageMock.getCredentialsForServerUrl).toHaveBeenCalledWith('https://company.example.test', { serverId: company.id });
             });
 
             const actionLabels = getActionLabels();
@@ -859,12 +880,12 @@ describe('ConnectionStatusControl (native popover config)', () => {
             const ConnectionStatusControl = await importConnectionStatusControl();
             const screen = await renderScreen(React.createElement(ConnectionStatusControl, { variant: 'sidebar' }));
 
-            await vi.waitFor(() => {
-                expect(tokenStorageMock.getCredentialsForServerUrl).toHaveBeenCalledWith(company.serverUrl, { serverId: company.id });
-            });
             const trigger = screen.findByProps({ accessibilityRole: 'button' });
             await act(async () => {
                 await pressTestInstanceAsync(trigger);
+            });
+            await vi.waitFor(() => {
+                expect(tokenStorageMock.getCredentialsForServerUrl).toHaveBeenCalledWith(company.serverUrl, { serverId: company.id });
             });
 
             const localAction = findAction(`target-use-server-${local.id}`);
@@ -1309,7 +1330,6 @@ describe('ConnectionStatusControl (native popover config)', () => {
             homeServerIdentityId,
             remoteEndpointId: 'browser-endpoint-123',
             state: 'connecting',
-            current: { carrier: 'iroh' },
             effectiveConfiguration: {
                 policy: 'automatic',
                 relayUrls: ['https://relay.example.test'],
@@ -1324,7 +1344,9 @@ describe('ConnectionStatusControl (native popover config)', () => {
         await act(async () => pressTestInstanceAsync(screen.findByTestId('connection-details-disclosure')));
 
         expect(screen.getTextContent()).toContain('browser-endpoint-123');
-        expect(screen.getTextContent()).toContain('Iroh · status.unknown');
+        expect(screen.getTextContent()).not.toContain('connectionStatus.labels.effectiveCarrier');
+        expect(screen.getTextContent()).not.toContain('Iroh');
+        expect(screen.getTextContent()).not.toContain('connectionStatus.labels.currentPath');
         expect(screen.getTextContent()).toContain('connectionStatus.labels.lastTransition');
 
         irohDiagnosticsState.values = [{
@@ -1334,6 +1356,7 @@ describe('ConnectionStatusControl (native popover config)', () => {
             lastKnown: { carrier: 'iroh', observedPath: 'relay' },
             lastTransitionAtMs: 1_700_000_001_000,
         }];
+        irohDiagnosticsState.revision += 1;
         await act(async () => {
             for (const listener of irohDiagnosticsState.listeners) listener();
         });
@@ -1341,6 +1364,30 @@ describe('ConnectionStatusControl (native popover config)', () => {
         const joined = screen.getTextContent();
         expect(joined).toContain('Iroh · connectionStatus.values.pathRelay');
         expect(joined).not.toContain('connectionStatus.values.pathDirect');
+
+        await act(async () => screen.tree?.unmount());
+    });
+
+    it('labels current and last-known transport paths without presenting stale facts as current', async () => {
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const activeProfile = profiles.listServerProfiles().find((profile) => profile.name === 'Happier Cloud');
+        if (!activeProfile) throw new Error('expected default Happier Cloud profile');
+        irohDiagnosticsState.values = [{
+            homeServerIdentityId: profiles.resolveServerProfileScopeId(activeProfile),
+            state: 'reconnecting',
+            lastKnown: { carrier: 'iroh', observedPath: 'relay' },
+            lastTransitionAtMs: 1_700_000_001_000,
+        }];
+
+        const ConnectionStatusControl = await importConnectionStatusControl();
+        const screen = await renderScreen(React.createElement(ConnectionStatusControl, { variant: 'sidebar' }));
+        await act(async () => pressTestInstanceAsync(screen.findByProps({ accessibilityRole: 'button' })));
+        await act(async () => pressTestInstanceAsync(screen.findByTestId('connection-details-disclosure')));
+
+        const joined = screen.getTextContent();
+        expect(joined).toContain('connectionStatus.labels.lastKnownPath');
+        expect(joined).toContain('connectionStatus.values.pathRelay');
+        expect(joined).not.toContain('connectionStatus.labels.currentPath');
 
         await act(async () => screen.tree?.unmount());
     });
@@ -1374,7 +1421,7 @@ describe('ConnectionStatusControl (native popover config)', () => {
         expect(joined).toContain('connectionStatus.labels.canonicalAddress');
         expect(joined).toContain('connectionStatus.labels.endpointId');
         expect(joined).toContain('iroh-endpoint-123');
-        expect(joined).toContain('connectionStatus.labels.connectionPath');
+        expect(joined).toContain('connectionStatus.labels.currentPath');
         expect(joined).toContain('connectionStatus.values.pathDirect');
         expect(joined).toContain('connectionStatus.labels.relayConfiguration');
         expect(joined).toContain('relay.example.test');
@@ -1423,6 +1470,7 @@ describe('ConnectionStatusControl (native popover config)', () => {
             remoteEndpointId: 'endpoint-after',
             state: 'connected',
         }];
+        irohDiagnosticsState.revision += 1;
         await act(async () => screen.tree?.update(
             React.createElement(ConnectionStatusControl, { variant: 'sidebar', textSize: 13 }),
         ));

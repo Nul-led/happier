@@ -85,6 +85,9 @@ export function RootLayoutNavigationEffects(): React.ReactElement | null {
                 serverIdentityId: pendingTerminalConnect.serverIdentityId,
                 ...(pendingTerminalConnect.pairing ? { pairing: pendingTerminalConnect.pairing } : {}),
                 ...(pendingTerminalConnect.supportsTokenOnly ? { supportsTokenOnly: true } : {}),
+                ...(pendingTerminalConnect.homeConnectionDescriptor
+                    ? { homeConnectionDescriptor: pendingTerminalConnect.homeConnectionDescriptor }
+                    : {}),
             });
 
             // If we are already on the terminal-connect page (which persists a pending connect while

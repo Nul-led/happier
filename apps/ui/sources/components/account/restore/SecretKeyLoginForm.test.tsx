@@ -118,13 +118,6 @@ vi.mock('react-native-unistyles', async () => {
     });
 });
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: {
-        default: () => ({}),
-        mono: () => ({}),
-    },
-}));
-
 vi.mock('@/components/ui/text/Text', () => ({
     Text: (props: { children?: React.ReactNode } & Record<string, unknown>) =>
         React.createElement('Text', props, props.children ?? null),

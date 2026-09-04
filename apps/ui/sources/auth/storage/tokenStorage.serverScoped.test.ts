@@ -497,10 +497,12 @@ describe('TokenStorage (web) server-scoped credentials', () => {
                 events.push(event);
             });
 
-            // Focused-server writes stay owned by the focused auth context:
-            // no exact-target Home credential mutation notification.
+            // Focused and explicit Home writers publish through the same mutation seam.
             await expect(TokenStorage.setCredentials({ token: 'focused-token' })).resolves.toBe(true);
-            expect(events).toEqual([]);
+            expect(events).toEqual([
+                { kind: 'credentials_set', serverId: 'server-a', serverUrl: 'https://focused.example.test' },
+            ]);
+            events.length = 0;
 
             // Canonical identity: the input URL normalizes to the stored scope URL and
             // the resolved identity is the profile's stable server identity.

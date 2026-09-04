@@ -1,14 +1,23 @@
 import * as React from 'react';
+import type { HomeConnectionDescriptorV1 } from '@happier-dev/protocol';
 
 import type { SshCredentialsDraft } from '@/components/ssh/SshCredentialsFields';
 import { SshCredentialsFields } from '@/components/ssh/SshCredentialsFields';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import type { ServerProfileSource } from '@/sync/domains/server/serverProfiles';
+import { setClipboardStringSafe } from '@/utils/ui/clipboard';
 
 import {
     buildCliInstallAndRunCommandForCurrentApp,
     buildCliInstallAndRunPowershellCommandForCurrentApp,
     buildRemoteMachineSetupCommand,
+    resolveWebDesktopSetupHandoffTarget,
 } from '../../commands/wizardCliCommands';
-import { WizardGuidedHandoff, WizardGuidedHandoffTerminal } from '../../ui/WizardGuidedHandoff';
+import {
+    WizardGuidedHandoff,
+    WizardGuidedHandoffNote,
+    WizardGuidedHandoffTerminal,
+} from '../../ui/WizardGuidedHandoff';
 import { t } from '@/text';
 
 export type WebDesktopRemoteSshHandoffContentProps = Readonly<{
@@ -18,18 +27,27 @@ export type WebDesktopRemoteSshHandoffContentProps = Readonly<{
     draft: SshCredentialsDraft;
     onDraftChange: (next: SshCredentialsDraft) => void;
     relayUrl: string | null;
+    homeConnectionDescriptor: HomeConnectionDescriptorV1 | null;
+    homeProfileSource: ServerProfileSource | null;
     installRelayRuntime: boolean;
 }>;
 
 export function WebDesktopRemoteSshHandoffContent(props: WebDesktopRemoteSshHandoffContentProps) {
+    const setupTarget = React.useMemo(() => resolveWebDesktopSetupHandoffTarget({
+        descriptor: props.homeConnectionDescriptor,
+        profileSource: props.homeProfileSource,
+        fallbackHomeUrl: props.relayUrl,
+    }), [props.homeConnectionDescriptor, props.homeProfileSource, props.relayUrl]);
     const setupArgs = React.useMemo(() => {
         const args: string[] = [];
-        if (props.relayUrl) {
-            args.push('--relay-url', props.relayUrl);
+        if (setupTarget.kind === 'https') {
+            args.push('--home-url', setupTarget.homeUrl);
+        } else if (setupTarget.kind === 'descriptor_file_required') {
+            args.push('--home-descriptor-file', './happier-home.json');
         }
-        args.push('--skip-providers', '--yes');
+        args.push('--skip-providers');
         return args;
-    }, [props.relayUrl]);
+    }, [setupTarget]);
     const installAndSetupCommand = React.useMemo(() => buildCliInstallAndRunCommandForCurrentApp({
         action: 'setup',
         args: setupArgs,
@@ -42,9 +60,28 @@ export function WebDesktopRemoteSshHandoffContent(props: WebDesktopRemoteSshHand
         draft: props.draft,
         installRelayRuntime: props.installRelayRuntime,
     }), [props.draft, props.installRelayRuntime]);
+    const copyHomeDescriptor = React.useCallback(async () => {
+        if (!props.homeConnectionDescriptor) return;
+        await setClipboardStringSafe(`${JSON.stringify(props.homeConnectionDescriptor, null, 2)}\n`);
+    }, [props.homeConnectionDescriptor]);
 
     return (
         <WizardGuidedHandoff testID={props.testID}>
+            {setupTarget.kind === 'descriptor_file_required' ? (
+                <>
+                    <WizardGuidedHandoffNote
+                        testID={`${props.testID}-descriptor-required`}
+                        title={t('setupOnboarding.webDesktopOnlySetupCommandTitle')}
+                        subtitle={t('setupOnboarding.webDesktopOnlyDescriptorFileRequiredSubtitle')}
+                    />
+                    <RoundButton
+                        testID={`${props.testID}-copy-descriptor`}
+                        size="normal"
+                        title={t('common.copy')}
+                        onPress={copyHomeDescriptor}
+                    />
+                </>
+            ) : null}
             <SshCredentialsFields
                 testIDPrefix={props.sshFieldTestIDPrefix ?? `${props.testID}-ssh`}
                 layoutVariant="wizard"

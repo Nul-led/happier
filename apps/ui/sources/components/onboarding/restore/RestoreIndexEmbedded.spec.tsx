@@ -54,7 +54,7 @@ describe('RestoreIndexEmbedded', () => {
         try {
             await act(async () => {
                 tree = renderer.create(
-                    <RestoreIndexEmbedded entryIntent="enter_home" onBack={onBack} onOpenSecretKeyLogin={onOpenSecretKeyLogin} />,
+                    <RestoreIndexEmbedded entryIntent="enter_home" reverseTargetProfileId="home-b" onBack={onBack} onOpenSecretKeyLogin={onOpenSecretKeyLogin} />,
                 );
             });
 

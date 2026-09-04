@@ -31,6 +31,10 @@ describe('approveTerminalPairing transport ownership', () => {
             endpointUrl: 'https://home-b.example.test',
             runtimeOrigin: 'http://127.0.0.1:43123',
             carrier: 'iroh',
+            authenticatedCredentialDestination: {
+                kind: 'iroh',
+                endpointId: 'iroh-home-b',
+            },
             createRequest,
             close: vi.fn(async () => {}),
         } satisfies HomeEnrollmentTransport;

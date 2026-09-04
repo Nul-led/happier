@@ -181,6 +181,37 @@ describe('TokenStorage credential lookup (native keychain)', () => {
         expect(secureStoreState.values.has(legacyKeys[1]!)).toBe(true);
     });
 
+    it('does not overwrite or misattribute a primary credential written during legacy migration', async () => {
+        installServerProfilesMockWithLegacyScopes();
+        const { TokenStorage } = await import('./tokenStorage');
+        await TokenStorage.getCredentials();
+        const [primaryKey, legacyKey] = [...secureStoreState.readOrder];
+        expect(primaryKey).toBeDefined();
+        expect(legacyKey).toBeDefined();
+        const legacyRaw = JSON.stringify({ token: 'legacy-token', secret: 'legacy-secret' });
+        const concurrentRaw = JSON.stringify({ token: 'concurrent-token', secret: 'concurrent-secret' });
+        secureStoreState.values.set(legacyKey!, legacyRaw);
+
+        vi.resetModules();
+        installServerProfilesMockWithLegacyScopes();
+        let primaryReads = 0;
+        secureStoreState.getItemAsync.mockImplementation(async (key: string) => {
+            if (key === primaryKey && ++primaryReads === 2) {
+                secureStoreState.values.set(primaryKey!, concurrentRaw);
+            }
+            return secureStoreState.values.get(key) ?? null;
+        });
+        const { TokenStorage: FreshTokenStorage } = await import('./tokenStorage');
+
+        await expect(FreshTokenStorage.getCredentials()).resolves.toEqual({
+            token: 'concurrent-token',
+            secret: 'concurrent-secret',
+        });
+        expect(secureStoreState.values.get(primaryKey!)).toBe(concurrentRaw);
+        expect(secureStoreState.values.get(legacyKey!)).toBe(legacyRaw);
+        expect(secureStoreState.setItemAsync).not.toHaveBeenCalledWith(primaryKey, legacyRaw);
+    });
+
     it('never promotes an anonymous URL-hash credential into an identity that shares that URL with another Home', async () => {
         installServerProfilesMockWithoutProfiles();
         const { TokenStorage } = await import('./tokenStorage');

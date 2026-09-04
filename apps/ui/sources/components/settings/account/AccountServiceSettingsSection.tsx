@@ -21,7 +21,6 @@ import {
     type AccountDirectorySessionSnapshot,
     createAccountDirectoryServiceKey,
     createAccountDirectorySession,
-    parseAccountDirectoryCapability,
 } from '@/sync/domains/accountDirectory/accountDirectorySession';
 import {
     getServerProfilesGeneration,
@@ -44,7 +43,6 @@ import {
 } from '@/sync/ops/accountDirectory/enrollPreferredDirectoryHome';
 import { provisionAuthenticatedHomeLink } from '@/sync/ops/accountDirectory/provisionAuthenticatedHomeLink';
 import { refreshAccountHomeDirectory } from '@/sync/ops/accountDirectory/refreshAccountHomeDirectory';
-import { probeServerFeaturesAtUrl } from '@/sync/api/capabilities/serverFeaturesClient';
 import { t } from '@/text';
 
 type AccountServiceConnectionView =
@@ -236,20 +234,15 @@ export function AccountServiceSettingsSection(): React.ReactElement {
                 let serverIdentityId = endpoint.serverIdentityId?.trim() ?? '';
                 let observedIdentity = false;
                 if (!serverIdentityId) {
-                    const observed = await probeServerFeaturesAtUrl({ endpointUrl: endpoint.url, force: true });
+                    const observed = await accountDirectoryAuthClient.discoverAuthenticationMethods({
+                        endpointUrl: endpoint.url,
+                    });
                     if (cancelled) return;
-                    const capability = parseAccountDirectoryCapability(
-                        observed.status === 'ready'
-                            ? observed.features.capabilities.accountDirectory
-                            : null,
-                    );
-                    serverIdentityId = observed.status === 'ready'
-                        ? observed.serverIdentityId?.trim() ?? ''
-                        : '';
-                    if (!serverIdentityId || capability?.homeDirectory !== true) {
+                    if (observed.kind !== 'supported_account_service') {
                         setConnectionView({ kind: 'disconnected', serviceKey: requestedServiceKey });
                         return;
                     }
+                    serverIdentityId = observed.serverIdentityId;
                     observedIdentity = true;
                 }
                 const credentials = await accountDirectoryCredentialStorage.get({
@@ -306,22 +299,16 @@ export function AccountServiceSettingsSection(): React.ReactElement {
                 await Modal.alertAsync(t('common.error'), t('errors.invalidFormat'));
                 return;
             }
-            const observed = await probeServerFeaturesAtUrl({ endpointUrl: normalized, force: true });
-            const capability = parseAccountDirectoryCapability(
-                observed.status === 'ready'
-                    ? observed.features.capabilities.accountDirectory
-                    : null,
-            );
-            const serverIdentityId = observed.status === 'ready'
-                ? observed.serverIdentityId?.trim() ?? ''
-                : '';
-            if (!serverIdentityId || capability?.homeDirectory !== true) {
+            const observed = await accountDirectoryAuthClient.discoverAuthenticationMethods({
+                endpointUrl: normalized,
+            });
+            if (observed.kind !== 'supported_account_service') {
                 await Modal.alertAsync(t('common.error'), t('errors.operationFailed'));
                 return;
             }
             setAccountServiceEndpoint({
                 url: normalized,
-                serverIdentityId,
+                serverIdentityId: observed.serverIdentityId,
                 displayName: displayNameForEndpoint(normalized),
                 source: 'user',
             });
@@ -337,24 +324,21 @@ export function AccountServiceSettingsSection(): React.ReactElement {
         let capabilityValidated = false;
         setCapabilityPresentation({ kind: 'probing', serviceKey: requestedServiceKey });
         try {
-            const observed = await probeServerFeaturesAtUrl({ endpointUrl: endpoint.url, force: true });
+            const observed = await accountDirectoryAuthClient.discoverAuthenticationMethods({
+                endpointUrl: endpoint.url,
+                expectedServerIdentityId: endpoint.serverIdentityId,
+            });
             if (shouldCancel()) return;
-            if (observed.status !== 'ready') {
+            if (observed.kind !== 'supported_account_service') {
+                if (observed.kind === 'not_account_service') {
+                    setCapabilityPresentation({ kind: 'missing', serviceKey: requestedServiceKey });
+                    return;
+                }
                 setCapabilityPresentation({ kind: 'unreachable', serviceKey: requestedServiceKey });
                 return;
             }
-            const capability = parseAccountDirectoryCapability(
-                observed.features.capabilities.accountDirectory,
-            );
-            const endpointServerIdentityId = observed.serverIdentityId?.trim() ?? '';
-            if (!endpointServerIdentityId) {
-                setCapabilityPresentation({ kind: 'unreachable', serviceKey: requestedServiceKey });
-                return;
-            }
-            if (capability?.homeDirectory !== true) {
-                setCapabilityPresentation({ kind: 'missing', serviceKey: requestedServiceKey });
-                return;
-            }
+            const capability = observed.capability;
+            const endpointServerIdentityId = observed.serverIdentityId;
             const observedEndpoint = { ...endpoint, serverIdentityId: endpointServerIdentityId };
             const observedServiceKey = accountServiceKey(observedEndpoint);
             if (observedServiceKey !== requestedServiceKey) {
@@ -696,17 +680,16 @@ export function AccountServiceSettingsSection(): React.ReactElement {
         const { attempt, shouldCancel, shouldInvalidateContinuation } = beginAttempt(serviceKey);
         setPendingRowActions((current) => ({ ...current, [homeServerIdentityId]: 'link' }));
         try {
-            const observed = await probeServerFeaturesAtUrl({ endpointUrl: endpoint.url, force: true });
+            const observed = await accountDirectoryAuthClient.discoverAuthenticationMethods({
+                endpointUrl: endpoint.url,
+                expectedServerIdentityId: endpoint.serverIdentityId,
+            });
             if (shouldCancel()) return;
-            const capability = parseAccountDirectoryCapability(
-                observed.status === 'ready' ? observed.features.capabilities.accountDirectory : null,
-            );
-            const endpointServerIdentityId = observed.status === 'ready'
-                ? observed.serverIdentityId?.trim() ?? ''
-                : '';
-            if (capability?.homeDirectory !== true || !endpointServerIdentityId) {
+            if (observed.kind !== 'supported_account_service') {
                 throw new Error('Account Service Home linking unavailable');
             }
+            const capability = observed.capability;
+            const endpointServerIdentityId = observed.serverIdentityId;
             const capturedEndpointServerIdentityId = endpoint.serverIdentityId?.trim() ?? '';
             if (
                 capturedEndpointServerIdentityId

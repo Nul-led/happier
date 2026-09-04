@@ -6,14 +6,17 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Text } from '@/components/ui/text/Text';
 import { getSessionName } from '@/utils/sessions/sessionUtils';
 import type { Machine, Session } from '@/sync/domains/state/storageTypes';
+import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
+import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
 import { t } from '@/text';
 import { SessionContextChips } from '@/components/sessions/context/SessionContextChips';
 import { Icon } from '@/components/ui/icons/Icon';
 import { readApprovalSessionEndpointLabels } from './approvalEndpointLabels';
 
 export const ApprovalSessionContextCard = React.memo(function ApprovalSessionContextCard(props: Readonly<{
-    session: Session | null;
+    session: Session | SessionListRenderableSession | null;
     machine: Machine | null;
+    serverId: string | null;
     requesterAgentId: string | null;
     requesterSurface: string;
 }>) {
@@ -44,7 +47,10 @@ export const ApprovalSessionContextCard = React.memo(function ApprovalSessionCon
                         testID="approvals.open-session"
                         accessibilityRole="button"
                         accessibilityLabel={t('runs.openSession')}
-                        onPress={() => router.push(`/session/${props.session!.id}`)}
+                        onPress={() => router.push(buildScopedSessionRouteHref({
+                            sessionId: props.session!.id,
+                            serverId: props.serverId,
+                        }))}
                         style={({ pressed }) => [styles.openButton, pressed && styles.openButtonPressed]}
                     >
                         <Icon name="arrow-square-out" size={16} color={theme.colors.text.primary} />

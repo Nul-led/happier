@@ -19,6 +19,10 @@ import {
     normalizeAuthenticationProviderId,
     projectAuthenticationMethodCapabilities,
 } from '@/auth/capabilities/authMethodCapabilities';
+import {
+    selectAccountServiceAuthenticationMethod,
+    type AccountServiceRequestedAuthenticationMethod,
+} from '@happier-dev/cli-common/accountService';
 
 export type AccountDirectoryOAuthStartInput = Readonly<{
     endpointUrl: string;
@@ -41,11 +45,10 @@ export type AccountDirectoryKeyLoginInput = Readonly<{
     endpointServerIdentityId: string;
     canonicalServerUrl: string;
     secret: Uint8Array;
+    verifiedServerFeaturesSnapshot: ServerFeaturesSnapshot & { status: 'ready' };
 }>;
 
-export type AccountDirectoryRequestedAuthMethod =
-    | Readonly<{ kind: 'key' }>
-    | Readonly<{ kind: 'oauth'; providerId?: string | null }>;
+export type AccountDirectoryRequestedAuthMethod = AccountServiceRequestedAuthenticationMethod;
 
 export type AccountDirectoryAuthMethodDiscovery = Readonly<{
     endpointUrl: string;
@@ -55,6 +58,8 @@ export type AccountDirectoryAuthMethodDiscovery = Readonly<{
     keyLoginAvailable: boolean;
     oauthProviderIds: readonly string[];
     preferredProvisionProviderId: string | null;
+    /** Exact endpoint observation reused by key authentication to avoid a second discovery probe. */
+    snapshot: ServerFeaturesSnapshot & { status: 'ready' };
 }>;
 
 export type AccountDirectoryAuthMethodDiscoveryResult =
@@ -89,20 +94,26 @@ export type AccountDirectoryAuthMethodDiscoveryResult =
         requestedMethod: AccountDirectoryRequestedAuthMethod;
     }> & AccountDirectoryAuthMethodDiscovery);
 
+export type AccountDirectoryEndpointVerificationResult =
+    | Extract<AccountDirectoryAuthMethodDiscoveryResult, { kind: 'endpoint_unavailable' | 'identity_mismatch' }>
+    | Readonly<{
+        kind: 'invalid_endpoint_metadata';
+        endpointUrl: string;
+        serverIdentityId: string | null;
+        snapshot: ServerFeaturesSnapshot & { status: 'ready' };
+    }>
+    | Readonly<{
+        kind: 'verified_endpoint';
+        endpointUrl: string;
+        serverIdentityId: string;
+        canonicalServerUrl: string;
+        capability: AccountDirectoryCapabilities | null;
+        snapshot: ServerFeaturesSnapshot & { status: 'ready' };
+    }>;
+
 function parseAccountDirectoryCapability(value: unknown): AccountDirectoryCapabilities | null {
     const parsed = AccountDirectoryCapabilitiesSchema.safeParse(value);
     return parsed.success ? parsed.data : null;
-}
-
-function requestedMethodAvailable(
-    discovery: AccountDirectoryAuthMethodDiscovery,
-    requestedMethod: AccountDirectoryRequestedAuthMethod | undefined,
-): boolean {
-    if (!requestedMethod) return true;
-    if (requestedMethod.kind === 'key') return discovery.keyLoginAvailable;
-    const providerId = normalizeAuthenticationProviderId(requestedMethod.providerId);
-    if (!providerId) return discovery.preferredProvisionProviderId !== null;
-    return discovery.oauthProviderIds.includes(providerId);
 }
 
 function buildSupportedDiscovery(
@@ -127,6 +138,59 @@ function buildSupportedDiscovery(
         keyLoginAvailable: authMethods.keyChallengeV2Available,
         oauthProviderIds,
         preferredProvisionProviderId: oauthProviderIds[0] ?? null,
+        snapshot,
+    };
+}
+
+async function verifyAccountDirectoryEndpoint(input: Readonly<{
+    endpointUrl: string;
+    expectedServerIdentityId?: string | null;
+}>): Promise<AccountDirectoryEndpointVerificationResult> {
+    const endpointUrl = normalizeAccountDirectoryEndpoint(input.endpointUrl) ?? '';
+    if (!endpointUrl) {
+        return { kind: 'endpoint_unavailable', endpointUrl, reason: 'invalid_endpoint' };
+    }
+    const expectedServerIdentityId = String(input.expectedServerIdentityId ?? '').trim();
+    const snapshot = await probeServerFeaturesAtUrl({
+        endpointUrl,
+        ...(expectedServerIdentityId ? { serverId: expectedServerIdentityId } : {}),
+        force: true,
+    });
+    if (snapshot.status !== 'ready') {
+        return { kind: 'endpoint_unavailable', endpointUrl, reason: 'probe_failed', snapshot };
+    }
+    const serverIdentityId = String(
+        snapshot.serverIdentityId
+        ?? snapshot.features.capabilities.serverIdentity?.serverIdentityId
+        ?? '',
+    ).trim();
+    if (expectedServerIdentityId && serverIdentityId !== expectedServerIdentityId) {
+        return {
+            kind: 'identity_mismatch',
+            endpointUrl,
+            expectedServerIdentityId,
+            observedServerIdentityId: serverIdentityId || null,
+            snapshot,
+        };
+    }
+    const canonicalServerUrl = normalizeAccountDirectoryEndpoint(
+        snapshot.features.capabilities.server?.canonicalServerUrl ?? '',
+    ) ?? '';
+    if (!serverIdentityId || !canonicalServerUrl) {
+        return {
+            kind: 'invalid_endpoint_metadata',
+            endpointUrl,
+            serverIdentityId: serverIdentityId || null,
+            snapshot,
+        };
+    }
+    return {
+        kind: 'verified_endpoint',
+        endpointUrl,
+        serverIdentityId,
+        canonicalServerUrl,
+        capability: parseAccountDirectoryCapability(snapshot.features.capabilities.accountDirectory),
+        snapshot,
     };
 }
 
@@ -136,31 +200,24 @@ function buildSupportedDiscovery(
  * adopted.
  */
 export const accountDirectoryAuthClient = {
+    verifyEndpoint: verifyAccountDirectoryEndpoint,
+
     async discoverAuthenticationMethods(input: Readonly<{
         endpointUrl: string;
         expectedServerIdentityId?: string | null;
         requestedMethod?: AccountDirectoryRequestedAuthMethod;
     }>): Promise<AccountDirectoryAuthMethodDiscoveryResult> {
-        const endpointUrl = normalizeAccountDirectoryEndpoint(input.endpointUrl) ?? '';
-        if (!endpointUrl) {
-            return { kind: 'endpoint_unavailable', endpointUrl, reason: 'invalid_endpoint' };
-        }
-        const snapshot = await probeServerFeaturesAtUrl({ endpointUrl, force: true });
-        if (snapshot.status !== 'ready') {
-            return { kind: 'endpoint_unavailable', endpointUrl, reason: 'probe_failed', snapshot };
-        }
-        const serverIdentityId = String(snapshot.serverIdentityId ?? snapshot.features.capabilities.serverIdentity.serverIdentityId ?? '').trim() || null;
-        const expectedServerIdentityId = String(input.expectedServerIdentityId ?? '').trim();
-        if (expectedServerIdentityId && serverIdentityId !== expectedServerIdentityId) {
+        const verified = await verifyAccountDirectoryEndpoint(input);
+        if (verified.kind === 'invalid_endpoint_metadata') {
             return {
-                kind: 'identity_mismatch',
-                endpointUrl,
-                expectedServerIdentityId,
-                observedServerIdentityId: serverIdentityId,
-                snapshot,
+                kind: 'not_account_service',
+                endpointUrl: verified.endpointUrl,
+                serverIdentityId: verified.serverIdentityId,
+                snapshot: verified.snapshot,
             };
         }
-        const capability = parseAccountDirectoryCapability(snapshot.features.capabilities.accountDirectory);
+        if (verified.kind !== 'verified_endpoint') return verified;
+        const { endpointUrl, serverIdentityId, snapshot, capability } = verified;
         if (capability?.homeDirectory !== true) {
             return { kind: 'not_account_service', endpointUrl, serverIdentityId, snapshot };
         }
@@ -168,10 +225,19 @@ export const accountDirectoryAuthClient = {
         if (!discovery) {
             return { kind: 'not_account_service', endpointUrl, serverIdentityId, snapshot };
         }
-        if (!requestedMethodAvailable(discovery, input.requestedMethod)) {
+        const methodSelection = input.requestedMethod
+            ? selectAccountServiceAuthenticationMethod({
+                advertised: {
+                    keyLoginAvailable: discovery.keyLoginAvailable,
+                    oauthProviderIds: discovery.oauthProviderIds,
+                },
+                requested: input.requestedMethod,
+            })
+            : null;
+        if (methodSelection?.kind === 'requested_method_unavailable') {
             return {
                 kind: 'requested_method_unavailable',
-                requestedMethod: input.requestedMethod!,
+                requestedMethod: methodSelection.requestedMethod,
                 ...discovery,
             };
         }
@@ -197,6 +263,7 @@ export const accountDirectoryAuthClient = {
             secret: input.secret,
             requireKeyChallengeV2: true,
             credentialTarget: 'account_directory',
+            verifiedServerFeaturesSnapshot: input.verifiedServerFeaturesSnapshot,
         });
         if (!isTokenOnlyAuthCredentials(credentials)) {
             throw new Error('Account Service returned non-Directory credentials');

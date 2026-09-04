@@ -11,11 +11,14 @@ import { installSettingsViewCommonModuleMocks } from '../../settingsViewTestHelp
 // real shell. Every assertion still runs through the real Tauri task bridge, runner, and screen.
 const desktopHostMock = vi.hoisted(() => ({
     invocations: [] as Array<Readonly<{ command: string; args: Record<string, unknown> | undefined }>>,
-    kind: null as 'tauri' | null,
+    kind: null as 'tauri' | 'electron' | null,
 }));
 const relocationInputs = vi.hoisted(() => ({
     remoteHosts: [] as unknown[],
 }));
+const rebuildHomeSearchIndex = vi.hoisted(() => vi.fn(async () => {}));
+
+vi.mock('@/sync/domains/memory/searchHomeMemory', () => ({ rebuildHomeSearchIndex }));
 
 vi.mock('@/utils/platform/desktopHost', () => ({
     desktopHostKind: () => desktopHostMock.kind,
@@ -176,6 +179,7 @@ describe('ServerSettingsScreen (concurrent section visibility)', () => {
         desktopHostMock.kind = null;
         desktopHostMock.invocations.length = 0;
         relocationInputs.remoteHosts = [];
+        rebuildHomeSearchIndex.mockClear();
     });
     it('hides concurrent multi-relay settings when there are no relay groups', async () => {
         setController({ serverGroups: [] });
@@ -268,6 +272,20 @@ describe('ServerSettingsScreen (concurrent section visibility)', () => {
             if (previousTauriInternals === undefined) delete (globalThis as any).__TAURI_INTERNALS__;
             else (globalThis as any).__TAURI_INTERNALS__ = previousTauriInternals;
         }
+    });
+
+    it('does not expose local host controls from the Electron renderer', async () => {
+        desktopHostMock.kind = 'electron';
+        setController({
+            servers: [{
+                id: 'home-electron', name: 'Personal Home', url: 'http://127.0.0.1:43123',
+                source: 'desktop-personal-home', serverIdentityId: 'srv_home_electron', personalHomeBootstrapCompleted: true,
+            }],
+        });
+        const { ServerSettingsScreen } = await import('./ServerSettingsScreen');
+        const screen = await renderScreen(React.createElement(ServerSettingsScreen));
+        expect(screen.findAllByType('PersonalHomeRuntimeControlSection' as any)).toHaveLength(0);
+        expect(screen.findAllByType('LocalRelayRuntimeControlSection' as any)).toHaveLength(0);
     });
 
     it('supplies the full production Personal Home operations contract through existing canonical bridges', async () => {
@@ -422,6 +440,9 @@ describe('ServerSettingsScreen (concurrent section visibility)', () => {
             const sections = screen.findAllByType('PersonalHomeRuntimeControlSection' as any);
             expect(sections).toHaveLength(1);
             expect(screen.findAllByType('LocalRelayRuntimeControlSection' as any)).toHaveLength(0);
+            expect(sections[0].props.operations.repairSearch).toEqual(expect.any(Function));
+            await sections[0].props.operations.repairSearch();
+            expect(rebuildHomeSearchIndex).toHaveBeenCalledWith({ serverId: 'srv_personal_home_1' });
 
             // Rendering the Personal Home section never switches the focused Home.
             expect(onSwitchServer).not.toHaveBeenCalled();

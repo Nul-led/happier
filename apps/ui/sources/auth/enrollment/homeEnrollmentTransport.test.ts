@@ -46,7 +46,7 @@ describe('resolveHomeEnrollmentTransport', () => {
         resolveBrowserEligibilitySpy.mockReset();
         resolveBrowserEligibilitySpy.mockReturnValue({ eligible: false, reason: 'host_ineligible' });
         resolveBrowserHostDecisionSpy.mockReset();
-        resolveBrowserHostDecisionSpy.mockReturnValue({ eligible: false, reason: 'native_host' });
+        resolveBrowserHostDecisionSpy.mockReturnValue({ eligible: false, reason: 'desktop_host' });
         acquireBrowserIrohHomeCarrierSpy.mockReset();
         browserReleaseSpy.mockClear();
     });
@@ -99,12 +99,12 @@ describe('resolveHomeEnrollmentTransport', () => {
             runtimeOrigin: null,
             carrier: 'iroh',
             authenticatedCredentialDestination: { kind: 'iroh', endpointId: 'iroh-home-b' },
-            homeCarrier,
+            homeCarrier: { ...homeCarrier, release: expect.any(Function) },
         });
         result.transport.createRequest({ credentials: null });
         expect(createServerFetchAtEndpointSpy).toHaveBeenCalledWith({
             endpointUrl: 'http://localhost:3010',
-            homeCarrier,
+            homeCarrier: { ...homeCarrier, release: expect.any(Function) },
             serverId: 'srv_home_b',
             credentials: null,
         });
@@ -130,7 +130,7 @@ describe('resolveHomeEnrollmentTransport', () => {
             descriptor,
             canonicalServerUrl: 'http://localhost:3010',
             homeServerIdentityId: 'srv_home_b',
-            endpointUrl: 'https://home-b.test',
+            endpointUrl: 'http://localhost:3010',
             runtimeOrigin: 'https://home-b.test',
             carrier: 'https',
             authenticatedCredentialDestination: {
@@ -156,7 +156,6 @@ describe('resolveHomeEnrollmentTransport', () => {
         expect(acquireIrohHomeRuntimeOriginSpy).toHaveBeenCalledWith({
             homeServerIdentityId: 'srv_home_b',
             endpoint: descriptor.endpoints[0],
-            descriptorRevision: 7,
             canonicalServerUrl: 'http://localhost:3010',
             verification: { kind: 'enrollment' },
         });
@@ -232,7 +231,7 @@ describe('resolveHomeEnrollmentTransport', () => {
             ],
         });
         expect(result).toMatchObject({ ok: true, transport: {
-            endpointUrl: 'https://home-b.test',
+            endpointUrl: 'http://localhost:3010',
             runtimeOrigin: 'https://home-b.test',
             carrier: 'https',
         } });
@@ -335,5 +334,27 @@ describe('resolveHomeEnrollmentTransport', () => {
         }, { runtimeOrigin: 'http://localhost:43123' });
         expect(result.ok && result.transport.runtimeOrigin).toBe('http://localhost:43123');
         expect(acquireIrohHomeRuntimeOriginSpy).not.toHaveBeenCalled();
+    });
+
+    it('keeps a supplied descriptor-declared HTTPS origin distinct from the canonical audience', async () => {
+        const result = await resolveHomeEnrollmentTransport({
+            v: 1,
+            homeServerIdentityId: 'srv_home_b',
+            canonicalServerUrl: 'https://canonical.home-b.test',
+            revision: 1,
+            endpoints: [{ kind: 'https', url: 'https://ingress.home-b.test' }],
+        }, {
+            runtimeOrigin: 'https://ingress.home-b.test',
+            runtimeCarrier: 'https',
+        });
+
+        expect(result).toMatchObject({ ok: true, transport: {
+            endpointUrl: 'https://canonical.home-b.test',
+            runtimeOrigin: 'https://ingress.home-b.test',
+            authenticatedCredentialDestination: {
+                kind: 'https',
+                applicationUrl: 'https://ingress.home-b.test',
+            },
+        } });
     });
 });

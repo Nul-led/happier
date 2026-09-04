@@ -17,19 +17,12 @@ const MINIMUM_TOUCH_TARGET_STYLE = { minWidth: 44, minHeight: 44 } as const;
 export type WelcomeFooterLinksProps = Readonly<{
     variant: 'desktop' | 'mobile';
     retentionSummary?: string | null;
-    onOpenRelayCustomFlow: () => void;
 }>;
 
 /**
  * Welcome-step-only footer rendered at the bottom of the workflow pane.
- * Two stacked groups (each: label on one line, action on the next line):
- *
- *   Self-hosting?               Need help?
- *   Use your own Relay          Docs · GH · Discord
- *
- * Desktop arranges the two groups side-by-side with space-between. Mobile
- * stacks them centred. The `Docs` action is followed by GitHub and Discord
- * brand icons that link to the public repo and the community Discord.
+ * The sign-in/Home authority controls live in the Welcome decision panel. This footer is limited
+ * to help/community links so a focused Home cannot appear to select the sign-in destination.
  */
 export const WelcomeFooterLinks = React.memo(function WelcomeFooterLinks(props: WelcomeFooterLinksProps) {
     const { theme } = useUnistyles();

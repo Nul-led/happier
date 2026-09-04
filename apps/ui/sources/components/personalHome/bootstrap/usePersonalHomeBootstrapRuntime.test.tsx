@@ -20,6 +20,16 @@ const harness = vi.hoisted(() => {
     const endpoint = {
         storagePolicy: 'plaintext_only' as 'required_e2ee' | 'optional' | 'plaintext_only',
         reachable: true,
+        homeConnectionDescriptor: {
+            v: 1 as const,
+            homeServerIdentityId: 'srv_home_b_identity',
+            canonicalServerUrl,
+            revision: 1,
+            endpoints: [{
+                kind: 'iroh' as const,
+                endpointId: 'b'.repeat(64),
+            }],
+        },
     };
     let credentials: Readonly<{ token: string }> | null = null;
     let segments: readonly string[] = ['(app)', 'index'];
@@ -298,6 +308,7 @@ vi.mock('@/sync/api/capabilities/serverFeaturesClient', () => ({
             status: 'ready',
             serverIdentityId: 'srv_home_b_identity',
             features: {
+                homeConnectionDescriptor: harness.endpoint.homeConnectionDescriptor,
                 capabilities: {
                     auth: {
                         signup: {

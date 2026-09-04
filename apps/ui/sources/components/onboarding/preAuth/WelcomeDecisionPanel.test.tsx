@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { renderScreen } from '@/dev/testkit';
 import type { AccountServiceEntryOptions } from '@/components/account/auth/useAccountServiceEntryOptions';
 import type { AuthEntryOptions } from '@/components/account/auth/useAuthEntryOptions';
+import { buildServerFeaturesResponse } from '@/hooks/server/serverFeaturesTestUtils';
 
 import { WelcomeDecisionPanel } from './WelcomeDecisionPanel';
 
@@ -93,6 +94,7 @@ function readyAccountServiceEntry(
     oauthProviderIds: readonly string[],
     options: Readonly<{ keyLoginAvailable?: boolean }> = {},
 ): AccountServiceEntryOptions {
+    const features = buildServerFeaturesResponse();
     return {
         endpoint: { url: 'https://api.happier.dev', displayName: 'Happier Cloud', source: 'default' },
         status: 'ready',
@@ -113,6 +115,27 @@ function readyAccountServiceEntry(
             keyLoginAvailable: options.keyLoginAvailable ?? false,
             oauthProviderIds,
             preferredProvisionProviderId: oauthProviderIds[0] ?? null,
+            snapshot: {
+                status: 'ready',
+                serverIdentityId: 'srv_cloud_identity',
+                features: {
+                    ...features,
+                    capabilities: {
+                        ...features.capabilities,
+                        accountDirectory: {
+                            version: 1,
+                            homeDirectory: true,
+                            homeEnrollment: true,
+                            homeLoginAssertion: {
+                                keyId: 'a'.repeat(64),
+                                publicKeyBase64Url: 'A'.repeat(43),
+                            },
+                        },
+                        server: { canonicalServerUrl: 'https://api.happier.dev' },
+                        serverIdentity: { serverIdentityId: 'srv_cloud_identity' },
+                    },
+                },
+            },
         },
     };
 }

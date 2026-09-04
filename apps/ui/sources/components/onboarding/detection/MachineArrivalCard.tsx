@@ -112,7 +112,7 @@ const stylesheet = StyleSheet.create((theme) => ({
 
 function buildSetupArgs(serverUrl: string | null | undefined): string[] {
     const trimmed = String(serverUrl ?? '').trim();
-    return trimmed ? ['--relay-url', trimmed, '--yes'] : ['--yes'];
+    return trimmed ? ['--home-url', trimmed] : [];
 }
 
 function useSetupCommands(serverUrl: string | null | undefined): Readonly<{ posix: string; windows: string }> {

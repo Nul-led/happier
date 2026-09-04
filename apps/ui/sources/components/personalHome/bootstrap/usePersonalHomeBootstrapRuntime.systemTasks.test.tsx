@@ -30,6 +30,13 @@ const harness = vi.hoisted(() => {
     const CANONICAL_SERVER_URL = 'http://127.0.0.1:3005';
     const HOME_B_IDENTITY = 'srv_home_b_identity';
     const HOME_B_TOKEN = 'home-b-token';
+    const DEFAULT_HOME_DESCRIPTOR = {
+        v: 1,
+        homeServerIdentityId: HOME_B_IDENTITY,
+        canonicalServerUrl: CANONICAL_SERVER_URL,
+        revision: 1,
+        endpoints: [{ kind: 'iroh', endpointId: 'c'.repeat(64) }],
+    };
 
     type PersonalHomePurpose = Readonly<{ kind: 'personal-home'; canonicalServerUrl: string }>;
     type RecordedTaskSpec = Readonly<{
@@ -93,7 +100,7 @@ const harness = vi.hoisted(() => {
     let bootstrapStarted = false;
     let authPingFailureCount = 0;
     /** /v1/features Home descriptor published by the endpoint feature probe; null = omitted. */
-    let publishedHomeConnectionDescriptor: Record<string, unknown> | null = null;
+    let publishedHomeConnectionDescriptor: Record<string, unknown> | null = { ...DEFAULT_HOME_DESCRIPTOR };
 
     let credentialsStore: Readonly<{ token: string }> | null = null;
     let persistedCredentials: Readonly<{ token: string }> | null = null;
@@ -497,7 +504,7 @@ const harness = vi.hoisted(() => {
             serverAccountsBySeedBase64Url.clear();
             failCreateAfterCommit = false;
             authPingFailureCount = 0;
-            publishedHomeConnectionDescriptor = null;
+            publishedHomeConnectionDescriptor = { ...DEFAULT_HOME_DESCRIPTOR };
             authGetTokenAtEndpoint.mockClear();
             focusedAuthGetToken.mockClear();
         },
@@ -1341,8 +1348,7 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
         await hook.unmount();
 
         // Fail-closed negative path on a fresh registry: a descriptor whose homeServerIdentityId
-        // disagrees with the independently observed server identity is rejected/omitted, and
-        // adoption keeps the exact legacy HTTPS descriptor behavior (no transport facts).
+        // disagrees with the independently observed server identity cannot complete adoption.
         for (const profile of profiles.listServerProfiles()) profiles.removeServerProfile(profile.id);
         harness.probes.setPublishedHomeConnectionDescriptor({
             v: 1,
@@ -1355,17 +1361,12 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
         });
         harness.markBootstrapStarted();
         const secondHook = await renderHook(() => usePersonalHomeBootstrapRuntime());
-        await runHookOperation(() => secondHook.getCurrent().operations['ensure-home-ready']!(initialFacts));
-        await flushHookEffects({ cycles: 8 });
+        await expect(runHookOperation(
+            () => secondHook.getCurrent().operations['ensure-home-ready']!(initialFacts),
+        )).rejects.toMatchObject({ code: 'personal_home_descriptor_unverified' });
 
         const adoptedAfterMismatch = profiles.listServerProfiles().filter((profile) => profile.source === 'desktop-personal-home');
-        expect(adoptedAfterMismatch).toHaveLength(1);
-        expect(adoptedAfterMismatch[0]).toMatchObject({
-            serverUrl: harness.CANONICAL_SERVER_URL,
-            serverIdentityId: harness.HOME_B_IDENTITY,
-        });
-        expect(adoptedAfterMismatch[0]?.irohEndpoint).toBeUndefined();
-        expect(adoptedAfterMismatch[0]?.connectionDescriptorRevision).toBeUndefined();
+        expect(adoptedAfterMismatch).toHaveLength(0);
         await secondHook.unmount();
     });
 });

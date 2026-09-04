@@ -93,9 +93,14 @@ export function installSessionHandoffCommonModuleMocks(
             Typography: {
                 default: () => ({}),
                 mono: () => ({}),
+                eyebrow: () => ({}),
+                rowTitle: () => ({}),
+                rowMeta: () => ({}),
                 keyHint: () => ({}),
                 pillLabel: () => ({}),
                 tabular: () => ({}),
+                timestamp: () => ({}),
+                logo: () => ({}),
             },
         };
     });

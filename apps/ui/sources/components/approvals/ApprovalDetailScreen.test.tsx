@@ -187,7 +187,6 @@ function createHandoffApprovalArtifact(input: Readonly<{
         selection: 'all_files' as const,
         extraIgnorePatterns: [],
         extraIncludePatterns: [],
-        includeGitDirectory: false,
     };
     const contentPolicy = {
         ...contentPolicyFields,
@@ -312,6 +311,12 @@ function createStorageState() {
 let currentArtifact: any = createApprovalArtifact();
 let sessionFixtures: Record<string, Session> = createSessionFixtures();
 let machineFixtures: Record<string, Machine> = createMachineFixtures();
+let sessionFixturesByServerId: Record<string, Record<string, Session>> = {
+    'server-cache': sessionFixtures,
+};
+let machineFixturesByServerId: Record<string, Record<string, Machine>> = {
+    'server-cache': machineFixtures,
+};
 let storageState = createStorageState();
 installApprovalCommonModuleMocks({
     reactNative: async () => {
@@ -368,6 +373,14 @@ installApprovalCommonModuleMocks({
             useArtifact: () => currentArtifact,
             useSession: (sessionId: string) => sessionFixtures[sessionId] ?? null,
             useMachine: (machineId: string) => machineFixtures[machineId] ?? null,
+            useSessionListRenderableWithServerScope: (serverId: string | null | undefined, sessionId: string) => (
+                serverId
+                    ? sessionFixturesByServerId[serverId]?.[sessionId] ?? null
+                    : sessionFixtures[sessionId] ?? null
+            ),
+            useServerScopedMachine: (serverId: string | null | undefined, machineId: string) => (
+                serverId ? machineFixturesByServerId[serverId]?.[machineId] ?? null : null
+            ),
             storage: {
                 getState: () => storageState,
             },
@@ -435,6 +448,8 @@ describe('ApprovalDetailScreen', () => {
         modalConfirmResult = true;
         sessionFixtures = createSessionFixtures();
         machineFixtures = createMachineFixtures();
+        sessionFixturesByServerId = { 'server-cache': sessionFixtures };
+        machineFixturesByServerId = { 'server-cache': machineFixtures };
         storageState = createStorageState();
         currentArtifact = createApprovalArtifact();
     });
@@ -877,16 +892,78 @@ describe('ApprovalDetailScreen', () => {
         expect(executeSpy).not.toHaveBeenCalled();
     });
 
-    it('opens the linked session from the approval context card', async () => {
+    it('uses the approval Home for duplicate session ids and opens the scoped session route', async () => {
+        currentArtifact = createApprovalArtifact('server-approval');
+        sessionFixtures = {
+            'session-1': createSessionFixture({
+                id: 'session-1',
+                metadata: { name: 'Active Home session', path: '/active', machineId: 'machine-active' },
+            }),
+        };
+        sessionFixturesByServerId = {
+            'server-active': sessionFixtures,
+            'server-approval': {
+                'session-1': createSessionFixture({
+                    id: 'session-1',
+                    metadata: { name: 'Approval Home session', path: '/approval', machineId: 'machine-approval' },
+                }),
+            },
+        };
+        machineFixturesByServerId = {
+            'server-approval': {
+                'machine-approval': createMachineFixture({
+                    id: 'machine-approval',
+                    metadata: {
+                        displayName: 'Approval Home workstation',
+                        host: 'approval.local',
+                        platform: 'darwin',
+                        happyCliVersion: '0.0.0-test',
+                        happyHomeDir: '/Users/tester/.happy-dev',
+                        homeDir: '/Users/tester',
+                    },
+                }),
+            },
+        };
         const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
 
         const screen = await renderScreen(<ApprovalDetailScreen artifactId="artifact-1" />);
+
+        expect(screen.getTextContent()).toContain('Approval Home session');
+        expect(screen.getTextContent()).toContain('Approval Home workstation');
+        expect(screen.getTextContent()).toContain('/approval');
+        expect(screen.getTextContent()).not.toContain('Active Home session');
 
         await act(async () => {
             await screen.pressByTestIdAsync('approvals.open-session');
         });
 
-        expect(pushSpy).toHaveBeenCalledWith('/session/session-1');
+        expect(pushSpy).toHaveBeenCalledWith('/session/session-1?serverId=server-approval');
+    });
+
+    it('does not read the active Home session when a bare approval session id is ambiguous', async () => {
+        resolvePreferredServerIdForSessionIdSpy.mockReturnValue(undefined);
+        sessionFixtures = {
+            'session-1': createSessionFixture({
+                id: 'session-1',
+                metadata: { name: 'Wrong active Home session', path: '/active', machineId: 'machine-target' },
+            }),
+        };
+        sessionFixturesByServerId = {
+            'server-active': sessionFixtures,
+            'server-other': {
+                'session-1': createSessionFixture({
+                    id: 'session-1',
+                    metadata: { name: 'Other Home session', path: '/other', machineId: 'machine-target' },
+                }),
+            },
+        };
+        const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
+
+        const screen = await renderScreen(<ApprovalDetailScreen artifactId="artifact-1" />);
+
+        expect(screen.getTextContent()).not.toContain('Wrong active Home session');
+        expect(screen.getTextContent()).not.toContain('Other Home session');
+        expect(screen.findByTestId('approvals.open-session')).toBeNull();
     });
 
     it('places the primary approve action before the reject action', async () => {

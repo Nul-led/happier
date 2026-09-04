@@ -14,9 +14,9 @@ export type AccountServiceEntryOptions = Readonly<{
     /** The selected sign-in service. Exists before any Home profile, focused Home, or Sync runtime. */
     endpoint: AccountServiceEndpointV1;
     /**
-     * `unavailable` covers an unreachable endpoint, an ordinary Home without Account Directory,
-     * a stable-identity mismatch, and a malformed advertisement. Callers keep their existing
-     * entry path in that case rather than offering a sign-in the service cannot complete.
+     * `unsupported` identifies an ordinary Home without Account Directory. `unavailable` covers
+     * an unreachable endpoint, stable-identity mismatch, or malformed advertisement. Welcome
+     * keeps the selected service authoritative in either case and presents recovery actions.
      */
     status: 'loading' | 'ready' | 'unavailable' | 'unsupported';
     /** The service's own advertised methods. Non-null only while `status` is `ready`. */

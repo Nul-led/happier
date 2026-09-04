@@ -5,6 +5,7 @@ import {
 } from '@happier-dev/protocol';
 import {
     buildRemoteBootstrapCommand,
+    createOpenSshHappierJsonExecutor,
     createRemoteSshBootstrapMachineTaskKind,
     normalizeRemoteReleaseArch,
     normalizeRemoteReleaseOs,
@@ -24,6 +25,7 @@ import {
 import { decodeBase64, encodeBase64 } from '@/encryption/base64';
 import {
     buildHomeConnectionDescriptorForProfile,
+    getServerProfileById,
     listServerProfiles,
 } from '@/sync/domains/server/serverProfiles';
 import { createServerUrlComparableKey } from '@/sync/domains/server/url/serverUrlCanonical';
@@ -34,6 +36,7 @@ import {
 } from '../bridges/native';
 import { buildNativeSystemTaskEvent } from '../bridges/events';
 import { createNativeRemoteSshCommandRunner, type NativeRemoteSshCommandRunner } from './nativeCommandRunner';
+export { readNativeSshBootstrapDedupeKey } from './nativeTaskIdentity';
 
 type RemoteBootstrapMachineParams = ReturnType<typeof parseRemoteBootstrapMachineParams>;
 
@@ -59,6 +62,7 @@ export type RunNativeRemoteSshBootstrapTaskParams = Readonly<{
     }>) => Promise<RemoteSelfDownloadFirstPartyInstallPlan>;
     approveLocalAuthRequest?: (params: Readonly<{
         publicKey: string;
+        homeServerIdentityId: string;
         pairing?: unknown;
         supportsTokenOnly?: boolean;
         endpointUrl: string;
@@ -191,9 +195,38 @@ async function installRemoteCliViaNativeSelfDownload(params: Readonly<{
 function resolveNativeApprovalTarget(parsed: RemoteBootstrapMachineParams): Readonly<{
     endpointUrl: string;
     credentialUrl: string;
-    serverId: string;
+    profileId: string;
+    homeServerIdentityId: string;
     descriptor: HomeConnectionDescriptorV1;
 }> {
+    if (parsed.homeTarget) {
+        const descriptor = parsed.homeTarget.descriptor;
+        const profileId = parsed.homeTarget.profileId;
+        const homeServerIdentityId = parsed.homeTarget.homeServerIdentityId;
+        if (!descriptor || !profileId || !homeServerIdentityId) {
+            throw new SystemTaskExecutionError(
+                'native_ssh_local_approval_target_unavailable',
+                'Native SSH bootstrap requires an identity-bearing saved Home target for local approval.',
+            );
+        }
+        const profile = getServerProfileById(profileId);
+        if (!profile || profile.serverIdentityId?.trim() !== homeServerIdentityId) {
+            throw new SystemTaskExecutionError(
+                'native_ssh_local_approval_target_mismatch',
+                'The selected Home profile no longer matches the resolved Home target.',
+            );
+        }
+        return {
+            endpointUrl: parsed.homeTarget.applicationUrl,
+            credentialUrl: parsed.homeTarget.applicationUrl,
+            profileId,
+            homeServerIdentityId,
+            descriptor,
+        };
+    }
+
+    // Compatibility/manual URL tasks predate the identity-bearing target. They
+    // may resolve one already-known local profile, but cannot supply identity.
     const endpointUrl = parsed.relay.relayUrl.trim();
     const credentialUrl = parsed.relay.publicRelayUrl?.trim() || endpointUrl;
     const credentialKey = createServerUrlComparableKey(credentialUrl);
@@ -217,25 +250,38 @@ function resolveNativeApprovalTarget(parsed: RemoteBootstrapMachineParams): Read
     const descriptor = matchedProfile
         ? buildHomeConnectionDescriptorForProfile(matchedProfile)
         : null;
-    if (!descriptor) {
+    if (!matchedProfile || !descriptor) {
         throw new SystemTaskExecutionError(
             'native_ssh_local_approval_target_unavailable',
             'Native SSH bootstrap could not resolve a verified Home connection descriptor.',
         );
     }
-    return { endpointUrl, credentialUrl, serverId: identities[0]!, descriptor };
+    return {
+        endpointUrl,
+        credentialUrl,
+        profileId: matchedProfile.id,
+        homeServerIdentityId: descriptor.homeServerIdentityId,
+        descriptor,
+    };
 }
 
 async function approveNativeLocalAuthRequest(params: Readonly<{
     publicKey: string;
+    homeServerIdentityId: string;
     pairing?: unknown;
     supportsTokenOnly?: boolean;
     parsed: RemoteBootstrapMachineParams;
 }>): Promise<void> {
     const target = resolveNativeApprovalTarget(params.parsed);
+    if (params.homeServerIdentityId.trim() !== target.homeServerIdentityId) {
+        throw new SystemTaskExecutionError(
+            'native_ssh_local_approval_target_mismatch',
+            'The remote authentication request belongs to a different Home identity.',
+        );
+    }
     const credentials = await TokenStorage.getCredentialsForServerUrl(
         target.credentialUrl,
-        { serverId: target.serverId },
+        { serverId: target.profileId },
     );
     if (!credentials) {
         throw new SystemTaskExecutionError(
@@ -246,10 +292,7 @@ async function approveNativeLocalAuthRequest(params: Readonly<{
 
     const publicKey = decodeTerminalPublicKey(params.publicKey);
     const pairing = readNativePairingContext(params.pairing);
-    const transportResolution = await resolveHomeEnrollmentTransport(target.descriptor, {
-        runtimeOrigin: target.endpointUrl,
-        runtimeCarrier: 'https',
-    });
+    const transportResolution = await resolveHomeEnrollmentTransport(target.descriptor);
     if (!transportResolution.ok) {
         throw new SystemTaskExecutionError(
             'native_ssh_local_approval_target_unavailable',
@@ -274,17 +317,6 @@ async function approveNativeLocalAuthRequest(params: Readonly<{
             'Native SSH bootstrap could not find the remote account pairing request.',
         );
     }
-}
-
-export function readNativeSshBootstrapDedupeKey(spec: Readonly<{
-    kind: string;
-    params: unknown;
-}>): string {
-    const params = readRecord(spec.params);
-    const remoteHostId = typeof params.remoteHostId === 'string' && params.remoteHostId.trim()
-        ? params.remoteHostId.trim()
-        : JSON.stringify(params.ssh ?? {});
-    return `${remoteHostId}:${spec.kind}`;
 }
 
 export function readNativeSshTaskCredentials(spec: Readonly<{
@@ -372,10 +404,31 @@ export async function runNativeRemoteSshBootstrapTask(
                 resolveInstallPlan: params.resolveInstallPlan,
             });
         },
-        approveLocalAuthRequest: async ({ publicKey, pairing, supportsTokenOnly, parsed: approvalTarget }) => {
+        createRemoteEnrollmentExecutor: ({ parsed: enrollmentTarget, auth, knownHostsMode, signal }) => (
+            createOpenSshHappierJsonExecutor({
+                ssh: enrollmentTarget.ssh,
+                auth,
+                knownHostsMode,
+                channel: enrollmentTarget.channel === 'dev' ? 'publicdev' : enrollmentTarget.channel,
+                runRemoteText: async ({ remoteCommand, timeoutMs, onStdoutChunk, input, signal: commandSignal }) => (
+                    await commandRunner.runTextCommand({
+                        nativeModule: params.nativeModule!,
+                        credentials,
+                        command: remoteCommand,
+                        signal: commandSignal ?? signal ?? params.signal,
+                        requestIdPrefix: params.taskId,
+                        ...(timeoutMs ? { execTimeoutMs: timeoutMs } : {}),
+                        ...(input !== undefined ? { input } : {}),
+                        ...(onStdoutChunk ? { onStdoutChunk } : {}),
+                    })
+                ),
+            })
+        ),
+        approveLocalAuthRequest: async ({ publicKey, homeServerIdentityId, pairing, supportsTokenOnly, parsed: approvalTarget }) => {
             if (params.approveLocalAuthRequest) {
                 await params.approveLocalAuthRequest({
                     publicKey,
+                    homeServerIdentityId,
                     ...(pairing !== undefined ? { pairing } : {}),
                     ...(supportsTokenOnly === true ? { supportsTokenOnly: true } : {}),
                     endpointUrl: approvalTarget.relay.relayUrl,
@@ -384,9 +437,13 @@ export async function runNativeRemoteSshBootstrapTask(
             }
             await approveNativeLocalAuthRequest({
                 publicKey,
+                homeServerIdentityId,
                 ...(pairing !== undefined ? { pairing } : {}),
                 ...(supportsTokenOnly === true ? { supportsTokenOnly: true } : {}),
-                parsed: approvalTarget,
+                // The native entry point owns the original strict target. Keep
+                // that identity-bearing projection intact even when the shared
+                // recipe derives a relay-adjusted approval view.
+                parsed,
             });
         },
         runRemoteCommand: async ({ label, data }) => {
@@ -401,14 +458,12 @@ export async function runNativeRemoteSshBootstrapTask(
                     localServerUrl: localServerUrl || undefined,
                     webappUrl: isLoopbackUrl(parsed.relay.webappUrl) ? undefined : parsed.relay.webappUrl,
                     daemonServiceMode: parsed.serviceMode,
-                    data: label === 'auth.wait'
-                        ? { publicKey: data?.publicKey }
-                        : label === 'relay.runtime.install'
-                            ? {
-                                relayRuntimeMode: parsed.relayRuntime?.mode ?? 'user',
-                                relayRuntimeEnv: parsed.relayRuntime?.env,
-                            }
-                            : undefined,
+                    data: label === 'relay.runtime.install'
+                        ? {
+                            relayRuntimeMode: parsed.relayRuntime?.mode ?? 'user',
+                            relayRuntimeEnv: parsed.relayRuntime?.env,
+                        }
+                        : undefined,
                 }),
                 signal: params.signal,
                 requestIdPrefix: params.taskId,

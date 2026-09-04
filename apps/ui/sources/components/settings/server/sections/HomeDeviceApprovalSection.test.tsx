@@ -82,6 +82,8 @@ vi.mock('@/utils/platform/desktopHost', () => ({
     isDesktopHost: () => false,
 }));
 
+const HOME_ENDPOINT_ID = 'f'.repeat(64);
+
 const HOME: ServerProfile = {
     id: 'home-b-profile',
     name: 'Home B',
@@ -89,8 +91,19 @@ const HOME: ServerProfile = {
     canonicalServerUrl: 'https://canonical.home-b.test',
     serverIdentityId: 'srv_home_b',
     connectionDescriptorRevision: 7,
+    homeConnectionDescriptor: {
+        v: 1,
+        homeServerIdentityId: 'srv_home_b',
+        canonicalServerUrl: 'https://canonical.home-b.test',
+        revision: 7,
+        endpoints: [{
+            kind: 'iroh',
+            endpointId: HOME_ENDPOINT_ID,
+            relayUrls: ['https://relay.home-b.test'],
+        }],
+    },
     irohEndpoint: {
-        endpointId: 'iroh-home-b',
+        endpointId: HOME_ENDPOINT_ID,
         relayUrls: ['https://relay.home-b.test'],
     },
     createdAt: 1,
@@ -105,7 +118,7 @@ const HOME_DESCRIPTOR = {
     revision: 7,
     endpoints: [{
         kind: 'iroh',
-        endpointId: 'iroh-home-b',
+        endpointId: HOME_ENDPOINT_ID,
         relayUrls: ['https://relay.home-b.test'],
     }],
 } satisfies HomeEnrollmentTransport['descriptor'];
@@ -531,7 +544,7 @@ describe('HomeDeviceApprovalSection', () => {
             revision: 7,
             endpoints: [{
                 kind: 'iroh',
-                endpointId: 'iroh-home-b',
+                endpointId: HOME_ENDPOINT_ID,
                 relayUrls: ['https://relay.home-b.test'],
             }],
         }, {

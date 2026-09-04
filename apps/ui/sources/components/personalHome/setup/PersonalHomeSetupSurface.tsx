@@ -174,7 +174,7 @@ export const PersonalHomeSetupSurface = React.memo(function PersonalHomeSetupSur
                         <Text style={styles.detailsText}>{detailsOpen ? t('common.collapse') : t('common.details')}</Text>
                     </Pressable>
                 ) : null}
-                {showDetails ? (
+                {showDetails && !showExistingDecision ? (
                     <View style={styles.details} testID="personal-home-bootstrap-details-panel">
                         <PersonalHomeDiagnosticDetails detail={props.snapshot.detail} activeTask={props.activeTask} />
                     </View>

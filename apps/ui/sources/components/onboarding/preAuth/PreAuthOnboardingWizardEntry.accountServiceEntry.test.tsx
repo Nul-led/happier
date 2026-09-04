@@ -51,6 +51,7 @@ const setPendingExternalAuthMock = vi.hoisted(() => vi.fn(async () => true));
 const clearPendingExternalAuthMock = vi.hoisted(() => vi.fn(async () => true));
 const clearPendingAccountDirectoryAuthMock = vi.hoisted(() => vi.fn(async () => true));
 const locationAssignMock = vi.hoisted(() => vi.fn());
+const runtimeFetchMock = vi.hoisted(() => vi.fn());
 const pendingEnrollmentSnapshot = vi.hoisted(() => ({
     kind: 'approval_required' as const,
     homeServerIdentityId: 'srv_home_preferred',
@@ -178,7 +179,7 @@ vi.mock('@/sync/domains/pending/pendingSetupIntent', () => ({
     getPendingSetupIntent: () => null,
     clearPendingSetupIntent: () => {},
 }));
-vi.mock('@/utils/system/runtimeFetch', () => ({ runtimeFetch: vi.fn() }));
+vi.mock('@/utils/system/runtimeFetch', () => ({ runtimeFetch: runtimeFetchMock }));
 
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
     getActiveServerSnapshot: () => getActiveServerSnapshotMock(),
@@ -326,6 +327,21 @@ describe('PreAuthOnboardingWizardEntry — Account Service welcome sign-in', () 
         clearPendingExternalAuthMock.mockClear();
         clearPendingAccountDirectoryAuthMock.mockClear();
         locationAssignMock.mockReset();
+        runtimeFetchMock.mockReset();
+        runtimeFetchMock.mockResolvedValue(new Response(null, { status: 401 }));
+        authEntryOptionsState.current = {
+            ...authEntryOptionsState.current,
+            showAnonymousSignup: true,
+            showMtlsLogin: false,
+            autoRedirect: {
+                enabled: false,
+                providerId: null,
+                toKeyedProvision: false,
+                toKeylessLogin: false,
+                toMtls: false,
+                toLegacySignupProvider: false,
+            },
+        };
         wizardControllerMock.lastProps = null;
         vi.stubGlobal('window', {
             location: {
@@ -358,6 +374,30 @@ describe('PreAuthOnboardingWizardEntry — Account Service welcome sign-in', () 
             serverIdentityId: SELECTED_SERVICE_IDENTITY,
             oauthProviderIds: ['github'],
         });
+    });
+
+    it('does not let the active Home auto-redirect while the selected Account Service owns Welcome', async () => {
+        authEntryOptionsState.current = {
+            ...authEntryOptionsState.current,
+            showAnonymousSignup: false,
+            showMtlsLogin: true,
+            autoRedirect: {
+                enabled: true,
+                providerId: null,
+                toKeyedProvision: false,
+                toKeylessLogin: false,
+                toMtls: true,
+                toLegacySignupProvider: false,
+            },
+        };
+
+        await renderEntry();
+        await vi.waitFor(() => expect(capturedAccountServiceEntry()?.status).toBe('ready'));
+
+        // Other Welcome composition still reads the active snapshot for legacy fallback
+        // presentation. The material invariant is that it must not execute the Home mTLS
+        // request while the selected Account Service owns authentication.
+        expect(runtimeFetchMock).not.toHaveBeenCalled();
     });
 
     it('starts provider sign-in on the exact selected service with the preferred-Home entry intent', async () => {
@@ -487,6 +527,7 @@ describe('PreAuthOnboardingWizardEntry — Account Service welcome sign-in', () 
             PREFERRED_HOME_IDENTITY,
             'enter_preferred_home',
             expect.any(String),
+            expect.any(Function),
         );
 
         // The observed stable service identity is bound through the existing endpoint owner so

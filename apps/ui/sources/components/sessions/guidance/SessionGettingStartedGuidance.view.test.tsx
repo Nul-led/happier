@@ -155,7 +155,7 @@ describe('SessionGettingStartedGuidanceView', () => {
     expect(screen.findByTestId('session-getting-started-setup-primary-card')).not.toBeNull();
     expect(screen.findByTestId('session-getting-started-cli-follow-up')).toBeNull();
     expect(screen.findByTestId('session-getting-started-show-manual')).toBeNull();
-    expect(content).not.toContain('happier server add');
+    expect(content).not.toMatch(/\bh(?:appier|prev|dev) server add\b/);
     expect(content).not.toContain('happier daemon install');
     expect(screen.findByTestId('session-getting-started-scroll')).not.toBeNull();
     expect(screen.findByTestId('session-getting-started-logo')).not.toBeNull();

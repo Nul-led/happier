@@ -12,6 +12,7 @@ import type { HomeQrEntryIntent } from '@/auth/pairing/homeQrEntryIntent';
 
 export type RestoreIndexEmbeddedProps = Readonly<{
     entryIntent: HomeQrEntryIntent;
+    reverseTargetProfileId?: string | null;
     onBack: () => void;
     onOpenSecretKeyLogin?: () => void;
     initialPairingLink?: string | null;
@@ -49,6 +50,7 @@ export const RestoreIndexEmbedded = React.memo(function RestoreIndexEmbedded(pro
     const showScannerFirst =
         Boolean(props.initialPairingLink)
         || props.entryIntent === 'add_home'
+        || !props.reverseTargetProfileId
         || isNativePhone
         || isWebPhoneWithCamera;
     const [currentView, setCurrentView] = React.useState<'qr' | 'scanner' | null>(null);
@@ -61,12 +63,13 @@ export const RestoreIndexEmbedded = React.memo(function RestoreIndexEmbedded(pro
             initialPairingLink={props.initialPairingLink}
             onBack={props.onBack}
             onOpenSecretKeyLogin={props.onOpenSecretKeyLogin}
-            onShowQrInstead={() => setCurrentView('qr')}
+            onShowQrInstead={props.reverseTargetProfileId ? () => setCurrentView('qr') : undefined}
             onNavigationLockChange={props.onNavigationLockChange}
         />
     ) : (
         <RestoreQrView
             entryIntent={props.entryIntent}
+            targetProfileId={props.reverseTargetProfileId ?? null}
             embedded
             onBack={props.onBack}
             onOpenSecretKeyLogin={props.onOpenSecretKeyLogin}

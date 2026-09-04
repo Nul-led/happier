@@ -151,7 +151,14 @@ export async function authQRWait(
         }
 
         try {
-            const response = await requestAtEndpoint('/v2/auth/account/request', {
+            const requestController = new AbortController();
+            const abortRequest = () => requestController.abort();
+            signal?.addEventListener('abort', abortRequest, { once: true });
+            const remainingMs = expiresAtMs === undefined ? null : Math.max(0, expiresAtMs - Date.now());
+            const deadlineTimer = remainingMs === null ? null : setTimeout(abortRequest, remainingMs);
+            let response: Response;
+            try {
+                response = await requestAtEndpoint('/v2/auth/account/request', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -159,8 +166,12 @@ export async function authQRWait(
                     pairId: context.pairId,
                     homeServerIdentityId: context.homeServerIdentityId,
                 }),
-                ...(signal ? { signal } : {}),
-            }, { includeAuth: false, retry: 'none' });
+                    signal: requestController.signal,
+                }, { includeAuth: false, retry: 'none' });
+            } finally {
+                if (deadlineTimer) clearTimeout(deadlineTimer);
+                signal?.removeEventListener('abort', abortRequest);
+            }
             if (!response.ok) {
                 if (response.status === 404 || response.status === 410) return terminal('expired');
                 if (response.status === 403) return terminal('wrong_target');
@@ -230,6 +241,7 @@ export async function authQRWait(
             }
         } catch {
             if (signal?.aborted || shouldCancel?.()) return terminal('cancelled');
+            if (expiresAtMs !== undefined && Date.now() >= expiresAtMs) return terminal('expired');
             // Polling is long-lived; transport failures must not discard an otherwise
             // valid pairing. Payload-level problems above return terminal results
             // directly instead of throwing.

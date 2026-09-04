@@ -72,6 +72,11 @@ export function PersonalHomeBootstrapGate(props: PersonalHomeBootstrapGateProps)
         // The shell is released once Home readiness is derived from facts. A post-shell daemon
         // failure stays scoped to a recovery strip in the same frame; the first-run gate never
         // reopens for it.
+        const showPostShellPending = enabled
+            && controller.error == null
+            && controller.isOperating
+            && controller.snapshot.homeReady
+            && controller.snapshot.shouldGateShell === false;
         const showPostShellRecovery = enabled
             && controller.error != null
             && controller.snapshot.homeReady
@@ -79,6 +84,12 @@ export function PersonalHomeBootstrapGate(props: PersonalHomeBootstrapGateProps)
         return (
             <View style={{ flex: 1 }}>
                 {props.children}
+                {showPostShellPending ? (
+                    <PersonalHomeRecoveryStrip
+                        pending
+                        kind={controller.facts?.completedPersonalHomeProfile ? 'computer' : 'profile'}
+                    />
+                ) : null}
                 {showPostShellRecovery ? (
                     <PersonalHomeRecoveryStrip
                         kind={controller.facts?.completedPersonalHomeProfile ? 'computer' : 'profile'}

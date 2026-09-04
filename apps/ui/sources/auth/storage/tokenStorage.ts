@@ -739,6 +739,13 @@ export type PendingAccountDirectoryAuthTarget = Readonly<{
     serverIdentityId: string;
 }>;
 
+export type PendingAccountDirectoryAuthCustodyResolution =
+    | Readonly<{ kind: 'absent' }>
+    | Readonly<{ kind: 'matched'; pending: PendingAccountDirectoryAuth }>
+    | Readonly<{ kind: 'ambiguous' }>
+    | Readonly<{ kind: 'corrupt' }>
+    | Readonly<{ kind: 'unavailable' }>;
+
 export type AccountServiceEntryIntent = 'enter_preferred_home' | 'connect_service';
 
 export function isLegacyAuthCredentials(credentials: AuthCredentials): credentials is LegacyAuthCredentials {
@@ -1520,6 +1527,24 @@ async function removeCredentialByKey(key: string): Promise<boolean> {
     }
 }
 
+const credentialScopeOperationTails = new Map<string, Promise<void>>();
+
+async function serializeCredentialScopeOperation<T>(primaryKey: string, run: () => Promise<T>): Promise<T> {
+    const previous = credentialScopeOperationTails.get(primaryKey) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => { release = resolve; });
+    credentialScopeOperationTails.set(primaryKey, current);
+    await previous;
+    try {
+        return await run();
+    } finally {
+        release();
+        if (credentialScopeOperationTails.get(primaryKey) === current) {
+            credentialScopeOperationTails.delete(primaryKey);
+        }
+    }
+}
+
 /**
  * Single owner for "read the credentials stored under this scope layout".
  *
@@ -1529,6 +1554,7 @@ async function removeCredentialByKey(key: string): Promise<boolean> {
  * still decides the winner, so precedence and the legacy -> primary migration are unchanged.
  */
 async function readCredentialsForScopedKeys(keys: ScopedStorageKeys): Promise<AuthCredentials | null> {
+    return await serializeCredentialScopeOperation(keys.primary, async () => {
     const primaryRaw = await readCredentialRawByKey(keys.primary);
     const primaryParsed = parseCredentialsRaw(primaryRaw);
     if (primaryParsed) return primaryParsed;
@@ -1542,13 +1568,25 @@ async function readCredentialsForScopedKeys(keys: ScopedStorageKeys): Promise<Au
         const legacyParsed = parseCredentialsRaw(legacyRaw);
         if (!legacyParsed || !legacyRaw) continue;
 
+        // A different writer may claim primary custody while legacy probes are
+        // in flight. Re-read before migration; the concurrent primary wins and
+        // the legacy scope remains available for its actual owner/recovery.
+        const concurrentPrimaryRaw = await readCredentialRawByKey(keys.primary);
+        const concurrentPrimary = parseCredentialsRaw(concurrentPrimaryRaw);
+        if (concurrentPrimary) return concurrentPrimary;
         const migrated = await writeCredentialRawByKey(keys.primary, legacyRaw);
         if (migrated) {
-            await removeCredentialByKey(legacyKey);
+            const verifiedPrimaryRaw = await readCredentialRawByKey(keys.primary);
+            if (verifiedPrimaryRaw === legacyRaw) {
+                await removeCredentialByKey(legacyKey);
+            } else {
+                return parseCredentialsRaw(verifiedPrimaryRaw) ?? legacyParsed;
+            }
         }
         return legacyParsed;
     }
-    return null;
+        return null;
+    });
 }
 
 async function removeCredentialKeysAtomically(targetKeys: readonly string[]): Promise<boolean> {
@@ -1767,6 +1805,21 @@ async function getPendingAccountDirectoryAuthValue(
     return matches[0] ?? null;
 }
 
+async function resolvePendingAccountDirectoryAuthCustodyValue(
+    provider: string,
+): Promise<PendingAccountDirectoryAuthCustodyResolution> {
+    const normalizedProvider = provider.trim().toLowerCase();
+    if (!normalizedProvider) return { kind: 'absent' };
+    const read = await readPendingAccountDirectoryAuthRecords();
+    if (read.kind === 'corrupt' || read.kind === 'unavailable') return read;
+    const matches = (read.kind === 'valid' ? read.value : [])
+        .filter((record) => record.provider === normalizedProvider)
+        .sort((left, right) => right.createdAt - left.createdAt);
+    if (matches.length === 0) return { kind: 'absent' };
+    if (matches.length > 1) return { kind: 'ambiguous' };
+    return { kind: 'matched', pending: matches[0]! };
+}
+
 async function clearPendingAccountDirectoryAuthValue(
     target?: PendingAccountDirectoryAuthTarget,
 ): Promise<boolean> {
@@ -1907,6 +1960,7 @@ async function writeHomeCredentialsForServerScope(
     // scope that an existing profile's identity does not own.
     if (!keys) return { stored: false, serverId: null, rollback: null };
 
+    return await serializeCredentialScopeOperation(keys.primary, async () => {
     const json = JSON.stringify(credentials);
     const previousPrimaryRaw = await readCredentialRawByKey(keys.primary);
     const previousLegacyRaws = await Promise.all(keys.legacy.map((legacyKey) => readCredentialRawByKey(legacyKey)));
@@ -1943,6 +1997,7 @@ async function writeHomeCredentialsForServerScope(
         return restored;
     };
     return { stored: true, serverId: identity.serverId, rollback };
+    });
 }
 
 export const TokenStorage = {
@@ -2164,6 +2219,7 @@ export const TokenStorage = {
     async setCredentials(credentials: AuthCredentials): Promise<boolean> {
         const keys = await getAuthKeys();
         if (!keys) return false;
+        return await serializeCredentialScopeOperation(keys.primary, async () => {
         const json = JSON.stringify(credentials);
         const written = await writeCredentialRawByKey(keys.primary, json);
         if (!written) return false;
@@ -2171,7 +2227,11 @@ export const TokenStorage = {
         for (const legacyKey of keys.legacy) {
             await removeCredentialByKey(legacyKey);
         }
+        emitHomeCredentialMutation('credentials_set', getActiveServerUrl(), {
+            serverId: getActiveServerId(),
+        });
         return true;
+        });
     },
 
     /** Persist credentials for an explicit Home without changing focused-server state. */
@@ -2323,6 +2383,13 @@ export const TokenStorage = {
         options: Readonly<{ includeExpired?: boolean }> = {},
     ): Promise<PendingAccountDirectoryAuth | null> {
         return await getPendingAccountDirectoryAuthValue(target, options);
+    },
+
+    /** Resolve OAuth callback family from persisted custody before consulting advisory URL markers. */
+    async resolvePendingAccountDirectoryAuthCustody(
+        provider: string,
+    ): Promise<PendingAccountDirectoryAuthCustodyResolution> {
+        return await resolvePendingAccountDirectoryAuthCustodyValue(provider);
     },
 
     async clearPendingAccountDirectoryAuth(

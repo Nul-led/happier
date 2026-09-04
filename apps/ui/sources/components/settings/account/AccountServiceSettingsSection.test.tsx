@@ -205,6 +205,7 @@ vi.mock('@/sync/ops/accountDirectory/enrollPreferredDirectoryHome', () => ({
         for (const listener of pendingEnrollmentState.listeners) listener();
         return result;
     },
+    finalizePreferredHomeEnrollmentEntryIntent: vi.fn(async () => 'completed'),
     cancelPendingPreferredHomeEnrollment: async () => {
         await cancelPendingPreferredHomeEnrollmentMock();
         pendingEnrollmentState.value = null;
@@ -549,6 +550,7 @@ describe('AccountServiceSettingsSection', () => {
             serverIdentityId: 'directory-1',
             features: {
                 capabilities: {
+                    server: { canonicalServerUrl: 'https://canonical-accounts.example.test' },
                     accountDirectory: { ...supportedCapability, homeEnrollment: false },
                 },
             },
@@ -873,6 +875,7 @@ describe('AccountServiceSettingsSection', () => {
 
         expect(probeServerFeaturesAtUrlMock).toHaveBeenCalledWith({
             endpointUrl: 'https://accounts.example.test',
+            serverId: 'directory-1',
             force: true,
         });
         expect(endpointState.set).not.toHaveBeenCalled();
@@ -941,6 +944,7 @@ describe('AccountServiceSettingsSection', () => {
 
         expect(probeServerFeaturesAtUrlMock).toHaveBeenCalledWith({
             endpointUrl: 'https://accounts.example.test',
+            serverId: 'directory-1',
             force: true,
         });
         expect(promptMock).toHaveBeenCalledWith(
@@ -953,6 +957,17 @@ describe('AccountServiceSettingsSection', () => {
             endpointServerIdentityId: 'directory-1',
             canonicalServerUrl: 'https://canonical-accounts.example.test',
             secret: expect.any(Uint8Array),
+            verifiedServerFeaturesSnapshot: expect.objectContaining({
+                status: 'ready',
+                serverIdentityId: 'directory-1',
+                features: expect.objectContaining({
+                    capabilities: expect.objectContaining({
+                        server: { canonicalServerUrl: 'https://canonical-accounts.example.test' },
+                        accountDirectory: supportedCapability,
+                        auth: expect.objectContaining({ keyChallenge: { v2: true } }),
+                    }),
+                }),
+            }),
         });
         const loginInput = loginWithKeyMock.mock.calls[0]?.[0] as { secret: Uint8Array } | undefined;
         const secret = loginInput?.secret;
@@ -1240,7 +1255,10 @@ describe('AccountServiceSettingsSection', () => {
             resolveProbe?.({
                 status: 'ready',
                 serverIdentityId: 'directory-1',
-                features: { capabilities: { accountDirectory: supportedCapability } },
+                features: { capabilities: {
+                    server: { canonicalServerUrl: 'https://canonical-accounts.example.test' },
+                    accountDirectory: supportedCapability,
+                } },
             });
             await vi.waitFor(() => expect(provisionAuthenticatedHomeLinkMock).toHaveBeenCalledOnce());
             await vi.waitFor(() => expect(enrollMock).toHaveBeenCalledOnce());
@@ -1269,7 +1287,10 @@ describe('AccountServiceSettingsSection', () => {
         probeServerFeaturesAtUrlMock.mockResolvedValueOnce({
             status: 'ready',
             serverIdentityId: 'directory-other',
-            features: { capabilities: { accountDirectory: supportedCapability } },
+            features: { capabilities: {
+                server: { canonicalServerUrl: 'https://canonical-accounts.example.test' },
+                accountDirectory: supportedCapability,
+            } },
         });
 
         await screen.pressByTestIdAsync('settings-account-service-local-home-srv_captured_home-link');
@@ -1292,7 +1313,10 @@ describe('AccountServiceSettingsSection', () => {
         probeServerFeaturesAtUrlMock.mockResolvedValueOnce({
             status: 'ready',
             serverIdentityId: 'directory-1',
-            features: { capabilities: { accountDirectory: supportedCapability } },
+            features: { capabilities: {
+                server: { canonicalServerUrl: 'https://canonical-accounts.example.test' },
+                accountDirectory: supportedCapability,
+            } },
         });
         const screen = await renderScreen(<AccountServiceSettingsSection />);
         await waitForAutomaticHydration(screen);
@@ -1326,7 +1350,10 @@ describe('AccountServiceSettingsSection', () => {
         probeServerFeaturesAtUrlMock.mockResolvedValueOnce({
             status: 'ready',
             serverIdentityId: 'directory-1',
-            features: { capabilities: { accountDirectory: supportedCapability } },
+            features: { capabilities: {
+                server: { canonicalServerUrl: 'https://canonical-accounts.example.test' },
+                accountDirectory: supportedCapability,
+            } },
         });
         const screen = await renderScreen(<AccountServiceSettingsSection />);
         await waitForAutomaticHydration(screen);
@@ -1373,7 +1400,10 @@ describe('AccountServiceSettingsSection', () => {
         probeServerFeaturesAtUrlMock.mockResolvedValueOnce({
             status: 'ready',
             serverIdentityId: 'directory-1',
-            features: { capabilities: { accountDirectory: supportedCapability } },
+            features: { capabilities: {
+                server: { canonicalServerUrl: 'https://canonical-accounts.example.test' },
+                accountDirectory: supportedCapability,
+            } },
         });
         const screen = await renderScreen(<AccountServiceSettingsSection />);
         await waitForAutomaticHydration(screen);
@@ -1408,7 +1438,10 @@ describe('AccountServiceSettingsSection', () => {
         probeServerFeaturesAtUrlMock.mockResolvedValueOnce({
             status: 'ready',
             serverIdentityId: 'directory-1',
-            features: { capabilities: { accountDirectory: supportedCapability } },
+            features: { capabilities: {
+                server: { canonicalServerUrl: 'https://canonical-accounts.example.test' },
+                accountDirectory: supportedCapability,
+            } },
         });
         const screen = await renderScreen(<AccountServiceSettingsSection />);
         await waitForAutomaticHydration(screen);
@@ -1458,6 +1491,7 @@ describe('AccountServiceSettingsSection', () => {
 
         expect(probeServerFeaturesAtUrlMock).toHaveBeenCalledWith({
             endpointUrl: 'https://accounts.example.test',
+            serverId: 'directory-stale',
             force: true,
         });
         expect(startOAuthMock).not.toHaveBeenCalled();

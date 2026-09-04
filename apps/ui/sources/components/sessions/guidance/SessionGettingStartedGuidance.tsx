@@ -7,20 +7,15 @@ import { t } from '@/text';
 import { router } from 'expo-router';
 import { Modal } from '@/modal';
 import { Image } from 'expo-image';
-import Constants from 'expo-constants';
-import * as Updates from 'expo-updates';
 import { useLocalSetting } from '@/sync/domains/state/storage';
 import { useConnectTerminal } from '@/hooks/session/useConnectTerminal';
 import type { FeatureId } from '@happier-dev/protocol';
 import { getFeatureBuildPolicyDecision } from '@/sync/domains/features/featureBuildPolicy';
-import { config } from '@/config';
-import { resolveAppVariant, type AppVariant } from '@/sync/runtime/appVariant';
-import { resolveCliInvokerNameForCurrentApp, resolvePreferredPublicReleaseRingIdForCurrentApp } from '@/sync/runtime/resolvePublicReleaseRing';
+import { resolveCliInvokerNameForCurrentApp } from '@/sync/runtime/resolvePublicReleaseRing';
 import { buildMachineSetupWizardHref } from '@/utils/routes/setupWizardHref';
 
 import type { SessionGettingStartedDecisionKind } from './gettingStartedModel';
 import { Text } from '@/components/ui/text/Text';
-import { buildHappierCliInstallCommand } from './happierCliInstallCommand';
 import { listSessionGettingStartedCliCommands } from './listSessionGettingStartedCliCommands';
 import { normalizeNodeForView } from '@/components/ui/rendering/normalizeNodeForView';
 import { getSessionGettingStartedSubtitle, getSessionGettingStartedTitle } from './sessionGettingStartedText';
@@ -181,28 +176,6 @@ const stylesheet = StyleSheet.create((theme) => ({
     },
 }));
 
-function resolveAppVariantForCliInstall(): AppVariant {
-    return (
-        resolveAppVariant({
-            appVariant: config.variant,
-            updatesReleaseChannel: (Updates as any)?.releaseChannel,
-            updatesChannel: (Updates as any)?.channel,
-            manifestReleaseChannel: (Constants as any)?.manifest?.releaseChannel,
-            expoConfigReleaseChannel: (Constants as any)?.expoConfig?.releaseChannel,
-            envAppEnv: process.env.APP_ENV,
-            envExpoPublicAppEnv: process.env.EXPO_PUBLIC_APP_ENV,
-        }) ?? 'production'
-    );
-}
-
-function buildCliInstallCommand(): string {
-    return buildHappierCliInstallCommand({
-        appVariant: resolveAppVariantForCliInstall(),
-        distTagOverride: config.cliNpmDistTag,
-        publicReleaseRingOverride: resolvePreferredPublicReleaseRingIdForCurrentApp(),
-    });
-}
-
 type SessionGettingStartedGuidanceStep = Readonly<{
     id: string;
     title: string;
@@ -214,47 +187,8 @@ type SessionGettingStartedGuidanceStep = Readonly<{
 function buildSteps(model: SessionGettingStartedGuidanceViewModel): SessionGettingStartedGuidanceStep[] {
     const invoker = resolveCliInvokerNameForCurrentApp();
     switch (model.kind) {
-        case 'connect_machine': {
-            const steps: SessionGettingStartedGuidanceStep[] = [];
-            steps.push({
-                id: 'install_cli',
-                title: t('sessionGettingStarted.steps.installCli.title'),
-                description: t('sessionGettingStarted.steps.installCli.description'),
-                command: buildCliInstallCommand(),
-                copyLabel: t('sessionGettingStarted.steps.installCli.copyLabel'),
-            });
-            if (model.showServerSetup) {
-                steps.push({
-                    id: 'server_setup',
-                    title: t('sessionGettingStarted.steps.serverSetup.title'),
-                    description: t('sessionGettingStarted.steps.serverSetup.description'),
-                    command: `${invoker} server add --name \"${model.serverName}\" --server-url \"${model.serverUrl}\" --use`,
-                    copyLabel: t('sessionGettingStarted.steps.serverSetup.copyLabel'),
-                });
-            }
-            steps.push({
-                id: 'auth_login',
-                title: t('sessionGettingStarted.steps.authLogin.title'),
-                description: t('sessionGettingStarted.steps.authLogin.description'),
-                command: `${invoker} auth login`,
-                copyLabel: t('sessionGettingStarted.steps.authLogin.copyLabel'),
-            });
-            steps.push({
-                id: 'daemon_install',
-                title: t('sessionGettingStarted.steps.daemonInstall.title'),
-                description: t('sessionGettingStarted.steps.daemonInstall.description'),
-                command: `${invoker} service install`,
-                copyLabel: t('sessionGettingStarted.steps.daemonInstall.copyLabel'),
-            });
-            steps.push({
-                id: 'create_session',
-                title: t('sessionGettingStarted.steps.createSession.title'),
-                description: t('sessionGettingStarted.steps.createSession.description'),
-                command: listSessionGettingStartedCliCommands(invoker).join('\n'),
-                copyLabel: t('sessionGettingStarted.steps.createSession.copyLabel'),
-            });
-            return steps;
-        }
+        case 'connect_machine':
+            return [];
         case 'start_daemon': {
             return [
                 {
@@ -318,9 +252,6 @@ function SessionGettingStartedGuidanceViewImpl(props: SessionGettingStartedGuida
         shouldBuildCliFollowUpSteps ? buildSteps(model) : []
     ), [
         model.kind,
-        model.serverName,
-        model.serverUrl,
-        model.showServerSetup,
         shouldBuildCliFollowUpSteps,
     ]);
     const showCliFollowUp = steps.length > 0 && shouldBuildCliFollowUpSteps;

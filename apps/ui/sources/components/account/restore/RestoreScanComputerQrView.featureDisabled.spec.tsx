@@ -46,6 +46,7 @@ vi.mock('@/auth/pairing/pairingUrl', () => ({
 }));
 
 vi.mock('@/sync/api/account/apiPairingAuth', () => ({
+    pairingConsume: vi.fn(async () => ({ ok: true })),
     pairingRequest: vi.fn(async () => ({ ok: true, data: { state: 'requested' } })),
 }));
 
@@ -82,6 +83,6 @@ describe('RestoreScanComputerQrView (feature disabled)', () => {
         expect(scannerRendered).toBe(false);
         expect(screen.getTextContent()).toContain('connect.scanComputerQrUnavailableBody');
         expect(screen.findByTestId('restore-open-manual')).not.toBeNull();
-        expect(screen.findByTestId('restore-show-qr-instead')).not.toBeNull();
+        expect(screen.findByTestId('restore-show-qr-instead')).toBeNull();
     });
 });

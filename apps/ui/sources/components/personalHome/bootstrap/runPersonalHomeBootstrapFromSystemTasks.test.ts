@@ -2,6 +2,7 @@ import type { HomeConnectionDescriptorV1, SystemTaskJsonObject, SystemTaskResult
 import { describe, expect, it } from 'vitest';
 
 import {
+    PersonalHomeDescriptorUnverifiedError,
     PersonalHomeExistingRuntimeConflictError,
     runPersonalHomeBootstrapFromSystemTasks,
     type PersonalHomeBootstrapSystemTaskDeps,
@@ -45,6 +46,7 @@ function createHarness(options: Readonly<{
     interruptBeforeClosure?: 'erase' | 'uninstall';
     /** /v1/features descriptor published by the endpoint probes (as parsed by the probe owner). */
     homeConnectionDescriptor?: HomeConnectionDescriptorV1;
+    suppressDescriptor?: boolean;
 }> = {}) {
     const canonicalServerUrl = 'http://127.0.0.1:43123';
     const runtime: RuntimeState = {
@@ -101,6 +103,13 @@ function createHarness(options: Readonly<{
         };
     };
 
+    const defaultDescriptor: HomeConnectionDescriptorV1 = {
+        v: 1,
+        homeServerIdentityId: 'home-b-identity',
+        canonicalServerUrl,
+        revision: 1,
+        endpoints: [{ kind: 'iroh', endpointId: 'a'.repeat(64) }],
+    };
     const deps: PersonalHomeBootstrapSystemTaskDeps = {
         runRelayTask: async (kind, taskOptions) => {
             taskCalls.push({ kind, options: taskOptions });
@@ -133,9 +142,11 @@ function createHarness(options: Readonly<{
                 serverIdentityId: 'home-b-identity',
                 storagePolicy: options.storagePolicy ?? 'plaintext_only',
                 anonymousSignup: runtime.signup,
-                ...(options.homeConnectionDescriptor
-                    ? { homeConnectionDescriptor: options.homeConnectionDescriptor }
-                    : {}),
+                ...(!options.suppressDescriptor && options.homeConnectionDescriptor === undefined
+                    ? { homeConnectionDescriptor: defaultDescriptor }
+                    : options.homeConnectionDescriptor
+                        ? { homeConnectionDescriptor: options.homeConnectionDescriptor }
+                        : {}),
             };
         },
         readCredentials: async (input) => {
@@ -182,13 +193,13 @@ function createHarness(options: Readonly<{
             return runtime.signup === 'disabled' && refusalVerified;
         },
         adoptCompletedProfile: async (input) => {
-            calls.push(`profile:adopt:${input.source}`);
+            calls.push('profile:adopt');
             adoptionAttempts += 1;
             adoptedInputs.push(input);
             if (options.failFirstAdoption === true && adoptionAttempts === 1) {
                 throw new Error('profile source temporarily unavailable');
             }
-            completionSource = input.source;
+            completionSource = 'personal-home';
             return { id: 'home-b-profile' };
         },
     };
@@ -329,12 +340,14 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
         ]);
         expect(harness.runtime.signup).toBe('disabled');
         expect(harness.credentials()).toEqual({ token: 'home-b-token' });
-        expect(harness.completionSource()).toBe('desktop-personal-home');
-        expect(harness.adoptedInputs()[0]?.connectionDescriptor).toBeUndefined();
+        expect(harness.completionSource()).toBe('personal-home');
+        expect(harness.adoptedInputs()[0]?.connectionDescriptor).toEqual(expect.objectContaining({
+            homeServerIdentityId: 'home-b-identity',
+        }));
         expect(result.profileId).toBe('home-b-profile');
         expect(harness.focusedHome.id).toBe(focusBefore);
-        expect(harness.calls.indexOf('signup:refusal')).toBeLessThan(harness.calls.indexOf('profile:adopt:desktop-personal-home'));
-        expect(harness.calls.lastIndexOf('auth:verify:home-b-token')).toBeLessThan(harness.calls.indexOf('profile:adopt:desktop-personal-home'));
+        expect(harness.calls.indexOf('signup:refusal')).toBeLessThan(harness.calls.indexOf('profile:adopt'));
+        expect(harness.calls.lastIndexOf('auth:verify:home-b-token')).toBeLessThan(harness.calls.indexOf('profile:adopt'));
     });
 
     it('does not start after an explicit erase wins immediately after the initial install/update', async () => {
@@ -422,7 +435,7 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
         expect(harness.adoptedInputs()[0]?.connectionDescriptor).toEqual(descriptor);
     });
 
-    it('omits a completion descriptor whose Home identity disagrees with the verified server identity', async () => {
+    it('rejects completion when the published descriptor identity disagrees with the verified server identity', async () => {
         const descriptor: HomeConnectionDescriptorV1 = {
             v: 1,
             homeServerIdentityId: 'srv_other_home_identity',
@@ -434,14 +447,29 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
         };
         const harness = createHarness({ homeConnectionDescriptor: descriptor });
 
-        const result = await runPersonalHomeBootstrapFromSystemTasks({
+        await expect(runPersonalHomeBootstrapFromSystemTasks({
             deps: harness.deps,
-        });
+        })).rejects.toBeInstanceOf(PersonalHomeDescriptorUnverifiedError);
 
-        // Fail closed: the adoption still completes with the exact legacy HTTPS
-        // descriptor behavior, never with the mismatched transport descriptor.
+        expect(harness.adoptionAttempts()).toBe(0);
+    });
+
+    it('rejects completion until the server publishes an Iroh descriptor', async () => {
+        const harness = createHarness({ suppressDescriptor: true });
+
+        await expect(runPersonalHomeBootstrapFromSystemTasks({ deps: harness.deps }))
+            .rejects.toBeInstanceOf(PersonalHomeDescriptorUnverifiedError);
+        expect(harness.adoptionAttempts()).toBe(0);
+    });
+
+    it('admits an installed generic runtime only when it has no data', async () => {
+        const harness = createHarness({ initiallyInstalled: true, initialPurpose: 'generic', dataPresent: false });
+
+        const result = await runPersonalHomeBootstrapFromSystemTasks({ deps: harness.deps });
+
         expect(result.profileId).toBe('home-b-profile');
-        expect(harness.adoptedInputs()[0]?.connectionDescriptor).toBeUndefined();
+        expect(harness.accountCreations()).toBe(1);
+        expect(harness.runtime.purpose).toBe('personal-home');
     });
 
     it('releases the pending bootstrap seed exactly once, only after the persisted credentials verified', async () => {
@@ -549,9 +577,9 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
         expect(harness.accountCreations()).toBe(0);
         expect(harness.credentials()).toEqual({ token: 'existing-home-token' });
         expect(harness.calls.filter((entry) => entry.startsWith('credentials:persist'))).toEqual([]);
-        expect(harness.completionSource()).toBe('desktop-personal-home');
+        expect(harness.completionSource()).toBe('personal-home');
         expect(result.profileId).toBe('home-b-profile');
-        const adoptIndex = harness.calls.indexOf('profile:adopt:desktop-personal-home');
+        const adoptIndex = harness.calls.indexOf('profile:adopt');
         expect(harness.calls.indexOf('signup:refusal')).toBeLessThan(adoptIndex);
         expect(harness.calls.lastIndexOf('auth:verify:existing-home-token')).toBeLessThan(adoptIndex);
     });
@@ -715,12 +743,12 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
         expect(harness.accountCreations()).toBe(0);
         expect(harness.credentials()).toEqual({ token: 'existing-home-token' });
         expect(harness.calls.filter((entry) => entry.startsWith('credentials:persist'))).toEqual([]);
-        expect(harness.completionSource()).toBe('desktop-personal-home');
+        expect(harness.completionSource()).toBe('personal-home');
         expect(result.accountCreated).toBe(false);
         expect(result.profileId).toBe('home-b-profile');
         expect(result.receipt.canonicalServerUrl).toBe(harness.canonicalServerUrl);
         expect(harness.focusedHome.id).toBe(focusBefore);
-        const adoptIndex = harness.calls.indexOf('profile:adopt:desktop-personal-home');
+        const adoptIndex = harness.calls.indexOf('profile:adopt');
         expect(harness.calls.indexOf('signup:refusal')).toBeLessThan(adoptIndex);
         expect(harness.calls.lastIndexOf('auth:verify:existing-home-token')).toBeLessThan(adoptIndex);
     });
@@ -748,7 +776,7 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
         expect(lifecycleStart.options.anonymousSignupEnabled).toBeUndefined();
         expect(harness.runtime.healthy).toBe(true);
         expect(harness.accountCreations()).toBe(0);
-        expect(harness.completionSource()).toBe('desktop-personal-home');
+        expect(harness.completionSource()).toBe('personal-home');
         expect(result.profileId).toBe('home-b-profile');
     });
 
@@ -774,7 +802,7 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
         ]);
         expect(harness.runtime.signup).toBe('disabled');
         expect(harness.accountCreations()).toBe(0);
-        expect(harness.completionSource()).toBe('desktop-personal-home');
+        expect(harness.completionSource()).toBe('personal-home');
         expect(result.profileId).toBe('home-b-profile');
     });
 
@@ -803,7 +831,7 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
         expect(result.accountCreated).toBe(false);
         expect(result.profileId).toBe('home-b-profile');
         expect(harness.focusedHome.id).toBe('home-a');
-        const adoptIndex = harness.calls.indexOf('profile:adopt:desktop-personal-home');
+        const adoptIndex = harness.calls.indexOf('profile:adopt');
         expect(harness.calls.indexOf('signup:refusal')).toBeLessThan(adoptIndex);
         expect(harness.calls.lastIndexOf('auth:verify:home-b-token')).toBeLessThan(adoptIndex);
     });

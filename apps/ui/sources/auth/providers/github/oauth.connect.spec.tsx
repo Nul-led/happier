@@ -138,6 +138,25 @@ describe('/oauth/[provider] (connect flow)', () => {
         alertSpy.mockRestore();
     });
 
+    it('never presents an untrusted provider callback error verbatim', async () => {
+        setAuthenticated();
+        replaceSpy.mockReset();
+        localSearchParamsMock.mockReturnValue({
+            provider: 'github',
+            flow: 'connect',
+            error: '<script>provider detail</script>',
+        });
+        const alertSpy = vi.spyOn(modal, 'alert').mockImplementation(async () => {});
+
+        await runWithOAuthScreen(async () => {
+            await flushOAuthEffects();
+            expect(alertSpy).toHaveBeenCalledWith(t('common.error'), t('errors.operationFailed'));
+            expect(JSON.stringify(alertSpy.mock.calls)).not.toContain('provider detail');
+        });
+
+        alertSpy.mockRestore();
+    });
+
     it('cancels pending connect when user closes the username prompt', async () => {
         setAuthenticated();
         replaceSpy.mockReset();

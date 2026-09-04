@@ -25,6 +25,7 @@ export type LocalRelayRuntimePurpose = Readonly<{
 }>;
 
 export type LocalRelayRuntimeTaskOptions = Readonly<{
+    runtimeTarget?: Readonly<{ channel: 'stable' | 'preview' | 'dev'; mode: 'user' | 'system' }>;
     purpose?: LocalRelayRuntimePurpose;
     anonymousSignupEnabled?: boolean;
     expectedPersonalHomeState?: Readonly<{
@@ -37,6 +38,7 @@ export type LocalRelayRuntimeTaskOptions = Readonly<{
         outputPath?: string;
         archivePath?: string;
         confirmOverwrite?: boolean;
+        expectedHomeServerIdentityId?: string;
     }>;
 }>;
 
@@ -56,6 +58,7 @@ export function buildLocalRelayRuntimeSystemTaskSpec(
         if (!requestedCanonicalServerUrl) throw new Error('The inspected Personal Home purpose is required.');
         const operationBase = {
             ...LOCAL_RELAY_RUNTIME_PARAMS,
+            ...(options.runtimeTarget ?? {}),
             purpose: { kind: 'personal-home' as const, canonicalServerUrl: requestedCanonicalServerUrl },
         };
         const archivePath = operation.archivePath?.trim() ?? '';
@@ -83,6 +86,9 @@ export function buildLocalRelayRuntimeSystemTaskSpec(
                 operationParams = {
                     archivePath,
                     ...(operation.confirmOverwrite === true ? { confirmOverwrite: true } : {}),
+                    ...(operation.expectedHomeServerIdentityId?.trim()
+                        ? { expectedHomeServerIdentityId: operation.expectedHomeServerIdentityId.trim() }
+                        : {}),
                 };
                 break;
             case 'relay.runtime.personal_home.erase.v1':
@@ -113,6 +119,7 @@ export function buildLocalRelayRuntimeSystemTaskSpec(
         kind,
         params: {
             ...LOCAL_RELAY_RUNTIME_PARAMS,
+            ...(options.runtimeTarget ?? {}),
             ...(purpose ? { purpose } : {}),
             ...(env ? { env } : {}),
             ...(options.expectedPersonalHomeState

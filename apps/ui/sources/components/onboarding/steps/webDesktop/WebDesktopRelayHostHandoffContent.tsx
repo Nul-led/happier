@@ -14,8 +14,8 @@ export type WebDesktopRelayHostHandoffContentProps = Readonly<{
 }>;
 
 export function WebDesktopRelayHostHandoffContent(props: WebDesktopRelayHostHandoffContentProps) {
-    const installAndSetupRelayCommand = React.useMemo(() => buildCliInstallAndRunCommandForCurrentApp({ action: 'setup-relay' }), []);
-    const installAndSetupRelayWindowsCommand = React.useMemo(() => buildCliInstallAndRunPowershellCommandForCurrentApp({ action: 'setup-relay' }), []);
+    const installAndSetupRelayCommand = React.useMemo(() => buildCliInstallAndRunCommandForCurrentApp({ action: 'home-create' }), []);
+    const installAndSetupRelayWindowsCommand = React.useMemo(() => buildCliInstallAndRunPowershellCommandForCurrentApp({ action: 'home-create' }), []);
 
     return (
         <WizardGuidedHandoff testID={props.testID}>

@@ -10,6 +10,7 @@ const refreshMachinesThrottledMock = vi.fn(async () => {});
 const openMachinePathBrowserModalMock = vi.fn<(params: unknown) => Promise<string>>(async () => '/home/leeroy.guest/.happier-stack/workspace/0.3');
 const pathBrowserModuleLoadedMock = vi.fn();
 let credentialsReady = true;
+let activeServerIdState = 'server_a';
 
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -78,6 +79,15 @@ installSessionHandoffCommonModuleMocks({
     },
 });
 
+vi.mock('@/hooks/server/useActiveServerSnapshot', () => ({
+    useActiveServerSnapshot: () => ({ serverId: activeServerIdState, serverUrl: '', generation: 1 }),
+}));
+
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(),
+    getServerProfileLegacyServerIds: () => [],
+}));
+
 vi.mock('@/components/sessions/new/components/MachineSelector', () => ({
     MachineSelector: (props: any) => React.createElement('MachineSelector', props),
 }));
@@ -129,6 +139,7 @@ describe('SessionHandoffPickerModal', () => {
         openMachinePathBrowserModalMock.mockClear();
         resetWorkspaceSyncStatusStoreForTests();
         credentialsReady = true;
+        activeServerIdState = 'server_a';
         machineListByServerIdState = {
             server_a: [
                 {
@@ -206,6 +217,29 @@ describe('SessionHandoffPickerModal', () => {
         expect(pathBrowserModuleLoadedMock).not.toHaveBeenCalled();
     });
 
+    it('uses one authoritative machine hydration request without a QA polling timer', async () => {
+        machineListByServerIdState = { server_a: [] };
+        allMachinesState = [];
+        credentialsReady = false;
+        const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+        const { SessionHandoffPickerModal } = await import('./SessionHandoffPickerModal');
+
+        const screen = await renderScreen(<SessionHandoffPickerModal
+            onClose={vi.fn()}
+            setChrome={vi.fn()}
+            onResolve={vi.fn()}
+            sessionId="sess_1"
+            sourceMachineId="machine_source"
+            serverId="server_a"
+        />);
+        await act(async () => {});
+
+        expect(refreshMachinesThrottledMock).not.toHaveBeenCalled();
+        expect(setTimeoutSpy).not.toHaveBeenCalled();
+        screen.unmount();
+        setTimeoutSpy.mockRestore();
+    });
+
     it('returns the selected machine and default handoff options', async () => {
         const onResolve = vi.fn();
         const onClose = vi.fn();
@@ -271,7 +305,6 @@ describe('SessionHandoffPickerModal', () => {
                     selection: 'git_worktree',
                     extraIgnorePatterns: [],
                     extraIncludePatterns: ['dist/**'],
-                    includeGitDirectory: false,
                     policyDigest: expect.any(String),
                 },
             },
@@ -405,7 +438,6 @@ describe('SessionHandoffPickerModal', () => {
             selection: 'git_worktree' as const,
             extraIgnorePatterns: [],
             extraIncludePatterns: [],
-            includeGitDirectory: false,
         };
         const contentPolicy = {
             ...contentPolicyFields,
@@ -911,6 +943,34 @@ describe('SessionHandoffPickerModal', () => {
         ]);
     });
 
+    it('uses only the session Home machine inventory when another Home is focused', async () => {
+        activeServerIdState = 'server_b';
+        machineListByServerIdState = {
+            server_a: [
+                { id: 'machine_source', metadata: { displayName: 'A source', homeDir: '/Users/tester' } },
+                { id: 'machine_shared', metadata: { displayName: 'A target' } },
+            ],
+            server_b: [
+                { id: 'machine_shared', metadata: { displayName: 'B collision' } },
+                { id: 'machine_b_only', metadata: { displayName: 'B only' } },
+            ],
+        };
+        allMachinesState = machineListByServerIdState.server_b;
+
+        const { SessionHandoffPickerModal } = await import('./SessionHandoffPickerModal');
+        const screen = await renderScreen(<SessionHandoffPickerModal
+            onClose={vi.fn()}
+            onResolve={vi.fn()}
+            sessionId="sess_1"
+            sourceMachineId="machine_source"
+            serverId="server_a"
+        />);
+
+        expect(screen.tree.findByType('MachineSelector' as any).props.machines).toEqual([
+            { id: 'machine_shared', metadata: { displayName: 'A target' } },
+        ]);
+    });
+
     it('does not start when the selected machine is structurally offline', async () => {
         machineListByServerIdState = {
             server_a: [
@@ -991,8 +1051,7 @@ describe('SessionHandoffPickerModal', () => {
         ]);
     });
 
-    it('retries the machine refresh once credentials are hydrated', async () => {
-        vi.useFakeTimers();
+    it('does not start a credential polling loop when credentials hydrate after mount', async () => {
         credentialsReady = false;
 
         const onResolve = vi.fn();
@@ -1011,18 +1070,14 @@ describe('SessionHandoffPickerModal', () => {
         expect(refreshMachinesThrottledMock).not.toHaveBeenCalled();
 
         credentialsReady = true;
-        await vi.advanceTimersByTimeAsync(300);
         await act(async () => {});
 
-        expect(refreshMachinesThrottledMock).toHaveBeenCalled();
-        vi.useRealTimers();
+        expect(refreshMachinesThrottledMock).not.toHaveBeenCalled();
     });
 
-    it('keeps retrying machine refresh until a second online machine becomes visible', async () => {
-        vi.useFakeTimers();
+    it('renders a second online machine from the authoritative machine storage update', async () => {
         credentialsReady = true;
 
-        let refreshCount = 0;
         machineListByServerIdState = {
             server_a: [
                 { id: 'machine_source', metadata: { displayName: 'Source machine', host: 'source.local' } },
@@ -1031,21 +1086,6 @@ describe('SessionHandoffPickerModal', () => {
         allMachinesState = [
             { id: 'machine_source', metadata: { displayName: 'Source machine', host: 'source.local' } },
         ];
-        refreshMachinesThrottledMock.mockImplementation(async () => {
-            refreshCount += 1;
-            if (refreshCount >= 2) {
-                machineListByServerIdState = {
-                    server_a: [
-                        { id: 'machine_source', metadata: { displayName: 'Source machine', host: 'source.local' } },
-                        { id: 'machine_target', metadata: { displayName: 'Target machine', host: 'target.local' } },
-                    ],
-                };
-                allMachinesState = [
-                    { id: 'machine_source', metadata: { displayName: 'Source machine', host: 'source.local' } },
-                    { id: 'machine_target', metadata: { displayName: 'Target machine', host: 'target.local' } },
-                ];
-            }
-        });
 
         const onResolve = vi.fn();
         const onClose = vi.fn();
@@ -1066,18 +1106,20 @@ describe('SessionHandoffPickerModal', () => {
         await act(async () => {});
         expect(refreshMachinesThrottledMock).toHaveBeenCalledTimes(1);
 
-        await act(async () => {
-            await vi.advanceTimersByTimeAsync(300);
-        });
+        machineListByServerIdState = {
+            server_a: [
+                { id: 'machine_source', metadata: { displayName: 'Source machine', host: 'source.local' } },
+                { id: 'machine_target', metadata: { displayName: 'Target machine', host: 'target.local' } },
+            ],
+        };
+        allMachinesState = machineListByServerIdState.server_a;
         await act(async () => {
             tree.update(renderModal());
         });
         await act(async () => {});
 
-        expect(refreshMachinesThrottledMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+        expect(refreshMachinesThrottledMock).toHaveBeenCalledTimes(1);
         const machineSelector = tree.findByType('MachineSelector' as any);
         expect(machineSelector.props.machines.map((machine: any) => machine.id)).toEqual(['machine_target']);
-
-        vi.useRealTimers();
     });
 });

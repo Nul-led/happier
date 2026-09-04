@@ -17,7 +17,7 @@ import { parseAccountConnectDeepLink } from '@/auth/pairing/accountConnectUrl';
 import { Modal } from '@/modal';
 import { t } from '@/text';
 import { useFeatureDecision } from '@/hooks/server/useFeatureDecision';
-import { pairingRequest, pairingStart, pairingStatus, type PairingRequestResult } from '@/sync/api/account/apiPairingAuth';
+import { pairingConsume, pairingRequest, pairingStart, pairingStatus, type PairingRequestResult } from '@/sync/api/account/apiPairingAuth';
 import {
     adoptHomeProfileWithCanonicalUrlMigration,
     adoptHomeProfileWithCredentials,
@@ -26,7 +26,6 @@ import {
 } from '@/sync/domains/server/adoptHomeProfile';
 import {
     computeHomeQrBindingProofV2,
-    createHomeCredentialDestinationDigestV1,
     deriveHomeQrBindingKeyV2,
     deriveHomeQrRendezvousSecretV2,
     deriveHomeQrRendezvousVerifierV2,
@@ -62,7 +61,7 @@ import { PairingLinkDisclosure } from '@/components/auth/pairing/PairingLinkDisc
 import type { HomeQrEntryIntent } from '@/auth/pairing/homeQrEntryIntent';
 import { openEnrolledHomeOrReturnToShell } from '@/auth/pairing/openEnrolledHome';
 
-const DESKTOP_QR_SCAN_FEATURE_ID = 'auth.pairing.desktopQrMobileScan' as const;
+const DESKTOP_QR_SCAN_FEATURE_ID = 'auth.pairing.boundQrV2' as const;
 
 type ScannedHomeEnrollmentPartialCommitError =
     | HomeProfileAdoptionPartialCommitError
@@ -223,16 +222,20 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
             : pairingDecision.state;
 
     const [phase, setPhase] = React.useState<'idle' | 'requesting' | 'securing'>('idle');
+    const [enrollmentResult, setEnrollmentResult] = React.useState<'succeeded' | null>(null);
     const [activeInvite, setActiveInvite] = React.useState<HomeQrInviteV2 | null>(null);
     const [navigationLocked, setNavigationLocked] = React.useState(false);
     const [shellNavigationRequested, setShellNavigationRequested] = React.useState(false);
     usePreventRemove(navigationLocked, () => undefined);
     const nextAttemptIdRef = React.useRef(0);
-    const activeAttemptRef = React.useRef<{
+    type EnrollmentAttempt = {
         id: number;
         controller: AbortController;
         cancellable: boolean;
-    } | null>(null);
+        cancelPairId: string | null;
+        cancelTarget: HomeQrEnrollmentTarget | null;
+    };
+    const activeAttemptRef = React.useRef<EnrollmentAttempt | null>(null);
 
     const isCurrentAttempt = React.useCallback((attemptId: number) => (
         activeAttemptRef.current?.id === attemptId
@@ -241,23 +244,29 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
 
     const beginEnrollmentAttempt = React.useCallback((invite: HomeQrInviteV2) => {
         if (activeAttemptRef.current) return null;
-        const attempt = {
+        const attempt: EnrollmentAttempt = {
             id: nextAttemptIdRef.current + 1,
             controller: new AbortController(),
             cancellable: true,
+            cancelPairId: null,
+            cancelTarget: null,
         };
         nextAttemptIdRef.current = attempt.id;
         activeAttemptRef.current = attempt;
+        setEnrollmentResult(null);
         setPhase('requesting');
         setActiveInvite(invite);
         return attempt;
     }, []);
 
-    const cancelEnrollmentAttempt = React.useCallback(() => {
+    const cancelEnrollmentAttempt = React.useCallback(async () => {
         const attempt = activeAttemptRef.current;
         if (!attempt || !attempt.cancellable) return;
         attempt.controller.abort();
         activeAttemptRef.current = null;
+        if (attempt.cancelPairId && attempt.cancelTarget) {
+            await pairingConsume({ pairId: attempt.cancelPairId, intent: 'cancel' }, attempt.cancelTarget).catch(() => null);
+        }
         setPhase('idle');
         setActiveInvite(null);
     }, []);
@@ -279,12 +288,8 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
     }, [embedded, props.onOpenSecretKeyLogin, router]);
 
     const openShowQrInstead = React.useCallback(() => {
-        if (embedded && props.onShowQrInstead) {
-            props.onShowQrInstead();
-            return;
-        }
-        router.push('/restore/show-qr');
-    }, [embedded, props.onShowQrInstead, router]);
+        props.onShowQrInstead?.();
+    }, [props.onShowQrInstead]);
 
     const scrollViewStyle: StyleProp<ViewStyle> = props.embedded
         ? [styles.scrollView, { backgroundColor: 'transparent' }]
@@ -446,9 +451,13 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
                     if (
                         targetFeatureSnapshot.status !== 'ready'
                         || targetFeatureSnapshot.serverIdentityId !== storedDescriptor.homeServerIdentityId
-                        || readServerEnabledBit(targetFeatureSnapshot.features, DESKTOP_QR_SCAN_FEATURE_ID) !== true
                     ) {
                         await Modal.alertAsync(t('connect.scanComputerQrUnavailableTitle'), t('connect.scanComputerQrUnavailableBody'));
+                        return;
+                    }
+                    if (readServerEnabledBit(targetFeatureSnapshot.features, DESKTOP_QR_SCAN_FEATURE_ID) !== true) {
+                        const action = await promptLegacyPairingUpdateRequired();
+                        if (action === 'cancel') handleBack();
                         return;
                     }
 
@@ -462,7 +471,11 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
                             expiresAtMs: link.invite.expiresAtMs,
                         }, target);
                         if (!isCurrentAttempt(attempt.id)) return;
-                        if (started.ok) break;
+                        if (started.ok) {
+                            attempt.cancelPairId = link.invite.pairId;
+                            attempt.cancelTarget = target;
+                            break;
+                        }
                         if (!isTransientEnrollmentStatus(started.status)) {
                             await Modal.alertAsync(t('common.error'), t('errors.operationFailed'));
                             return;
@@ -525,17 +538,13 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
                             // Success is decided by this attempt's own completion, not by an
                             // earlier transient poll failure that the retry already recovered.
                             if (completed) {
-                                await Modal.alertAsync(
-                                    formatHomeEnrollmentTargetLabel(storedDescriptor),
-                                    t('connect.requesterDeviceAddedBody'),
-                                );
-                                handleBack();
+                                setEnrollmentResult('succeeded');
                                 return;
                             }
                         } else if (
                             'reason' in status
-                            && (status.reason === 'not_found'
-                                || (status.reason === 'http_error' && isTransientEnrollmentStatus(status.status)))
+                            && status.reason === 'http_error'
+                            && isTransientEnrollmentStatus(status.status)
                         ) {
                             statusFailures += 1;
                         } else {
@@ -628,7 +637,6 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
                     if (
                         targetFeatureSnapshot.status !== 'ready'
                         || targetFeatureSnapshot.serverIdentityId !== link.invite.home.homeServerIdentityId
-                        || readServerEnabledBit(targetFeatureSnapshot.features, DESKTOP_QR_SCAN_FEATURE_ID) !== true
                     ) {
                         await Modal.alertAsync(
                             t('connect.scanComputerQrUnavailableTitle'),
@@ -636,28 +644,17 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
                         );
                         return;
                     }
-                    const publishedDescriptor = targetFeatureSnapshot.features.homeConnectionDescriptor;
-                    try {
-                        if (
-                            !publishedDescriptor
-                            || publishedDescriptor.homeServerIdentityId !== link.invite.home.homeServerIdentityId
-                            || createHomeCredentialDestinationDigestV1(publishedDescriptor)
-                                !== createHomeCredentialDestinationDigestV1(link.invite.home)
-                        ) {
-                            await Modal.alertAsync(
-                                t('connect.scanComputerQrUnavailableTitle'),
-                                t('connect.scanComputerQrUnavailableBody'),
-                            );
-                            return;
-                        }
-                    } catch {
-                        await Modal.alertAsync(
-                            t('connect.scanComputerQrUnavailableTitle'),
-                            t('connect.scanComputerQrUnavailableBody'),
-                        );
+                    if (readServerEnabledBit(targetFeatureSnapshot.features, DESKTOP_QR_SCAN_FEATURE_ID) !== true) {
+                        const action = await promptLegacyPairingUpdateRequired();
+                        if (action === 'cancel') handleBack();
                         return;
                     }
-                    observedHomeDescriptor = publishedDescriptor;
+                    // The unauthenticated feature projection is advisory. The V2 QR
+                    // possession/binding path owns the exact descriptor: transport
+                    // selection has already reached that descriptor's endpoint and
+                    // the observed stable Home identity above must match it before
+                    // the bound request can proceed.
+                    observedHomeDescriptor = link.invite.home;
                     break;
                 }
 
@@ -904,8 +901,14 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
         };
     }, []);
 
-    const enrollmentPresentation = resolveHomeEnrollmentPresentation({ kind: 'scanner', phase });
-    const statusText = t(enrollmentPresentation.primaryTranslationKey);
+    const enrollmentPresentation = resolveHomeEnrollmentPresentation({
+        kind: 'scanner',
+        phase,
+        ...(enrollmentResult ? { result: enrollmentResult } : {}),
+    });
+    const statusText = enrollmentResult === 'succeeded'
+        ? t('common.success')
+        : t(enrollmentPresentation.primaryTranslationKey);
 
     if (pairingState === 'unknown') {
         const frame = (
@@ -930,17 +933,17 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
                                 }}
                             />
                         </View>
-                        <View style={styles.footerButton}>
+                        {props.onShowQrInstead ? <View style={styles.footerButton}>
                             <RoundButton
                                 testID="restore-show-qr-instead"
                                 size="small"
                                 title={t('connect.showQrInstead')}
                                 display="inverted"
                                 action={async () => {
-                                    router.push('/restore/show-qr');
+                                    openShowQrInstead();
                                 }}
                             />
-                        </View>
+                        </View> : null}
                         <View style={styles.footerButton}>
                             <RoundButton
                                 testID="restore-scan-cancel"
@@ -985,17 +988,17 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
                                 }}
                             />
                         </View>
-                        <View style={styles.footerButton}>
+                        {props.onShowQrInstead ? <View style={styles.footerButton}>
                             <RoundButton
                                 testID="restore-show-qr-instead"
                                 size="small"
                                 title={t('connect.showQrInstead')}
                                 display="inverted"
                                 action={async () => {
-                                    router.push('/restore/show-qr');
+                                    openShowQrInstead();
                                 }}
                             />
-                        </View>
+                        </View> : null}
                         <View style={styles.footerButton}>
                             <RoundButton
                                 testID="restore-scan-cancel"
@@ -1017,7 +1020,7 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
         );
     }
 
-    if (phase === 'idle') {
+    if (phase === 'idle' && !enrollmentResult) {
         return (
             <QrCodeScannerView
                 active={isFocused}
@@ -1066,17 +1069,19 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
                                 }}
                             />
                         </View>
-                        <View style={styles.footerButton}>
-                            <RoundButton
-                                testID="restore-show-qr-instead"
-                                size="small"
-                                title={t('connect.showQrInstead')}
-                                display="inverted"
-                                action={async () => {
-                                    openShowQrInstead();
-                                }}
-                            />
-                        </View>
+                        {props.onShowQrInstead ? (
+                            <View style={styles.footerButton}>
+                                <RoundButton
+                                    testID="restore-show-qr-instead"
+                                    size="small"
+                                    title={t('connect.showQrInstead')}
+                                    display="inverted"
+                                    action={async () => {
+                                        openShowQrInstead();
+                                    }}
+                                />
+                            </View>
+                        ) : null}
                     </>
                 }
             />
@@ -1115,7 +1120,19 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
                     ) : null}
                 </View>
 
-                {phase !== 'securing' ? (
+                {enrollmentResult === 'succeeded' ? (
+                    <View style={[styles.footer, embedded ? styles.embeddedFooter : null]}>
+                        <View style={styles.footerButton}>
+                            <RoundButton
+                                testID="restore-enrollment-done"
+                                size="small"
+                                title={t('common.done')}
+                                display="inverted"
+                                onPress={handleBack}
+                            />
+                        </View>
+                    </View>
+                ) : phase !== 'securing' ? (
                     <View style={[styles.footer, embedded ? styles.embeddedFooter : null]}>
                         <View style={styles.footerButton}>
                             <RoundButton

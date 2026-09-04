@@ -133,7 +133,7 @@ export const AddPhoneSettingsView = React.memo(function AddPhoneSettingsView() {
     const { theme } = useUnistyles();
     const styles = stylesheet;
     const auth = useAuth();
-    const pairingDecision = useFeatureDecision('auth.pairing.desktopQrMobileScan');
+    const pairingDecision = useFeatureDecision('auth.pairing.boundQrV2');
     const pairingState = pairingDecision?.state ?? 'unknown';
     const pairingEnabled = pairingState === 'enabled';
 
@@ -161,7 +161,10 @@ export const AddPhoneSettingsView = React.memo(function AddPhoneSettingsView() {
     const startPairingWithAlert = React.useCallback(async () => {
         const res = await startPairing();
         if (!res.ok && auth.isAuthenticated && pairingEnabled) {
-            await Modal.alertAsync(t('common.error'), t('errors.operationFailed'));
+            await Modal.alertAsync(
+                t(res.reason === 'update_required' ? 'connect.updateRequiredTitle' : 'common.error'),
+                t(res.reason === 'update_required' ? 'connect.updateRequiredBody' : 'errors.operationFailed'),
+            );
         }
     }, [auth.isAuthenticated, pairingEnabled, startPairing]);
 
@@ -309,8 +312,7 @@ export const AddPhoneSettingsView = React.memo(function AddPhoneSettingsView() {
                                 </View>
                             ) : null}
 
-                            {presentation.phase === 'verifying'
-                                || presentation.phase === 'adding'
+                            {presentation.phase === 'adding'
                                 || presentation.phase === 'retryable_error' ? (
                                 <View
                                     testID="add-phone-request-card"

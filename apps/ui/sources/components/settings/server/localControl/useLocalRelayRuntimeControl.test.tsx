@@ -400,6 +400,7 @@ describe('useLocalRelayRuntimeControl Personal Home operations', () => {
             ...BASE_PARAMS,
             archivePath: '/a.tar',
             confirmOverwrite: true,
+            expectedHomeServerIdentityId: 'home-identity-1',
         });
         expect(getCurrent().lastOperation).toEqual({
             operation: 'restore',

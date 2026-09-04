@@ -92,6 +92,64 @@ describe.each(['tauri', 'electron'] as const)('%s Desktop secure storage', (host
         expect(values.get('sibling')).toBe('keep');
     });
 
+    it('does not overwrite a primary credential that appears during legacy migration', async () => {
+        const { values } = installLocalStorage({ 'scope:key': 'legacy-value' });
+        let nativeValue: string | null = null;
+        let reads = 0;
+        invokeDesktopHostMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+            if (command === READ_COMMAND) {
+                reads += 1;
+                if (reads === 2) nativeValue = 'concurrent-primary';
+                return nativeValue;
+            }
+            if (command === WRITE_COMMAND) nativeValue = String(args?.value);
+            return null;
+        });
+
+        await expect(readDeviceLocalStorageString('scope:key')).resolves.toBe('concurrent-primary');
+        expect(invokeDesktopHostMock).not.toHaveBeenCalledWith(
+            WRITE_COMMAND,
+            expect.objectContaining({ value: 'legacy-value' }),
+        );
+        expect(values.has('scope:key')).toBe(false);
+    });
+
+    it('serializes a primary write against the legacy migration read-write window', async () => {
+        const { values } = installLocalStorage({ 'scope:key': 'legacy-value' });
+        let nativeValue: string | null = null;
+        let releaseLegacyWrite!: () => void;
+        const legacyWriteEntered = new Promise<void>((resolve) => {
+            releaseLegacyWrite = resolve;
+        });
+        let notifyLegacyWriteEntered!: () => void;
+        const legacyWriteStarted = new Promise<void>((resolve) => {
+            notifyLegacyWriteEntered = resolve;
+        });
+        invokeDesktopHostMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+            if (command === READ_COMMAND) return nativeValue;
+            if (command === WRITE_COMMAND) {
+                const value = String(args?.value);
+                if (value === 'legacy-value') {
+                    notifyLegacyWriteEntered();
+                    await legacyWriteEntered;
+                }
+                nativeValue = value;
+            }
+            return null;
+        });
+
+        const migration = readDeviceLocalStorageString('scope:key');
+        await legacyWriteStarted;
+        const primaryWrite = writeDeviceLocalStorageString('scope:key', 'concurrent-primary');
+        await Promise.resolve();
+        releaseLegacyWrite();
+
+        await expect(migration).resolves.toBe('legacy-value');
+        await expect(primaryWrite).resolves.toBeUndefined();
+        expect(nativeValue).toBe('concurrent-primary');
+        expect(values.has('scope:key')).toBe(false);
+    });
+
     it('surfaces a native read failure without treating legacy plaintext as authoritative', async () => {
         const { values } = installLocalStorage({ 'scope:key': 'legacy-value' });
         invokeDesktopHostMock.mockRejectedValue(new Error('keychain locked'));

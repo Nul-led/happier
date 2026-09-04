@@ -33,7 +33,7 @@ import { buildRemoteSshManageHostSystemTaskSpec } from '@/components/systemTasks
 import { LocalRelayAccessControlSection } from '@/components/settings/server/localControl/LocalRelayAccessControlSection';
 import { resolveKnownLocalRelayUrl } from '@/sync/domains/server/url/resolveKnownLocalRelayUrl';
 import { useServerSettingsScreenController } from '@/components/settings/server/hooks/useServerSettingsScreenController';
-import { isDesktopHost } from '@/utils/platform/desktopHost';
+import { desktopHostKind } from '@/utils/platform/desktopHost';
 import { resolveSetupSurfacePolicy } from '@/sync/domains/server/setup/setupSurfacePolicy';
 import { t } from '@/text';
 import { buildRelaySetupWizardHref } from '@/utils/routes/setupWizardHref';
@@ -52,12 +52,14 @@ import {
 } from '@/sync/domains/accountDirectory/accountDirectorySession';
 import { accountDirectoryCredentialStorage } from '@/auth/accountDirectory/accountDirectoryCredentialStorage';
 import { probeServerFeaturesAtUrl } from '@/sync/api/capabilities/serverFeaturesClient';
+import { rebuildHomeSearchIndex } from '@/sync/domains/memory/searchHomeMemory';
 import {
     adoptHomeProfile,
     buildHomeConnectionDescriptorForProfile,
     getAccountServiceEndpointSnapshot,
     findPersonalHomeBootstrapCompletedProfile,
     getServerProfileById,
+    resolveServerProfileScopeId,
     subscribeAccountServiceEndpoint,
     type AccountServiceEndpointV1,
 } from '@/sync/domains/server/serverProfiles';
@@ -137,7 +139,7 @@ export function ServerSettingsScreen() {
     const styles = stylesheet;
     const router = useRouter();
     const controller = useServerSettingsScreenController();
-    const isDesktop = isDesktopHost();
+    const isDesktop = desktopHostKind() === 'tauri';
     const isWeb = Platform.OS === 'web';
     const setupPolicy = React.useMemo(() => resolveSetupSurfacePolicy(), []);
     const [localRelayUrl, setLocalRelayUrl] = React.useState<string | null>(null);
@@ -279,6 +281,9 @@ export function ServerSettingsScreen() {
             await invokeDesktopHost('system_tasks_open_log_path', { path: normalizedPath });
         };
         return {
+            repairSearch: async () => {
+                await rebuildHomeSearchIndex({ serverId: resolveServerProfileScopeId(personalHomeProfile) });
+            },
             removeProfile: async () => {
                 await controller.onRemoveServer(personalHomeProfile);
             },

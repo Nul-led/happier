@@ -244,7 +244,6 @@ export const WorkflowPanel = React.memo(function WorkflowPanel(props: WorkflowPa
                             <WelcomeFooterLinks
                                 variant="mobile"
                                 retentionSummary={props.retentionSummary}
-                                onOpenRelayCustomFlow={props.onOpenRelayCustomFlow}
                             />
                         </>
                     ) : (
@@ -264,7 +263,6 @@ export const WorkflowPanel = React.memo(function WorkflowPanel(props: WorkflowPa
                             <WelcomeFooterLinks
                                 variant="desktop"
                                 retentionSummary={props.retentionSummary}
-                                onOpenRelayCustomFlow={props.onOpenRelayCustomFlow}
                             />
                         </>
                     )

@@ -3,10 +3,12 @@ import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import {
     SessionHandoffProgressCheckpointSchema,
+    SessionHandoffActionResultV1Schema,
     SESSION_HANDOFF_PROGRESS_FULL_TIMELINE,
     SESSION_HANDOFF_PROGRESS_FULL_TIMELINE_WITH_SOURCE_SCAN,
     resolveSessionHandoffProgressTimeline,
     type ActionOperationSnapshotV1,
+    type HandoffWorkspaceOutcomeV1,
     type SessionHandoffProgressCheckpoint,
     type SessionHandoffStatus,
 } from '@happier-dev/protocol';
@@ -174,6 +176,20 @@ const stylesheet = StyleSheet.create((theme) => ({
     },
     actionRow: {
         alignItems: 'flex-end',
+    },
+    outcomeSection: {
+        gap: 6,
+    },
+    outcomeText: {
+        fontSize: 14,
+        color: theme.colors.text.primary,
+        ...Typography.default('semiBold'),
+    },
+    outcomeWarningText: {
+        fontSize: 12,
+        // Cleanup debt after a committed success is a warning, not a failure.
+        color: theme.colors.state.warning.foreground,
+        ...Typography.default(),
     },
     detailsBody: {
         paddingHorizontal: 16,
@@ -372,6 +388,24 @@ function buildProgressStatRows(status: SessionHandoffStatus | undefined): readon
     ];
 }
 
+/**
+ * Product wording for the committed workspace result. Relationship identity and
+ * copy operation ids stay diagnostic-only (A4.5), so the confirmation names what
+ * happened to the user's files rather than the record that carries it.
+ */
+function translateWorkspaceOutcome(outcome: HandoffWorkspaceOutcomeV1): string | null {
+    switch (outcome.kind) {
+        case 'none':
+            return null;
+        case 'copied':
+            return t('sessionHandoff.workspaceOutcome.copied');
+        case 'relationship':
+            return outcome.created
+                ? t('sessionHandoff.workspaceOutcome.relationshipCreated')
+                : t('sessionHandoff.workspaceOutcome.relationshipReused');
+    }
+}
+
 function isKnownCheckpoint(value: unknown): value is SessionHandoffProgressCheckpoint {
     return typeof value === 'string' && (CHECKPOINT_TIMELINE as readonly string[]).includes(value);
 }
@@ -468,10 +502,25 @@ export function SessionHandoffProgressModal({ onClose, setChrome, title, message
         }
     }, [status]);
 
-    const isFailureState = effectiveStatus?.status === 'failed' || effectiveStatus?.status === 'aborted' || effectiveStatus?.status === 'awaiting_recovery';
+    // One effective terminal reading: the legacy status channel when present,
+    // otherwise the live Action operation the production opener subscribes to.
+    // A terminal (failed/cancelled) operation must never keep presenting as
+    // active progress with a running spinner.
+    const terminalResult = SessionHandoffActionResultV1Schema.safeParse(operation?.result);
+    const workspaceOutcome = terminalResult.success ? terminalResult.data.workspace : undefined;
+    const outcomeLabel = workspaceOutcome ? translateWorkspaceOutcome(workspaceOutcome) : null;
+    const outcomeCleanupWarning = terminalResult.success
+        ? terminalResult.data.warning
+            ?? (workspaceOutcome && workspaceOutcome.kind !== 'none' ? workspaceOutcome.cleanupWarning : undefined)
+            ?? null
+        : null;
+    const hasLegacyStatus = effectiveStatus !== undefined;
+    const operationFailed = !hasLegacyStatus && operation?.state === 'failed';
+    const operationCancelled = !hasLegacyStatus && operation?.state === 'cancelled';
+    const isFailureState = effectiveStatus?.status === 'failed' || effectiveStatus?.status === 'aborted' || effectiveStatus?.status === 'awaiting_recovery' || operationFailed;
     const isReadyForCutover = effectiveStatus?.status === 'ready_for_cutover';
     const isCompleted = effectiveStatus?.status === 'completed';
-    const canShowActiveProgress = !isFailureState && !isReadyForCutover;
+    const canShowActiveProgress = !isFailureState && !isReadyForCutover && !operationCancelled;
     const progressFraction = canShowActiveProgress ? computeProgressFraction(effectiveStatus) : null;
     const summaryChips = buildSummaryChips(effectiveStatus);
     const progressStats = buildProgressStatRows(effectiveStatus);
@@ -510,25 +559,35 @@ export function SessionHandoffProgressModal({ onClose, setChrome, title, message
             ? t('sessionHandoff.recovery.title')
             : isFailureState
                 ? t('sessionHandoff.failure.title')
-                : t('sessionHandoff.progress.title'));
+                : operationCancelled
+                    ? t('sessionHandoff.cancelled.title')
+                    : t('sessionHandoff.progress.title'));
     const resolvedMessage =
         message
-        ?? (isAwaitingRecovery
+        ?? (outcomeLabel && !isFailureState
+            ? t('sessionHandoff.progress.completedMessage')
+            : isAwaitingRecovery
             ? t('sessionHandoff.recovery.messageAfterSourceStop')
             : isAwaitingUserResume
                 ? t('externalSessions.operationStatusNeedsResume')
                 : isFailureState
                     ? t('sessionHandoff.failure.message')
-                    : t('sessionHandoff.progress.message'));
+                    : operationCancelled
+                        ? t('sessionHandoff.cancelled.message')
+                        : t('sessionHandoff.progress.message'));
     const operationProgress = operation?.progress;
     const determinateOperationProgress = operationProgress?.kind === 'determinate' ? operationProgress : null;
     const operationProgressFraction = determinateOperationProgress && determinateOperationProgress.total > 0
         ? Math.max(0, Math.min(1, determinateOperationProgress.current / determinateOperationProgress.total))
         : null;
     const operationProgressLabel = operationProgress?.label ?? null;
-    const primaryProgressStep = resolvePrimaryProgressStep(operation, effectiveStatus, currentCheckpoint);
+    // A committed workspace outcome only exists after the daemon finished the
+    // handoff, so it is the strongest available "Ready" evidence.
+    const primaryProgressStep = outcomeLabel && !isFailureState
+        ? 'ready'
+        : resolvePrimaryProgressStep(operation, effectiveStatus, currentCheckpoint);
     const primaryProgressStepIndex = PRIMARY_PROGRESS_STEPS.indexOf(primaryProgressStep);
-    const primaryProgressFraction = operation ? operationProgressFraction : progressFraction;
+    const primaryProgressFraction = operation && canShowActiveProgress ? operationProgressFraction : progressFraction;
     const primaryProgressLabel = primaryProgressFraction === null ? null : `${Math.round(primaryProgressFraction * 100)}%`;
     const progressAnnouncement = [
         resolvedMessage,
@@ -551,9 +610,12 @@ export function SessionHandoffProgressModal({ onClose, setChrome, title, message
             setResumeInFlight(false);
         });
     }, [onResume]);
+    // A committed workspace outcome is itself a terminal reading, so the footer
+    // must offer Done rather than a cancel control the daemon can no longer honor.
     const operationTerminal = Boolean(operation?.state === 'succeeded'
         || operation?.state === 'failed'
-        || operation?.state === 'cancelled');
+        || operation?.state === 'cancelled'
+        || outcomeLabel);
 
     const chrome = React.useMemo(() => ({
         kind: 'card' as const,
@@ -616,7 +678,7 @@ export function SessionHandoffProgressModal({ onClose, setChrome, title, message
                                         <Icon name="warning" size={16} color={theme.colors.state.danger.foreground} />
                                     ) : isCurrent && isAwaitingUserResume ? (
                                         <Icon name="play" size={16} color={theme.colors.accent.blue} />
-                                    ) : isCurrent ? (
+                                    ) : isCurrent && !operationCancelled ? (
                                         <ActivitySpinner size={iconMatchedSpinnerSize(16)} color={theme.colors.accent.blue} />
                                     ) : (
                                         <View style={styles.timelineDot} />
@@ -650,6 +712,27 @@ export function SessionHandoffProgressModal({ onClose, setChrome, title, message
                         );
                     })}
                 </View>
+            {outcomeLabel ? (
+                <View testID="session-handoff-workspace-outcome" style={styles.outcomeSection}>
+                    <Text
+                        testID="session-handoff-workspace-outcome-label"
+                        style={styles.outcomeText}
+                        accessibilityLiveRegion="polite"
+                        role="status"
+                        aria-live="polite"
+                    >
+                        {outcomeLabel}
+                    </Text>
+                    {outcomeCleanupWarning ? (
+                        <Text
+                            testID="session-handoff-workspace-outcome-cleanup-warning"
+                            style={styles.outcomeWarningText}
+                        >
+                            {outcomeCleanupWarning.message}
+                        </Text>
+                    ) : null}
+                </View>
+            ) : null}
             {hasTechnicalDetails ? (
                 <ItemGroup>
                     <ExpandableItem
@@ -678,6 +761,14 @@ export function SessionHandoffProgressModal({ onClose, setChrome, title, message
                                     {determinateOperationProgress ? (
                                         <Text testID="session-handoff-operation-byte-progress" style={styles.currentPath}>
                                             {formatByteSize(determinateOperationProgress.current)} / {formatByteSize(determinateOperationProgress.total)}
+                                        </Text>
+                                    ) : null}
+                                    {operationFailed && operation.error ? (
+                                        <Text
+                                            testID="session-handoff-operation-error"
+                                            style={styles.progressMetaText}
+                                        >
+                                            {operation.error.error}
                                         </Text>
                                     ) : null}
                                 </View>

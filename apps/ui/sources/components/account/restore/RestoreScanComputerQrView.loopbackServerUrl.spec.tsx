@@ -78,6 +78,7 @@ vi.mock('@/auth/flows/qrWait', () => ({
 }));
 
 vi.mock('@/sync/api/account/apiPairingAuth', () => ({
+    pairingConsume: vi.fn(async () => ({ ok: true })),
     pairingRequest: vi.fn(async () => ({ ok: false, reason: 'not_found', status: 404 })),
 }));
 

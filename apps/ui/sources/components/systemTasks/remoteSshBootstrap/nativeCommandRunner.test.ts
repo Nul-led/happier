@@ -143,4 +143,84 @@ describe('createNativeRemoteSshCommandRunner', () => {
             data: { code: 'not_authenticated' },
         });
     });
+
+    it('forwards bounded stdin and only correlated incremental stdout to the caller', async () => {
+        const loaded = await import('./nativeCommandRunner');
+        const listeners = new Set<(event: { requestId: string; chunk: string }) => void>();
+        const nativeModule = {
+            getAvailability: () => ({
+                available: true,
+                platform: 'android',
+                engine: 'russh',
+                moduleVersion: '0.0.0',
+                supportsLoopbackTunnel: true,
+                supportsPersistentHostKeyStorage: false,
+            } as const),
+            exec: vi.fn(async (request) => {
+                for (const listener of listeners) {
+                    Reflect.apply(listener, undefined, [{ requestId: request.requestId }]);
+                    Reflect.apply(listener, undefined, [{ requestId: request.requestId, chunk: '' }]);
+                    listener({ requestId: 'another-request', chunk: 'ignore\n' });
+                    listener({ requestId: request.requestId, chunk: 'pairing\n' });
+                }
+                return { exitCode: 0, stdout: 'pairing\nresult\n', stderr: '' };
+            }),
+            cancelRequest: vi.fn(async () => undefined),
+            addListener: vi.fn((eventName, listener) => {
+                expect(eventName).toBe('stdout');
+                listeners.add(listener as (event: { requestId: string; chunk: string }) => void);
+                return { remove: () => listeners.delete(listener as (event: { requestId: string; chunk: string }) => void) };
+            }),
+        } satisfies NativeSshModule;
+        const onStdoutChunk = vi.fn();
+
+        await loaded.createNativeRemoteSshCommandRunner().runTextCommand({
+            command: 'happier auth enroll-remote --json-lines --home-target-stdin',
+            credentials: {
+                host: '10.0.0.5',
+                port: 22,
+                username: 'dev',
+                auth: { username: 'dev', password: 'secret' },
+            },
+            nativeModule,
+            input: '{"kind":"descriptor"}',
+            onStdoutChunk,
+        });
+
+        expect(nativeModule.exec).toHaveBeenCalledWith(expect.objectContaining({
+            input: '{"kind":"descriptor"}',
+        }));
+        expect(onStdoutChunk).toHaveBeenCalledTimes(1);
+        expect(onStdoutChunk).toHaveBeenCalledWith('pairing\n');
+        expect(listeners.size).toBe(0);
+    });
+
+    it('fails closed when a native module cannot stream enrollment stdout', async () => {
+        const loaded = await import('./nativeCommandRunner');
+        const nativeModule = {
+            getAvailability: () => ({
+                available: true,
+                platform: 'android',
+                engine: 'russh',
+                moduleVersion: '0.0.0',
+                supportsLoopbackTunnel: true,
+                supportsPersistentHostKeyStorage: false,
+            } as const),
+            exec: vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' })),
+            cancelRequest: vi.fn(async () => undefined),
+        } satisfies NativeSshModule;
+
+        await expect(loaded.createNativeRemoteSshCommandRunner().runTextCommand({
+            command: 'happier auth enroll-remote --json-lines --home-target-stdin',
+            credentials: {
+                host: '10.0.0.5',
+                port: 22,
+                username: 'dev',
+                auth: { username: 'dev', password: 'secret' },
+            },
+            nativeModule,
+            onStdoutChunk: () => undefined,
+        })).rejects.toThrow('native_ssh_stdout_stream_unavailable');
+        expect(nativeModule.exec).not.toHaveBeenCalled();
+    });
 });

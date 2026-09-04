@@ -149,5 +149,6 @@ describe('PersonalHomeSetupSurface', () => {
         expect(screen.findByTestId('personal-home-bootstrap-details-toggle')).not.toBeNull();
         await screen.pressByTestIdAsync('personal-home-bootstrap-details-toggle');
         expect(screen.findByTestId('personal-home-bootstrap-details-panel')).not.toBeNull();
+        expect(screen.findAllHostsByTestId('personal-home-bootstrap-details-panel')).toHaveLength(1);
     });
 });

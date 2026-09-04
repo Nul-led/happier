@@ -468,21 +468,21 @@ export function usePersonalHomeBootstrapRuntime(): PersonalHomeBootstrapRuntime 
                     const urlCleared = await TokenStorage.clearPendingPersonalHomeBootstrapSeed(serverUrl);
                     return identityCleared && urlCleared;
                 },
-                preflightCompletedProfile: ({ canonicalServerUrl, localServerUrl, serverIdentityId, source }) => {
+                preflightCompletedProfile: ({ canonicalServerUrl, localServerUrl, serverIdentityId }) => {
                     preflightHomeProfileAdoption({
                         descriptor: {
                             serverUrl: localServerUrl,
                             canonicalServerUrl,
                             homeServerIdentityId: serverIdentityId,
                         },
-                        source,
+                        source: 'desktop-personal-home',
                         preserveUserLabel: true,
                     });
                 },
                 probeAnonymousSignupRefused: async ({ endpoint }) => (
                     await probeAnonymousSignupRefused(endpoint)
                 ),
-                adoptCompletedProfile: async ({ canonicalServerUrl, localServerUrl, serverIdentityId, source, connectionDescriptor }) => {
+                adoptCompletedProfile: async ({ canonicalServerUrl, localServerUrl, serverIdentityId, connectionDescriptor }) => {
                     const credentials = await TokenStorage.getCredentialsForServerUrl(
                         canonicalServerUrl,
                         { serverId: serverIdentityId },
@@ -499,7 +499,7 @@ export function usePersonalHomeBootstrapRuntime(): PersonalHomeBootstrapRuntime 
                             canonicalServerUrl,
                             homeServerIdentityId: serverIdentityId,
                         },
-                        source,
+                        source: 'desktop-personal-home',
                         preserveUserLabel: true,
                     });
                 },

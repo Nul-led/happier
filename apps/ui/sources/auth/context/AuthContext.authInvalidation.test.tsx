@@ -11,6 +11,7 @@ import { renderScreen } from '@/dev/testkit';
 
 const switchConnectionToActiveServerSpy = vi.hoisted(() => vi.fn(async () => null));
 const disconnectActiveServerConnectionSpy = vi.hoisted(() => vi.fn(async () => {}));
+const disconnectActiveServerConnectionIfCurrentSpy = vi.hoisted(() => vi.fn(async () => true));
 const syncSwitchServerSpy = vi.hoisted(() => vi.fn(async () => {}));
 const subscribeActiveServerSpy = vi.hoisted(() => vi.fn());
 const subscribeAuthCredentialsInvalidationSpy = vi.hoisted(() => vi.fn());
@@ -22,6 +23,7 @@ let authInvalidationListener: ((event: unknown) => void | Promise<void>) | null 
 vi.mock('@/sync/runtime/orchestration/connectionManager', () => ({
     switchConnectionToActiveServer: switchConnectionToActiveServerSpy,
     disconnectActiveServerConnection: disconnectActiveServerConnectionSpy,
+    disconnectActiveServerConnectionIfCurrent: disconnectActiveServerConnectionIfCurrentSpy,
 }));
 
 vi.mock('@/sync/sync', () => ({
@@ -70,6 +72,8 @@ describe('AuthContext credential invalidation handling', () => {
         switchConnectionToActiveServerSpy.mockReset();
         switchConnectionToActiveServerSpy.mockResolvedValue(null);
         disconnectActiveServerConnectionSpy.mockReset();
+        disconnectActiveServerConnectionIfCurrentSpy.mockReset();
+        disconnectActiveServerConnectionIfCurrentSpy.mockResolvedValue(true);
         syncSwitchServerSpy.mockReset();
         subscribeActiveServerSpy.mockReset();
         subscribeAuthCredentialsInvalidationSpy.mockReset();
@@ -103,12 +107,17 @@ describe('AuthContext credential invalidation handling', () => {
                     kind: 'first_key_recovery_required',
                     serverId: 'server-a',
                     serverUrl: 'http://localhost:3012',
+                    generation: 1,
                     recovery: {},
                 });
             });
 
             await vi.waitFor(() => {
-                expect(disconnectActiveServerConnectionSpy).toHaveBeenCalledTimes(1);
+                expect(disconnectActiveServerConnectionIfCurrentSpy).toHaveBeenCalledWith({
+                    serverId: 'server-a',
+                    serverUrl: 'http://localhost:3012',
+                    generation: 1,
+                });
                 expect(getCurrentAuth()?.isAuthenticated).toBe(false);
             });
             expect(switchConnectionToActiveServerSpy).not.toHaveBeenCalled();
@@ -118,5 +127,37 @@ describe('AuthContext credential invalidation handling', () => {
             await screen.unmount();
         }
         expect(stopConcurrentSessionCacheSyncSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not clear the focused Home when a delayed first-key invalidation belongs to another Home', async () => {
+        disconnectActiveServerConnectionIfCurrentSpy.mockResolvedValue(false);
+        const { AuthProvider, getCurrentAuth } = await import('./AuthContext');
+        const initialCredentials = { token: 'token-b', secret: 'secret-b' };
+        const screen = await renderScreen(React.createElement(AuthProvider, {
+            initialCredentials,
+            children: React.createElement(React.Fragment, null),
+        }));
+
+        try {
+            await act(async () => {
+                await authInvalidationListener?.({
+                    kind: 'first_key_recovery_required',
+                    serverId: 'server-a',
+                    serverUrl: 'http://localhost:3012',
+                    generation: 1,
+                    recovery: {},
+                });
+                await Promise.resolve();
+            });
+
+            await vi.waitFor(() => expect(disconnectActiveServerConnectionIfCurrentSpy).toHaveBeenCalledOnce());
+            expect(getCurrentAuth()).toMatchObject({
+                isAuthenticated: true,
+                credentials: initialCredentials,
+            });
+            expect(disconnectActiveServerConnectionSpy).not.toHaveBeenCalled();
+        } finally {
+            await screen.unmount();
+        }
     });
 });

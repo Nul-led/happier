@@ -23,6 +23,55 @@ const facts: PersonalHomeFacts = {
 };
 
 describe('PersonalHomeBootstrapGate', () => {
+    it('keeps the shell mounted while showing one truthful post-shell pending status', async () => {
+        const homeReadyFacts: PersonalHomeFacts = {
+            ...facts,
+            relayRuntime: {
+                relayUrl: 'http://127.0.0.1:3005', installed: true, healthy: true,
+                serviceActive: true, status: 'healthy', anonymousSignupEnabled: false,
+                purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:3005' },
+            },
+            localHomeReachability: 'reachable',
+            localHomeIdentity: 'srv_home_b',
+            localHomeAuth: 'present',
+            anonymousSignup: 'disabled',
+            completedPersonalHomeProfile: {
+                id: 'p1', name: 'Personal Home', serverUrl: 'http://127.0.0.1:3005',
+                createdAt: 1, updatedAt: 1, lastUsedAt: 1, source: 'desktop-personal-home',
+            },
+            daemon: { serviceInstalled: false, daemonRunning: false, needsAuth: false, machineId: null },
+        };
+        let daemonReady = false;
+        let releasePreparation!: () => void;
+        const prepareComputer = vi.fn(() => new Promise<void>((resolve) => {
+            releasePreparation = () => {
+                daemonReady = true;
+                resolve();
+            };
+        }));
+        const screen = await renderScreen(
+            <PersonalHomeBootstrapGate
+                isDesktopHost isDesktopMainWindow
+                readFacts={async () => daemonReady ? {
+                    ...homeReadyFacts,
+                    daemon: { serviceInstalled: true, daemonRunning: true, needsAuth: false, machineId: 'machine_1' },
+                } : homeReadyFacts}
+                operations={{ 'prepare-computer': prepareComputer }}
+            >
+                <View testID="normal-shell" />
+            </PersonalHomeBootstrapGate>,
+        );
+
+        await flushHookEffects({ cycles: 4, turns: 2 });
+        expect(screen.findByTestId('normal-shell')).not.toBeNull();
+        expect(screen.findAllHostsByTestId('personal-home-bootstrap-pending-strip')).toHaveLength(1);
+        expect(screen.findByTestId('personal-home-recovery-retry')).toBeNull();
+
+        releasePreparation();
+        await flushHookEffects({ cycles: 4, turns: 2 });
+        expect(screen.findByTestId('normal-shell')).not.toBeNull();
+    });
+
     it.each([
         { name: 'pending', currentFacts: facts },
         {

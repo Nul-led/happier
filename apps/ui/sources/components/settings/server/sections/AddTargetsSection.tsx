@@ -271,7 +271,7 @@ export function AddTargetsSection(props: AddTargetsSectionProps) {
                     {props.isValidating && (
                         <Text
                             testID="server-settings-add-validating"
-                            accessibilityRole="status"
+                            role="status"
                             accessibilityLiveRegion="polite"
                             style={styles.validatingText}
                         >

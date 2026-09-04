@@ -32,6 +32,26 @@ const DESKTOP_SECURE_STORAGE_COMMANDS = {
     remove: 'desktop_secure_storage_remove',
 } as const;
 
+const deviceLocalStorageOperationTails = new Map<string, Promise<void>>();
+
+async function serializeDeviceLocalStorageOperation<T>(key: string, run: () => Promise<T>): Promise<T> {
+    const previous = deviceLocalStorageOperationTails.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+        release = resolve;
+    });
+    deviceLocalStorageOperationTails.set(key, current);
+    await previous;
+    try {
+        return await run();
+    } finally {
+        release();
+        if (deviceLocalStorageOperationTails.get(key) === current) {
+            deviceLocalStorageOperationTails.delete(key);
+        }
+    }
+}
+
 function isDesktopWebRuntime(): boolean {
     return Platform.OS === 'web' && desktopHostKind() !== null;
 }
@@ -63,7 +83,7 @@ async function discardUnverifiedDesktopStorageString(key: string): Promise<void>
  * retains the existing origin-scoped localStorage boundary; that is local custody, not
  * an encryption-at-rest, E2EE, or hardware-backed security claim.
  */
-export async function readDeviceLocalStorageString(key: string): Promise<string | null> {
+async function readDeviceLocalStorageStringUnserialized(key: string): Promise<string | null> {
     if (isDesktopWebRuntime()) {
         const nativeValue = await readDesktopSecureStorageString(key);
         if (nativeValue !== null) return nativeValue;
@@ -73,6 +93,14 @@ export async function readDeviceLocalStorageString(key: string): Promise<string 
         if (legacyValue === null) return null;
 
         try {
+            // A concurrent writer may have populated primary custody after the
+            // initial miss. Re-read before migration so legacy bytes can never
+            // overwrite a newer credential.
+            const concurrentPrimary = await readDesktopSecureStorageString(key);
+            if (concurrentPrimary !== null) {
+                legacyStorage?.removeItem(key);
+                return concurrentPrimary;
+            }
             await writeDesktopSecureStorageString(key, legacyValue);
             const verifiedValue = await readDesktopSecureStorageString(key);
             if (verifiedValue === legacyValue) {
@@ -94,7 +122,7 @@ export async function readDeviceLocalStorageString(key: string): Promise<string 
     return await readNativeSecureStoreString(key);
 }
 
-export async function writeDeviceLocalStorageString(key: string, value: string): Promise<void> {
+async function writeDeviceLocalStorageStringUnserialized(key: string, value: string): Promise<void> {
     if (isDesktopWebRuntime()) {
         try {
             await writeDesktopSecureStorageString(key, value);
@@ -117,7 +145,7 @@ export async function writeDeviceLocalStorageString(key: string, value: string):
     await writeNativeSecureStoreString(key, value);
 }
 
-export async function removeDeviceLocalStorageString(key: string): Promise<void> {
+async function removeDeviceLocalStorageStringUnserialized(key: string): Promise<void> {
     if (isDesktopWebRuntime()) {
         let nativeFailure: unknown;
         try {
@@ -135,4 +163,16 @@ export async function removeDeviceLocalStorageString(key: string): Promise<void>
         return;
     }
     await removeNativeSecureStoreString(key);
+}
+
+export async function readDeviceLocalStorageString(key: string): Promise<string | null> {
+    return await serializeDeviceLocalStorageOperation(key, async () => await readDeviceLocalStorageStringUnserialized(key));
+}
+
+export async function writeDeviceLocalStorageString(key: string, value: string): Promise<void> {
+    await serializeDeviceLocalStorageOperation(key, async () => await writeDeviceLocalStorageStringUnserialized(key, value));
+}
+
+export async function removeDeviceLocalStorageString(key: string): Promise<void> {
+    await serializeDeviceLocalStorageOperation(key, async () => await removeDeviceLocalStorageStringUnserialized(key));
 }

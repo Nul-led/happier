@@ -69,7 +69,7 @@ vi.mock('@/sync/api/capabilities/serverFeaturesClient', () => ({
         serverIdentityId: 'srv_test',
         features: {
             features: {
-                auth: { pairing: { desktopQrMobileScan: { enabled: true } } },
+                auth: { pairing: { desktopQrMobileScan: { enabled: true }, boundQrV2: { enabled: true } } },
             },
             homeConnectionDescriptor: {
                 v: 1,
@@ -111,13 +111,6 @@ vi.mock('@/sync/domains/server/url/serverUrlClassification', () => ({
     isLoopbackServerUrl: () => false,
 }));
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: {
-        default: () => ({}),
-        mono: () => ({}),
-    },
-}));
-
 vi.mock('@/auth/pairing/pairingUrl', () => ({
     classifyLegacyPairingDeepLink: () => null,
     parseHomeQrInviteDeepLink: () => ({
@@ -141,6 +134,7 @@ vi.mock('@/auth/pairing/pairingUrl', () => ({
 }));
 
 vi.mock('@/sync/api/account/apiPairingAuth', () => ({
+    pairingConsume: vi.fn(async () => ({ ok: true })),
     pairingRequest: vi.fn(async () => ({ ok: false, reason: 'already_requested', status: 401 })),
 }));
 

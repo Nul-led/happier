@@ -320,6 +320,13 @@ vi.mock('@/sync/domains/server/serverRuntime', () => ({
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
     HAPPIER_CLOUD_SERVER_URL: 'https://api.happier.dev',
     loadHomeViewState: () => null,
+    subscribeHomeViewState: () => () => {},
+    updateHomeViewState: (update: (current: {
+        version: 1;
+        groups: never[];
+        activeTargetKind: null;
+        activeTargetId: null;
+    }) => unknown) => update({ version: 1, groups: [], activeTargetKind: null, activeTargetId: null }),
     getResetToDefaultServerId: () => getResetToDefaultServerIdMock(),
     getServerProfileById: (serverId: string) => getServerProfileByIdMock(serverId),
     listServerProfiles: () => listServerProfilesMock(),
@@ -2166,9 +2173,9 @@ describe('OnboardingWizardSurface', () => {
 
         const relayInput = screen.findByTestId('onboarding-wizard-relay-url-input')!;
         expect(relayInput.props.value).toBe('https://prefilled.relay.test');
-        expect(screen.findByTestId('onboarding-wizard-relay-url-label')?.props.children).toBe('Home address');
+        expect(screen.findByTestId('onboarding-wizard-relay-url-label')?.props.children).toBe('setupOnboarding.customRelayUrlLabel');
         expect(relayInput.props).toMatchObject({
-            accessibilityLabel: 'Home address',
+            accessibilityLabel: 'setupOnboarding.customRelayUrlLabel',
             accessibilityLabelledBy: 'onboarding-wizard-relay-url-label',
         });
     });
@@ -4524,6 +4531,9 @@ describe('OnboardingWizardSurface', () => {
     it('refuses a released V1 QR in place without putting its secret into wizard navigation state', async () => {
         webQrScannerSupportedMock.value = true;
         webMobileLikeQrScannerHostMock.value = true;
+        modalMock.spies.alertAsync.mockImplementationOnce(async (_title, _message, buttons) => {
+            buttons?.find((button) => button.style !== 'cancel')?.onPress?.();
+        });
 
         const { OnboardingWizardSurface } = await import('./OnboardingWizardSurface');
         const screen = await renderScreen(
@@ -4549,7 +4559,7 @@ describe('OnboardingWizardSurface', () => {
         await act(async () => {
             await scanner.props.onScan?.('happier:///pair?v=1&pairId=pair_1&secret=sec_1');
         });
-        await flushHookEffects({ cycles: 1, turns: 1 });
+        await flushHookEffects({ cycles: 2, turns: 2 });
 
         expect(modalMock.spies.alertAsync).toHaveBeenCalledWith(
             'connect.updateRequiredTitle',
@@ -4559,8 +4569,7 @@ describe('OnboardingWizardSurface', () => {
                 expect.objectContaining({ text: 'common.cancel', style: 'cancel' }),
             ],
         );
-        expect(screen.findAllByType('QrCodeScannerView')).toHaveLength(0);
-        expect(screen.findByTestId('welcome-decision-panel')).toBeTruthy();
+        expect(screen.findAllByType('QrCodeScannerView')).toHaveLength(1);
         expect(screen.findByTestId('onboarding-wizard-relay-url-input')).toBeNull();
     });
 

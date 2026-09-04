@@ -243,6 +243,7 @@ export function AccountServiceOAuthJourney(props: Readonly<{
     );
     const [approvalPresentation, setApprovalPresentation] =
         React.useState<AccountServiceApprovalPresentation>('waiting');
+    const approvalOperationRevisionRef = React.useRef(0);
 
     React.useEffect(() => {
         if (!approvalActive) setApprovalPresentation('waiting');
@@ -274,21 +275,27 @@ export function AccountServiceOAuthJourney(props: Readonly<{
         }
     }, [props.onApprovalOutcome]);
 
-    const resumeApproval = React.useCallback(async (): Promise<'success' | 'transient'> => {
+    const resumeApproval = React.useCallback(async (): Promise<'completed' | 'backoff'> => {
+        const operationRevision = ++approvalOperationRevisionRef.current;
         try {
             const result = await resumePendingPreferredHomeEnrollment();
+            if (operationRevision !== approvalOperationRevisionRef.current) return 'completed';
             if (
                 pendingEnrollment
                 && !isSelectedAccountServiceKey(pendingEnrollment.serviceKey)
             ) {
                 setApprovalPresentation('service_replaced');
-                return 'success';
+                return 'completed';
             }
             applyApprovalResult(result);
-            return result?.kind === 'transport_unavailable' ? 'transient' : 'success';
+            return result?.kind === 'approval_required' || result?.kind === 'transport_unavailable'
+                ? 'backoff'
+                : 'completed';
         } catch {
-            setApprovalPresentation('failed');
-            return 'success';
+            if (operationRevision === approvalOperationRevisionRef.current) {
+                setApprovalPresentation('failed');
+            }
+            return 'completed';
         }
     }, [applyApprovalResult, pendingEnrollment]);
 
@@ -302,19 +309,27 @@ export function AccountServiceOAuthJourney(props: Readonly<{
     React.useEffect(() => {
         if (!approvalActive || !pendingEnrollment) return;
         if (isSelectedAccountServiceKey(pendingEnrollment.serviceKey)) return;
+        const operationRevision = ++approvalOperationRevisionRef.current;
         void cancelPendingPreferredHomeEnrollment(pendingEnrollment).finally(() => {
-            setApprovalPresentation('service_replaced');
+            if (operationRevision === approvalOperationRevisionRef.current) {
+                setApprovalPresentation('service_replaced');
+            }
         });
     }, [approvalActive, pendingEnrollment, selectedAccountServiceEndpoint]);
 
     const cancelApproval = React.useCallback(async () => {
+        const operationRevision = ++approvalOperationRevisionRef.current;
         try {
             await cancelPendingPreferredHomeEnrollment(
                 pendingEnrollment ?? undefined,
             );
-            setApprovalPresentation('cancelled');
+            if (operationRevision === approvalOperationRevisionRef.current) {
+                setApprovalPresentation('cancelled');
+            }
         } catch {
-            setApprovalPresentation('failed');
+            if (operationRevision === approvalOperationRevisionRef.current) {
+                setApprovalPresentation('failed');
+            }
         }
     }, [pendingEnrollment]);
 

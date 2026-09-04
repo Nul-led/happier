@@ -212,7 +212,10 @@ export function useLocalRelayRuntimeControl(options: Readonly<{
         taskOptions: LocalRelayRuntimeTaskOptions = {},
     ): Promise<SystemTaskStartOutcome> => {
         try {
-            const taskId = await runner.start(buildLocalRelayRuntimeSystemTaskSpec(kind, taskOptions));
+            const taskId = await runner.start(buildLocalRelayRuntimeSystemTaskSpec(kind, {
+                ...(lastStatus ? { runtimeTarget: { channel: lastStatus.channel, mode: lastStatus.mode } } : {}),
+                ...taskOptions,
+            }));
             setBridgeUnavailable(false);
             setLastErrorMessage(null);
             return { status: 'started', taskId };
@@ -226,7 +229,7 @@ export function useLocalRelayRuntimeControl(options: Readonly<{
             setLastErrorMessage(failure);
             return { status: 'failed', message: failure };
         }
-    }, [runner]);
+    }, [lastStatus, runner]);
 
     const refreshStatus = React.useCallback(async () => {
         if (isUnavailable) {
@@ -503,9 +506,14 @@ export function useLocalRelayRuntimeControl(options: Readonly<{
             const archivePath = input.archivePath.trim();
             const destinationEmpty = inspectionRef.current?.destinationEmpty;
             if (input.verification.archivePath !== archivePath
+                || !input.verification.homeServerIdentityId
                 || destinationEmpty == null
                 || (!destinationEmpty && !input.overwriteConfirmed)) return null;
-            const outcome = await runPersonalHomeTask('relay.runtime.personal_home.restore.v1', { personalHomeOperation: { archivePath, ...(input.overwriteConfirmed ? { confirmOverwrite: true } : {}) } });
+            const outcome = await runPersonalHomeTask('relay.runtime.personal_home.restore.v1', { personalHomeOperation: {
+                archivePath,
+                expectedHomeServerIdentityId: input.verification.homeServerIdentityId,
+                ...(input.overwriteConfirmed ? { confirmOverwrite: true } : {}),
+            } });
             if (outcome.status !== 'completed') return null;
             const data = outcome.result.data as Record<string, unknown> | undefined;
             const recoveryArchiveFacts = readPersonalHomeBackupFacts(data?.recoveryArchive);

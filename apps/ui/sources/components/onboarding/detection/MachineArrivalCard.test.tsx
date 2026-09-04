@@ -34,7 +34,7 @@ describe('MachineArrivalCard', () => {
         expect(screen.findAllByType(StatusPill as never)).toHaveLength(0);
         expect(normalizeRenderedCodeText(screen.getTextContent())).toContain(buildCliInstallAndRunCommandForCurrentApp({
             action: 'setup',
-            args: ['--relay-url', 'https://relay.example.test', '--yes'],
+            args: ['--home-url', 'https://relay.example.test'],
         }));
     });
 
@@ -51,7 +51,7 @@ describe('MachineArrivalCard', () => {
         expect(screen.findByTestId('machine-arrival-card-command-setup')).toBeNull();
         expect(normalizeRenderedCodeText(screen.getTextContent())).toContain(buildCliInstallAndRunCommandForCurrentApp({
             action: 'setup',
-            args: ['--relay-url', 'https://relay.example.test', '--yes'],
+            args: ['--home-url', 'https://relay.example.test'],
         }));
     });
 
@@ -142,7 +142,7 @@ describe('MachineArrivalCard', () => {
 
         expect(normalizeRenderedCodeText(screen.getTextContent())).toContain(buildCliInstallAndRunPowershellCommandForCurrentApp({
             action: 'setup',
-            args: ['--relay-url', 'https://relay.example.test', '--yes'],
+            args: ['--home-url', 'https://relay.example.test'],
         }));
     });
 });

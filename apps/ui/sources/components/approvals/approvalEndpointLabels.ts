@@ -1,4 +1,5 @@
 import type { Machine, Session } from '@/sync/domains/state/storageTypes';
+import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
 import { getMachineDisplayName } from '@/utils/sessions/machineUtils';
 import { formatPathRelativeToHome } from '@/utils/sessions/sessionUtils';
 import { readDisplayPathForSession } from '@/sync/ops/sessionMachineTarget';
@@ -15,13 +16,13 @@ export type ApprovalEndpointLabels = {
 
 /** Where a session currently runs, as the canonical session/machine state describes it. */
 export function readApprovalSessionEndpointLabels(input: Readonly<{
-    session: Session | null;
+    session: Session | SessionListRenderableSession | null;
     machine: Machine | null;
     machineId?: string | null;
 }>): ApprovalEndpointLabels {
     const ownerMetadata = input.session ? readSessionOwnerMetadataView(input.session) : null;
     const displayPath = input.session
-        ? readDisplayPathForSession({ sessionId: input.session.id, metadata: ownerMetadata })
+        ? readDisplayPathForSession({ sessionId: null, metadata: ownerMetadata })
         : '';
 
     return {

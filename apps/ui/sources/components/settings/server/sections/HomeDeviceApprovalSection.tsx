@@ -187,17 +187,17 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
                         listHomeDeviceApprovals,
                     ),
                 })));
-                if (!mountedRef.current) return 'success';
+                if (!mountedRef.current) return 'completed';
 
                 const failed = results.some(({ result }) => !result.ok && result.reason !== 'unauthorized');
-                if (failed && mode === 'poll') return 'transient';
+                if (failed && mode === 'poll') return 'backoff';
 
                 const items = results.flatMap(({ home, result }) => result.ok
                     ? result.items.map((approval) => ({ home, approval }))
                     : []);
                 const nextSnapshotKey = approvalSnapshotKey(items);
                 const changed = nextSnapshotKey !== approvalSnapshotKeyRef.current;
-                if (mode === 'poll' && !changed) return 'success';
+                if (mode === 'poll' && !changed) return 'completed';
 
                 approvalItemsRef.current = items;
                 approvalSnapshotKeyRef.current = failed ? null : nextSnapshotKey;
@@ -209,14 +209,14 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
                             ? t('inbox.emptyDescription')
                             : `${t('approvals.title')}: ${items.map(({ home }) => home.name).join(', ')}`,
                 );
-                return failed ? 'transient' : 'success';
+                return failed ? 'backoff' : 'completed';
             } catch {
                 if (mountedRef.current && mode === 'interactive') {
                     approvalSnapshotKeyRef.current = null;
                     setState((current) => ({ kind: 'error', items: current.items }));
                     publishAnnouncement(t('approvals.loadError'));
                 }
-                return 'transient';
+                return 'backoff';
             }
         })();
         approvalRefreshPromiseRef.current = operation;
@@ -322,7 +322,7 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
             return await load('poll');
         } catch {
             // The visible pending card and explicit Retry remain available.
-            return 'transient';
+            return 'backoff';
         }
     }, [load]);
     useAccountDirectoryActivePolling(poll);
