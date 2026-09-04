@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildSshCommand,
-  redactRemoteBootstrapPayload,
   SshKnownHostsStore,
 } from './sshTransport';
 
@@ -49,22 +48,6 @@ describe('buildSshCommand', () => {
       serverAliveIntervalSec: 20,
       serverAliveCountMax: 2,
     }).args).toContain('/Users/alex/.ssh/id_ed25519');
-  });
-});
-
-describe('redactRemoteBootstrapPayload', () => {
-  it('removes auth secrets and state file paths before any prompt/event payload is surfaced', () => {
-    expect(redactRemoteBootstrapPayload({
-      publicKey: 'pub-key',
-      claimSecret: 'top-secret',
-      stateFile: '/tmp/happier/state.json',
-      webappUrl: 'https://relay.example.test',
-      supportsV2: true,
-    })).toEqual({
-      publicKey: 'pub-key',
-      webappUrl: 'https://relay.example.test',
-      supportsV2: true,
-    });
   });
 });
 

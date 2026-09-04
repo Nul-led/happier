@@ -1,8 +1,12 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+type OpenSshFileTransferParams = Parameters<
+  typeof import('@happier-dev/cli-common/ssh').transferOpenSshFile
+>[0];
 
 const {
   spawnSync,
@@ -13,6 +17,10 @@ const {
   approveTerminalAuthRequest,
   reloadConfiguration,
   lastInstallRemoteFirstPartyDeps,
+  lastOpenSshParams,
+  openSshParamsCalls,
+  transferOpenSshFile,
+  localEnrollmentExecutor,
 } = vi.hoisted(() => ({
   spawnSync: vi.fn(),
   mkdirSync: vi.fn(),
@@ -22,6 +30,12 @@ const {
   approveTerminalAuthRequest: vi.fn(async () => undefined),
   reloadConfiguration: vi.fn(),
   lastInstallRemoteFirstPartyDeps: { current: null as null | unknown },
+  lastOpenSshParams: { current: null as null | Record<string, unknown> },
+  openSshParamsCalls: [] as Array<Record<string, unknown>>,
+  transferOpenSshFile: vi.fn<(params: OpenSshFileTransferParams) => Promise<void>>(async () => undefined),
+  localEnrollmentExecutor: { current: null as null | {
+    runHappierText: (args: readonly string[], opts?: Readonly<{ onStdoutChunk?: (text: string) => void }>) => Promise<Readonly<{ status: number; stdout: string; stderr: string }>>;
+  } },
 }));
 
 const { isLoopbackPortAvailable, findAvailableLoopbackPort } = vi.hoisted(() => ({
@@ -43,6 +57,67 @@ vi.mock('node:fs', () => ({
   writeFileSync,
   chmodSync,
 }));
+
+vi.mock('@happier-dev/cli-common/ssh', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@happier-dev/cli-common/ssh')>();
+  return {
+    ...actual,
+    runOpenSshRemoteCommand: async (params: Parameters<typeof actual.runOpenSshRemoteCommand>[0]) => {
+      lastOpenSshParams.current = params as unknown as Record<string, unknown>;
+      openSshParamsCalls.push(params as unknown as Record<string, unknown>);
+      if (String(params.remoteCommand).includes('enroll-remote')) {
+        const input = JSON.parse(String(params.input ?? '{}')) as { descriptor?: { homeServerIdentityId?: string } };
+        const homeServerIdentityId = input.descriptor?.homeServerIdentityId ?? 'srv_live_remote_bootstrap';
+        remoteEnrollmentCompleted = true;
+        const stdout = `${JSON.stringify({
+          kind: 'remote_home_enrollment_pairing_request',
+          protocolVersion: 1,
+          publicKey: REMOTE_PUBLIC_KEY,
+          homeServerIdentityId,
+          pairing: REMOTE_REQUEST_PAIRING,
+          supportsTokenOnly: true,
+          pairingRequirement: 'v3',
+        })}\n${JSON.stringify({
+          kind: 'remote_home_enrollment_result',
+          protocolVersion: 1,
+          success: true,
+          homeServerIdentityId,
+          machineId: 'machine-1',
+          encryptionType: 'tokenOnly',
+          pairingAuthentication: 'v3',
+          remoteProfileId: 'remote-home-profile',
+        })}\n`;
+        params.onStdoutChunk?.(stdout);
+        return { status: 0, stdout, stderr: '' };
+      }
+      const invocation = actual.buildOpenSshCommand({
+        sshBin: params.sshBin ?? 'ssh',
+        target: params.target,
+        remoteCommand: params.remoteCommand,
+        sshConfigFile: params.sshConfigFile,
+        knownHostsPath: params.knownHostsPath,
+        knownHostsMode: params.knownHostsMode,
+        auth: params.auth,
+        port: params.port,
+        connectTimeoutSec: params.connectTimeoutSec,
+        serverAliveIntervalSec: params.serverAliveIntervalSec,
+        serverAliveCountMax: params.serverAliveCountMax,
+      });
+      const result = spawnSync(invocation.command, invocation.args, {
+        encoding: 'utf8',
+        ...(invocation.env ? { env: invocation.env } : {}),
+      }) as { status?: number | null; stdout?: string; stderr?: string; error?: Error };
+      if (result.error) throw result.error;
+      const status = result.status ?? 1;
+      const stdout = String(result.stdout ?? '');
+      const stderr = String(result.stderr ?? '');
+      params.onStdoutChunk?.(stdout);
+      if (status !== 0 && params.rejectOnNonZero !== false) throw new Error(stderr || stdout || 'SSH command failed');
+      return { status, stdout, stderr };
+    },
+    transferOpenSshFile,
+  };
+});
 
 vi.mock('@/auth/terminalAuthApproval', () => ({
   approveTerminalAuthRequest,
@@ -66,6 +141,7 @@ vi.mock('@happier-dev/cli-common/systemTasks', async () => {
   );
   return {
     ...actual,
+    createLocalHappierJsonExecutor: () => localEnrollmentExecutor.current ?? actual.createLocalHappierJsonExecutor(),
     installRemoteFirstPartyComponent: async (
       ...args: Parameters<typeof actual.installRemoteFirstPartyComponent>
     ) => {
@@ -93,8 +169,9 @@ vi.mock('@happier-dev/cli-common/systemTasks', async () => {
   };
 });
 
-import { createLiveRemoteSshBootstrapTaskKind } from './liveRemoteSshBootstrap';
+import { createLiveRemoteSshBootstrapTaskKind, createLiveRemoteSshManageHostTaskKind } from './liveRemoteSshBootstrap';
 import { createServer } from 'node:http';
+import { encodeHomeQrInviteV2Payload, type HomeQrInviteV2 } from '@happier-dev/protocol';
 
 function jsonResult(data: Record<string, unknown>) {
   return {
@@ -104,9 +181,13 @@ function jsonResult(data: Record<string, unknown>) {
   };
 }
 
-// The remote `auth request --json` pairing context the kind must forward to the
-// local approval so it seals a pairing-bound v3 response.
-const REMOTE_REQUEST_PAIRING = { secretB64Url: 'pairing-secret-b64url', createdAtMs: 123, expiresAtMs: 456 };
+const REMOTE_PUBLIC_KEY = Buffer.alloc(32, 1).toString('base64');
+const REMOTE_REQUEST_PAIRING = {
+  secretB64Url: Buffer.alloc(32, 2).toString('base64url'),
+  createdAtMs: 123,
+  expiresAtMs: 456,
+};
+let remoteEnrollmentCompleted = false;
 
 	const TRUSTED_HOST_KEY = 'example.test ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
 	const MISMATCHED_TRUSTED_HOST_KEY = 'example.test ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC';
@@ -117,6 +198,10 @@ describe('createLiveRemoteSshBootstrapTaskKind', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     lastInstallRemoteFirstPartyDeps.current = null;
+    lastOpenSshParams.current = null;
+    openSshParamsCalls.length = 0;
+    localEnrollmentExecutor.current = null;
+    remoteEnrollmentCompleted = false;
     isLoopbackPortAvailable.mockResolvedValue(true);
     findAvailableLoopbackPort.mockImplementation(async (requestedPort: number) => requestedPort + 1);
     readFileSync.mockImplementation(() => {
@@ -201,8 +286,19 @@ describe('createLiveRemoteSshBootstrapTaskKind', () => {
         return jsonResult({
           ok: true,
           data: {
-            authenticated: false,
+            authenticated: remoteEnrollmentCompleted,
+            credentialState: remoteEnrollmentCompleted ? 'valid' : 'missing',
+            machineRegistrationState: remoteEnrollmentCompleted ? 'server-confirmed' : 'no-local-id',
+            machineId: remoteEnrollmentCompleted ? 'machine-1' : null,
           },
+        });
+      }
+      if (remoteCommand.includes('daemon status --json')) {
+        return jsonResult({
+          server: { activeServerId: 'remote-home-profile' },
+          service: { installed: true },
+          daemon: { running: true },
+          auth: { needsAuth: false, machineId: 'machine-1' },
         });
       }
 	      if (remoteCommand.includes('server set')) {
@@ -212,26 +308,6 @@ describe('createLiveRemoteSshBootstrapTaskKind', () => {
 	          data: {},
 	        });
 	      }
-      if (remoteCommand.includes('auth request')) {
-        return jsonResult({
-          ok: true,
-          data: {
-            publicKey: 'pub-key',
-            claimSecret: 'secret',
-            stateFile: '/tmp/state.json',
-            pairing: REMOTE_REQUEST_PAIRING,
-            supportsTokenOnly: true,
-          },
-        });
-      }
-      if (remoteCommand.includes('auth wait')) {
-        return jsonResult({
-          ok: true,
-          data: {
-            machineId: 'machine-1',
-          },
-        });
-      }
       if (remoteCommand.includes('relay host install')) {
         return jsonResult({
           ok: true,
@@ -247,6 +323,285 @@ describe('createLiveRemoteSshBootstrapTaskKind', () => {
         data: {},
       });
     });
+  });
+
+  it('delivers remote Home erase approval over bounded stdin and parses the canonical task result', async () => {
+    const defaultSpawn = spawnSync.getMockImplementation();
+    spawnSync.mockImplementation((command: string, args: readonly string[] = [], options?: unknown) => {
+      const remoteCommand = String(args.at(-1) ?? '');
+      const taskResult = (data: Record<string, unknown>) => jsonResult({
+        kind: 'personal_home_task_result',
+        protocolVersion: 1,
+        result: { protocolVersion: 1, ok: true, taskId: 'remote-home-task', data },
+      });
+      if (command === 'ssh' && remoteCommand.includes('happier') && remoteCommand.includes('status')) {
+        return taskResult({
+          purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
+          identity: { homeServerIdentityId: 'srv_remote_home' },
+          storage: { ownedErasePaths: ['/var/lib/happier-home'], estimatedOwnedBytes: 4096 },
+        });
+      }
+      if (command === 'ssh' && remoteCommand.includes('happier') && remoteCommand.includes('erase')) {
+        return taskResult({ outcome: 'completed', removedPaths: ['/var/lib/happier-home'] });
+      }
+      return defaultSpawn?.(command, args, options) as ReturnType<typeof spawnSync>;
+    });
+
+    const kind = createLiveRemoteSshManageHostTaskKind();
+    const result = await kind.run({
+      params: {
+        action: 'personalHome.erase',
+        channel: 'preview',
+        relayRuntime: { channel: 'preview', mode: 'system' },
+        ssh: { target: 'example.test', auth: 'agent', trustedHostKey: TRUSTED_HOST_KEY },
+      },
+      emit: () => undefined,
+      prompt: async (request) => {
+        expect(request).toMatchObject({
+          kind: 'personal_home.confirm_remote_erase.v1',
+          data: {
+            sshHost: 'example.test',
+            homeServerIdentityId: 'srv_remote_home',
+            paths: ['/var/lib/happier-home'],
+            estimatedBytes: 4096,
+          },
+        });
+        return { confirmed: true };
+      },
+    });
+
+    expect(result).toMatchObject({ action: 'personalHome.erase', personalHome: { outcome: 'completed' } });
+    expect(lastOpenSshParams.current?.input).toBe(`${JSON.stringify({
+      v: 1,
+      operation: 'erase',
+      canonicalServerUrl: 'http://127.0.0.1:43123',
+      homeServerIdentityId: 'srv_remote_home',
+      paths: ['/var/lib/happier-home'],
+      estimatedBytes: 4096,
+      confirmed: true,
+    })}\n`);
+    expect(String(lastOpenSshParams.current?.remoteCommand)).not.toContain('srv_remote_home');
+    expect(String(lastOpenSshParams.current?.remoteCommand)).not.toContain('4096');
+  });
+
+  it('downloads a remote Home backup without overwriting an existing local archive', async () => {
+    const defaultSpawn = spawnSync.getMockImplementation();
+    spawnSync.mockImplementation((command: string, args: readonly string[] = [], options?: unknown) => {
+      const remoteCommand = String(args.at(-1) ?? '');
+      if (command === 'ssh' && remoteCommand.includes('happier') && remoteCommand.includes('backup')) {
+        return jsonResult({
+          kind: 'personal_home_task_result',
+          protocolVersion: 1,
+          result: {
+            protocolVersion: 1,
+            ok: true,
+            taskId: 'remote-home-backup',
+            data: {
+              path: '/srv/home/backups/home.tar',
+              sha256: 'abc',
+              archiveBytes: 12,
+              manifest: { format: 'happier-personal-home-backup', version: 1, homeServerIdentityId: 'srv_remote_home' },
+            },
+          },
+        });
+      }
+      return defaultSpawn?.(command, args, options) as ReturnType<typeof spawnSync>;
+    });
+    transferOpenSshFile.mockImplementationOnce(async (params) => {
+      await writeFile(params.localPath, 'new archive', 'utf8');
+    });
+    const directory = await mkdtemp(join(tmpdir(), 'happier-home-download-'));
+    const outputPath = join(directory, 'home.tar');
+    await writeFile(outputPath, 'existing archive', 'utf8');
+
+    try {
+      const kind = createLiveRemoteSshManageHostTaskKind();
+      await expect(kind.run({
+        params: {
+          action: 'personalHome.backup',
+          channel: 'preview',
+          relayRuntime: { channel: 'preview', mode: 'system' },
+          personalHomeOperation: { outputPath },
+          ssh: { target: 'example.test', auth: 'agent', trustedHostKey: TRUSTED_HOST_KEY },
+        },
+        emit: () => undefined,
+        prompt: async () => ({}),
+      })).rejects.toMatchObject({ code: 'EEXIST' });
+      expect(await readFile(outputPath, 'utf8')).toBe('existing archive');
+      expect(transferOpenSshFile).toHaveBeenCalledWith(expect.objectContaining({
+        direction: 'download',
+        remotePath: '/srv/home/backups/home.tar',
+      }));
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('renders a strict remote Home invite as a local QR and preserves an expired optional outcome', async () => {
+    const descriptor = {
+      v: 1 as const,
+      homeServerIdentityId: 'srv_remote_home',
+      canonicalServerUrl: 'http://127.0.0.1:43123',
+      revision: 1,
+      endpoints: [{ kind: 'iroh' as const, endpointId: 'a'.repeat(64) }],
+    };
+    const invite: HomeQrInviteV2 = {
+      v: 2,
+      intent: 'home_device',
+      direction: 'trusted_home_displays',
+      pairId: 'remote-home-pair',
+      home: descriptor,
+      qrSecretBase64Url: Buffer.alloc(32, 7).toString('base64url'),
+      issuedAtMs: Date.now(),
+      expiresAtMs: Date.now() + 60_000,
+    };
+    const link = `happier:///pair?v=2&payload=${encodeURIComponent(encodeHomeQrInviteV2Payload(invite))}`;
+    const defaultSpawn = spawnSync.getMockImplementation();
+    spawnSync.mockImplementation((command: string, args: readonly string[] = [], options?: unknown) => {
+      const remoteCommand = String(args.at(-1) ?? '');
+      if (command === 'ssh' && remoteCommand.includes('home') && remoteCommand.includes('create')) {
+        return jsonResult({
+          v: 1,
+          ok: true,
+          kind: 'personal_home_create',
+          data: {
+            status: 'complete',
+            profileId: 'remote-home',
+            homeServerIdentityId: descriptor.homeServerIdentityId,
+            canonicalServerUrl: descriptor.canonicalServerUrl,
+            accountCreated: true,
+            channel: 'preview',
+            mode: 'system',
+            descriptor,
+            accountServiceLink: { kind: 'not_requested' },
+          },
+        });
+      }
+      if (command === 'ssh' && remoteCommand.includes('pair-device')) {
+        return {
+          status: 0,
+          stdout: [
+            JSON.stringify({ v: 1, kind: 'home_pair_device.invite', link }),
+            JSON.stringify({ v: 1, kind: 'home_pair_device.result', result: { kind: 'expired' } }),
+            '',
+          ].join('\n'),
+          stderr: '',
+        };
+      }
+      return defaultSpawn?.(command, args, options) as ReturnType<typeof spawnSync>;
+    });
+    const output = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const result = await createLiveRemoteSshManageHostTaskKind().run({
+      params: {
+        action: 'personalHome.create',
+        channel: 'preview',
+        relayRuntime: { channel: 'preview', mode: 'system' },
+        pairDevice: true,
+        ssh: { target: 'example.test', auth: 'agent', trustedHostKey: TRUSTED_HOST_KEY },
+      },
+      emit: () => undefined,
+      prompt: async () => ({}),
+    });
+
+    expect(result).toMatchObject({
+      action: 'personalHome.create',
+      personalHome: { status: 'complete', pairing: { kind: 'expired' } },
+    });
+    expect(output.mock.calls[0]?.[0]).toBe('Scan this QR code with the phone or browser you want to add:');
+    expect(output.mock.calls.some(([value]) => value === link)).toBe(false);
+    expect(String(lastOpenSshParams.current?.remoteCommand)).toContain('pair-device');
+    expect(String(lastOpenSshParams.current?.remoteCommand)).toContain('--system-task-stream');
+    expect(String(lastOpenSshParams.current?.remoteCommand)).not.toContain('--copy-link');
+  });
+
+  it('enrolls the invoking CLI through bounded v3 stdin without putting pairing material in SSH argv or task JSON', async () => {
+    const descriptor = {
+      v: 1 as const,
+      homeServerIdentityId: 'srv_remote_home',
+      canonicalServerUrl: 'http://127.0.0.1:43123',
+      revision: 1,
+      endpoints: [{ kind: 'iroh' as const, endpointId: 'a'.repeat(64) }],
+    };
+    const pairingRequest = {
+      kind: 'remote_home_enrollment_pairing_request',
+      protocolVersion: 1,
+      publicKey: Buffer.alloc(32, 3).toString('base64'),
+      homeServerIdentityId: descriptor.homeServerIdentityId,
+      pairing: { secretB64Url: 'short-lived-v3-context', createdAtMs: 100, expiresAtMs: 200 },
+      supportsTokenOnly: true,
+      pairingRequirement: 'v3',
+    } as const;
+    const enrollmentResult = {
+      kind: 'remote_home_enrollment_result',
+      protocolVersion: 1,
+      success: true,
+      homeServerIdentityId: descriptor.homeServerIdentityId,
+      machineId: 'local-machine',
+      encryptionType: 'tokenOnly',
+      pairingAuthentication: 'v3',
+      remoteProfileId: 'remote-home-profile',
+    } as const;
+    const runHappierText = vi.fn(async (_args: readonly string[], opts?: Readonly<{ onStdoutChunk?: (text: string) => void }>) => {
+      const stdout = `${JSON.stringify(pairingRequest)}\n${JSON.stringify(enrollmentResult)}\n`;
+      opts?.onStdoutChunk?.(stdout);
+      return { status: 0, stdout, stderr: '' };
+    });
+    localEnrollmentExecutor.current = { runHappierText };
+    const defaultSpawn = spawnSync.getMockImplementation();
+    spawnSync.mockImplementation((command: string, args: readonly string[] = [], options?: unknown) => {
+      const remoteCommand = String(args.at(-1) ?? '');
+      if (command === 'ssh' && remoteCommand.includes('home') && remoteCommand.includes('create')) {
+        return jsonResult({
+          v: 1,
+          ok: true,
+          kind: 'personal_home_create',
+          data: {
+            status: 'complete',
+            profileId: 'remote-home',
+            homeServerIdentityId: descriptor.homeServerIdentityId,
+            canonicalServerUrl: descriptor.canonicalServerUrl,
+            accountCreated: true,
+            channel: 'preview',
+            mode: 'system',
+            descriptor,
+            accountServiceLink: { kind: 'not_requested' },
+          },
+        });
+      }
+      if (command === 'ssh' && remoteCommand.includes('auth') && remoteCommand.includes('approve')) {
+        return jsonResult({ success: true });
+      }
+      return defaultSpawn?.(command, args, options) as ReturnType<typeof spawnSync>;
+    });
+
+    const result = await createLiveRemoteSshManageHostTaskKind().run({
+      params: {
+        action: 'personalHome.create',
+        channel: 'preview',
+        relayRuntime: { channel: 'preview', mode: 'system' },
+        enrollInvokingClient: true,
+        ssh: { target: 'example.test', auth: 'agent', trustedHostKey: TRUSTED_HOST_KEY },
+      },
+      emit: () => undefined,
+      prompt: async () => ({}),
+    });
+
+    expect(runHappierText).toHaveBeenCalledWith(
+      ['auth', 'enroll-remote', '--json-lines', '--home-target-stdin'],
+      expect.objectContaining({ includeStdoutInError: false }),
+    );
+    const approvalCall = openSshParamsCalls.find((params) => String(params.remoteCommand).includes('approve'));
+    expect(approvalCall).toBeDefined();
+    const remoteCommand = String(approvalCall?.remoteCommand);
+    expect(remoteCommand).toContain('auth');
+    expect(remoteCommand).toContain('approve');
+    expect(remoteCommand).not.toContain(pairingRequest.pairing.secretB64Url);
+    expect(approvalCall?.input).toContain(pairingRequest.pairing.secretB64Url);
+    expect(result).toMatchObject({
+      personalHome: { status: 'complete', invokingClientEnrollment: { kind: 'enrolled' } },
+    });
+    expect(JSON.stringify(result)).not.toMatch(/short-lived-v3-context|accessToken|credential|claim/i);
   });
 
   it('uses a local payload root for remote CLI install when HAPPIER_FIRST_PARTY_REMOTE_CLI_PAYLOAD_ROOT is set', async () => {
@@ -537,7 +892,7 @@ describe('createLiveRemoteSshBootstrapTaskKind', () => {
     expect(sshRemoteCommands.some((command) => command.includes('ln -sfn'))).toBe(true);
     expect(sshRemoteCommands.join('\n')).not.toContain('curl -fsSL https://happier.dev/install');
     expect(approveTerminalAuthRequest).toHaveBeenCalledWith({
-      publicKey: 'pub-key',
+      publicKey: REMOTE_PUBLIC_KEY,
       pairing: REMOTE_REQUEST_PAIRING,
       supportsTokenOnly: true,
     });
@@ -881,7 +1236,7 @@ describe('createLiveRemoteSshBootstrapTaskKind', () => {
     })).resolves.toBeDefined();
 
     expect(approveTerminalAuthRequest).toHaveBeenCalledWith({
-      publicKey: 'pub-key',
+      publicKey: REMOTE_PUBLIC_KEY,
       pairing: REMOTE_REQUEST_PAIRING,
       supportsTokenOnly: true,
     });
@@ -946,6 +1301,43 @@ describe('createLiveRemoteSshBootstrapTaskKind', () => {
     else delete process.env.HAPPIER_PUBLIC_SERVER_URL;
     if (typeof previousLocalServerUrl === 'string') process.env.HAPPIER_LOCAL_SERVER_URL = previousLocalServerUrl;
     else delete process.env.HAPPIER_LOCAL_SERVER_URL;
+  });
+
+  it('passes an explicit manual Home target to approval instead of using the ambient active Home', async () => {
+    const kind = createLiveRemoteSshBootstrapTaskKind();
+    const homeTarget = {
+      profileId: null,
+      homeServerIdentityId: null,
+      descriptor: null,
+      canonicalAuthUrl: 'https://home-b.example.test',
+      applicationUrl: 'https://home-b.example.test',
+      webappUrl: 'https://home-b.example.test',
+      credentialDestination: null,
+      preferredTransport: 'https' as const,
+      authority: 'manual_url' as const,
+    };
+
+    await kind.run({
+      params: {
+        ssh: { target: 'dev@example.test', auth: 'agent' },
+        relay: { relayUrl: homeTarget.applicationUrl, webappUrl: homeTarget.webappUrl },
+        homeTarget,
+        channel: 'preview',
+        knownHostsMode: 'system',
+        serviceMode: 'none',
+      },
+      emit: () => undefined,
+      prompt: async (request) => request.kind === 'auth.approveRemoteProvisioning'
+        ? { approved: true }
+        : Promise.reject(new Error(`Unexpected prompt: ${request.kind}`)),
+    });
+
+    expect(approveTerminalAuthRequest).toHaveBeenCalledWith({
+      publicKey: REMOTE_PUBLIC_KEY,
+      pairing: REMOTE_REQUEST_PAIRING,
+      supportsTokenOnly: true,
+      target: homeTarget,
+    });
   });
 
   it('preserves the local/public relay split when the approval target matches the current public relay url', async () => {
@@ -1079,7 +1471,7 @@ describe('createLiveRemoteSshBootstrapTaskKind', () => {
     expect(controlPathArg).toMatch(/^ControlPath=\/tmp\//u);
     expect(observedServerUrl).toMatch(new RegExp(`^http://(127\\\\.0\\\\.0\\\\.1|localhost):${relayPort}$`, 'u'));
     expect(approveTerminalAuthRequest).toHaveBeenCalledWith({
-      publicKey: 'pub-key',
+      publicKey: REMOTE_PUBLIC_KEY,
       pairing: REMOTE_REQUEST_PAIRING,
       supportsTokenOnly: true,
     });
@@ -1159,7 +1551,7 @@ describe('createLiveRemoteSshBootstrapTaskKind', () => {
       expect(localPort).not.toBe(occupiedPort);
       expect(observedServerUrl).toMatch(new RegExp(`^http://(127\\\\.0\\\\.0\\\\.1|localhost):${localPort}$`, 'u'));
       expect(approveTerminalAuthRequest).toHaveBeenCalledWith({
-        publicKey: 'pub-key',
+        publicKey: REMOTE_PUBLIC_KEY,
         pairing: REMOTE_REQUEST_PAIRING,
         supportsTokenOnly: true,
       });

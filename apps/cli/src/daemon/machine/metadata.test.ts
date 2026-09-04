@@ -38,4 +38,20 @@ describe('initialMachineMetadata', () => {
       daemonSessionGoalControlsSupported: true,
     });
   });
+
+  it('returns the existing metadata object when every daemon-owned field is current', () => {
+    const current = {
+      ...initialMachineMetadata,
+      displayName: 'Build box',
+    };
+
+    expect(refreshMachineMetadataForCurrentDaemon(current, {
+      host: current.host,
+      platform: current.platform,
+      happyCliVersion: current.happyCliVersion,
+      homeDir: current.homeDir,
+      happyHomeDir: current.happyHomeDir,
+      happyLibDir: current.happyLibDir,
+    })).toBe(current);
+  });
 });

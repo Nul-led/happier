@@ -8,7 +8,7 @@ import { Socket } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { listenWorkspaceSyncBroker } from './workspaceSyncBroker';
-import { WorkspaceSyncBrokerClient } from './workspaceSyncBrokerClient';
+import { WorkspaceSyncBrokerClient } from './workspaceSyncBrokerClient.testkit';
 import {
     createWorkspaceSyncPeerIdentityValidator,
     type WorkspaceSyncPeerIdentityValidator,

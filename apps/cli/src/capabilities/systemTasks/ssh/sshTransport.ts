@@ -80,10 +80,3 @@ export function buildScpCommand(params: Readonly<{
     serverAliveCountMax: params.serverAliveCountMax,
   });
 }
-
-export function redactRemoteBootstrapPayload<T extends Record<string, unknown>>(params: T): Omit<T, 'claimSecret' | 'stateFile'> {
-  const next = { ...params };
-  delete (next as { claimSecret?: unknown }).claimSecret;
-  delete (next as { stateFile?: unknown }).stateFile;
-  return next;
-}

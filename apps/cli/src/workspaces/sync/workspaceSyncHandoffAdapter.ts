@@ -3,7 +3,11 @@ import {
   type WorkspaceSyncCopyOnceV1,
 } from './workspaceSyncTypes';
 import { validateWorkspaceSyncContentPolicy } from './workspaceSyncSettings';
-import type { HandoffTargetReplacementApprovalV1, HandoffWorkspaceActionV1 } from '@happier-dev/protocol';
+import type {
+  HandoffTargetReplacementApprovalV1,
+  HandoffWorkspaceActionV1,
+  WorkspaceSyncStatusV1,
+} from '@happier-dev/protocol';
 import type { WorkspaceRootOwnershipHandle } from './workspaceSyncRootOwnership';
 import type {
   PreparedWorkspaceSyncRelationship,
@@ -37,8 +41,14 @@ export type WorkspaceSyncHandoffPrepared = Readonly<{
   kind: WorkspaceSyncHandoffAction['kind'];
   operationId: string;
   relationshipId?: string;
+  /**
+   * `true` when this operation persisted a new relationship definition, `false`
+   * when an exact existing definition was reused. Absent for actions that
+   * publish no relationship.
+   */
+  relationshipCreated?: boolean;
   action: WorkspaceSyncHandoffAction;
-  status?: unknown;
+  status?: WorkspaceSyncStatusV1;
 }>;
 
 export type CommitWorkspaceSyncHandoffInput = Readonly<{
@@ -51,7 +61,8 @@ export type WorkspaceSyncHandoffCommitted = Readonly<{
   kind: WorkspaceSyncHandoffAction['kind'];
   operationId: string;
   relationshipId?: string;
-  status?: unknown;
+  relationshipCreated?: boolean;
+  status?: WorkspaceSyncStatusV1;
 }>;
 export type FinalizeWorkspaceSyncHandoffInput = CommitWorkspaceSyncHandoffInput;
 export type WorkspaceSyncHandoffFinalized = WorkspaceSyncHandoffCommitted;
@@ -86,7 +97,7 @@ type PreparedOperation = Readonly<{
     release(reason: 'abort' | 'commit'): Promise<void>;
     ownershipHandles?: readonly WorkspaceRootOwnershipHandle[];
   }>;
-  finalizedStatus?: unknown;
+  finalizedStatus?: WorkspaceSyncStatusV1;
   finalized?: boolean;
   relationshipTransaction?: PreparedWorkspaceSyncRelationship;
 }>;
@@ -164,6 +175,7 @@ export function createWorkspaceSyncHandoffAdapter(deps: WorkspaceSyncHandoffAdap
           kind: input.action.kind,
           operationId: input.operationId,
           relationshipId: relationshipTransaction.relationship.relationshipId,
+          relationshipCreated: !relationshipTransaction.reused,
           action: input.action,
           status: relationshipTransaction.status,
         };
@@ -195,7 +207,7 @@ export function createWorkspaceSyncHandoffAdapter(deps: WorkspaceSyncHandoffAdap
       }
       const fence = input.action.kind === 'none' ? undefined : await deps.bootstrap(effectiveInput);
       try {
-        let status: unknown;
+        let status: WorkspaceSyncStatusV1 | undefined;
         if (input.action.kind === 'relationship') {
           // Initial materialization/readiness occurs while the source session
           // is still active. The coordinator performs finalize only after the
@@ -206,7 +218,9 @@ export function createWorkspaceSyncHandoffAdapter(deps: WorkspaceSyncHandoffAdap
           kind: input.action.kind,
           operationId: input.operationId,
           action: input.action,
-          ...(input.action.kind === 'relationship' ? { relationshipId: input.action.relationshipId } : {}),
+          ...(input.action.kind === 'relationship'
+            ? { relationshipId: input.action.relationshipId, relationshipCreated: false }
+            : {}),
           ...(status === undefined ? {} : { status }),
         };
         preparedByOperation.set(input.operationId, { prepared, input: effectiveInput, ...(fence ? { fence } : {}) });
@@ -248,9 +262,9 @@ export function createWorkspaceSyncHandoffAdapter(deps: WorkspaceSyncHandoffAdap
         kind: prepared.action.kind,
         operationId: input.operationId,
         ...(prepared.action.kind === 'relationship'
-          ? { relationshipId: prepared.action.relationshipId }
+          ? { relationshipId: prepared.action.relationshipId, relationshipCreated: false }
           : prepared.action.kind === 'create_relationship' && prepared.relationshipId
-            ? { relationshipId: prepared.relationshipId }
+            ? { relationshipId: prepared.relationshipId, relationshipCreated: prepared.relationshipCreated ?? true }
             : {}),
         ...(status === undefined ? {} : { status }),
       };
@@ -277,9 +291,9 @@ export function createWorkspaceSyncHandoffAdapter(deps: WorkspaceSyncHandoffAdap
         kind: action.kind,
         operationId: input.operationId,
         ...(action.kind === 'relationship'
-          ? { relationshipId: action.relationshipId }
+          ? { relationshipId: action.relationshipId, relationshipCreated: false }
           : action.kind === 'create_relationship' && prepared.relationshipId
-            ? { relationshipId: prepared.relationshipId }
+            ? { relationshipId: prepared.relationshipId, relationshipCreated: prepared.relationshipCreated ?? true }
             : {}),
         ...(status === undefined ? {} : { status }),
       };

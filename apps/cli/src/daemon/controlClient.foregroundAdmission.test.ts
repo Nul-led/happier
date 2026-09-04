@@ -10,6 +10,7 @@ import {
   AgentCliSessionCommandBuildInputV1Schema,
   AgentCliSessionCommandOptionsV1Schema,
   ForegroundAgentRuntimeAdmissionRequestV1Schema,
+  ForegroundAgentRuntimeClaimRequestV1Schema,
 } from '@/daemon/agentRuntime/foregroundAdmissionContract';
 import { clearDaemonStateForTestTeardown, writeDaemonState } from '@/persistence';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
@@ -42,6 +43,50 @@ describe('daemon control client: foreground Agent runtime admission', () => {
       await removeTempDir(tmpHomeDir);
       tmpHomeDir = null;
     }
+  });
+
+  it('carries the full canonical qualified Agent routing identity through admission and claim', () => {
+    const agentId = `${'p'.repeat(256)}/${'a'.repeat(256)}`;
+    const tooLongAgentId = `${agentId}x`;
+    const admission = {
+      v: 1 as const,
+      attemptId: 'attempt-1',
+      sessionId: 'session-1',
+      foregroundPid: process.pid,
+      directory: '/workspace',
+      agentId,
+      backendTarget: {
+        kind: 'backend' as const,
+        backendId: agentId,
+        configuredBackendId: 'configured-agent',
+        sourceKind: 'configured' as const,
+      },
+    };
+    const claim = {
+      v: 1 as const,
+      attemptId: 'attempt-1',
+      provisionalSessionId: 'session-1',
+      canonicalSessionId: 'session-2',
+      foregroundPid: process.pid,
+      pluginId: 'p'.repeat(256),
+      agentId,
+      generation: 'generation-1',
+      capability: 'capability-1',
+      foregroundSatisfiedProfileSecretRequirementNames: [],
+    };
+
+    expect(ForegroundAgentRuntimeAdmissionRequestV1Schema.parse(admission))
+      .toEqual(admission);
+    expect(ForegroundAgentRuntimeClaimRequestV1Schema.parse(claim))
+      .toEqual(claim);
+    expect(ForegroundAgentRuntimeAdmissionRequestV1Schema.safeParse({
+      ...admission,
+      agentId: tooLongAgentId,
+    }).success).toBe(false);
+    expect(ForegroundAgentRuntimeClaimRequestV1Schema.safeParse({
+      ...claim,
+      agentId: tooLongAgentId,
+    }).success).toBe(false);
   });
 
   it('accepts only qualified service-keyed Connected Services intent and rejects client-qualified purpose authority', () => {

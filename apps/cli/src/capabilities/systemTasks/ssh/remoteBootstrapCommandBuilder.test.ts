@@ -17,7 +17,7 @@ describe('buildRemoteBootstrapCommand', () => {
     })).not.toContain('$HOME/.happier/bin/happier');
   });
 
-  it('uses a real auth-status preflight and configures the selected relay before pairing', () => {
+  it('uses a real auth-status preflight and configures the selected relay', () => {
     expect(buildRemoteBootstrapCommand({
       label: 'auth.status',
       serverUrl: 'https://relay.example.test',
@@ -33,6 +33,13 @@ describe('buildRemoteBootstrapCommand', () => {
       serverUrl: 'https://relay.example.test',
       webappUrl: 'https://app.example.test',
     })).not.toContain('--public-server-url');
+  });
+
+  it('uses the existing daemon status command for remote service readiness', () => {
+    expect(buildRemoteBootstrapCommand({
+      label: 'daemon.status',
+      serverUrl: 'https://relay.example.test',
+    })).toContain('daemon status --json');
   });
 
   it('pins daemon service lifecycle commands to the selected relay urls', () => {
@@ -82,15 +89,6 @@ describe('buildRemoteBootstrapCommand', () => {
     expect(serverConfigure).toContain("--local-server-url 'http://127.0.0.1:3005'");
     expect(serverConfigure).toContain("--webapp-url 'https://app.example.test'");
 
-    const authRequest = buildRemoteBootstrapCommand({
-      label: 'auth.request',
-      serverUrl: 'https://relay.example.test',
-      localServerUrl: 'http://127.0.0.1:3005',
-      webappUrl: 'https://app.example.test',
-    });
-    expect(authRequest).toContain("--server-url 'https://relay.example.test'");
-    expect(authRequest).not.toContain("--local-server-url 'http://127.0.0.1:3005'");
-
     const daemonInstall = buildRemoteBootstrapCommand({
       label: 'daemon.service.install',
       serverUrl: 'https://relay.example.test',
@@ -112,23 +110,6 @@ describe('buildRemoteBootstrapCommand', () => {
     expect(serverConfigure).toContain('server use cloud --json');
     expect(serverConfigure).not.toContain("server set --server-url 'https://api.happier.dev'");
 
-    const authRequest = buildRemoteBootstrapCommand({
-      label: 'auth.request',
-      serverUrl: 'https://api.happier.dev',
-      webappUrl: 'https://app.happier.dev',
-    });
-    expect(authRequest).toContain('auth request --json --persist --server cloud');
-    expect(authRequest).not.toContain("--server-url 'https://api.happier.dev'");
-
-    const authWait = buildRemoteBootstrapCommand({
-      label: 'auth.wait',
-      serverUrl: 'https://api.happier.dev',
-      webappUrl: 'https://app.happier.dev',
-      data: { publicKey: 'abc' },
-    });
-    expect(authWait).toContain('auth wait --public-key');
-    expect(authWait).toContain('--json --persist --server cloud');
-    expect(authWait).not.toContain("--server-url 'https://api.happier.dev'");
   });
 
   it('never emits hstack self-host install shells (relay runtime is handled out-of-band)', () => {

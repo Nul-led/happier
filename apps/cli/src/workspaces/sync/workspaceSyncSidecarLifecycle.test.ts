@@ -283,7 +283,14 @@ describe('WorkspaceSyncSidecarLifecycle', () => {
     expect(outcome).toMatchObject({ code: 'engine_unavailable' });
     expect(spawn).toHaveBeenCalledTimes(1);
     expect(close).toHaveBeenCalledTimes(1);
-    await lifecycle.stop();
+    const stopOutcome = await Promise.race([
+      lifecycle.stop().then(() => 'stopped', (error: unknown) => error),
+      new Promise<'hung'>((resolve) => setTimeout(() => resolve('hung'), 100)),
+    ]);
+    expect(stopOutcome).toMatchObject({
+      code: 'engine_unavailable',
+      message: expect.stringContaining('cleanup is pending'),
+    });
   });
 
   it('stops a sidecar process that arrives after its startup deadline', async () => {
@@ -321,6 +328,53 @@ describe('WorkspaceSyncSidecarLifecycle', () => {
     await vi.waitFor(() => expect(stop).toHaveBeenCalledTimes(1));
     expect(close).toHaveBeenCalledTimes(1);
     await lifecycle.stop();
+  });
+
+  it('retains a late sidecar whose first stop fails and retries it on the next lifecycle stop', async () => {
+    let resolveSpawn!: (process: WorkspaceSyncSidecarProcess) => void;
+    const deferredSpawn = new Promise<WorkspaceSyncSidecarProcess>((resolve) => { resolveSpawn = resolve; });
+    const cleanupFailure = new Error('late sidecar stop failed');
+    let finishFirstStop!: () => void;
+    const firstStopGate = new Promise<void>((resolve) => { finishFirstStop = resolve; });
+    const stop = vi.fn()
+      .mockImplementationOnce(async () => {
+        await firstStopGate;
+        throw cleanupFailure;
+      })
+      .mockResolvedValueOnce(undefined);
+    const lifecycle = new WorkspaceSyncSidecarLifecycle({
+      resolveRuntime: vi.fn(async () => ({
+        managerPath: '/verified/manager', agentPath: '/verified/agent',
+        dataDir: '/private/data', brokerDir: '/private/broker',
+        manifest: { engineVersion: '1', protocolEpoch: 'external-stream-v1' },
+      })),
+      createBroker: vi.fn(async () => ({
+        bootstrapDescriptor: new Uint8Array([1]),
+        waitForReady: async () => undefined,
+        command: async () => [],
+        close: async () => undefined,
+      })),
+      openExternalStream: vi.fn(),
+      spawn: vi.fn(async () => await deferredSpawn),
+      ensurePrivateDirectory: vi.fn(async () => undefined),
+      randomBytes: () => new Uint8Array(32), randomId: () => 'opaque-id',
+      onRestartReady: async () => undefined,
+      startupDeadlineMs: 25,
+      shutdownGraceMs: 0,
+    });
+
+    await expect(lifecycle.start()).rejects.toMatchObject({ code: 'engine_unavailable' });
+    resolveSpawn({
+      pid: 42,
+      waitForTermination: async () => await new Promise<never>(() => {}),
+      stop,
+    });
+    await vi.waitFor(() => expect(stop).toHaveBeenCalledTimes(1));
+    const firstStop = lifecycle.stop();
+    finishFirstStop();
+    await expect(firstStop).rejects.toBe(cleanupFailure);
+    await expect(lifecycle.stop()).resolves.toBeUndefined();
+    expect(stop).toHaveBeenCalledTimes(2);
   });
 
   it('supervises a crash restart without ever spawning a concurrent second sidecar', async () => {

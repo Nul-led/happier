@@ -17,6 +17,7 @@ import {
   updateAccountSettingsV2OnceAgainstLatest,
 } from '@/settings/accountSettings/updateAccountSettingsV2WithRetry';
 import type { StoredCredentials } from '@/persistence';
+import { deriveWorkspaceSyncRelationshipId } from './workspaceSyncRelationshipIdentity';
 import { validateWorkspaceSyncRelationship, validateWorkspaceSyncRelationships } from './workspaceSyncSettings';
 
 export type WorkspaceSyncRelationshipSettingsMutation = (
@@ -213,9 +214,12 @@ function transitionAndCompensationFailure(
   );
 }
 
-function defaultRelationshipId(operationId: string): string {
-  return `relationship_${createHash('sha256').update(operationId).digest('hex')}`;
-}
+/**
+ * Test-only determinism seam. Production must keep the canonical rule, because
+ * the target daemon re-derives it to authorize destructive replacement; a test
+ * that overrides it cannot carry a target replacement approval.
+ */
+const defaultRelationshipId = deriveWorkspaceSyncRelationshipId;
 
 /** Production adapter to the one Account Settings compare-and-swap owner. */
 export function createAccountSettingsWorkspaceSyncRelationshipMutation(

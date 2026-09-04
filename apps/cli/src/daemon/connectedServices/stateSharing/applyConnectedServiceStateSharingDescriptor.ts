@@ -153,7 +153,6 @@ function isAllowedMigrationSource(params: Readonly<{
 }
 
 function assertNativeSourceRootInvariant(input: ApplyConnectedServiceStateSharingDescriptorInput): void {
-  if (process.env.NODE_ENV === 'production') return;
   const sourceRoot = resolvePathForComparison(input.nativeSourceContext.sourceRoot);
   const targetRoot = resolvePathForComparison(input.target.targetMaterializedRoot);
   if (!isPathWithin(sourceRoot, targetRoot)) return;

@@ -12,9 +12,9 @@ import {
 import {
   BrokerControlFrameDecoder,
   BrokerProtocolError,
-  BrokerRequestStateMachine,
   createBrokerHelloOkProof,
   createBrokerHelloProof,
+  encodeBrokerCommandFrame,
   encodeBrokerControlFrame,
   isBrokerTerminalErrorCode,
   MAX_CONCURRENT_DATA_STREAMS,
@@ -24,7 +24,6 @@ import {
   type MutagenControlCommandV1,
   verifyBrokerProof,
   WORKSPACE_SYNC_BROKER_ATTACH_TTL_MS,
-  WORKSPACE_SYNC_BROKER_COMMAND_DEADLINE_MS,
 } from './workspaceSyncBrokerProtocol';
 
 export interface WorkspaceSyncBrokerOpenContext {
@@ -48,6 +47,8 @@ export interface WorkspaceSyncBrokerConfig {
   launchSecret: Uint8Array;
   expectedSidecarPid?: number;
   maxStreams?: number;
+  /** Test/boundary injection for the broker-owned attach window; production uses the protocol constant. */
+  attachTtlMs?: number;
   now?: () => number;
   validatePeerIdentity?: (context: WorkspaceSyncBrokerPeerIdentityContext) => boolean | Promise<boolean>;
   openExternalStream: (context: WorkspaceSyncBrokerOpenContext) => Promise<NodeJS.ReadWriteStream>;
@@ -127,7 +128,10 @@ type PendingStream = {
   requestId: string;
   streamId: string;
   attachNonce: string;
+  /** Client-supplied remote-open deadline; never reused as the attach deadline. */
   expiresAtMs: number;
+  /** Broker-owned attach window that starts once the external open succeeded. */
+  attachExpiresAtMs?: number;
   control: Socket;
   data?: Socket;
   dataCandidate?: Socket;
@@ -141,7 +145,7 @@ type PendingStream = {
    * Settles with the cleanup failures once this stream's data server and
    * endpoint removal have both finished.
    */
-  cleanup?: Promise<readonly unknown[]>;
+  cleanup?: Promise<void>;
   setupDone: Promise<void>;
   resolveSetupDone: () => void;
   dataReady: Promise<boolean>;
@@ -150,13 +154,11 @@ type PendingStream = {
   attached: boolean;
   terminalSent: boolean;
   closed: boolean;
-  state: BrokerRequestStateMachine;
 };
 
 type PendingCommand = {
   resolve: (result: unknown) => void;
   reject: (error: Error) => void;
-  timer: NodeJS.Timeout;
   abortCleanup?: () => void;
 };
 
@@ -203,14 +205,17 @@ export class WorkspaceSyncBroker {
   private launchSecret: Buffer;
   private readonly server: Server;
   private readonly endpoint: WorkspaceSyncBrokerEndpoint;
-  private readonly config: WorkspaceSyncBrokerConfig & { now: () => number; maxStreams: number };
+  private readonly config: WorkspaceSyncBrokerConfig & {
+    now: () => number;
+    maxStreams: number;
+    attachTtlMs: number;
+  };
   private readonly pending = new Map<string, PendingStream>();
   private readonly attachRequestIds = new Map<string, string>();
   private readonly activeRequestIds = new Set<string>();
   private readonly commands = new Map<string, PendingCommand>();
   private readonly controlSockets = new Set<Socket>();
-  private readonly streamCleanups = new Set<Promise<readonly unknown[]>>();
-  private readonly streamCleanupFailures: unknown[] = [];
+  private readonly streamsAwaitingCleanup = new Set<PendingStream>();
   private authenticatedControl: Socket | undefined;
   private authenticatedSidecarPidValue: number | undefined;
   private readyResolve!: () => void;
@@ -229,6 +234,11 @@ export class WorkspaceSyncBroker {
       ...config,
       now: config.now ?? Date.now,
       maxStreams: Math.min(config.maxStreams ?? MAX_CONCURRENT_DATA_STREAMS, MAX_CONCURRENT_DATA_STREAMS),
+      // The attach window is broker-owned: a caller-supplied OPEN_DATA expiry
+      // is only the remote-open deadline and can never shorten the window.
+      attachTtlMs: config.attachTtlMs && config.attachTtlMs > 0 && config.attachTtlMs <= WORKSPACE_SYNC_BROKER_ATTACH_TTL_MS
+        ? config.attachTtlMs
+        : WORKSPACE_SYNC_BROKER_ATTACH_TTL_MS,
     };
     this.endpoint = endpoint;
     this.server = server;
@@ -257,7 +267,6 @@ export class WorkspaceSyncBroker {
     }
     const endpoint = config.createEndpoint?.(config.socketPath)
       ?? createWorkspaceSyncBrokerEndpoint({ endpointPath: config.socketPath });
-    await endpoint.remove();
     const server = createServer();
     const broker = new WorkspaceSyncBroker(
       config,
@@ -289,7 +298,7 @@ export class WorkspaceSyncBroker {
 
   command(
     command: MutagenControlCommandV1,
-    options: Readonly<{ signal?: AbortSignal; timeoutMs?: number }> = {},
+    options: Readonly<{ signal?: AbortSignal }> = {},
   ): Promise<unknown> {
     const control = this.authenticatedControl;
     if (!control || control.destroyed) {
@@ -301,22 +310,18 @@ export class WorkspaceSyncBroker {
     if (options.signal?.aborted) {
       return Promise.reject(new BrokerProtocolError('cancelled', 'command cancelled'));
     }
-    const timeoutMs = Math.min(options.timeoutMs ?? WORKSPACE_SYNC_BROKER_COMMAND_DEADLINE_MS, WORKSPACE_SYNC_BROKER_COMMAND_DEADLINE_MS);
     return new Promise<unknown>((resolve, reject) => {
       let dispatched = false;
       const fail = (error: Error, sendCancel: boolean) => {
         const pending = this.commands.get(command.requestId);
         if (!pending) return;
         this.commands.delete(command.requestId);
-        clearTimeout(pending.timer);
         pending.abortCleanup?.();
         if (sendCancel && this.authenticatedControl === control && !control.destroyed) {
           this.send(control, { t: 'cancel', requestId: command.requestId });
         }
         reject(error);
       };
-      const timer = setTimeout(() => fail(new BrokerProtocolError('indeterminate', 'sidecar command timed out'), true), timeoutMs);
-      timer.unref();
       const abort = () => fail(
         new BrokerProtocolError(
           dispatched ? 'indeterminate' : 'cancelled',
@@ -326,9 +331,9 @@ export class WorkspaceSyncBroker {
       );
       const abortCleanup = options.signal ? () => options.signal?.removeEventListener('abort', abort) : undefined;
       options.signal?.addEventListener('abort', abort, { once: true });
-      this.commands.set(command.requestId, { resolve, reject, timer, abortCleanup });
+      this.commands.set(command.requestId, { resolve, reject, abortCleanup });
       try {
-        this.send(control, { t: 'command', requestId: command.requestId, command });
+        control.write(encodeBrokerCommandFrame(command));
         dispatched = true;
       } catch (error) {
         fail(typedError(error, 'agent_unavailable', 'workspace sync sidecar unavailable'), false);
@@ -339,7 +344,11 @@ export class WorkspaceSyncBroker {
   async close(): Promise<void> {
     if (!this.closeTask) {
       this.closed = true;
-      this.closeTask = this.closeTerminally();
+      const closeTask = this.closeTerminally();
+      this.closeTask = closeTask;
+      void closeTask.catch(() => {
+        if (this.closeTask === closeTask) this.closeTask = undefined;
+      });
     }
     await this.closeTask;
   }
@@ -351,8 +360,13 @@ export class WorkspaceSyncBroker {
     // endpoint removal has settled; each stream is attempted even if one fails.
     for (const stream of [...this.pending.values()]) this.closePending(stream);
     this.failCommands(new BrokerProtocolError('indeterminate', 'sidecar command outcome is unknown after broker close'));
-    await Promise.allSettled([...this.streamCleanups]);
-    const failures = this.streamCleanupFailures.splice(0);
+    const failures: unknown[] = [];
+    const streamResults = await Promise.allSettled(
+      [...this.streamsAwaitingCleanup].map((stream) => this.closePending(stream)),
+    );
+    failures.push(...streamResults
+      .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+      .map((result) => result.reason));
     failures.push(...await settleCleanup([closeServer(this.server)]));
     // Endpoint removal remains ordered after listener close, but is attempted
     // even when that close reported a failure.
@@ -500,7 +514,9 @@ export class WorkspaceSyncBroker {
       requestId: message.requestId,
       streamId: randomUUID(),
       attachNonce: randomBytes(24).toString('base64url'),
-      expiresAtMs: Math.min(message.expiresAtMs, now + WORKSPACE_SYNC_BROKER_ATTACH_TTL_MS),
+      // The client-supplied expiry bounds only the remote open; the attach
+      // window is granted fresh once the open succeeds.
+      expiresAtMs: message.expiresAtMs,
       control: socket,
       dataReady,
       resolveDataReady,
@@ -511,12 +527,7 @@ export class WorkspaceSyncBroker {
       attached: false,
       terminalSent: false,
       closed: false,
-      state: new BrokerRequestStateMachine(),
     };
-    stream.state.transition('CONTROL_AUTHENTICATING');
-    stream.state.transition('CONTROL_READY');
-    stream.state.transition('OPEN_VALIDATING');
-    stream.state.transition('REMOTE_OPENING');
     this.pending.set(stream.requestId, stream);
     this.attachRequestIds.set(stream.streamId, stream.requestId);
     stream.openTimer = setTimeout(() => {
@@ -547,14 +558,17 @@ export class WorkspaceSyncBroker {
         return;
       }
       stream.external = external;
-      stream.state.transition('DATA_ATTACH_PENDING');
+      // Darwin's sockaddr_un path ceiling is only 104 bytes and its temporary
+      // directory prefix is long. The stream UUID is broker-generated, so a
+      // 64-bit filename token remains ample for the bounded active-stream set
+      // while leaving the endpoint inside the broker's private directory.
+      const dataEndpointToken = stream.streamId.replaceAll('-', '').slice(0, 16);
       const dataPath = process.platform === 'win32'
         ? `${this.socketPath}-data-${stream.streamId}`
-        : join(dirname(this.socketPath), `d-${stream.streamId}.sock`);
+        : join(dirname(this.socketPath), `d-${dataEndpointToken}.sock`);
       const dataEndpoint = this.config.createEndpoint?.(dataPath)
         ?? createWorkspaceSyncBrokerEndpoint({ endpointPath: dataPath });
       stream.dataEndpoint = dataEndpoint;
-      await dataEndpoint.remove();
       if (stream.closed) return;
       const dataServer = createServer({ allowHalfOpen: true }, (data) => { void this.acceptData(stream, data); });
       stream.dataServer = dataServer;
@@ -567,13 +581,17 @@ export class WorkspaceSyncBroker {
       }
       this.send(socket, {
         t: 'data_ready', requestId: message.requestId, streamId: stream.streamId,
-        dataEndpoint: dataEndpoint.endpointPath, attachNonce: stream.attachNonce, expiresAtMs: stream.expiresAtMs,
+        dataEndpoint: dataEndpoint.endpointPath, attachNonce: stream.attachNonce,
+        // Fresh broker-owned attach window counted from after the successful
+        // external open — never the leftover open budget (§6.4).
+        expiresAtMs: this.config.now() + this.config.attachTtlMs,
       });
+      stream.attachExpiresAtMs = this.config.now() + this.config.attachTtlMs;
       stream.attachTimer = setTimeout(() => {
         if (!stream.attached && !stream.closed) {
           this.failPending(stream, 'data_attach_failed', 'data attachment expired');
         }
-      }, Math.max(1, stream.expiresAtMs - this.config.now()));
+      }, Math.max(1, stream.attachExpiresAtMs - this.config.now()));
       stream.attachTimer.unref();
     } catch (error) {
       clearTimeout(stream.openTimer);
@@ -621,13 +639,14 @@ export class WorkspaceSyncBroker {
     const socket = stream.control;
     const dataAccepted = await stream.dataReady;
     if (stream.closed) return;
-    if (!dataAccepted || stream.expiresAtMs <= this.config.now() || !stream.data) {
+    const attachExpired = stream.attachExpiresAtMs === undefined
+      || stream.attachExpiresAtMs <= this.config.now();
+    if (!dataAccepted || attachExpired || !stream.data) {
       this.failPending(stream, 'data_attach_failed', 'data attachment unavailable');
       return;
     }
     stream.attached = true;
     clearTimeout(stream.attachTimer);
-    stream.state.transition('STREAMING');
     this.pipe(stream);
     this.send(socket, { t: 'data_ok', streamId: stream.streamId });
   }
@@ -661,45 +680,57 @@ export class WorkspaceSyncBroker {
    * endpoint removal have settled, so a terminal `close()` can await the same
    * work the fire-and-forget callers (socket errors, CANCEL, disconnect) start.
    */
-  private closePending(stream: PendingStream): Promise<readonly unknown[]> {
-    if (stream.closed) return stream.cleanup ?? Promise.resolve([]);
-    stream.closed = true;
-    const cleanup = this.teardownPending(stream);
+  private closePending(stream: PendingStream): Promise<void> {
+    if (!stream.closed) {
+      stream.closed = true;
+      this.beginPendingTeardown(stream);
+      this.streamsAwaitingCleanup.add(stream);
+    }
+    if (stream.cleanup) return stream.cleanup;
+    const cleanup = this.finishPendingCleanup(stream);
     stream.cleanup = cleanup;
-    this.streamCleanups.add(cleanup);
     void cleanup.then(
-      (failures) => this.streamCleanupFailures.push(...failures),
-      (failure: unknown) => this.streamCleanupFailures.push(failure),
-    ).finally(() => this.streamCleanups.delete(cleanup));
-    return stream.cleanup;
+      () => {
+        this.streamsAwaitingCleanup.delete(stream);
+        if (stream.cleanup === cleanup) stream.cleanup = undefined;
+      },
+      () => {
+        if (stream.cleanup === cleanup) stream.cleanup = undefined;
+      },
+    );
+    return cleanup;
   }
 
-  private async teardownPending(stream: PendingStream): Promise<readonly unknown[]> {
+  private beginPendingTeardown(stream: PendingStream): void {
     if (!stream.openController.signal.aborted) {
       stream.openController.abort(new BrokerProtocolError('cancelled', 'request closed'));
     }
     stream.resolveDataReady(false);
     clearTimeout(stream.openTimer);
     clearTimeout(stream.attachTimer);
-    if (stream.state.state !== 'CLOSED') {
-      if (stream.state.state !== 'CLOSING') stream.state.transition('CLOSING');
-      stream.state.transition('CLOSED');
-    }
     stream.dataCandidate?.destroy();
     stream.data?.destroy();
-    if (stream.external && 'destroy' in stream.external && typeof stream.external.destroy === 'function') stream.external.destroy();
+    if (stream.external && 'destroy' in stream.external && typeof stream.external.destroy === 'function') {
+      stream.external.destroy();
+    }
     this.pending.delete(stream.requestId);
     this.attachRequestIds.delete(stream.streamId);
     this.activeRequestIds.delete(stream.requestId);
+  }
+
+  private async finishPendingCleanup(stream: PendingStream): Promise<void> {
     await stream.setupDone;
-    return await settleCleanup([closeServer(stream.dataServer), stream.dataEndpoint?.remove()]);
+    const failures = await settleCleanup([closeServer(stream.dataServer), stream.dataEndpoint?.remove()]);
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) {
+      throw new AggregateError(failures, 'workspace sync broker stream cleanup failed');
+    }
   }
 
   private settleCommand(requestId: string, result: unknown, error?: Error): void {
     const command = this.commands.get(requestId);
     if (!command) return;
     this.commands.delete(requestId);
-    clearTimeout(command.timer);
     command.abortCleanup?.();
     if (error) command.reject(error); else command.resolve(result);
   }
@@ -707,7 +738,6 @@ export class WorkspaceSyncBroker {
   private failCommands(error: Error): void {
     for (const [requestId, command] of this.commands) {
       this.commands.delete(requestId);
-      clearTimeout(command.timer);
       command.abortCleanup?.();
       command.reject(error);
     }

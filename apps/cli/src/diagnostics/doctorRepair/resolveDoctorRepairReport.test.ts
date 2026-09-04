@@ -29,12 +29,19 @@ const {
   resolveDaemonServiceCliRuntimeFromEnvMock,
   resolveDaemonServiceInventoryEntriesMock,
   resolveInvokerNameMock,
+  validateStoredAuthTokenAgainstActiveServerMock,
 } = vi.hoisted(() => ({
   readDoctorRuntimeInventoryMock: vi.fn(),
   resolveBackgroundServiceRepairPlanForCurrentRuntimeMock: vi.fn(),
   resolveDaemonServiceCliRuntimeFromEnvMock: vi.fn(),
   resolveDaemonServiceInventoryEntriesMock: vi.fn(),
   resolveInvokerNameMock: vi.fn(() => 'hprev'),
+  validateStoredAuthTokenAgainstActiveServerMock: vi.fn(),
+}));
+
+vi.mock('@/auth/validateStoredAuthTokenAgainstActiveServer', () => ({
+  validateStoredAuthTokenAgainstServer: (params?: unknown) =>
+    validateStoredAuthTokenAgainstActiveServerMock(params),
 }));
 
 vi.mock('@/daemon/service/cli', () => ({
@@ -66,6 +73,7 @@ describe('resolveDoctorRepairReport', () => {
     resolveBackgroundServiceRepairPlanForCurrentRuntimeMock.mockReset();
     readDoctorRuntimeInventoryMock.mockReset();
     resolveInvokerNameMock.mockClear();
+    validateStoredAuthTokenAgainstActiveServerMock.mockReset();
     vi.resetModules();
   });
 
@@ -80,11 +88,20 @@ describe('resolveDoctorRepairReport', () => {
       chmodSync(binaryPath, 0o755);
 
       await writeDaemonSettingsFixture(homeDir, {
-        activeServerId: 'cloud',
+        activeServerId: 'other',
         machineIdByServerId: { cloud: 'machine-local-only' },
         machineIdConfirmedByServerByServerId: {},
         lastTokenSubByServerId: { cloud: 'account-local' },
         servers: {
+          other: {
+            id: 'other',
+            name: 'Other Home',
+            serverUrl: 'https://other.example.test',
+            webappUrl: 'https://other.example.test',
+            createdAt: 0,
+            updatedAt: 0,
+            lastUsedAt: 0,
+          },
           cloud: {
             id: 'cloud',
             name: 'Happier Cloud',
@@ -96,6 +113,17 @@ describe('resolveDoctorRepairReport', () => {
           },
         },
       });
+      reloadConfiguration();
+      const { writeCredentialsTokenOnly } = await import('@/persistence');
+      await writeCredentialsTokenOnly({ token: 'other-token' });
+      mkdirSync(join(homeDir, 'servers', 'cloud'), { recursive: true });
+      writeFileSync(
+        join(homeDir, 'servers', 'cloud', 'access.key'),
+        JSON.stringify({ token: 'stored-token' }),
+        'utf8',
+      );
+
+      validateStoredAuthTokenAgainstActiveServerMock.mockResolvedValue({ state: 'valid', httpStatus: 200 });
 
       resolveDaemonServiceCliRuntimeFromEnvMock.mockReturnValue(runtimeFixture);
       resolveBackgroundServiceRepairPlanForCurrentRuntimeMock.mockResolvedValue({
@@ -176,6 +204,7 @@ describe('resolveDoctorRepairReport', () => {
       const result = await resolveDoctorRepairReport({
         preferredMode: 'user',
         systemUser: 'tester',
+        targetServerId: 'cloud',
       });
 
       expect(result.report.currentCli.binaryPath).toBe(binaryPath);
@@ -183,7 +212,7 @@ describe('resolveDoctorRepairReport', () => {
       expect(result.report.authProfiles).toEqual(expect.arrayContaining([
         expect.objectContaining({
           serverId: 'cloud',
-          hasCredentials: true,
+          credentialState: 'valid',
           machineRegistered: false,
         }),
       ]));
@@ -191,6 +220,10 @@ describe('resolveDoctorRepairReport', () => {
         expect.objectContaining({ kind: 'machine_not_registered_for_profile' }),
       ]));
       expect(readDoctorRuntimeInventoryMock).toHaveBeenCalledTimes(1);
+      expect(validateStoredAuthTokenAgainstActiveServerMock).toHaveBeenCalledWith({
+        baseUrl: 'https://api.happier.dev',
+        token: 'stored-token',
+      });
     });
   });
 });

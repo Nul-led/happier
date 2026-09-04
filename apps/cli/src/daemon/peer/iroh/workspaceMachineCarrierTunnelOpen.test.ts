@@ -53,10 +53,17 @@ describe('createWorkspaceMachineCarrierTunnelOpen', () => {
       observedPath: 'direct' as const,
       close,
     }));
+    const openHttpTunnel = vi.fn(async () => ({
+      localPort: 48124,
+      localCapability: 'e'.repeat(64),
+      remoteEndpointId: targetEndpointId,
+      observedPath: 'relay' as const,
+      close,
+    }));
     const open = createWorkspaceMachineCarrierTunnelOpen({
       accountId: 'account-1',
       localMachineId: 'machine-source',
-      runtime: { available: true, endpoint: { endpointId: localEndpointId }, openTunnel } as never,
+      runtime: { available: true, endpoint: { endpointId: localEndpointId }, openTunnel, openHttpTunnel } as never,
       resolveTrustRoots: () => [{ keyId: 'key-1', publicKey: base64url(signingKeyPair.publicKey) }],
       readTargetMachine,
       mintGrant,
@@ -96,6 +103,24 @@ describe('createWorkspaceMachineCarrierTunnelOpen', () => {
       localCapability: 'd'.repeat(64),
       observedPath: 'direct',
       close,
+    });
+
+    const finiteTunnel = await open({
+      sourceMachineId: 'machine-source', targetMachineId: 'machine-target', flow: 'file_transfer',
+    });
+    expect(openHttpTunnel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        flow: 'finite_transfer',
+        handshake: expect.objectContaining({ flow: 'finite_transfer' }),
+      }),
+      target.daemonState.peerMediation.iroh.endpoint,
+    );
+    expect(openHttpTunnel).toHaveBeenCalledTimes(1);
+    expect(openTunnel).toHaveBeenCalledTimes(1);
+    expect(finiteTunnel).toMatchObject({
+      localPort: 48124,
+      localCapability: 'e'.repeat(64),
+      observedPath: 'relay',
     });
   });
 

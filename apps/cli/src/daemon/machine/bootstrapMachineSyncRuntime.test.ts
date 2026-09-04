@@ -1434,7 +1434,9 @@ describe('bootstrapMachineSyncRuntime', () => {
                 connectedServices: {
                     v: 1,
                     bindingsByServiceId: {
-                        anthropic: { source: 'connected', selection: 'profile', profileId: 'claude-work' },
+                        'happier.agent.claude/anthropic': {
+                            source: 'connected', selection: 'profile', profileId: 'claude-work',
+                        },
                     },
                 },
                 connectedServicesUpdatedAt: 1030,
@@ -1453,7 +1455,9 @@ describe('bootstrapMachineSyncRuntime', () => {
             connectedServices: {
                 v: 1,
                 bindingsByServiceId: {
-                    anthropic: { source: 'connected', selection: 'profile', profileId: 'claude-work' },
+                    'happier.agent.claude/anthropic': {
+                        source: 'connected', selection: 'profile', profileId: 'claude-work',
+                    },
                 },
             },
             connectedServicesUpdatedAt: 1030,
@@ -1897,6 +1901,7 @@ describe('bootstrapMachineSyncRuntime', () => {
             stopAttemptAcceptor: vi.fn(async () => { lifecycleOrder.push('acceptor:stop'); }),
             openTransport: vi.fn(),
             openTunnel: vi.fn(),
+            openHttpTunnel: vi.fn(),
             shutdown: vi.fn(async () => {}),
         };
         const connectOptionsRef: { current: { onConnect?: () => Promise<void> | void } | null } = { current: null };
@@ -2104,6 +2109,7 @@ describe('bootstrapMachineSyncRuntime', () => {
             stopAttemptAcceptor: vi.fn(async () => {}),
             openTransport: vi.fn(),
             openTunnel: vi.fn(),
+            openHttpTunnel: vi.fn(),
             shutdown: vi.fn(async () => {}),
         };
         const connectOptionsRef: { current: { onConnect?: () => Promise<void> | void } | null } = { current: null };

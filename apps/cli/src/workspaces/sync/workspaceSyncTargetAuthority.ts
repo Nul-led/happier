@@ -13,6 +13,7 @@ import {
   type ReadWorkspaceSyncFileResultV1,
   type HandoffTargetReplacementPreflightResultV1,
   type HandoffTargetReplacementPreflightV1,
+  type WorkspaceContentPolicyV1,
   type WorkspaceRefV1,
   type WorkspaceSyncCopyOnceV1,
   type WorkspaceSyncRelationshipV1,
@@ -27,7 +28,6 @@ import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { lstat, readdir, realpath } from 'node:fs/promises';
 import { basename, dirname, join, normalize, resolve } from 'node:path';
 import { createServer, type Server, type Socket } from 'node:net';
-import type { Duplex } from 'node:stream';
 
 import {
   getActiveAccountSettingsSnapshot,
@@ -36,6 +36,8 @@ import {
 import { resolveWorkspaceRefById } from '@/settings/accountSettings/workspaceRefsV1';
 import { deleteWorkspaceSyncConflictLoserAtRoot } from './workspaceSyncConflicts';
 import { readWorkspaceSyncFileAtRoot } from './workspaceSyncFileRead';
+import type { WorkspaceSyncOwnedLocalAgent } from './workspaceSyncController';
+import { deriveWorkspaceSyncRelationshipId } from './workspaceSyncRelationshipIdentity';
 import { computeWorkspaceSyncAbsentRootFingerprint } from './workspaceSyncRootIdentity';
 import {
   computeWorkspaceSyncRootFingerprint,
@@ -117,7 +119,8 @@ export type WorkspaceSyncTargetBootstrapAuthorityDependencies = Readonly<{
     sourceMachineId: string;
     sourceWorkspaceRefId: string;
     canonicalRoot: string;
-    contentSelection: 'git_worktree' | 'all_files';
+    /** Complete bounded selection policy: a seed that drops it loses explicitly included ignored paths. */
+    contentPolicy: WorkspaceContentPolicyV1;
     materializationReceiptPath: string;
     originalTargetExists: boolean;
     signal?: AbortSignal;
@@ -126,7 +129,7 @@ export type WorkspaceSyncTargetBootstrapAuthorityDependencies = Readonly<{
     operationId: string;
     sourcePath: string;
     canonicalRoot: string;
-    contentSelection: 'git_worktree' | 'all_files';
+    contentPolicy: WorkspaceContentPolicyV1;
     materializationReceiptPath: string;
     originalTargetExists: boolean;
   }>) => Promise<WorkspaceExportMaterializationCustody>;
@@ -148,7 +151,7 @@ export type WorkspaceSyncTargetAuthority = Readonly<{
   reconcileRetainedBootstraps(): Promise<void>;
   /** Owner-local, non-wire: release every retained handle on daemon shutdown. */
   releaseAllRetainedBootstraps(): Promise<void>;
-  prepareSourceSeedExport(request: Readonly<{ operationId: string; sourceWorkspaceRefId: string; contentSelection: 'git_worktree' | 'all_files' }>): Promise<Readonly<{
+  prepareSourceSeedExport(request: Readonly<{ operationId: string; sourceWorkspaceRefId: string; targetMachineId: string; contentPolicy: WorkspaceContentPolicyV1 }>): Promise<Readonly<{
     payloadSource: TransferPayloadSource;
     onDemandScope: DirectPeerOnDemandTransferScope;
   }>>;
@@ -171,7 +174,7 @@ export type WorkspaceSyncTargetAuthorityDependencies = Readonly<{
     workspaceRefId: string;
     canonicalRoot: string;
     signal?: AbortSignal;
-  }>): Promise<Duplex>;
+  }>): Promise<WorkspaceSyncOwnedLocalAgent>;
   /**
    * Derived once from the retired-state inspection at the daemon composition
    * boundary. Throws the exact typed legacy-state code before any local
@@ -182,8 +185,9 @@ export type WorkspaceSyncTargetAuthorityDependencies = Readonly<{
   assertLegacyStateAvailable?: () => void;
   prepareSourceSeedExport?: (input: Readonly<{
     operationId: string;
-    sourcePath: string;
-    contentSelection: 'git_worktree' | 'all_files';
+    sourceWorkspaceRefId: string;
+    targetMachineId: string;
+    contentPolicy: WorkspaceContentPolicyV1;
   }>) => Promise<Readonly<{ payloadSource: TransferPayloadSource; onDemandScope: DirectPeerOnDemandTransferScope }>>;
 }>;
 
@@ -221,6 +225,29 @@ function resolveOwnedWorkspace(
 function assertTargetMachine(workspace: WorkspaceRefV1, targetMachineId: string): void {
   if (!targetMachineId.trim() || workspace.machineId.trim() !== targetMachineId.trim()) {
     throw authorityError('peer_unavailable', 'Workspace sync target machine does not own the selected workspace');
+  }
+}
+
+/**
+ * A workspace may name this machine while belonging to another Personal Home.
+ * Local target authority exists only for a workspace enrolled through this
+ * daemon's current Home; transport reachability is a separate Lane 06 check.
+ */
+function assertLocalWorkspacePlacement(
+  workspace: WorkspaceRefV1,
+  localServerId: string,
+  localMachineId: string,
+): void {
+  if (
+    !localServerId.trim()
+    || workspace.serverId.trim() !== localServerId.trim()
+    || !localMachineId.trim()
+    || workspace.machineId.trim() !== localMachineId.trim()
+  ) {
+    throw authorityError(
+      'workspace_machine_not_enrolled',
+      'Workspace sync target machine is not enrolled in this Home',
+    );
   }
 }
 
@@ -279,7 +306,7 @@ function resolveBootstrapOwner(
   sourceWorkspaceRefId: string;
   sourceWorkspace: WorkspaceRefV1;
   endpointRole: 'alpha' | 'beta';
-  contentSelection: 'git_worktree' | 'all_files';
+  contentPolicy: WorkspaceContentPolicyV1;
   relationship: WorkspaceSyncRelationshipV1 | null;
 }> {
   const target = resolveWorkspaceRef(snapshot, request.targetWorkspaceRefId);
@@ -332,7 +359,7 @@ function resolveBootstrapOwner(
       sourceWorkspaceRefId: sourceRefId,
       sourceWorkspace: source,
       endpointRole: request.endpointRole,
-      contentSelection: relationship.contentPolicy.selection,
+      contentPolicy: relationship.contentPolicy,
       relationship,
     };
   }
@@ -358,7 +385,7 @@ function resolveBootstrapOwner(
     sourceWorkspaceRefId: operation.alphaWorkspaceRefId,
     sourceWorkspace: source,
     endpointRole: request.endpointRole,
-    contentSelection: operation.contentPolicy.selection,
+    contentPolicy: operation.contentPolicy,
     relationship: null,
   };
 }
@@ -380,7 +407,6 @@ function canonicalBootstrapDefinition(request: WorkspaceSyncTargetBootstrapPrepa
           selection: request.owner.operation.contentPolicy.selection,
           extraIgnorePatterns: [...request.owner.operation.contentPolicy.extraIgnorePatterns],
           extraIncludePatterns: [...request.owner.operation.contentPolicy.extraIncludePatterns],
-          includeGitDirectory: request.owner.operation.contentPolicy.includeGitDirectory,
           policyDigest: request.owner.operation.contentPolicy.policyDigest,
         },
       },
@@ -515,6 +541,7 @@ export function createWorkspaceSyncTargetAuthority(
     const entry = retained.get(authorityKey);
     if (!entry) return;
     const cleanupFailures: unknown[] = [];
+    let materializationCustodyExternalized = false;
     const ingressClosers = [...(activeIngresses.get(authorityKey) ?? [])];
     const ingressResults = await Promise.allSettled(ingressClosers.map(async (close) => await close()));
     for (const result of ingressResults) {
@@ -524,15 +551,20 @@ export function createWorkspaceSyncTargetAuthority(
       if (outcome === 'commit') await entry.materializationCustody?.commit();
       else await entry.materializationCustody?.abort();
     } catch (error) {
-      cleanupFailures.push(error);
+      materializationCustodyExternalized = (error as { code?: unknown }).code
+        === 'workspace_target_materialization_manual_recovery';
+      // The durable receipt is now the sole recovery authority. Keeping this
+      // process-local entry would retry a destructive action that has already
+      // failed its object-custody proof on every later reconcile/shutdown.
+      if (!materializationCustodyExternalized) cleanupFailures.push(error);
     }
     await entry.handle.release().catch((error: unknown) => {
       cleanupFailures.push(error);
     });
-    if (cleanupFailures.length === 0) {
+    if (cleanupFailures.length === 0 || materializationCustodyExternalized) {
       retained.delete(authorityKey);
       activeIngresses.delete(authorityKey);
-      return;
+      if (cleanupFailures.length === 0) return;
     }
     if (cleanupFailures.length === 1) throw cleanupFailures[0];
     throw new AggregateError(cleanupFailures, 'Workspace sync target authority cleanup failed');
@@ -559,6 +591,7 @@ export function createWorkspaceSyncTargetAuthority(
     const source = resolveWorkspaceRefById(snapshot?.settings.workspaceRefsV1 ?? [], expectedSourceRef);
     return expectedTargetRef === entry.targetWorkspaceRefId
       && expectedSourceRef === entry.sourceWorkspaceRefId
+      && target?.serverId.trim() === localServerId.trim()
       && target?.machineId.trim() === entry.targetMachineId
       && source?.machineId.trim() === entry.sourceMachineId
       && relationship.contentPolicy.policyDigest === entry.result.policyDigest;
@@ -571,6 +604,7 @@ export function createWorkspaceSyncTargetAuthority(
     sourceWorkspace: WorkspaceRefV1;
   }>): Promise<RetainedBootstrap | null> => {
     if (!bootstrap || input.targetWorkspace.machineId.trim() !== localMachineId) return null;
+    assertLocalWorkspacePlacement(input.targetWorkspace, localServerId, localMachineId);
     const authorityKey = retainedAuthorityKey({
       relationshipId: input.relationship.relationshipId,
       operationId: input.relationship.relationshipId,
@@ -628,6 +662,7 @@ export function createWorkspaceSyncTargetAuthority(
     sourceWorkspace: WorkspaceRefV1;
   }>): Promise<RetainedBootstrap | null> => {
     if (!bootstrap || input.targetWorkspace.machineId.trim() !== localMachineId) return null;
+    assertLocalWorkspacePlacement(input.targetWorkspace, localServerId, localMachineId);
     const operation = input.request.owner.operation;
     const authorityKey = retainedAuthorityKey({
       relationshipId: null,
@@ -801,7 +836,7 @@ export function createWorkspaceSyncTargetAuthority(
     signal?.throwIfAborted();
     const request = WorkspaceSyncTargetConflictDeleteV1Schema.parse(rawRequest);
     const { relationship, workspace } = resolveOwnedWorkspace(getSnapshot(), request.relationshipId, request.workspaceRefId);
-    assertTargetMachine(workspace, localMachineId);
+    assertLocalWorkspacePlacement(workspace, localServerId, localMachineId);
     const retainedEndpoint = await requireRetainedRelationshipEndpoint({ relationship, workspace });
     signal?.throwIfAborted();
     await deleteWorkspaceSyncConflictLoserAtRoot({
@@ -824,11 +859,15 @@ export function createWorkspaceSyncTargetAuthority(
     assertStateAvailable();
     signal?.throwIfAborted();
     const request = WorkspaceSyncTargetFileReadV1Schema.parse(rawRequest);
-    const { workspace } = resolveOwnedWorkspace(getSnapshot(), request.relationshipId, request.workspaceRefId);
-    assertTargetMachine(workspace, localMachineId);
+    const { relationship, workspace } = resolveOwnedWorkspace(getSnapshot(), request.relationshipId, request.workspaceRefId);
+    assertLocalWorkspacePlacement(workspace, localServerId, localMachineId);
+    // Disclosure uses the same retained relationship/root object authority as
+    // conflict deletion. A replacement root at the granted pathname is not the
+    // root the relationship was granted, so it must yield no bytes.
+    const retainedEndpoint = await requireRetainedRelationshipEndpoint({ relationship, workspace });
     signal?.throwIfAborted();
     return ReadWorkspaceSyncFileResultV1Schema.parse(await readWorkspaceSyncFileAtRoot({
-      rootPath: workspace.rootPath,
+      rootPath: retainedEndpoint.canonicalRoot,
       relativePath: request.path,
       maxBytes: request.maxBytes,
       ...(request.expectedDigest === undefined ? {} : { expectedDigest: request.expectedDigest }),
@@ -938,15 +977,14 @@ export function createWorkspaceSyncTargetAuthority(
     },
 
     prepareSourceSeedExport: async (request) => {
-      const workspace = resolveWorkspaceRef(getSnapshot(), request.sourceWorkspaceRefId);
-      assertTargetMachine(workspace, localMachineId);
       if (!dependencies.prepareSourceSeedExport) {
         throw authorityError('target_bootstrap_offline', 'Workspace sync source seed is unavailable');
       }
       return await dependencies.prepareSourceSeedExport({
         operationId: request.operationId,
-        sourcePath: workspace.rootPath,
-        contentSelection: request.contentSelection,
+        sourceWorkspaceRefId: request.sourceWorkspaceRefId,
+        targetMachineId: request.targetMachineId,
+        contentPolicy: request.contentPolicy,
       });
     },
     deleteConflictLoserHere,
@@ -1006,11 +1044,31 @@ export function createWorkspaceSyncTargetAuthority(
       // Resolve the stable settings-owned endpoint before serializing. A new
       // handoff id rebinds this one authority instead of creating a sibling.
       const owner = resolveBootstrapOwner(getSnapshot(), request);
-      assertTargetMachine(owner.targetWorkspace, localMachineId);
-      if (request.targetReplacementApproval
-        && (request.targetReplacementApproval.serverId !== localServerId
-          || request.targetReplacementApproval.machineId !== localMachineId)) {
-        throw authorityError('approval_stale', 'Workspace target replacement approval placement is stale');
+      assertLocalWorkspacePlacement(owner.targetWorkspace, localServerId, localMachineId);
+      // Exact mirroring authorizes deleting target-only files for the life of
+      // the relationship. The approval that carries that consequence is only
+      // representable alongside source materialization, which is the single
+      // path that establishes a mirroring endpoint.
+      const activatesExactMirror = owner.relationship?.mode === 'mirror_exactly'
+        && request.targetBootstrap === 'materialize_from_source_workspace';
+      // This daemon owns local authorization, and its prepare RPC is reachable
+      // without the Action wrapper, so the complete binding is proven here
+      // before any retained lookup or filesystem work. Canonical root and
+      // object identity stay with bootstrap, which inspects the real target.
+      if (request.targetReplacementApproval) {
+        const approval = request.targetReplacementApproval;
+        if (approval.serverId !== localServerId || approval.machineId !== localMachineId) {
+          throw authorityError('approval_stale', 'Workspace target replacement approval placement is stale');
+        }
+        const boundToThisOwner = owner.relationshipId === null
+          ? approval.operationId === owner.operationId
+          : deriveWorkspaceSyncRelationshipId(approval.operationId) === owner.relationshipId;
+        if (!boundToThisOwner) {
+          throw authorityError('approval_stale', 'Workspace target replacement approval is stamped for another operation');
+        }
+        if (approval.consequences.includes('delete_target_only_files_during_exact_mirror') !== activatesExactMirror) {
+          throw authorityError('approval_stale', 'Workspace target replacement approval does not match this relationship mode');
+        }
       }
       const authorityKey = retainedAuthorityKey({
         relationshipId: owner.relationshipId,
@@ -1114,7 +1172,7 @@ export function createWorkspaceSyncTargetAuthority(
                 sourceMachineId: owner.sourceWorkspace.machineId.trim(),
                 sourceWorkspaceRefId: owner.sourceWorkspaceRefId,
                 canonicalRoot,
-                contentSelection: owner.contentSelection,
+                contentPolicy: owner.contentPolicy,
                 materializationReceiptPath,
                 originalTargetExists,
                 ...(signal ? { signal } : {}),
@@ -1131,7 +1189,7 @@ export function createWorkspaceSyncTargetAuthority(
                 operationId: owner.operationId,
                 sourcePath: owner.sourceRootPath,
                 canonicalRoot,
-                contentSelection: owner.contentSelection,
+                contentPolicy: owner.contentPolicy,
                 materializationReceiptPath,
                 originalTargetExists,
               });
@@ -1145,22 +1203,23 @@ export function createWorkspaceSyncTargetAuthority(
           relationshipId: owner.operationId,
           endpointRole: request.endpointRole,
           policyDigest: request.policyDigest,
-          contentSelection: owner.contentSelection,
+          contentSelection: owner.contentPolicy.selection,
           ...(request.targetReplacementApproval
             ? { targetReplacementApproval: request.targetReplacementApproval }
             : {}),
+          activatesExactMirror,
           stagingDirectory: bootstrap.stagingDirectory,
           rootOwnershipManager: bootstrap.rootOwnershipManager,
-          ...(owner.contentSelection === 'git_worktree' && remoteMaterialize
+          ...(owner.contentPolicy.selection === 'git_worktree' && remoteMaterialize
             ? { prepareGitTarget: async ({ canonicalRoot, materializationReceiptPath, targetState }: { canonicalRoot: string; materializationReceiptPath: string; targetState: 'missing' | 'empty' | 'nonempty' }) => {
                 const custody = await remoteMaterialize(canonicalRoot, materializationReceiptPath, targetState !== 'missing');
                 await prepareExistingGitWorkspaceSyncTarget({ canonicalRoot, targetState: 'nonempty' });
                 return custody;
               } }
             : bootstrap.prepareGitTarget ? { prepareGitTarget: bootstrap.prepareGitTarget } : {}),
-          ...(owner.contentSelection === 'all_files' && remoteMaterialize
+          ...(owner.contentPolicy.selection === 'all_files' && remoteMaterialize
             ? { materializeSeed: async ({ canonicalRoot, materializationReceiptPath, originalTargetExists }: { canonicalRoot: string; materializationReceiptPath: string; originalTargetExists: boolean }) => await remoteMaterialize(canonicalRoot, materializationReceiptPath, originalTargetExists) }
-            : owner.contentSelection === 'all_files' && localMaterialize
+            : owner.contentPolicy.selection === 'all_files' && localMaterialize
               ? { materializeSeed: async ({ canonicalRoot, materializationReceiptPath, originalTargetExists }: { canonicalRoot: string; materializationReceiptPath: string; originalTargetExists: boolean }) => await localMaterialize(canonicalRoot, materializationReceiptPath, originalTargetExists) }
             : {}),
           createIfMissing: request.createIfMissing,
@@ -1324,7 +1383,7 @@ export function createWorkspaceSyncTargetAuthority(
       }
       const [authorityKey, entry] = matches[0]!;
       const target = resolveWorkspaceRef(getSnapshot(), entry.targetWorkspaceRefId);
-      assertTargetMachine(target, localMachineId);
+      assertLocalWorkspacePlacement(target, localServerId, localMachineId);
       const currentRoot = await assertRetainedRootIdentity({
         authorityKey,
         entry,
@@ -1343,9 +1402,15 @@ export function createWorkspaceSyncTargetAuthority(
       const ingressClosers = activeIngresses.get(authorityKey) ?? new Set<() => Promise<void>>();
       ingressClosers.add(activeCloser);
       activeIngresses.set(authorityKey, ingressClosers);
+      // Event-driven cleanup (caller abort, peer socket or rooted-agent stream
+      // end) consumes its own close rejection: a rooted agent that fails to
+      // stop must not surface as an unhandled rejection in the daemon process.
+      // Custody stays with `close`, which resets itself on failure so
+      // `activeCloser` and the returned explicit closer can retry it.
+      const scheduleClose = () => { void closeIngress?.().catch(() => undefined); };
       const abortFromCaller = () => {
         agentAbort.abort(request.signal?.reason);
-        if (closeIngress) void closeIngress();
+        scheduleClose();
       };
       request.signal?.addEventListener('abort', abortFromCaller, { once: true });
       const agent = await dependencies.openRootedAgent({
@@ -1368,19 +1433,25 @@ export function createWorkspaceSyncTargetAuthority(
       let closed = false;
       let closePromise: Promise<void> | null = null;
       const close = (): Promise<void> => {
-        closePromise ??= (async () => {
-          if (closed) return;
-          closed = true;
-          request.signal?.removeEventListener('abort', abortFromCaller);
-          agentAbort.abort();
-          for (const socket of pendingCapabilitySockets) socket.destroy();
-          pendingCapabilitySockets.clear();
-          accepted?.destroy();
-          agent.destroy();
-          await closeListeningServer(server);
+        if (closePromise) return closePromise;
+        closePromise = (async () => {
+          if (!closed) {
+            closed = true;
+            request.signal?.removeEventListener('abort', abortFromCaller);
+            agentAbort.abort();
+            for (const socket of pendingCapabilitySockets) socket.destroy();
+            pendingCapabilitySockets.clear();
+            accepted?.destroy();
+            agent.stream.destroy();
+            await closeListeningServer(server);
+          }
+          await agent.stop();
           ingressClosers.delete(activeCloser);
           if (ingressClosers.size === 0) activeIngresses.delete(authorityKey);
-        })();
+        })().catch((error: unknown) => {
+          closePromise = null;
+          throw error;
+        });
         return closePromise;
       };
       closeIngress = close;
@@ -1411,14 +1482,14 @@ export function createWorkspaceSyncTargetAuthority(
           pendingCapabilitySockets.delete(socket);
           void closeListeningServer(server);
           socket.setNoDelay(true);
-          socket.pipe(agent, { end: false });
-          agent.pipe(socket, { end: false });
-          socket.once('end', () => agent.end());
-          agent.once('end', () => { if (!socket.destroyed) socket.end(); });
-          socket.once('error', () => { void close(); });
-          socket.once('close', () => { void close(); });
-          agent.once('error', () => { void close(); });
-          agent.once('close', () => { void close(); });
+          socket.pipe(agent.stream, { end: false });
+          agent.stream.pipe(socket, { end: false });
+          socket.once('end', () => agent.stream.end());
+          agent.stream.once('end', () => { if (!socket.destroyed) socket.end(); });
+          socket.once('error', scheduleClose);
+          socket.once('close', scheduleClose);
+          agent.stream.once('error', scheduleClose);
+          agent.stream.once('close', scheduleClose);
           socket.resume();
         })();
       });
@@ -1452,6 +1523,15 @@ export function createWorkspaceSyncTargetAuthority(
 
     reconcileRetainedBootstraps: async () => {
       const snapshot = getSnapshot();
+      const rehydrateAfterReconciliation = async (
+        input: Parameters<typeof rehydrateRelationshipEndpoint>[0],
+      ): Promise<void> => {
+        await rehydrateRelationshipEndpoint(input).catch((error: unknown) => {
+          const code = (error as { code?: unknown }).code;
+          if (code === 'root_changed' || code === 'workspace_target_materialization_manual_recovery') return null;
+          throw error;
+        });
+      };
       for (const [authorityKey, entry] of [...retained.entries()]) {
         if (entry.relationshipId && !relationshipStillOwnsEndpoint(snapshot, entry)) {
           await discardRetained(authorityKey);
@@ -1480,7 +1560,7 @@ export function createWorkspaceSyncTargetAuthority(
         const beta = resolveWorkspaceRefById(snapshot.settings.workspaceRefsV1 ?? [], relationship.betaWorkspaceRefId);
         if (!alpha || !beta) continue;
         if (alpha.machineId.trim() === localMachineId) {
-          await rehydrateRelationshipEndpoint({
+          await rehydrateAfterReconciliation({
             relationship,
             endpointRole: 'alpha',
             targetWorkspace: alpha,
@@ -1488,7 +1568,7 @@ export function createWorkspaceSyncTargetAuthority(
           });
         }
         if (beta.machineId.trim() === localMachineId) {
-          await rehydrateRelationshipEndpoint({
+          await rehydrateAfterReconciliation({
             relationship,
             endpointRole: 'beta',
             targetWorkspace: beta,

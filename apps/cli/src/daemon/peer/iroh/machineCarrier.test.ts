@@ -33,7 +33,7 @@ const TARGET_ENDPOINT_ID = 'b'.repeat(64);
 const ACCOUNT_ID = 'account-1';
 const SOURCE_MACHINE_ID = 'machine-1';
 const TARGET_MACHINE_ID = 'machine-2';
-const OPERATION_ID = 'operation-1';
+const WORKSPACE_OPERATION_ID = 'operation-1';
 
 interface HandshakeOverrides {
     accountId?: string;
@@ -56,12 +56,7 @@ function createGrantPayload(overrides: Partial<DirectRouteGrantPayloadV2> = {}):
         machineId: TARGET_MACHINE_ID,
         flowKind: 'bounded_transfer',
         routeKind: 'iroh_peer',
-        scope: {
-            kind: 'bounded_transfer',
-            mode: 'single',
-            transferId: OPERATION_ID,
-            maxBytes: 1024,
-        },
+        scope: { kind: 'bounded_transfer', mode: 'carrier' },
         iat: 1_000,
         exp: 10_000,
         aud: DIRECT_ROUTE_GRANT_AUDIENCE_V1,
@@ -76,7 +71,7 @@ function createGrantPayload(overrides: Partial<DirectRouteGrantPayloadV2> = {}):
                 machineId: TARGET_MACHINE_ID,
                 endpointId: TARGET_ENDPOINT_ID,
             },
-            operationKind: 'file_transfer',
+            operationKind: 'finite_transfer',
         },
         proofKind: 'ephemeral_ed25519',
         ephemeralPublicKeyBase64Url: '',
@@ -104,14 +99,15 @@ function createHandshake(overrides: HandshakeOverrides = {}): IrohMachineHandsha
     const targetMachineId = overrides.targetMachineId ?? TARGET_MACHINE_ID;
     const sourceEndpointId = overrides.sourceEndpointId ?? SOURCE_ENDPOINT_ID;
     const targetEndpointId = overrides.targetEndpointId ?? TARGET_ENDPOINT_ID;
-    const flow = overrides.flow ?? 'file_transfer';
+    const flow = overrides.flow ?? 'finite_transfer';
+    const initiator: IrohMachineHandshakeV1['initiator'] = overrides.initiatorKind === 'account_client'
+        ? { kind: 'account_client', endpointId: sourceEndpointId }
+        : { kind: 'machine', machineId: sourceMachineId, endpointId: sourceEndpointId };
     const payload = createGrantPayload({
         machineId: targetMachineId,
         endpointFingerprint: targetEndpointId,
         iroh: {
-            initiator: overrides.initiatorKind === 'account_client'
-                ? { kind: 'account_client', endpointId: sourceEndpointId }
-                : { kind: 'machine', machineId: sourceMachineId, endpointId: sourceEndpointId },
+            initiator,
             target: { machineId: targetMachineId, endpointId: targetEndpointId },
             operationKind: flow,
         },
@@ -120,18 +116,17 @@ function createHandshake(overrides: HandshakeOverrides = {}): IrohMachineHandsha
     const handle = createEphemeralPeerRouteProofHandleV2({ randomBytes: (length) => tweetnacl.randomBytes(length) });
     const grant = signGrant({ ...payload, ephemeralPublicKeyBase64Url: handle.publicKeyBase64Url });
     const proof = handle.sign(grant);
-    return {
+    const common = {
         v: 1,
         accountId: overrides.accountId ?? ACCOUNT_ID,
-        initiator: overrides.initiatorKind === 'account_client'
-            ? { kind: 'account_client', endpointId: sourceEndpointId }
-            : { kind: 'machine', machineId: sourceMachineId, endpointId: sourceEndpointId },
+        initiator,
         target: { machineId: targetMachineId, endpointId: targetEndpointId },
-        flow,
-        operationId: overrides.operationId ?? OPERATION_ID,
         grant,
         proof: overrides.breakProof ? { ...proof, nonceBase64Url: toBase64Url(new Uint8Array(16).fill(7)) } : proof,
-    };
+    } as const;
+    return flow === 'workspace_sync'
+        ? { ...common, flow, operationId: overrides.operationId ?? WORKSPACE_OPERATION_ID }
+        : { ...common, flow };
 }
 
 describe('machine/1 carrier lifecycle', () => {

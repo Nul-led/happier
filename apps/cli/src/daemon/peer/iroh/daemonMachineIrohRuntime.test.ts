@@ -32,7 +32,7 @@ function nativeHarness(overrides: Record<string, unknown> = {}) {
       tunnelId: 'home-tunnel-1', endpointHandle: 'endpoint-1',
       homeServerIdentityId: 'srv_home_iroh', homeEndpointId: 'c'.repeat(64),
       runtimeOrigin: 'http://127.0.0.1:49123', carrier: 'iroh', observedPath: 'direct',
-      startedAtMs: 1, descriptorRevision: 7,
+      startedAtMs: 1,
     })),
     releaseHomeTunnel: vi.fn(async () => undefined),
     shutdownEndpoint: vi.fn(async () => undefined),
@@ -80,7 +80,7 @@ describe('createDaemonMachineIrohRuntime', () => {
         tunnelId: 'home-tunnel-1', endpointHandle: 'endpoint-1',
         homeServerIdentityId: 'srv_home_iroh', homeEndpointId: 'c'.repeat(64),
         runtimeOrigin: 'http://127.0.0.1:49123', carrier: 'iroh', observedPath: 'direct',
-        startedAtMs: 1, descriptorRevision: 7,
+        startedAtMs: 1,
       })),
       releaseHomeTunnel: vi.fn()
         .mockRejectedValueOnce(new Error('native Home release failed'))
@@ -121,7 +121,7 @@ describe('createDaemonMachineIrohRuntime', () => {
     });
     expect(native.ensureHomeTunnel).toHaveBeenCalledWith({
       endpointHandle: 'endpoint-1', homeServerIdentityId: 'srv_home_iroh',
-      endpointId: 'c'.repeat(64), relayUrls: ['https://relay.test/'], descriptorRevision: 7,
+      endpointId: 'c'.repeat(64), relayUrls: ['https://relay.test/'],
     });
     expect(homeLease.runtimeOrigin).toBe('http://127.0.0.1:49123');
     await expect(homeLease.release()).rejects.toThrow('native Home release failed');
@@ -162,8 +162,8 @@ describe('createDaemonMachineIrohRuntime', () => {
     expect(connection.remoteEndpointId).toBe('b'.repeat(64));
 
     await expect(runtime.openTunnel({
-      alpn: 'happier/machine/1', remoteEndpointId: 'b'.repeat(64), flow: 'file_transfer',
-      operationId: 'operation-1', handshake: handshake as never,
+      alpn: 'happier/machine/1', remoteEndpointId: 'b'.repeat(64), flow: 'finite_transfer',
+      handshake: handshake as never,
     }, { endpointId: 'b'.repeat(64) })).rejects.toThrow('does not match the verified handshake');
 
     await runtime.stopActiveTunnels();
@@ -198,6 +198,32 @@ describe('createDaemonMachineIrohRuntime', () => {
     expect(native.stopMachineTunnel).toHaveBeenCalledTimes(1);
   });
 
+  it('owns the native Machine HTTP lease through the same retryable runtime cleanup owner', async () => {
+    const { native, runtime } = await createHarness();
+    expect(runtime.available).toBe(true);
+    if (!runtime.available) return;
+
+    const handshake = { v: 1, flow: 'finite_transfer', exact: 'verified' };
+    const tunnel = await runtime.openTunnel({
+      alpn: 'happier/machine/1', remoteEndpointId: 'b'.repeat(64), flow: 'finite_transfer',
+      handshake: handshake as never,
+    }, { endpointId: 'b'.repeat(64), directAddresses: ['10.0.0.2:7777'] });
+
+    expect(native.startMachineTunnel).toHaveBeenCalledWith(expect.objectContaining({
+      endpointHandle: 'endpoint-1', endpointId: 'b'.repeat(64),
+      handshakeJson: JSON.stringify(handshake), capProfile: 'machineBulk',
+    }));
+    expect(tunnel).toMatchObject({
+      localPort: 48123,
+      localCapability: 'c'.repeat(64),
+      remoteEndpointId: 'b'.repeat(64),
+      observedPath: 'relay',
+    });
+
+    await Promise.all([tunnel.close(), runtime.stopActiveTunnels()]);
+    expect(native.stopMachineTunnel).toHaveBeenCalledTimes(1);
+  });
+
   it('releases the owned native tunnel even when the subsidiary local stream close fails', async () => {
     const { native, runtime } = await createHarness({}, async () => ({
       write: async () => undefined,
@@ -225,13 +251,37 @@ describe('createDaemonMachineIrohRuntime', () => {
       })),
     });
 
-    await expect(createDaemonMachineIrohRuntime({
+    const result = await createDaemonMachineIrohRuntime({
       happyHomeDir: '/daemon-home',
       relayConfig: { relayPolicy: 'automatic', relayUrls: ['https://relay.test/'] },
       native: native as never,
-    })).rejects.toThrow();
+    });
 
+    expect(result).toMatchObject({ available: false, reason: 'startup_failed' });
     expect(native.shutdownEndpoint).toHaveBeenCalledWith({ endpointHandle: 'endpoint-1' });
+  });
+
+  it('reports a fail-closed-classified local endpoint creation failure as native-runtime unavailability', async () => {
+    // `endpoint_key_unavailable` is classified fail-closed for a *selected*
+    // Iroh Home. Local carrier preparation must not make that decision: it
+    // reports unavailability so the HTTPS-aware Home transport owner remains
+    // the single owner of the trusted-HTTPS-or-fail-closed choice.
+    const creationFailure = Object.assign(new Error('local endpoint key is unreadable'), {
+      name: 'IrohError',
+      code: 'endpoint_key_unavailable',
+    });
+    const native = nativeHarness({ createEndpoint: vi.fn(async () => { throw creationFailure; }) });
+
+    const result = await createDaemonMachineIrohRuntime({
+      happyHomeDir: '/daemon-home',
+      relayConfig: { relayPolicy: 'automatic', relayUrls: ['https://relay.test/'] },
+      native: native as never,
+    });
+
+    expect(result).toMatchObject({ available: false, reason: 'startup_failed', error: creationFailure });
+    // No native endpoint was created, so there is no custody to retain.
+    await expect(result.shutdown()).resolves.toBeUndefined();
+    expect(native.shutdownEndpoint).not.toHaveBeenCalled();
   });
 
   it('returns failed-but-cleanable custody when startup projection and its first endpoint shutdown both fail', async () => {
@@ -343,7 +393,7 @@ describe('createDaemonMachineIrohRuntime', () => {
     }, { endpointId: 'b'.repeat(64) })).rejects.toThrow('Iroh machine runtime is shut down');
   });
 
-  it('holds shutdown until a machine tunnel creation racing it settles and the created tunnel is released, never publishing it', async () => {
+  it('reaches native endpoint shutdown without waiting for an in-flight machine tunnel creation, then releases the late result', async () => {
     let resolveCreate!: (value: {
       machineTunnelId: string;
       endpointHandle: string;
@@ -368,33 +418,27 @@ describe('createDaemonMachineIrohRuntime', () => {
       operationId: 'operation-1', handshake: WORKSPACE_SYNC_HANDSHAKE as never,
     }, { endpointId: 'b'.repeat(64), directAddresses: ['10.0.0.2:7777'] });
     await vi.waitFor(() => expect(native.startMachineTunnel).toHaveBeenCalledTimes(1));
-    let shutdownSettled = false;
     const shutdown = runtime.shutdown();
-    shutdown.then(() => { shutdownSettled = true; }, () => { shutdownSettled = true; });
 
-    // Shutdown must stay pending while an admitted creation is still in flight.
-    expect(shutdownSettled).toBe(false);
+    // Native endpoint shutdown owns admission closure, cancellation and the
+    // join, so JavaScript must reach it promptly instead of waiting behind the
+    // in-flight creation it is supposed to cancel.
+    await vi.waitFor(() => expect(native.shutdownEndpoint).toHaveBeenCalledTimes(1));
+    await shutdown;
 
-    let releaseRacingTunnel!: () => void;
-    const racingTunnelReleased = new Promise<void>((resolve) => { releaseRacingTunnel = resolve; });
-    native.stopMachineTunnel = vi.fn(async () => { await racingTunnelReleased; });
+    // A creation that resolved just before native shutdown raced publication:
+    // it is released by its own owner and never handed to its caller.
     resolveCreate({
       machineTunnelId: 'tunnel-race', endpointHandle: 'endpoint-1', localPort: 48123,
       localCapability: 'c'.repeat(64), connectionActive: true, remoteEndpointId: 'b'.repeat(64),
       observedPath: 'relay', startedAtMs: 1, lastErrorCode: null,
     });
-
-    // The racing creation is never published to its caller...
     await expect(creation).rejects.toThrow('Iroh machine runtime is shut down');
-    // ...and shutdown stays pending until the created tunnel's custody is released.
-    expect(shutdownSettled).toBe(false);
     expect(native.stopMachineTunnel).toHaveBeenCalledWith('tunnel-race');
-    releaseRacingTunnel();
-    await shutdown;
     expect(native.shutdownEndpoint).toHaveBeenCalledTimes(1);
   });
 
-  it('holds shutdown until a Home tunnel creation racing it settles and the created lease is released, never publishing it', async () => {
+  it('reaches native endpoint shutdown without waiting for an in-flight Home tunnel creation, then releases the late lease', async () => {
     let resolveCreate!: (value: {
       tunnelId: string;
       endpointHandle: string;
@@ -404,7 +448,6 @@ describe('createDaemonMachineIrohRuntime', () => {
       carrier: 'iroh';
       observedPath: 'direct' | 'relay' | 'unknown';
       startedAtMs: number;
-      descriptorRevision: number | null;
     }) => void;
     const { native, runtime } = await createHarness({
       ensureHomeTunnel: vi.fn(async () => await new Promise((resolve) => { resolveCreate = resolve; })),
@@ -416,33 +459,25 @@ describe('createDaemonMachineIrohRuntime', () => {
     // begin shutdown, so the race is real.
     const creation = runtime.ensureHomeTunnel!({ descriptor: HOME_DESCRIPTOR });
     await vi.waitFor(() => expect(native.ensureHomeTunnel).toHaveBeenCalledTimes(1));
-    let shutdownSettled = false;
     const shutdown = runtime.shutdown();
-    shutdown.then(() => { shutdownSettled = true; }, () => { shutdownSettled = true; });
 
-    // Shutdown must stay pending while an admitted creation is still in flight.
-    expect(shutdownSettled).toBe(false);
+    // A blocked Home dial must never gate the native shutdown that cancels it.
+    await vi.waitFor(() => expect(native.shutdownEndpoint).toHaveBeenCalledTimes(1));
+    await shutdown;
 
-    let releaseRacingLease!: () => void;
-    const racingLeaseReleased = new Promise<void>((resolve) => { releaseRacingLease = resolve; });
-    native.releaseHomeTunnel = vi.fn(async () => { await racingLeaseReleased; });
     resolveCreate({
       tunnelId: 'home-tunnel-race', endpointHandle: 'endpoint-1', homeServerIdentityId: 'srv_home_iroh',
       homeEndpointId: 'c'.repeat(64), runtimeOrigin: 'http://127.0.0.1:49123', carrier: 'iroh',
-      observedPath: 'direct', startedAtMs: 1, descriptorRevision: 7,
+      observedPath: 'direct', startedAtMs: 1,
     });
 
-    // The racing lease is never published to its caller...
+    // The racing lease is released by its own owner and never published.
     await expect(creation).rejects.toThrow('Iroh daemon runtime is shut down');
-    // ...and shutdown stays pending until the created lease's custody is released.
-    expect(shutdownSettled).toBe(false);
     expect(native.releaseHomeTunnel).toHaveBeenCalledWith('home-tunnel-race');
-    releaseRacingLease();
-    await shutdown;
     expect(native.shutdownEndpoint).toHaveBeenCalledTimes(1);
   });
 
-  it('holds shutdown through the subsidiary local-hop creation and never publishes the machine transport', async () => {
+  it('releases the subsidiary local-hop creation that raced shutdown and never publishes the machine transport', async () => {
     let resolveConnect!: (value: {
       write: (data: Uint8Array) => Promise<void>;
       endWrite: () => Promise<void>;
@@ -455,11 +490,7 @@ describe('createDaemonMachineIrohRuntime', () => {
       onData: (listener: (data: Uint8Array) => void) => () => void;
       close: () => Promise<void>;
     }>((resolve) => { resolveConnect = resolve; }));
-    let releaseTunnel!: () => void;
-    const tunnelReleased = new Promise<void>((resolve) => { releaseTunnel = resolve; });
-    const { native, runtime } = await createHarness({
-      stopMachineTunnel: vi.fn(async () => { await tunnelReleased; }),
-    }, connectTcp);
+    const { native, runtime } = await createHarness({}, connectTcp);
     expect(runtime.available).toBe(true);
     if (!runtime.available) return;
 
@@ -469,10 +500,9 @@ describe('createDaemonMachineIrohRuntime', () => {
     }, { endpointId: 'b'.repeat(64), directAddresses: ['10.0.0.2:7777'] });
     await vi.waitFor(() => expect(connectTcp).toHaveBeenCalledTimes(1));
 
-    let shutdownSettled = false;
     const shutdown = runtime.shutdown();
-    shutdown.then(() => { shutdownSettled = true; }, () => { shutdownSettled = true; });
-    expect(shutdownSettled).toBe(false);
+    await vi.waitFor(() => expect(native.shutdownEndpoint).toHaveBeenCalledTimes(1));
+    await shutdown;
 
     resolveConnect({
       write: async () => undefined,
@@ -481,15 +511,11 @@ describe('createDaemonMachineIrohRuntime', () => {
       close: async () => undefined,
     });
     await expect(creation).rejects.toThrow('Iroh machine runtime is shut down');
-    await vi.waitFor(() => expect(native.stopMachineTunnel).toHaveBeenCalledWith('tunnel-1'));
-    expect(shutdownSettled).toBe(false);
-
-    releaseTunnel();
-    await shutdown;
+    expect(native.stopMachineTunnel).toHaveBeenCalledWith('tunnel-1');
     expect(native.shutdownEndpoint).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps shutdown pending through a rejected creation and settles truthfully without leaked custody', async () => {
+  it('settles shutdown truthfully while a creation the native owner cancels is still rejecting', async () => {
     let rejectCreate!: (error: unknown) => void;
     const { native, runtime } = await createHarness({
       startMachineTunnel: vi.fn(async () => await new Promise((_, reject) => { rejectCreate = reject; })),
@@ -504,20 +530,16 @@ describe('createDaemonMachineIrohRuntime', () => {
       operationId: 'operation-1', handshake: WORKSPACE_SYNC_HANDSHAKE as never,
     }, { endpointId: 'b'.repeat(64), directAddresses: ['10.0.0.2:7777'] });
     await vi.waitFor(() => expect(native.startMachineTunnel).toHaveBeenCalledTimes(1));
-    let shutdownSettled = false;
-    const shutdown = runtime.shutdown();
-    shutdown.then(() => { shutdownSettled = true; }, () => { shutdownSettled = true; });
 
-    // Shutdown must stay pending while an admitted creation is still in flight.
-    expect(shutdownSettled).toBe(false);
+    // Native endpoint shutdown is what cancels the in-flight creation, so it
+    // must run before the creation settles.
+    await runtime.shutdown();
+    expect(native.shutdownEndpoint).toHaveBeenCalledTimes(1);
 
     rejectCreate(new Error('native tunnel creation failed'));
     await expect(creation).rejects.toThrow('native tunnel creation failed');
-    // The failed creation produced no custody; shutdown still settles truthfully.
-    await shutdown;
-    expect(shutdownSettled).toBe(true);
+    // A cancelled creation produced no custody to release.
     expect(native.stopMachineTunnel).not.toHaveBeenCalled();
-    expect(native.shutdownEndpoint).toHaveBeenCalledTimes(1);
   });
 
   it('refuses new tunnel creation after shutdown begins without calling the native creators', async () => {
@@ -534,9 +556,10 @@ describe('createDaemonMachineIrohRuntime', () => {
     } as const;
     await runtime.openTunnel(openInput, { endpointId: 'b'.repeat(64), directAddresses: ['10.0.0.2:7777'] });
 
-    // Shutdown is pending on the owned tunnel's blocked release while the
-    // refused creations below are attempted.
+    // Native aggregate shutdown starts promptly; JavaScript cleanup remains
+    // pending on the owned tunnel while later creations are refused.
     const shutdown = runtime.shutdown();
+    await vi.waitFor(() => expect(native.shutdownEndpoint).toHaveBeenCalledTimes(1));
     await vi.waitFor(() => expect(native.stopMachineTunnel).toHaveBeenCalledTimes(1));
 
     await expect(runtime.ensureHomeTunnel!({ descriptor: HOME_DESCRIPTOR }))
@@ -588,11 +611,12 @@ describe('createDaemonMachineIrohRuntime', () => {
     const shutdownOutcome = runtime.shutdown();
     shutdownOutcome.then(() => { shutdownSettled = true; }, () => { shutdownSettled = true; });
 
-    // Every owned release was attempted, and shutdown neither settled nor shut
-    // the endpoint down while the blocking release was still unresolved.
+    // Native endpoint cancellation starts before JavaScript waits for the
+    // subsidiary closers; every closer is still attempted and settled before
+    // the public wrapper resolves.
+    await vi.waitFor(() => expect(native.shutdownEndpoint).toHaveBeenCalledTimes(1));
     await vi.waitFor(() => expect(stopCalls).toEqual(['tunnel-1', 'tunnel-2']));
     expect(shutdownSettled).toBe(false);
-    expect(native.shutdownEndpoint).not.toHaveBeenCalled();
 
     releaseBlockingStop();
     await expect(shutdownOutcome).rejects.toThrow('native tunnel stop failed');

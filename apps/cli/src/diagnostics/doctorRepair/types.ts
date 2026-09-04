@@ -31,18 +31,9 @@ export type AuthProfileSnapshot = Readonly<{
   serverId: string;
   serverName: string;
   serverUrl: string;
-  hasCredentials: boolean;
-  isExpired: boolean;
+  credentialState: 'missing' | 'valid' | 'invalid' | 'unknown' | 'stored-unverified';
   machineRegistered: boolean;
   isActive: boolean;
-  /**
-   * Verification state for the section renderer:
-   *  - 'verified'     — we did a live check and got a definitive answer.
-   *  - 'unreachable'  — we attempted a live check but the server didn't
-   *                     respond; credential state is assumed, not confirmed.
-   *  - 'not-probed'   — we didn't attempt a live check (non-active profile).
-   */
-  reachability: 'verified' | 'unreachable' | 'not-probed';
 }>;
 
 export type CurrentCliInfo = Readonly<{

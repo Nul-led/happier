@@ -45,6 +45,7 @@ await workspaceSyncTargetBootstrap({
           });
           await mkdir(canonicalRoot);
           await writeFile(join(canonicalRoot, 'new.txt'), 'new');
+          await materialization.custody.bindPromotedTarget();
           await writeFile(readyPath, 'renamed');
           await new Promise<void>(() => undefined);
           return materialization.custody;
@@ -52,8 +53,18 @@ await workspaceSyncTargetBootstrap({
       }
     : {
         prepareGitTarget: async ({ canonicalRoot, materializationReceiptPath }) => {
-          await access(canonicalRoot);
-          await access(materializationReceiptPath);
+          await access(canonicalRoot).then(
+            () => { throw new Error('missing Git target was created before the SCM materialization owner'); },
+            (error: NodeJS.ErrnoException) => {
+              if (error.code !== 'ENOENT') throw error;
+            },
+          );
+          await beginWorkspaceTargetMaterialization({
+            targetPath: canonicalRoot,
+            backupDirectoryPrefix: '.happier-sync-backup',
+            receiptPath: materializationReceiptPath,
+            originalTargetExists: false,
+          });
           await writeFile(readyPath, 'created-before-git');
           await new Promise<void>(() => undefined);
         },

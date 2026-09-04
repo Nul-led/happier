@@ -112,6 +112,28 @@ async function resolveDaemonStateForServer(serverId: string): Promise<Readonly<{
 }
 
 /**
+ * Resolves one profile-scoped daemon control publication without consulting
+ * the process-global lifecycle scope. Long-lived explicit-Home consumers use
+ * this target to prevent a stack-scoped ambient override from selecting a
+ * different Home's daemon.
+ */
+export async function resolveLiveDaemonControlTargetForServer(serverId: string): Promise<Readonly<{
+  pid: number;
+  httpPort: number;
+  controlToken?: string;
+}> | null> {
+  const normalizedServerId = String(serverId ?? '').trim();
+  if (!normalizedServerId) return null;
+  const { state } = await resolveDaemonStateForServer(normalizedServerId);
+  if (!state || !isPidPresent(state.pid)) return null;
+  return {
+    pid: state.pid,
+    httpPort: state.httpPort,
+    ...(state.controlToken ? { controlToken: state.controlToken } : {}),
+  };
+}
+
+/**
  * The servers directory, rather than the mutable profile registry, is the
  * durable inventory of daemon publications. A removed profile can still own a
  * live daemon, and each release-ring basename is independently reachable

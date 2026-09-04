@@ -10,13 +10,41 @@ import { once } from 'node:events';
 import { createServer } from 'node:net';
 import { createWorkspaceRootOwnershipManager } from './workspaceSyncRootOwnership';
 
-const policy = { v: 1 as const, selection: 'all_files' as const, extraIgnorePatterns: [], extraIncludePatterns: [], includeGitDirectory: false };
+const policy = { v: 1 as const, selection: 'all_files' as const, extraIgnorePatterns: [], extraIncludePatterns: [] };
 const definition = { v: 1 as const, relationshipId: 'r1', controllerMachineId: 'm1', alphaWorkspaceRefId: 'a', betaWorkspaceRefId: 'b', mode: 'keep_synced' as const, contentPolicy: { ...policy, policyDigest: computeWorkspaceSyncPolicyDigest(policy) }, enabled: true, createdAtMs: 1, updatedAtMs: 1 };
-const gitWorktreePolicy = { v: 1 as const, selection: 'git_worktree' as const, extraIgnorePatterns: [], extraIncludePatterns: [], includeGitDirectory: false };
+const gitWorktreePolicy = { v: 1 as const, selection: 'git_worktree' as const, extraIgnorePatterns: [], extraIncludePatterns: [] };
 const gitWorktreeDefinition = { ...definition, contentPolicy: { ...gitWorktreePolicy, policyDigest: computeWorkspaceSyncPolicyDigest(gitWorktreePolicy) } };
 const status: WorkspaceSyncStatusV1 = { relationshipId: 'r1', controllerMachineId: 'm1', state: 'watching', alphaPath: '/a', betaPath: '/b', mode: 'keep_synced', changedFiles: 0, conflictCount: 0, lastSuccessfulSyncAtMs: null };
 
+function ownedLocalAgent(stream = new PassThrough(), stop = vi.fn(async () => undefined)) {
+  return { stream, stop };
+}
+
 describe('WorkspaceSyncController', () => {
+  it('publishes pause, resume, and terminate status transitions through its canonical status callback', async () => {
+    const published: WorkspaceSyncStatusV1[] = [];
+    const adapter = completeAdapter({
+      ensure: vi.fn(async () => status),
+      pause: vi.fn(async () => ({ ...status, state: 'paused' as const })),
+      resume: vi.fn(async () => status),
+    });
+    const controller = new WorkspaceSyncController({
+      adapter,
+      lifecycle: lifecycle(),
+      rootOwnershipManager: rootOwnership(),
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => ({ machineId: 'other', rootPath: `/${id}` }),
+      onStatusPublished: (next) => published.push(next),
+    });
+
+    await controller.ensure(definition);
+    await controller.pause(definition.relationshipId);
+    await controller.resume(definition.relationshipId);
+    await controller.terminate(definition.relationshipId);
+
+    expect(published.map((item) => item.state)).toEqual(['watching', 'paused', 'watching', 'stopped']);
+  });
+
   it('serializes relationship commands, accepts metadata refresh, and rejects definition mutation', async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
@@ -35,6 +63,253 @@ describe('WorkspaceSyncController', () => {
     const controller = new WorkspaceSyncController({ adapter: completeAdapter({ ensure }), lifecycle: lifecycle(), rootOwnershipManager: rootOwnership(), localMachineId: 'm2', resolveWorkspaceRef: () => null });
     await expect(controller.ensure(definition)).rejects.toMatchObject({ code: 'controller_unavailable' });
     expect(ensure).not.toHaveBeenCalled();
+  });
+
+  it('fences the controller-local source root before target preparation can read it', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-controller-source-fence-'));
+    const sourceRoot = join(fixture, 'source');
+    await mkdir(sourceRoot);
+    const rootOwnershipManager = createWorkspaceRootOwnershipManager({ lockDirectory: join(fixture, 'locks') });
+    let sourceFencedDuringPreparation: boolean | null = null;
+    const prepareRelationshipTarget = vi.fn(async () => {
+      // Target preparation exports, packages and materializes these source
+      // bytes, so the source fence must already be held when it runs.
+      const probe = await rootOwnershipManager.tryAcquire({
+        ownerId: 'seed-probe',
+        canonicalRoot: await realpath(sourceRoot),
+        operation: 'handoff',
+      });
+      sourceFencedDuringPreparation = 'kind' in probe;
+      if (!('kind' in probe)) await probe.release();
+    });
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter(),
+      lifecycle: lifecycle(),
+      rootOwnershipManager,
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: sourceRoot }
+        : { machineId: 'm2', rootPath: '/remote/b' },
+      prepareRelationshipTarget,
+    });
+    try {
+      await controller.ensure(definition);
+      expect(sourceFencedDuringPreparation).toBe(true);
+    } finally {
+      await controller.shutdown();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects relationship source export when the local machine ref belongs to another Home', async () => {
+    const prepareRelationshipTarget = vi.fn(async () => undefined);
+    const adapter = completeAdapter();
+    const controller = new WorkspaceSyncController({
+      adapter,
+      lifecycle: lifecycle(),
+      rootOwnershipManager: rootOwnership(),
+      localMachineId: 'm1',
+      localServerId: 'home-a',
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { serverId: 'home-b', machineId: 'm1', rootPath: '/a' }
+        : { serverId: 'home-a', machineId: 'm2', rootPath: '/b' },
+      prepareRelationshipTarget,
+    });
+
+    await expect(controller.ensure(definition)).rejects.toMatchObject({
+      code: 'workspace_machine_not_enrolled',
+    });
+    expect(prepareRelationshipTarget).not.toHaveBeenCalled();
+    expect(adapter.ensure).not.toHaveBeenCalled();
+  });
+
+  it('rejects copy_once source access when the local machine ref belongs to another Home', async () => {
+    const adapter = completeAdapter();
+    const controller = new WorkspaceSyncController({
+      adapter,
+      lifecycle: lifecycle(),
+      rootOwnershipManager: rootOwnership(),
+      localMachineId: 'm1',
+      localServerId: 'home-a',
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { serverId: 'home-b', machineId: 'm1', rootPath: '/a' }
+        : { serverId: 'home-a', machineId: 'm2', rootPath: '/b' },
+    });
+
+    await expect(controller.copyOnce({
+      v: 1,
+      operationId: 'copy-other-home',
+      controllerMachineId: 'm1',
+      alphaWorkspaceRefId: 'a',
+      betaWorkspaceRefId: 'b',
+      contentPolicy: definition.contentPolicy,
+    })).rejects.toMatchObject({ code: 'workspace_machine_not_enrolled' });
+    expect(adapter.copyOnce).not.toHaveBeenCalled();
+  });
+
+  it('preserves a transient prepared relationship across unrelated Settings reconciliation', async () => {
+    const prepareRelationshipTarget = vi.fn(async () => undefined);
+    const rehydrate = vi.fn(async (definitions: readonly WorkspaceSyncRelationshipV1[]) => (
+      definitions.map((item) => ({ ...status, relationshipId: item.relationshipId }))
+    ));
+    const adapter = completeAdapter({ rehydrate });
+    const controller = new WorkspaceSyncController({
+      adapter,
+      lifecycle: lifecycle(),
+      rootOwnershipManager: rootOwnership(),
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: '/a' }
+        : { machineId: 'm2', rootPath: '/b' },
+      prepareRelationshipTarget,
+    });
+
+    await controller.ensure(definition, undefined, {
+      transient: true,
+      targetBootstrap: 'use_existing',
+    });
+    await expect(controller.rehydrateFromSettings([])).resolves.toEqual([]);
+
+    expect(rehydrate).toHaveBeenLastCalledWith([definition]);
+    expect(adapter.terminate).not.toHaveBeenCalled();
+    expect(prepareRelationshipTarget).toHaveBeenCalledTimes(1);
+
+    await controller.rehydrateFromSettings([definition]);
+    expect(prepareRelationshipTarget).toHaveBeenCalledTimes(1);
+    await controller.shutdown();
+  });
+
+  it('serializes Settings reconciliation behind an active copy and never replays the copy', async () => {
+    let releaseCopy!: () => void;
+    const copyGate = new Promise<void>((resolve) => { releaseCopy = resolve; });
+    let copyStarted!: () => void;
+    const started = new Promise<void>((resolve) => { copyStarted = resolve; });
+    const copyOnce = vi.fn(async () => {
+      copyStarted();
+      await copyGate;
+      return { ...status, relationshipId: 'copy-1', mode: 'copy_once' as const };
+    });
+    const discoverCopyOnceRecoveries = vi.fn(async () => []);
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter({ copyOnce, discoverCopyOnceRecoveries }),
+      lifecycle: lifecycle(),
+      rootOwnershipManager: rootOwnership(),
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: '/a' }
+        : { machineId: 'm2', rootPath: '/b' },
+    });
+    const operation = {
+      v: 1 as const,
+      operationId: 'copy-1',
+      controllerMachineId: 'm1',
+      alphaWorkspaceRefId: 'a',
+      betaWorkspaceRefId: 'b',
+      contentPolicy: definition.contentPolicy,
+    };
+
+    const copying = controller.copyOnce(operation);
+    await started;
+    const reconciling = controller.rehydrateFromSettings([]);
+    await Promise.resolve();
+    expect(discoverCopyOnceRecoveries).not.toHaveBeenCalled();
+    releaseCopy();
+    await copying;
+    await reconciling;
+
+    expect(copyOnce).toHaveBeenCalledTimes(1);
+    expect(discoverCopyOnceRecoveries).toHaveBeenCalledTimes(1);
+    await controller.shutdown();
+  });
+
+  it('refuses relationship creation before target preparation when the source root is already owned', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-controller-source-busy-'));
+    const sourceRoot = join(fixture, 'source');
+    await mkdir(sourceRoot);
+    const rootOwnershipManager = createWorkspaceRootOwnershipManager({ lockDirectory: join(fixture, 'locks') });
+    const held = await rootOwnershipManager.tryAcquire({
+      ownerId: 'other-operation',
+      canonicalRoot: await realpath(sourceRoot),
+      operation: 'handoff',
+    });
+    expect('kind' in held).toBe(false);
+    const prepareRelationshipTarget = vi.fn(async () => undefined);
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter(),
+      lifecycle: lifecycle(),
+      rootOwnershipManager,
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: sourceRoot }
+        : { machineId: 'm2', rootPath: '/remote/b' },
+      prepareRelationshipTarget,
+    });
+    try {
+      await expect(controller.ensure(definition)).rejects.toMatchObject({ code: 'workspace_root_in_use' });
+      expect(prepareRelationshipTarget).not.toHaveBeenCalled();
+    } finally {
+      await controller.shutdown();
+      if (!('kind' in held)) await held.release();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it('exports a seed only for the exact active operation, source, policy, destination, and retained source fence', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-controller-seed-export-'));
+    const sourceRoot = join(fixture, 'source');
+    await mkdir(sourceRoot);
+    const exportSource = vi.fn(async (canonicalSourcePath: string) => canonicalSourcePath);
+    let sourceServerId = 'home-a';
+    let controller!: WorkspaceSyncController;
+    controller = new WorkspaceSyncController({
+      adapter: completeAdapter(),
+      lifecycle: lifecycle(),
+      rootOwnershipManager: createWorkspaceRootOwnershipManager({ lockDirectory: join(fixture, 'locks') }),
+      localServerId: 'home-a',
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { serverId: sourceServerId, machineId: 'm1', rootPath: sourceRoot }
+        : { serverId: 'home-a', machineId: 'm2', rootPath: '/remote/b' },
+      prepareRelationshipTarget: async () => {
+        await expect(controller.withAuthorizedSourceSeedExport({
+          operationId: definition.relationshipId,
+          sourceWorkspaceRefId: definition.alphaWorkspaceRefId,
+          targetMachineId: 'm2',
+          contentPolicy: definition.contentPolicy,
+        }, exportSource)).resolves.toBe(await realpath(sourceRoot));
+        sourceServerId = 'home-b';
+        await expect(controller.withAuthorizedSourceSeedExport({
+          operationId: definition.relationshipId,
+          sourceWorkspaceRefId: definition.alphaWorkspaceRefId,
+          targetMachineId: 'm2',
+          contentPolicy: definition.contentPolicy,
+        }, exportSource)).rejects.toMatchObject({ code: 'workspace_machine_not_enrolled' });
+        sourceServerId = 'home-a';
+        await expect(controller.withAuthorizedSourceSeedExport({
+          operationId: definition.relationshipId,
+          sourceWorkspaceRefId: definition.alphaWorkspaceRefId,
+          targetMachineId: 'wrong-machine',
+          contentPolicy: definition.contentPolicy,
+        }, exportSource)).rejects.toMatchObject({ code: 'target_unavailable' });
+      },
+    });
+    try {
+      await controller.ensure(definition, undefined, {
+        transient: true,
+        targetBootstrap: 'materialize_from_source_workspace',
+      });
+      expect(exportSource).toHaveBeenCalledOnce();
+      await expect(controller.withAuthorizedSourceSeedExport({
+        operationId: 'not-active',
+        sourceWorkspaceRefId: definition.alphaWorkspaceRefId,
+        targetMachineId: 'm2',
+        contentPolicy: definition.contentPolicy,
+      }, exportSource)).rejects.toMatchObject({ code: 'relationship_not_ready' });
+      expect(exportSource).toHaveBeenCalledOnce();
+    } finally {
+      await controller.shutdown();
+      await rm(fixture, { recursive: true, force: true });
+    }
   });
 
   it('releases all daemon-owned root custody even when sidecar shutdown fails', async () => {
@@ -62,6 +337,105 @@ describe('WorkspaceSyncController', () => {
       errors: [lifecycleFailure],
     });
     expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('settles every shutdown custody entry and retries only failed releases', async () => {
+    const firstFailure = new Error('first root release failed');
+    const firstRelease = vi.fn()
+      .mockRejectedValueOnce(firstFailure)
+      .mockResolvedValueOnce(undefined);
+    const secondRelease = vi.fn(async () => undefined);
+    let acquisition = 0;
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter(),
+      lifecycle: lifecycle(),
+      rootOwnershipManager: {
+        tryAcquire: vi.fn(async (owner) => ({
+          owner: { ...owner, rootFingerprint: null },
+          bindCurrentRootIdentity: vi.fn(async () => undefined),
+          release: acquisition++ === 0 ? firstRelease : secondRelease,
+        })),
+      },
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => ({ machineId: 'm1', rootPath: `/${id}` }),
+    });
+    await controller.ensure(definition);
+
+    await expect(controller.shutdown()).rejects.toMatchObject({ errors: [firstFailure] });
+    expect(firstRelease).toHaveBeenCalledOnce();
+    expect(secondRelease).toHaveBeenCalledOnce();
+
+    await expect(controller.shutdown()).resolves.toBeUndefined();
+    expect(firstRelease).toHaveBeenCalledTimes(2);
+    expect(secondRelease).toHaveBeenCalledOnce();
+  });
+
+  it('retains relationship root custody when terminate cleanup fails and retries it on the next terminate', async () => {
+    const cleanupFailure = new Error('relationship root release failed');
+    const release = vi.fn()
+      .mockRejectedValueOnce(cleanupFailure)
+      .mockResolvedValueOnce(undefined);
+    const adapter = completeAdapter();
+    const controller = new WorkspaceSyncController({
+      adapter,
+      lifecycle: lifecycle(),
+      rootOwnershipManager: {
+        tryAcquire: vi.fn(async (owner) => ({
+          owner: { ...owner, rootFingerprint: null },
+          bindCurrentRootIdentity: vi.fn(async () => undefined),
+          release,
+        })),
+      },
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: '/a' }
+        : { machineId: 'm2', rootPath: '/b' },
+    });
+    await controller.ensure(definition);
+
+    await expect(controller.terminate(definition.relationshipId)).rejects.toBe(cleanupFailure);
+    await expect(controller.terminate(definition.relationshipId)).resolves.toBeUndefined();
+    expect(release).toHaveBeenCalledTimes(2);
+    expect(adapter.terminate).toHaveBeenCalledTimes(2);
+  });
+
+  it('retains partially acquired root custody when a later root acquisition fails', async () => {
+    const cleanupFailure = new Error('partial root release failed');
+    const release = vi.fn()
+      .mockRejectedValueOnce(cleanupFailure)
+      .mockResolvedValueOnce(undefined);
+    let acquisition = 0;
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter(),
+      lifecycle: lifecycle(),
+      rootOwnershipManager: {
+        tryAcquire: vi.fn(async (owner) => {
+          acquisition += 1;
+          if (acquisition === 2) {
+            return {
+              kind: 'overlap' as const,
+              existing: {
+                ownerId: 'other',
+                canonicalRoot: '/other',
+                operation: 'sync' as const,
+                rootFingerprint: 'other-fingerprint',
+              },
+            };
+          }
+          return {
+            owner: { ...owner, rootFingerprint: null },
+            bindCurrentRootIdentity: vi.fn(async () => undefined),
+            release,
+          };
+        }),
+      },
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => ({ machineId: 'm1', rootPath: `/${id}` }),
+    });
+
+    await expect(controller.ensure(definition)).rejects.toBe(cleanupFailure);
+    await expect(controller.shutdown()).resolves.toBeUndefined();
+    expect(release).toHaveBeenCalledTimes(2);
   });
 
   it('rejects a git_worktree relationship with the canonical typed outcome when Git is unavailable', async () => {
@@ -434,7 +808,7 @@ describe('WorkspaceSyncController', () => {
       resolveWorkspaceRef: (id) => id === 'a'
         ? { machineId: 'm1', rootPath: canonicalRootPath }
         : { machineId: 'm2', rootPath: '/remote/b' },
-      openLocalWorkspaceAgentStream: vi.fn(async () => agentStream),
+      openLocalWorkspaceAgentStream: vi.fn(async () => ownedLocalAgent(agentStream)),
     });
     try {
       await controller.ensure(definition);
@@ -474,7 +848,7 @@ describe('WorkspaceSyncController', () => {
       resolveWorkspaceRef: (id) => ({ machineId: 'm1', rootPath: `/${id}` }),
     });
     await controller.rehydrateFromSettings([definition]);
-    expect(events.slice(0, 5)).toEqual(['target', 'fence', 'fence', 'start', 'rehydrate']);
+    expect(events.slice(0, 5)).toEqual(['fence', 'target', 'fence', 'start', 'rehydrate']);
     expect(rehydrate).toHaveBeenCalledWith([definition]);
     expect(ensure).toHaveBeenCalledTimes(1);
     expect(ensure).toHaveBeenCalledWith(definition, undefined);
@@ -508,7 +882,7 @@ describe('WorkspaceSyncController', () => {
 
     await controller.flush(definition.relationshipId);
 
-    expect(events).toEqual(['target', 'fence', 'fence', 'start', 'ensure', 'start', 'flush']);
+    expect(events).toEqual(['fence', 'target', 'fence', 'start', 'ensure', 'start', 'flush']);
     await controller.shutdown();
   });
 
@@ -588,10 +962,50 @@ describe('WorkspaceSyncController', () => {
     applicationServer.close();
   });
 
+  it('awaits a delayed remote tunnel cleanup failure and retains it for shutdown retry', async () => {
+    const applicationServer = createServer({ allowHalfOpen: true }, (socket) => {
+      socket.once('data', () => socket.pipe(socket));
+    });
+    applicationServer.listen({ host: '127.0.0.1', port: 0 });
+    await once(applicationServer, 'listening');
+    const applicationAddress = applicationServer.address();
+    if (!applicationAddress || typeof applicationAddress === 'string') throw new Error('test application port unavailable');
+    const cleanupFailure = new Error('remote native tunnel cleanup failed');
+    let rejectFirstCleanup!: (error: unknown) => void;
+    const firstCleanup = new Promise<void>((_, reject) => { rejectFirstCleanup = reject; });
+    const close = vi.fn()
+      .mockReturnValueOnce(firstCleanup)
+      .mockResolvedValueOnce(undefined);
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter(),
+      lifecycle: lifecycle(),
+      rootOwnershipManager: rootOwnership(),
+      localMachineId: 'm1',
+      openMachineCarrierTunnel: vi.fn(async () => ({
+        localPort: applicationAddress.port,
+        localCapability: 'a'.repeat(64),
+        observedPath: 'direct' as const,
+        close,
+      })),
+      resolveWorkspaceRef: (id) => ({ machineId: id === 'a' ? 'm1' : 'm2', rootPath: `/${id}` }),
+    });
+    await controller.ensure(definition);
+    const stream = await controller.openExternalStream({ endpointId: deriveWorkspaceSyncEndpointId('r1', 'beta') });
+
+    stream.destroy();
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    const terminating = controller.terminate('r1');
+    rejectFirstCleanup(cleanupFailure);
+    await expect(terminating).rejects.toBe(cleanupFailure);
+    await expect(controller.shutdown()).resolves.toBeUndefined();
+    expect(close).toHaveBeenCalledTimes(2);
+    applicationServer.close();
+  });
+
   it('allows manager resume to re-enter the relationship through its external stream', async () => {
     const localRoot = await mkdtemp(join(tmpdir(), 'workspace-sync-reentrant-agent-'));
     const canonicalLocalRoot = await realpath(localRoot);
-    const openLocalWorkspaceAgentStream = vi.fn(async () => new PassThrough());
+    const openLocalWorkspaceAgentStream = vi.fn(async () => ownedLocalAgent());
     let controller!: WorkspaceSyncController;
     const ensure = vi.fn(async () => {
       const stream = await controller.openExternalStream({
@@ -612,7 +1026,7 @@ describe('WorkspaceSyncController', () => {
     });
 
     const ensuring = controller.ensure(definition);
-    await vi.waitFor(() => expect(openLocalWorkspaceAgentStream).toHaveBeenCalledOnce(), { timeout: 250 });
+    await vi.waitFor(() => expect(openLocalWorkspaceAgentStream).toHaveBeenCalledOnce(), { timeout: 1_000 });
     await expect(ensuring).resolves.toEqual(status);
     await controller.shutdown();
     await rm(localRoot, { recursive: true, force: true });
@@ -621,7 +1035,7 @@ describe('WorkspaceSyncController', () => {
   it('publishes the desired relationship fence before manager rehydration opens its external stream', async () => {
     const localRoot = await mkdtemp(join(tmpdir(), 'workspace-sync-rehydrate-agent-'));
     const canonicalLocalRoot = await realpath(localRoot);
-    const openLocalWorkspaceAgentStream = vi.fn(async () => new PassThrough());
+    const openLocalWorkspaceAgentStream = vi.fn(async () => ownedLocalAgent());
     let controller!: WorkspaceSyncController;
     const rehydrate = vi.fn(async () => {
       const stream = await controller.openExternalStream({
@@ -651,7 +1065,7 @@ describe('WorkspaceSyncController', () => {
     const localRoot = await mkdtemp(join(tmpdir(), 'workspace-sync-rehydrate-rollback-'));
     const canonicalLocalRoot = await realpath(localRoot);
     const opened = new PassThrough();
-    const openLocalWorkspaceAgentStream = vi.fn(async () => opened);
+    const openLocalWorkspaceAgentStream = vi.fn(async () => ownedLocalAgent(opened));
     let controller!: WorkspaceSyncController;
     const rehydrate = vi.fn(async () => {
       await controller.openExternalStream({ endpointId: deriveWorkspaceSyncEndpointId('r1', 'alpha') });
@@ -682,7 +1096,7 @@ describe('WorkspaceSyncController', () => {
   it('opens a local endpoint through the verified rooted agent seam, not machine carrier', async () => {
     const localRoot = await mkdtemp(join(tmpdir(), 'workspace-sync-local-agent-'));
     const canonicalLocalRoot = await realpath(localRoot);
-    const openLocalWorkspaceAgentStream = vi.fn(async () => new PassThrough());
+    const openLocalWorkspaceAgentStream = vi.fn(async () => ownedLocalAgent());
     const openMachineCarrierTunnel = vi.fn();
     const controller = new WorkspaceSyncController({
       adapter: completeAdapter(), lifecycle: lifecycle(), rootOwnershipManager: rootOwnership(),
@@ -704,11 +1118,95 @@ describe('WorkspaceSyncController', () => {
     await rm(localRoot, { recursive: true, force: true });
   });
 
+  it('retains local agent process custody after close cleanup fails and retries it during shutdown', async () => {
+    const localRoot = await mkdtemp(join(tmpdir(), 'workspace-sync-local-agent-retry-'));
+    const canonicalLocalRoot = await realpath(localRoot);
+    const cleanupFailure = new Error('local agent cleanup failed');
+    const stop = vi.fn()
+      .mockRejectedValueOnce(cleanupFailure)
+      .mockResolvedValueOnce(undefined);
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter(),
+      lifecycle: lifecycle(),
+      rootOwnershipManager: rootOwnership(),
+      localMachineId: 'm1',
+      openLocalWorkspaceAgentStream: vi.fn(async () => ownedLocalAgent(new PassThrough(), stop)),
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: canonicalLocalRoot }
+        : { machineId: 'm2', rootPath: '/remote/b' },
+    });
+    await controller.ensure(definition);
+    const stream = await controller.openExternalStream({
+      endpointId: deriveWorkspaceSyncEndpointId('r1', 'alpha'),
+    });
+
+    stream.destroy();
+    await vi.waitFor(() => expect(stop).toHaveBeenCalledOnce());
+    await expect(controller.shutdown()).resolves.toBeUndefined();
+    expect(stop).toHaveBeenCalledTimes(2);
+    await rm(localRoot, { recursive: true, force: true });
+  });
+
+  it('clears successful local agent custody after natural stream termination', async () => {
+    const localRoot = await mkdtemp(join(tmpdir(), 'workspace-sync-local-agent-natural-'));
+    const canonicalLocalRoot = await realpath(localRoot);
+    const stream = new PassThrough();
+    const stop = vi.fn(async () => undefined);
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter(),
+      lifecycle: lifecycle(),
+      rootOwnershipManager: rootOwnership(),
+      localMachineId: 'm1',
+      openLocalWorkspaceAgentStream: vi.fn(async () => ownedLocalAgent(stream, stop)),
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: canonicalLocalRoot }
+        : { machineId: 'm2', rootPath: '/remote/b' },
+    });
+    await controller.ensure(definition);
+    await controller.openExternalStream({
+      endpointId: deriveWorkspaceSyncEndpointId('r1', 'alpha'),
+    });
+
+    stream.destroy();
+    await vi.waitFor(() => expect(stop).toHaveBeenCalledOnce());
+    await controller.shutdown();
+    expect(stop).toHaveBeenCalledOnce();
+    await rm(localRoot, { recursive: true, force: true });
+  });
+
+  it('surfaces persistent local agent cleanup failure and keeps it retryable across shutdown attempts', async () => {
+    const localRoot = await mkdtemp(join(tmpdir(), 'workspace-sync-local-agent-persistent-'));
+    const canonicalLocalRoot = await realpath(localRoot);
+    const cleanupFailure = new Error('persistent local agent cleanup failure');
+    const stop = vi.fn(async () => { throw cleanupFailure; });
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter(),
+      lifecycle: lifecycle(),
+      rootOwnershipManager: rootOwnership(),
+      localMachineId: 'm1',
+      openLocalWorkspaceAgentStream: vi.fn(async () => ownedLocalAgent(new PassThrough(), stop)),
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: canonicalLocalRoot }
+        : { machineId: 'm2', rootPath: '/remote/b' },
+    });
+    await controller.ensure(definition);
+    const stream = await controller.openExternalStream({
+      endpointId: deriveWorkspaceSyncEndpointId('r1', 'alpha'),
+    });
+    stream.destroy();
+    await vi.waitFor(() => expect(stop).toHaveBeenCalledOnce());
+
+    await expect(controller.shutdown()).rejects.toMatchObject({ errors: [cleanupFailure] });
+    await expect(controller.shutdown()).rejects.toMatchObject({ errors: [cleanupFailure] });
+    expect(stop).toHaveBeenCalledTimes(3);
+    await rm(localRoot, { recursive: true, force: true });
+  });
+
   it('rejects a local endpoint when the filesystem object no longer matches its held fence', async () => {
     const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-controller-root-'));
     const localRoot = join(fixture, 'workspace');
     await mkdir(localRoot);
-    const openLocalWorkspaceAgentStream = vi.fn(async () => new PassThrough());
+    const openLocalWorkspaceAgentStream = vi.fn(async () => ownedLocalAgent());
     const controller = new WorkspaceSyncController({
       adapter: completeAdapter(),
       lifecycle: lifecycle(),
@@ -861,7 +1359,7 @@ describe('WorkspaceSyncController', () => {
 
 describe('WorkspaceSyncController copy_once restart recovery', () => {
   it('reacquires exact roots and target authority before settling the same persisted operation', async () => {
-    const policy = { v: 1 as const, selection: 'all_files' as const, extraIgnorePatterns: [], extraIncludePatterns: [], includeGitDirectory: false };
+    const policy = { v: 1 as const, selection: 'all_files' as const, extraIgnorePatterns: [], extraIncludePatterns: [] };
     const operation = {
       v: 1 as const,
       operationId: 'copy-restart-1',
@@ -913,7 +1411,7 @@ describe('WorkspaceSyncController copy_once restart recovery', () => {
   });
 
   it('retains recovered root and target fences until terminal cleanup succeeds', async () => {
-    const policy = { v: 1 as const, selection: 'all_files' as const, extraIgnorePatterns: [], extraIncludePatterns: [], includeGitDirectory: false };
+    const policy = { v: 1 as const, selection: 'all_files' as const, extraIgnorePatterns: [], extraIncludePatterns: [] };
     const operation = {
       v: 1 as const, operationId: 'copy-restart-pending', controllerMachineId: 'm1',
       alphaWorkspaceRefId: 'a', betaWorkspaceRefId: 'b',
@@ -956,6 +1454,49 @@ describe('WorkspaceSyncController copy_once restart recovery', () => {
     expect(recoverCopyOnceTarget).toHaveBeenCalledTimes(1);
     expect(releaseTarget).toHaveBeenCalledTimes(2);
     expect(releaseRoot).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains a failed copy target shutdown release for a later shutdown retry', async () => {
+    const operation = {
+      v: 1 as const, operationId: 'copy-shutdown-pending', controllerMachineId: 'm1',
+      alphaWorkspaceRefId: 'a', betaWorkspaceRefId: 'b',
+      contentPolicy: { ...policy, policyDigest: computeWorkspaceSyncPolicyDigest(policy) },
+    };
+    const adapter = completeAdapter({
+      discoverCopyOnceRecoveries: vi.fn(async () => [operation]),
+      copyOnce: vi.fn(async () => {
+        throw Object.assign(new Error('copy result unknown'), { code: 'indeterminate' });
+      }),
+      rehydrate: vi.fn(async () => []),
+    });
+    const targetFailure = new Error('target release unavailable');
+    const releaseTarget = vi.fn()
+      .mockRejectedValueOnce(targetFailure)
+      .mockResolvedValueOnce(undefined);
+    const releaseRoot = vi.fn(async () => undefined);
+    const controller = new WorkspaceSyncController({
+      adapter,
+      lifecycle: lifecycle(),
+      localMachineId: 'm1',
+      rootOwnershipManager: { tryAcquire: vi.fn(async (owner) => ({
+        owner: { ...owner, rootFingerprint: null },
+        bindCurrentRootIdentity: vi.fn(async () => undefined),
+        release: releaseRoot,
+      })) },
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: '/a' }
+        : { machineId: 'm2', rootPath: '/b' },
+      recoverCopyOnceTarget: vi.fn(async () => ({ release: releaseTarget })),
+    });
+
+    await expect(controller.rehydrateFromSettings([])).rejects.toMatchObject({ code: 'indeterminate' });
+    await expect(controller.shutdown()).rejects.toMatchObject({ errors: [targetFailure] });
+    expect(releaseTarget).toHaveBeenCalledOnce();
+    expect(releaseRoot).toHaveBeenCalledOnce();
+
+    await expect(controller.shutdown()).resolves.toBeUndefined();
+    expect(releaseTarget).toHaveBeenCalledTimes(2);
+    expect(releaseRoot).toHaveBeenCalledOnce();
   });
 });
 

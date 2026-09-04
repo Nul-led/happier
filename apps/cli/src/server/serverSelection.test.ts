@@ -103,6 +103,39 @@ describe('server selection flags', () => {
     });
   });
 
+  it('persists deterministic URL metadata without replacing the active profile while applying it ephemerally', async () => {
+    await withTempDir('happier-cli-server-select-non-focusing-', async (homeDir) => {
+      envScope.patch({
+        HAPPIER_HOME_DIR: homeDir,
+        HAPPIER_ACTIVE_SERVER_ID: undefined,
+        HAPPIER_SERVER_URL: undefined,
+        HAPPIER_LOCAL_SERVER_URL: undefined,
+        HAPPIER_PUBLIC_SERVER_URL: undefined,
+        HAPPIER_WEBAPP_URL: undefined,
+      });
+
+      vi.resetModules();
+      const { resolveServerSelectionFromArgs, applyResolvedServerSelectionNonFocusing } = await import('./serverSelection');
+      const { getActiveServerProfile, listServerProfiles } = await import('./serverProfiles');
+      const config = await import('@/configuration');
+      const before = await getActiveServerProfile();
+      const resolution = await resolveServerSelectionFromArgs([
+        '--server-url',
+        'https://pending.example.test',
+        '--persist',
+      ]);
+      expect(resolution.selection).not.toBeNull();
+
+      const applied = await applyResolvedServerSelectionNonFocusing(resolution.selection!);
+
+      expect((await getActiveServerProfile()).id).toBe(before.id);
+      expect(applied.profileId).not.toBe(before.id);
+      expect(config.configuration.serverUrl).toBe('https://pending.example.test');
+      expect(config.configuration.activeServerId).toBe(applied.profileId);
+      expect((await listServerProfiles()).some((profile) => profile.id === applied.profileId)).toBe(true);
+    });
+  });
+
   it('reuses an existing matching server profile when --server-url is used with --persist', async () => {
     await withTempDir('happier-cli-server-select-persist-existing-', async (homeDir) => {
       envScope.patch({
@@ -178,8 +211,13 @@ describe('server selection flags', () => {
       const selectionMod: any = await import('./serverSelection');
       expect(typeof selectionMod.applyEphemeralServerSelectionFromPrefixArgs).toBe('function');
 
-      const remaining = await selectionMod.applyEphemeralServerSelectionFromPrefixArgs(['--server', 'company', 'doctor']);
-      expect(remaining).toEqual(['doctor']);
+      const resolution = await selectionMod.applyEphemeralServerSelectionFromPrefixArgs(['--server', 'company', 'doctor']);
+      expect(resolution.rest).toEqual(['doctor']);
+      expect(resolution.selection).toMatchObject({
+        activeServerId: 'company',
+        application: { kind: 'ephemeralEnv' },
+        homeTarget: { profileId: 'company', homeServerIdentityId: null },
+      });
 
       const config = await import('@/configuration');
       expect(config.configuration.serverUrl).toBe('https://company.example.test');
@@ -218,8 +256,8 @@ describe('server selection flags', () => {
       });
 
       const { applyEphemeralServerSelectionFromPrefixArgs } = await import('./serverSelection');
-      const remaining = await applyEphemeralServerSelectionFromPrefixArgs(['--server', 'company', 'doctor']);
-      expect(remaining).toEqual(['doctor']);
+      const resolution = await applyEphemeralServerSelectionFromPrefixArgs(['--server', 'company', 'doctor']);
+      expect(resolution.rest).toEqual(['doctor']);
 
       const config = await import('@/configuration');
       expect(config.configuration.activeServerId).toBe('company');

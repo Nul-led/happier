@@ -1,14 +1,20 @@
 import { once } from 'node:events';
 import { connect, type Socket } from 'node:net';
 
-export type WorkspaceSyncMachineTunnelOpenInput = Readonly<{
-  operationId: string;
+type WorkspaceSyncMachineTunnelTarget = Readonly<{
   sourceMachineId: string;
   targetMachineId: string;
-  flow: 'workspace_sync' | 'file_transfer';
-  maxBytes?: number;
   signal?: AbortSignal;
 }>;
+
+export type WorkspaceSyncMachineTunnelOpenInput =
+  | (WorkspaceSyncMachineTunnelTarget & Readonly<{
+      flow: 'file_transfer';
+    }>)
+  | (WorkspaceSyncMachineTunnelTarget & Readonly<{
+      flow: 'workspace_sync';
+      operationId: string;
+    }>);
 
 export type WorkspaceSyncMachineTunnel = Readonly<{
   localPort: number;
@@ -26,29 +32,46 @@ export type WorkspaceSyncMachineTunnelOpen = (
   input: WorkspaceSyncMachineTunnelOpenInput,
 ) => Promise<WorkspaceSyncMachineTunnel>;
 
+export type WorkspaceSyncMachineTunnelConnection = Readonly<{
+  stream: Socket;
+  stop(): Promise<void>;
+}>;
+
 function invalidTunnelPort(): Error {
   return Object.assign(new Error('Workspace sync machine tunnel did not expose a valid loopback port'), {
     code: 'machine_carrier_unavailable',
   });
 }
 
+async function throwAfterTunnelCleanup(
+  tunnel: WorkspaceSyncMachineTunnel,
+  error: unknown,
+): Promise<never> {
+  try {
+    await tunnel.close();
+  } catch (cleanupError) {
+    throw new AggregateError(
+      [error, cleanupError],
+      'Workspace sync machine tunnel setup and cleanup both failed',
+    );
+  }
+  throw error;
+}
+
 export async function connectWorkspaceSyncMachineTunnel(
   tunnel: WorkspaceSyncMachineTunnel,
   signal?: AbortSignal,
-): Promise<Socket> {
+): Promise<WorkspaceSyncMachineTunnelConnection> {
   if (!Number.isInteger(tunnel.localPort) || tunnel.localPort < 1 || tunnel.localPort > 65_535) {
-    await tunnel.close().catch(() => undefined);
-    throw invalidTunnelPort();
+    return await throwAfterTunnelCleanup(tunnel, invalidTunnelPort());
   }
   if (!/^[0-9a-f]{64}$/.test(tunnel.localCapability)) {
-    await tunnel.close().catch(() => undefined);
-    throw invalidTunnelPort();
+    return await throwAfterTunnelCleanup(tunnel, invalidTunnelPort());
   }
   try {
     signal?.throwIfAborted();
   } catch (error) {
-    await tunnel.close().catch(() => undefined);
-    throw error;
+    return await throwAfterTunnelCleanup(tunnel, error);
   }
   const socket = connect({
     host: '127.0.0.1',
@@ -56,18 +79,25 @@ export async function connectWorkspaceSyncMachineTunnel(
     allowHalfOpen: true,
   });
   socket.setNoDelay(true);
-  let closed = false;
-  const closeTunnel = async (): Promise<void> => {
-    if (closed) return;
-    closed = true;
+  let stopped = false;
+  let stopAttempt: Promise<void> | null = null;
+  const stop = async (): Promise<void> => {
+    if (stopped) return;
+    if (stopAttempt) return await stopAttempt;
     signal?.removeEventListener('abort', abort);
-    await tunnel.close();
+    const attempt = tunnel.close().then(() => { stopped = true; });
+    stopAttempt = attempt;
+    try {
+      await attempt;
+    } catch (error) {
+      if (stopAttempt === attempt) stopAttempt = null;
+      throw error;
+    }
   };
   const abort = (): void => {
     socket.destroy(signal?.reason instanceof Error ? signal.reason : undefined);
   };
   signal?.addEventListener('abort', abort, { once: true });
-  socket.once('close', () => { void closeTunnel().catch(() => undefined); });
   try {
     await once(socket, 'connect');
     socket.write(tunnel.localCapability, 'ascii');
@@ -75,10 +105,17 @@ export async function connectWorkspaceSyncMachineTunnel(
       abort();
       signal.throwIfAborted();
     }
-    return socket;
+    return { stream: socket, stop };
   } catch (error) {
     socket.destroy();
-    await closeTunnel().catch(() => undefined);
+    try {
+      await stop();
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        'Workspace sync machine tunnel connection and cleanup both failed',
+      );
+    }
     throw error;
   }
 }

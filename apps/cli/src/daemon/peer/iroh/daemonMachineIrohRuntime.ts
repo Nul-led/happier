@@ -72,6 +72,16 @@ export type DaemonMachineIrohRuntime = Readonly<{
     observedPath: 'direct' | 'relay' | 'unknown';
     close(): Promise<void>;
   }>>;
+  openHttpTunnel: (
+    input: MachineCarrierTransportOpenInput,
+    endpoint: IrohEndpointDescriptorV1,
+  ) => Promise<Readonly<{
+    localPort: number;
+    localCapability: string;
+    remoteEndpointId: string;
+    observedPath: 'direct' | 'relay' | 'unknown';
+    close(): Promise<void>;
+  }>>;
   openTransport: (
     input: MachineCarrierTransportOpenInput,
     endpoint: IrohEndpointDescriptorV1,
@@ -93,6 +103,15 @@ export type UnavailableDaemonMachineIrohRuntime =
       shutdown: () => Promise<void>;
     }>;
 
+/**
+ * Creates the daemon's one Machine Iroh runtime. Local native-endpoint
+ * initialization is an optional carrier preparation step, so every local
+ * failure is reported as native-runtime unavailability instead of thrown: the
+ * HTTPS-aware Home transport owner is the single owner of the
+ * trusted-HTTPS-or-fail-closed decision, and it needs the unavailability as an
+ * input rather than an aborted daemon startup. A `startup_failed` result keeps
+ * any native endpoint that was created in retryable `shutdown` custody.
+ */
 export async function createDaemonMachineIrohRuntime(input: Readonly<{
   happyHomeDir: string;
   relayConfig: DaemonMachineIrohRelayConfig;
@@ -110,12 +129,18 @@ export async function createDaemonMachineIrohRuntime(input: Readonly<{
     };
   }
 
-  const created = await native.createEndpoint({
-    keyPath: join(input.happyHomeDir, 'runtime', 'iroh', 'endpoint.key'),
-    relayPolicy: input.relayConfig.relayPolicy,
-    ...(input.relayConfig.relayUrls.length > 0 ? { relayUrls: input.relayConfig.relayUrls } : {}),
-    capProfile: 'machineBulk',
-  });
+  let created: Awaited<ReturnType<NodeIrohNativeModule['createEndpoint']>>;
+  try {
+    created = await native.createEndpoint({
+      keyPath: join(input.happyHomeDir, 'runtime', 'iroh', 'endpoint.key'),
+      relayPolicy: input.relayConfig.relayPolicy,
+      ...(input.relayConfig.relayUrls.length > 0 ? { relayUrls: input.relayConfig.relayUrls } : {}),
+      capProfile: 'machineBulk',
+    });
+  } catch (error) {
+    // No native endpoint exists, so there is nothing to keep in custody.
+    return { available: false, reason: 'startup_failed', error, shutdown: async () => undefined };
+  }
   // Custody is registered on the created endpoint before any status read or
   // descriptor projection, so every later startup failure disposes the one
   // native resource this runtime already owns.
@@ -134,41 +159,25 @@ export async function createDaemonMachineIrohRuntime(input: Readonly<{
       ...(status.directAddresses.length > 0 ? { directAddresses: status.directAddresses } : {}),
     });
   } catch (error) {
-    try {
-      await disposeEndpoint();
-    } catch {
-      // The endpoint exists but native cleanup did not settle. Return the same
-      // retryable closer to the daemon process owner instead of losing custody
-      // behind the startup error.
-      return {
-        available: false,
-        reason: 'startup_failed',
-        error,
-        shutdown: disposeEndpoint,
-      };
-    }
-    throw error;
+    // Dispose the one native resource this factory owns, then report the
+    // failure as native-runtime unavailability. `disposeEndpoint` resolves
+    // immediately once cleanup succeeded and stays retryable when it did not,
+    // so the daemon process owner keeps custody either way.
+    await disposeEndpoint().catch(() => undefined);
+    return { available: false, reason: 'startup_failed', error, shutdown: disposeEndpoint };
   }
   const activeTunnelClosers = new Set<() => Promise<void>>();
   const activeHomeTunnelClosers = new Set<() => Promise<void>>();
-  // Settlements of admitted-but-unresolved tunnel creations. A creation is
-  // admitted once it passes its shutdown gate, and it registers its native
-  // custody before its admission settles, so the stop sweep can never resolve
-  // while a creation racing shutdown could still publish a tunnel.
-  const pendingCreationSettlements = new Set<Promise<void>>();
-  const admitCreation = <T>(create: () => Promise<T>): Promise<T> => {
-    let creation: Promise<T>;
-    try {
-      creation = create();
-    } catch (error) {
-      return Promise.reject(error);
-    }
-    const settled = creation.then(() => undefined, () => undefined);
-    pendingCreationSettlements.add(settled);
-    void settled.then(() => {
-      pendingCreationSettlements.delete(settled);
-    });
-    return creation;
+  /**
+   * Releases a creation that resolved after shutdown began. Native endpoint
+   * shutdown is the admission, cancellation and join owner, so it refuses a
+   * late native publication itself; this only covers the narrow window where a
+   * native creation resolved just before shutdown reached the endpoint. A
+   * failed release keeps the closer in its active set, so it stays retryable
+   * through the same shutdown sweep.
+   */
+  const releaseLateCreation = async (release: () => Promise<void>): Promise<void> => {
+    await release().catch(() => undefined);
   };
   let acceptorRunning = false;
   let startAcceptorInFlight: Promise<unknown> | null = null;
@@ -195,10 +204,6 @@ export async function createDaemonMachineIrohRuntime(input: Readonly<{
     return stopAcceptorInFlight;
   };
   const stopActiveTunnels = async (): Promise<void> => {
-    // Settle every admitted creation first: its custody is registered when the
-    // native call resolves, so a sweep that ran mid-creation would resolve
-    // while the created tunnel could still be published.
-    await Promise.all([...pendingCreationSettlements]);
     // Aggregate only after every closer settles: a first failure must not race
     // shutdown past the other owned releases. Successful closers leave their
     // set; failed closers stay owned and retryable through the same sweep.
@@ -213,11 +218,19 @@ export async function createDaemonMachineIrohRuntime(input: Readonly<{
   const startTunnel = async (
     transportInput: MachineCarrierTransportOpenInput,
     remoteDescriptor: IrohEndpointDescriptorV1,
+    kind: 'raw' | 'http' = 'raw',
   ) => {
     if (shutdownRequested) throw new Error('Iroh machine runtime is shut down');
     if (
       transportInput.flow !== transportInput.handshake.flow
-      || transportInput.operationId !== transportInput.handshake.operationId
+      || (
+        transportInput.handshake.flow === 'workspace_sync'
+        && transportInput.operationId !== transportInput.handshake.operationId
+      )
+      || (
+        transportInput.handshake.flow === 'finite_transfer'
+        && transportInput.operationId !== undefined
+      )
     ) {
       throw new Error('Iroh machine transport request does not match the verified handshake');
     }
@@ -225,7 +238,8 @@ export async function createDaemonMachineIrohRuntime(input: Readonly<{
     if (parsedRemote.endpointId !== transportInput.remoteEndpointId) {
       throw new Error('Iroh machine endpoint descriptor does not match the verified handshake');
     }
-    const tunnel = await native.startMachineTunnel({
+    const start = kind === 'http' ? native.startMachineHttpTunnel : native.startMachineTunnel;
+    const tunnel = await start({
       endpointHandle: created.endpointHandle,
       endpointId: parsedRemote.endpointId,
       ...(parsedRemote.directAddresses ? { directAddresses: parsedRemote.directAddresses } : {}),
@@ -236,6 +250,30 @@ export async function createDaemonMachineIrohRuntime(input: Readonly<{
     return tunnel;
   };
 
+  const openLoopbackTunnel = async (
+    transportInput: MachineCarrierTransportOpenInput,
+    remoteDescriptor: IrohEndpointDescriptorV1,
+    kind: 'raw' | 'http',
+  ) => {
+    const tunnel = await startTunnel(transportInput, remoteDescriptor, kind);
+    const close = onceReleased(async () => {
+      await native.stopMachineTunnel(tunnel.machineTunnelId);
+      activeTunnelClosers.delete(close);
+    });
+    activeTunnelClosers.add(close);
+    if (shutdownRequested) {
+      await releaseLateCreation(close);
+      throw new Error('Iroh machine runtime is shut down');
+    }
+    return {
+      localPort: tunnel.localPort,
+      localCapability: tunnel.localCapability,
+      remoteEndpointId: tunnel.remoteEndpointId,
+      observedPath: tunnel.observedPath,
+      close,
+    };
+  };
+
   return {
     available: true,
     endpoint,
@@ -244,36 +282,29 @@ export async function createDaemonMachineIrohRuntime(input: Readonly<{
       const parsed = HomeConnectionDescriptorV1Schema.parse(descriptor);
       const homeEndpoint = parsed.endpoints.find((candidate) => candidate.kind === 'iroh');
       if (!homeEndpoint) throw new Error('Home descriptor does not contain an Iroh endpoint');
-      return admitCreation(async () => {
-        const tunnel = await native.ensureHomeTunnel({
-          endpointHandle: created.endpointHandle,
-          homeServerIdentityId: parsed.homeServerIdentityId,
-          endpointId: homeEndpoint.endpointId,
-          ...(homeEndpoint.directAddresses ? { directAddresses: homeEndpoint.directAddresses } : {}),
-          ...(homeEndpoint.relayUrls ? { relayUrls: homeEndpoint.relayUrls } : {}),
-          descriptorRevision: parsed.revision,
-        });
-        // The lease stays owned until native release succeeds; concurrent
-        // release callers share the one in-flight native call. Custody is
-        // registered inside the admission so a shutdown racing this creation
-        // sweeps it.
-        const release = onceReleased(async () => {
-          await native.releaseHomeTunnel(tunnel.tunnelId);
-          activeHomeTunnelClosers.delete(release);
-        });
-        activeHomeTunnelClosers.add(release);
-        if (shutdownRequested) {
-          // The native ABI cannot cancel an in-flight creation, so the sweep
-          // owns and releases it above; fail this caller closed instead of
-          // publishing a lease during shutdown.
-          throw new Error('Iroh daemon runtime is shut down');
-        }
-        return {
-          runtimeOrigin: tunnel.runtimeOrigin,
-          observedPath: tunnel.observedPath,
-          release,
-        };
+      const tunnel = await native.ensureHomeTunnel({
+        endpointHandle: created.endpointHandle,
+        homeServerIdentityId: parsed.homeServerIdentityId,
+        endpointId: homeEndpoint.endpointId,
+        ...(homeEndpoint.directAddresses ? { directAddresses: homeEndpoint.directAddresses } : {}),
+        ...(homeEndpoint.relayUrls ? { relayUrls: homeEndpoint.relayUrls } : {}),
       });
+      // The lease stays owned until native release succeeds; concurrent
+      // release callers share the one in-flight native call.
+      const release = onceReleased(async () => {
+        await native.releaseHomeTunnel(tunnel.tunnelId);
+        activeHomeTunnelClosers.delete(release);
+      });
+      activeHomeTunnelClosers.add(release);
+      if (shutdownRequested) {
+        await releaseLateCreation(release);
+        throw new Error('Iroh daemon runtime is shut down');
+      }
+      return {
+        runtimeOrigin: tunnel.runtimeOrigin,
+        observedPath: tunnel.observedPath,
+        release,
+      };
     },
     async startAttemptAcceptor({ admissionPort }) {
       if (shutdownRequested) throw new Error('Iroh machine runtime is shut down');
@@ -301,92 +332,72 @@ export async function createDaemonMachineIrohRuntime(input: Readonly<{
     },
     stopActiveTunnels,
     stopAttemptAcceptor,
-    async openTunnel(transportInput, remoteDescriptor) {
-      return admitCreation(async () => {
-        const tunnel = await startTunnel(transportInput, remoteDescriptor);
-        // Owned until the native stop succeeds; concurrent close callers share
-        // the one in-flight native call. Custody is registered inside the
-        // admission so a shutdown racing this creation sweeps it.
-        const close = onceReleased(async () => {
-          await native.stopMachineTunnel(tunnel.machineTunnelId);
-          activeTunnelClosers.delete(close);
-        });
-        activeTunnelClosers.add(close);
-        if (shutdownRequested) {
-          // The native ABI cannot cancel an in-flight creation, so the sweep
-          // owns and releases it above; fail this caller closed instead of
-          // publishing a handle during shutdown.
-          throw new Error('Iroh machine runtime is shut down');
-        }
-        return {
-          localPort: tunnel.localPort,
-          localCapability: tunnel.localCapability,
-          remoteEndpointId: tunnel.remoteEndpointId,
-          observedPath: tunnel.observedPath,
-          close,
-        };
-      });
-    },
+    openTunnel: async (transportInput, remoteDescriptor) =>
+      await openLoopbackTunnel(transportInput, remoteDescriptor, 'raw'),
+    openHttpTunnel: async (transportInput, remoteDescriptor) =>
+      await openLoopbackTunnel(transportInput, remoteDescriptor, 'http'),
     async openTransport(transportInput, remoteDescriptor) {
-      return admitCreation(async () => {
-        const tunnel = await startTunnel(transportInput, remoteDescriptor);
-        // Owned until the native stop succeeds, from native creation onward: a
-        // local-hop failure disposes through this same closer, and a rejected
-        // disposal keeps the tunnel owned and retryable by the runtime. The local
-        // loopback stream is subsidiary custody: a rejected stream close must not
-        // block or poison the authoritative native tunnel cleanup or its retry.
-        // Custody is registered inside the admission so a shutdown racing this
-        // creation sweeps it.
-        let stream!: Awaited<ReturnType<typeof connectPeerTcpTunnelTcp>>;
-        let streamOpened = false;
-        const close = onceReleased(async () => {
-          if (streamOpened) await Promise.resolve(stream.close()).catch(() => undefined);
-          await native.stopMachineTunnel(tunnel.machineTunnelId);
-          activeTunnelClosers.delete(close);
-        });
-        activeTunnelClosers.add(close);
-        if (shutdownRequested) {
-          // The native ABI cannot cancel an in-flight creation, so the sweep
-          // owns and releases it above; do not open the local hop during
-          // shutdown.
-          throw new Error('Iroh machine runtime is shut down');
-        }
-        const connectTcp = input.connectTcp ?? connectPeerTcpTunnelTcp;
-        try {
-          stream = await connectTcp({ host: '127.0.0.1', port: tunnel.localPort });
-          streamOpened = true;
-          if (!stream.write) throw new Error('Iroh machine local hop is not writable');
-          await stream.write(Buffer.from(tunnel.localCapability, 'ascii'));
-        } catch (error) {
-          await close().catch(() => undefined);
-          throw error;
-        }
-        if (shutdownRequested) {
-          // Shutdown began during the local hop: the sweep owns the closer and
-          // releases both the stream and the native tunnel, so fail closed
-          // instead of publishing a usable connection.
-          throw new Error('Iroh machine runtime is shut down');
-        }
-        return {
-          remoteEndpointId: tunnel.remoteEndpointId,
-          observedPath: tunnel.observedPath,
-          stream,
-          close,
-        };
+      const tunnel = await startTunnel(transportInput, remoteDescriptor);
+      // Owned until the native stop succeeds, from native creation onward: a
+      // local-hop failure disposes through this same closer, and a rejected
+      // disposal keeps the tunnel owned and retryable by the runtime. The local
+      // loopback stream is subsidiary custody: a rejected stream close must not
+      // block or poison the authoritative native tunnel cleanup or its retry.
+      let stream!: Awaited<ReturnType<typeof connectPeerTcpTunnelTcp>>;
+      let streamOpened = false;
+      const close = onceReleased(async () => {
+        if (streamOpened) await Promise.resolve(stream.close()).catch(() => undefined);
+        await native.stopMachineTunnel(tunnel.machineTunnelId);
+        activeTunnelClosers.delete(close);
       });
+      activeTunnelClosers.add(close);
+      if (shutdownRequested) {
+        await releaseLateCreation(close);
+        throw new Error('Iroh machine runtime is shut down');
+      }
+      const connectTcp = input.connectTcp ?? connectPeerTcpTunnelTcp;
+      try {
+        stream = await connectTcp({ host: '127.0.0.1', port: tunnel.localPort });
+        streamOpened = true;
+        if (!stream.write) throw new Error('Iroh machine local hop is not writable');
+        await stream.write(Buffer.from(tunnel.localCapability, 'ascii'));
+      } catch (error) {
+        await close().catch(() => undefined);
+        throw error;
+      }
+      if (shutdownRequested) {
+        // Shutdown began during the local hop: release the whole handle rather
+        // than publishing a usable connection.
+        await releaseLateCreation(close);
+        throw new Error('Iroh machine runtime is shut down');
+      }
+      return {
+        remoteEndpointId: tunnel.remoteEndpointId,
+        observedPath: tunnel.observedPath,
+        stream,
+        close,
+      };
     },
     async shutdown() {
       if (shutdownComplete) return;
-      // New work is refused immediately, even while a concurrent shutdown is
+      // New work is refused synchronously, even while a concurrent shutdown is
       // still in flight; concurrent callers share the one cleanup sequence.
+      // Nothing waits for an in-flight creation before native shutdown runs:
+      // native endpoint shutdown closes admission, cancels admitted work and
+      // joins it, so waiting here would only withhold the cancellation the
+      // creation is blocked on.
       shutdownRequested = true;
       shutdownInFlight ??= (async () => {
         let firstFailure: unknown = null;
+        // Native endpoint shutdown is the admission/cancellation/join owner.
+        // Reach it before awaiting any JavaScript-side release so an admitted
+        // create cannot be the work that prevents its own cancellation.
+        await disposeEndpoint().catch((error: unknown) => { firstFailure ??= error; });
+        // These closers still own subsidiary JavaScript resources (notably the
+        // local TCP stream) and retain retry custody if their idempotent native
+        // release fails after aggregate endpoint shutdown.
         await stopActiveTunnels().catch((error) => { firstFailure ??= error; });
         await stopAttemptAcceptor().catch((error) => { firstFailure ??= error; });
-        // The same endpoint closer that owns a failed startup disposal owns
-        // shutdown, so repeated shutdown callers retry it until it succeeds.
-        await disposeEndpoint().catch((error: unknown) => { firstFailure ??= error; });
         if (firstFailure) {
           shutdownInFlight = null;
           throw firstFailure;

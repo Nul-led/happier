@@ -78,7 +78,7 @@ import {
   type FeaturesResponse,
   type PeerLoopbackEndpointCandidateV1,
 } from '@happier-dev/protocol';
-import type { PeerTcpTunnelRelayEnvelope } from '@happier-dev/protocol';
+import type { PeerTcpTunnelRelayEnvelope, WorkspaceContentPolicyV1 } from '@happier-dev/protocol';
 import {
   startPeerMediationLoopback,
   type StartPeerMediationLoopbackInput,
@@ -400,7 +400,7 @@ async function maybeStartPeerMediationLoopback(params: Readonly<{
       irohMachineAdmission: {
         localEndpointId: params.machineIrohRuntime.endpoint.endpointId,
         role: 'acceptor' as const,
-        allowedFlows: ['file_transfer', 'attachment_transfer', 'workspace_sync'] as const,
+        allowedFlows: ['finite_transfer', 'workspace_sync'] as const,
         resolveTrustRoots: () => {
           const current = params.getServerFeaturesSnapshot?.();
           const features = current?.status === 'ready' ? current.features : serverFeatures;
@@ -409,7 +409,7 @@ async function maybeStartPeerMediationLoopback(params: Readonly<{
             .map((key) => ({ keyId: key.keyId, publicKey: key.publicKey, expiresAt: key.expiresAt }));
         },
         resolveApplicationTarget: async ({ handshake }) => {
-          if (handshake.flow === 'file_transfer' || handshake.flow === 'attachment_transfer') {
+          if (handshake.flow === 'finite_transfer') {
             return params.directPeerServerLifecycle
               ? { port: await params.directPeerServerLifecycle.ensureListening() }
               : null;
@@ -777,7 +777,8 @@ export async function bootstrapMachineSyncRuntime(
                 t: 'workspace_sync_seed_v1';
                 operationId: string;
                 sourceWorkspaceRefId: string;
-                contentSelection: 'git_worktree' | 'all_files';
+                targetMachineId: string;
+                contentPolicy: WorkspaceContentPolicyV1;
               }>
             | Readonly<{
                 t: 'composer_media_stage_inspect_v1';

@@ -1,12 +1,17 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import {
+  WORKSPACE_SYNC_MAX_PATTERN_BYTES,
+  WORKSPACE_SYNC_MAX_PATTERNS,
+} from '@happier-dev/protocol';
 
 export const WORKSPACE_SYNC_BROKER_PROTOCOL = 1 as const;
 export const WORKSPACE_SYNC_BROKER_MAX_FRAME_BYTES = 64 * 1024;
 export const WORKSPACE_SYNC_BROKER_MAX_ID_BYTES = 256;
 export const WORKSPACE_SYNC_BROKER_MAX_MESSAGE_BYTES = 4096;
+// Two 128×1024-byte Protocol policy arrays, worst-case JSON escaping, and envelope metadata.
+export const WORKSPACE_SYNC_BROKER_MAX_REQUEST_FRAME_BYTES = 2 * 1024 * 1024;
 export const WORKSPACE_SYNC_BROKER_ATTACH_TTL_MS = 30_000;
 export const OPEN_REMOTE_DEADLINE_MS = 15_000;
-export const WORKSPACE_SYNC_BROKER_COMMAND_DEADLINE_MS = 30_000;
 export const MAX_CONCURRENT_DATA_STREAMS = 8;
 export const MAX_CONTROL_FRAME_BYTES = WORKSPACE_SYNC_BROKER_MAX_FRAME_BYTES;
 
@@ -15,7 +20,50 @@ export type MutagenContentPolicy = Readonly<{
   selection: 'git_worktree' | 'all_files';
   extraIgnorePatterns: readonly string[];
   extraIncludePatterns: readonly string[];
-  includeGitDirectory: boolean;
+}>;
+export type MutagenEndpointSummaryV1 = Readonly<{
+  protocol: 'external';
+  host: string;
+  path: '';
+  connected: boolean;
+  scanned: boolean;
+}>;
+export type MutagenSessionSummaryV1 = Readonly<{
+  identifier: string;
+  name: string;
+  labels: Readonly<Record<string, string>>;
+  alpha: MutagenEndpointSummaryV1;
+  beta: MutagenEndpointSummaryV1;
+  mode: MutagenSynchronizationMode;
+  paused: boolean;
+  status: string;
+  successfulCycles: number;
+  conflictCount: number;
+  lastError?: string;
+}>;
+export type MutagenSessionListPageV1 = Readonly<{
+  sessions: readonly MutagenSessionSummaryV1[];
+  /** Opaque engine-view continuation; null means this view is complete. */
+  nextCursor: string | null;
+}>;
+export type MutagenConflictSummaryV1 = Readonly<{
+  root: string;
+  alphaChanges: readonly unknown[];
+  betaChanges: readonly unknown[];
+}>;
+export type MutagenConflictListPageV1 = Readonly<{
+  totalCount: number;
+  shownCount: number;
+  truncatedCount: number;
+  conflicts: readonly MutagenConflictSummaryV1[];
+  /** Opaque engine-view continuation; null means this view is complete. */
+  nextCursor: string | null;
+}>;
+export type MutagenPolicyPageV1 = Readonly<{
+  selection: MutagenContentPolicy['selection'];
+  patterns: readonly string[];
+  /** Opaque engine-view continuation; null means this view is complete. */
+  nextCursor: string | null;
 }>;
 export type MutagenSessionDefinition = Readonly<{
   alpha: string;
@@ -28,12 +76,13 @@ export type MutagenSessionDefinition = Readonly<{
 export type MutagenControlCommandV1 =
   | Readonly<{ t: 'create'; requestId: string; session: MutagenSessionDefinition }>
   | Readonly<{ t: 'get'; requestId: string; sessionIdentifier: string }>
-  | Readonly<{ t: 'list'; requestId: string }>
+  | Readonly<{ t: 'list'; requestId: string; cursor?: string; limit: number }>
   | Readonly<{ t: 'flush'; requestId: string; sessionIdentifier: string }>
   | Readonly<{ t: 'pause'; requestId: string; sessionIdentifier: string }>
   | Readonly<{ t: 'resume'; requestId: string; sessionIdentifier: string }>
   | Readonly<{ t: 'terminate'; requestId: string; sessionIdentifier: string }>
-  | Readonly<{ t: 'list_conflicts'; requestId: string; sessionIdentifier: string; limit: number }>
+  | Readonly<{ t: 'get_policy'; requestId: string; sessionIdentifier: string; cursor?: string; limit: number }>
+  | Readonly<{ t: 'list_conflicts'; requestId: string; sessionIdentifier: string; cursor?: string; limit: number }>
   | Readonly<{ t: 'shutdown'; requestId: string }>;
 
 export const WORKSPACE_SYNC_BROKER_TERMINAL_ERROR_CODES = [
@@ -50,6 +99,7 @@ export const WORKSPACE_SYNC_BROKER_TERMINAL_ERROR_CODES = [
   'data_attach_failed',
   'cancelled',
   'protocol_error',
+  'cursor_invalidated',
   'indeterminate',
 ] as const;
 export type BrokerTerminalErrorCode = (typeof WORKSPACE_SYNC_BROKER_TERMINAL_ERROR_CODES)[number];
@@ -156,9 +206,10 @@ function finiteNumber(value: unknown, name: string): number {
 
 const commandFields: Record<MutagenControlCommandV1['t'], readonly string[]> = {
   create: ['t', 'requestId', 'session'],
-  get: ['t', 'requestId', 'sessionIdentifier'], list: ['t', 'requestId'], flush: ['t', 'requestId', 'sessionIdentifier'],
+  get: ['t', 'requestId', 'sessionIdentifier'], list: ['t', 'requestId', 'cursor', 'limit'], flush: ['t', 'requestId', 'sessionIdentifier'],
   pause: ['t', 'requestId', 'sessionIdentifier'], resume: ['t', 'requestId', 'sessionIdentifier'], terminate: ['t', 'requestId', 'sessionIdentifier'],
-  list_conflicts: ['t', 'requestId', 'sessionIdentifier', 'limit'], shutdown: ['t', 'requestId'],
+  get_policy: ['t', 'requestId', 'sessionIdentifier', 'cursor', 'limit'],
+  list_conflicts: ['t', 'requestId', 'sessionIdentifier', 'cursor', 'limit'], shutdown: ['t', 'requestId'],
 };
 
 function strictFields(value: Record<string, unknown>, allowed: readonly string[], owner: string): void {
@@ -176,20 +227,24 @@ function parseExternalEndpoint(value: unknown, name: string): string {
 }
 
 function parsePatterns(value: unknown, name: string): readonly string[] {
-  if (!Array.isArray(value) || value.length > 256) throw new Error(`invalid ${name}`);
-  return value.map((pattern) => boundedString(pattern, name, 4096));
+  if (!Array.isArray(value) || value.length > WORKSPACE_SYNC_MAX_PATTERNS) throw new Error(`invalid ${name}`);
+  return value.map((pattern) => boundedString(pattern, name, WORKSPACE_SYNC_MAX_PATTERN_BYTES));
+}
+
+function parseIncludePatterns(value: unknown): readonly string[] {
+  const patterns = parsePatterns(value, 'extraIncludePatterns');
+  if (patterns.some((pattern) => pattern.startsWith('!'))) throw new Error('invalid extraIncludePatterns');
+  return patterns;
 }
 
 function parseMutagenContentPolicy(value: unknown): MutagenContentPolicy {
   if (!isRecord(value)) throw new Error('invalid contentPolicy');
-  strictFields(value, ['selection', 'extraIgnorePatterns', 'extraIncludePatterns', 'includeGitDirectory'], 'contentPolicy');
+  strictFields(value, ['selection', 'extraIgnorePatterns', 'extraIncludePatterns'], 'contentPolicy');
   if (value.selection !== 'git_worktree' && value.selection !== 'all_files') throw new Error('invalid contentPolicy selection');
-  if (typeof value.includeGitDirectory !== 'boolean') throw new Error('invalid includeGitDirectory');
   return {
     selection: value.selection,
     extraIgnorePatterns: parsePatterns(value.extraIgnorePatterns, 'extraIgnorePatterns'),
-    extraIncludePatterns: parsePatterns(value.extraIncludePatterns, 'extraIncludePatterns'),
-    includeGitDirectory: value.includeGitDirectory,
+    extraIncludePatterns: parseIncludePatterns(value.extraIncludePatterns),
   };
 }
 
@@ -233,9 +288,20 @@ export function parseMutagenControlCommandV1(value: unknown): MutagenControlComm
     case 'resume':
     case 'terminate':
       return { t: tag, requestId, sessionIdentifier: boundedIdentifier(value.sessionIdentifier, 'sessionIdentifier') };
-    case 'list':
+    case 'list': {
+      if (!Number.isInteger(value.limit) || (value.limit as number) < 1 || (value.limit as number) > 100) {
+        throw new Error('invalid list limit');
+      }
+      return {
+        t: tag,
+        requestId,
+        ...(value.cursor === undefined ? {} : { cursor: boundedIdentifier(value.cursor, 'cursor') }),
+        limit: value.limit as number,
+      };
+    }
     case 'shutdown':
       return { t: tag, requestId };
+    case 'get_policy':
     case 'list_conflicts': {
       if (!Number.isInteger(value.limit) || (value.limit as number) < 1 || (value.limit as number) > 100) {
         throw new Error('invalid conflict limit');
@@ -244,6 +310,7 @@ export function parseMutagenControlCommandV1(value: unknown): MutagenControlComm
         t: tag,
         requestId,
         sessionIdentifier: boundedIdentifier(value.sessionIdentifier, 'sessionIdentifier'),
+        ...(value.cursor === undefined ? {} : { cursor: boundedIdentifier(value.cursor, 'cursor') }),
         limit: value.limit as number,
       };
     }
@@ -299,6 +366,20 @@ export function encodeBrokerControlFrame(control: BrokerControlV1): Buffer {
   payload.copy(frame, 4);
   return frame;
 }
+
+/** Encodes a validated manager request using the request-specific frame budget. */
+export function encodeBrokerCommandFrame(command: MutagenControlCommandV1): Buffer {
+  const parsed = parseMutagenControlCommandV1(command);
+  const envelope = { t: 'command' as const, requestId: parsed.requestId, command: parsed };
+  const payload = Buffer.from(JSON.stringify(envelope), 'utf8');
+  if (payload.byteLength > WORKSPACE_SYNC_BROKER_MAX_REQUEST_FRAME_BYTES) {
+    throw new BrokerProtocolError('protocol_error', 'broker manager command exceeds bounded logical size');
+  }
+  const frame = Buffer.allocUnsafe(4 + payload.byteLength);
+  frame.writeUInt32BE(payload.byteLength, 0);
+  payload.copy(frame, 4);
+  return frame;
+}
 export const encodeBrokerFrame = encodeBrokerControlFrame;
 export const parseBrokerControlEnvelope = parseBrokerControlV1;
 
@@ -345,19 +426,4 @@ export function createBrokerHelloOkProof(secret: Uint8Array, hello: Pick<Extract
 export function verifyBrokerProof(expected: string, actual: string): boolean {
   const left = Buffer.from(expected); const right = Buffer.from(actual);
   return left.byteLength === right.byteLength && timingSafeEqual(left, right);
-}
-
-export type BrokerRequestState = 'LISTEN' | 'CONTROL_AUTHENTICATING' | 'CONTROL_READY' | 'OPEN_VALIDATING' | 'REMOTE_OPENING' | 'DATA_ATTACH_PENDING' | 'STREAMING' | 'CLOSING' | 'CLOSED';
-const transitions: Record<BrokerRequestState, readonly BrokerRequestState[]> = {
-  LISTEN: ['CONTROL_AUTHENTICATING'], CONTROL_AUTHENTICATING: ['CONTROL_READY', 'CLOSED'], CONTROL_READY: ['OPEN_VALIDATING', 'CLOSING', 'CLOSED'], OPEN_VALIDATING: ['REMOTE_OPENING', 'CLOSING', 'CLOSED'], REMOTE_OPENING: ['DATA_ATTACH_PENDING', 'CLOSING', 'CLOSED'], DATA_ATTACH_PENDING: ['STREAMING', 'CLOSING', 'CLOSED'], STREAMING: ['CLOSING', 'CLOSED'], CLOSING: ['CLOSED'], CLOSED: [],
-};
-
-export class BrokerRequestStateMachine {
-  private currentState: BrokerRequestState = 'LISTEN';
-  get state(): BrokerRequestState { return this.currentState; }
-  transition(next: BrokerRequestState): void {
-    if (!transitions[this.currentState].includes(next)) throw new Error(`invalid broker state transition: ${this.currentState} -> ${next}`);
-    this.currentState = next;
-  }
-  fail(): void { if (this.currentState !== 'CLOSED') this.currentState = 'CLOSED'; }
 }

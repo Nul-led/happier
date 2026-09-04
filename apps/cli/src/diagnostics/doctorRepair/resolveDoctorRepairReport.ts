@@ -19,7 +19,11 @@ import {
   buildDoctorSnapshotFromInventory,
   type DoctorSnapshot,
 } from '@/doctor/inv/snapshot';
-import { readSettings, readStoredCredentials } from '@/persistence';
+import {
+  readSettings,
+  readStoredCredentials,
+  readStoredCredentialsForServerId,
+} from '@/persistence';
 import { validateStoredAuthTokenAgainstServer } from '@/auth/validateStoredAuthTokenAgainstActiveServer';
 import { resolveMachineIdForServerFromSettings } from '@/daemon/resolveMachineIdForServerFromSettings';
 
@@ -452,13 +456,9 @@ function buildLocalRelayEntries(snapshot: DoctorSnapshot | null): readonly Local
  * only from the account-scoped server-confirmation fact written after the
  * server accepts the local identity; local id allocation alone is not enough.
  *
- * Live-check policy: when a non-empty token exists we make a single
- * `GET /v1/account/profile` call for the *active* profile only, with a 3s
- * timeout. A 401/403 flips `isExpired` to true; anything else leaves it
- * false so the `auth_expired_for_active_profile` finding doesn't false-fire
- * offline. Non-active profiles don't get a live check — their `isExpired`
- * remains unknown (false) here; expiry on those is surfaced lazily when
- * the user actually switches to them.
+ * Live-check policy: a stored token is checked for the active profile only.
+ * Inactive profile credential files are read locally but never probed over the
+ * network; their state is rendered as stored-but-unverified until selected.
  */
 async function resolveAuthContext(params: Readonly<{
   /**
@@ -482,7 +482,10 @@ async function resolveAuthContext(params: Readonly<{
 }>> {
   const [settings, credentials] = await Promise.all([
     readSettings().catch(() => null),
-    readStoredCredentials().catch(() => null),
+    (params.targetServerId === null
+      ? readStoredCredentials()
+      : readStoredCredentialsForServerId(params.targetServerId)
+    ).catch(() => null),
   ]);
   const servers = settings?.servers ?? {};
   const settingsActiveServerId = String(settings?.activeServerId ?? '').trim();
@@ -507,24 +510,24 @@ async function resolveAuthContext(params: Readonly<{
   // confirmed the auth state — critical when the relay is down, so users
   // don't see a misleading "signed in" when we couldn't verify.
   const activeToken = String(credentials?.token ?? '').trim();
-  let activeExpired = false;
-  let activeReachability: 'verified' | 'unreachable' | 'not-probed' = 'not-probed';
+  let activeCredentialState: AuthSignalsForProfile['credentialState'] = 'missing';
   if (activeProfile && activeToken) {
     const result = await validateStoredAuthTokenAgainstServer({
       baseUrl: activeProfile.serverUrl,
       token: activeToken,
     });
-    activeExpired = result.state === 'invalid';
-    activeReachability = result.state === 'unknown' ? 'unreachable' : 'verified';
+    activeCredentialState = result.state;
   }
 
+  const inactiveCredentialStateByServerId = new Map(
+    await Promise.all(profiles.filter((profile) => profile.id !== effectiveActiveServerId).map(async (profile) => [
+      profile.id,
+      await readStoredCredentialsForServerId(profile.id) ? 'stored-unverified' : 'missing',
+    ] as const)),
+  );
+
   const signals: AuthSignalsForProfile[] = profiles.map((profile) => {
-    // Credentials are per-home, not per-profile, but we treat "has a known
-    // account sub recorded for this profile" as the best offline signal that
-    // the user has ever authenticated there. New profiles or replaced homes
-    // get no sub until first login.
     const lastSub = String(lastTokenSubByServerId[profile.id] ?? '').trim();
-    const hasCredentials = lastSub.length > 0;
     // Unreadable settings yield no server profiles at all, so this callback only
     // runs with settings present; the empty fallback keeps the machine-id owner's
     // "no recorded machine" answer rather than reading through a null snapshot.
@@ -534,12 +537,12 @@ async function resolveAuthContext(params: Readonly<{
       serverId: profile.id,
       serverName: profile.name || profile.id,
       serverUrl: profile.serverUrl,
-      hasCredentials,
-      isExpired: isActive ? activeExpired : false,
+      credentialState: isActive
+        ? activeCredentialState
+        : inactiveCredentialStateByServerId.get(profile.id) ?? 'missing',
       machineRegistered: machineId !== null
         && machineIdConfirmedByServerByServerId[profile.id] === true,
       isActive,
-      reachability: isActive ? activeReachability : 'not-probed',
     };
   });
 

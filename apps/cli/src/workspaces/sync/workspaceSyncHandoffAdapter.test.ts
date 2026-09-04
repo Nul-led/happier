@@ -440,14 +440,14 @@ function relationshipInput() {
 }
 
 function allFilesPolicy() {
-  const input = { v: 1 as const, selection: 'all_files' as const, extraIgnorePatterns: [], extraIncludePatterns: [], includeGitDirectory: false };
+  const input = { v: 1 as const, selection: 'all_files' as const, extraIgnorePatterns: [], extraIncludePatterns: [] };
   return { ...input, policyDigest: computeWorkspaceSyncPolicyDigest(input) };
 }
 
 function copyInput(selection: 'all_files'): PrepareWorkspaceSyncHandoffInput;
 function copyInput(selection: 'future_selection'): unknown;
 function copyInput(selection: 'all_files' | 'future_selection'): unknown {
-  const basePolicy = { v: 1 as const, selection, extraIgnorePatterns: [], extraIncludePatterns: [], includeGitDirectory: false };
+  const basePolicy = { v: 1 as const, selection, extraIgnorePatterns: [], extraIncludePatterns: [] };
   return {
     operationId: 'handoff-copy',
     action: { kind: 'copy_once' as const, contentPolicy: { ...basePolicy, policyDigest: selection === 'all_files' ? computeWorkspaceSyncPolicyDigest({ ...basePolicy, selection: 'all_files' }) : '0'.repeat(64) } },
@@ -466,6 +466,8 @@ function managedSync(overrides: Partial<ManagedWorkspaceSync> = {}): ManagedWork
     resume: vi.fn(async () => relationshipStatus), terminate: vi.fn(async () => undefined),
     listConflicts: vi.fn(async () => ({ relationshipId: 'rel-1', totalCount: 0, shownCount: 0, truncatedCount: 0, conflicts: [] })),
     deleteConflictLoser: vi.fn(async () => relationshipStatus), readFile: vi.fn(async () => ({ status: 'missing' as const })),
+    withAuthorizedSourceSeedExport: vi.fn(async (_request, exportSource) => await exportSource('/src')),
+    withSourceSeedAuthorization: vi.fn(async (_operation, _handles, action) => await action()),
     ...overrides,
   };
 }

@@ -1,6 +1,8 @@
-import { classifyIrohHomeCarrierFailure } from '@happier-dev/iroh-native';
+import { classifyIrohHomeCarrierFailure, IrohError } from '@happier-dev/iroh-native';
 import type { ReadinessProbeResult } from '@happier-dev/connection-supervisor';
 import type { FeaturesResponse, HomeConnectionDescriptorV1 } from '@happier-dev/protocol';
+import { acquireHomeCarrierByPolicy } from '@happier-dev/cli-common/homeEnrollment';
+import { assertResolvedHomeTargetIdentity, resolveHomeTarget } from '@happier-dev/cli-common/homeTarget';
 
 import {
   createLoopbackHomeIdentityProbe,
@@ -129,6 +131,9 @@ function withReacquisition(
           pendingReleases.add(activeRelease);
           return { status: 'ready' };
         } catch (error) {
+          if (closing || released) {
+            return { status: 'server_unreachable', errorMessage: 'Home transport is released' };
+          }
           if (error instanceof DaemonHomeReadinessError) return error.probe;
           return {
             status: classifyIrohHomeCarrierFailure(error).fallbackAllowed ? 'server_unreachable' : 'auth_failed',
@@ -162,8 +167,7 @@ async function prepareDaemonHomeIrohTransportOnce(
   profile: ServerProfile,
 ): Promise<ActiveDaemonHomeTransport> {
   const descriptor = profile.homeConnectionDescriptor;
-  const hasIrohEndpoint = descriptor?.endpoints.some((endpoint) => endpoint.kind === 'iroh') === true;
-  if (!descriptor || !hasIrohEndpoint) {
+  if (!descriptor) {
     return {
       carrier: 'standard',
       observedPath: 'unknown',
@@ -171,6 +175,12 @@ async function prepareDaemonHomeIrohTransportOnce(
       verifyAuthenticated: async () => ({ status: 'ready' }),
     };
   }
+  const resolvedTarget = await resolveHomeTarget({
+    input: { kind: 'descriptor', descriptor, authority: 'current_connection' },
+    readSavedProfile: async () => null,
+  });
+  const expectedHomeServerIdentityId = resolvedTarget.homeServerIdentityId;
+  if (!expectedHomeServerIdentityId) throw new Error('Resolved daemon Home target has no stable identity');
 
   const probe = input.probe ?? defaultProbe;
   const identityProbe = input.identityProbe ?? (
@@ -183,11 +193,10 @@ async function prepareDaemonHomeIrohTransportOnce(
       : defaultIdentityProbe
   );
   const publish = input.publishRuntimeOrigin ?? publishServerHttpRuntimeOrigin;
-  const trustedHttpsOrigin = descriptor.endpoints.find((endpoint) => endpoint.kind === 'https')?.url;
   const verifyTrustedFallback = async (serverUrl: string, token: string) => await probe({
     serverUrl,
     token,
-    expectedServerIdentityId: descriptor.homeServerIdentityId,
+    expectedServerIdentityId: expectedHomeServerIdentityId,
   });
   const activateTrustedFallback = (serverUrl: string): ActiveDaemonHomeTransport => {
     if (input.isCancelled?.()) {
@@ -201,16 +210,68 @@ async function prepareDaemonHomeIrohTransportOnce(
       verifyAuthenticated: async (token) => await verifyTrustedFallback(serverUrl, token),
     };
   };
-  const ensureHomeTunnel = input.runtime?.ensureHomeTunnel;
-  if (!ensureHomeTunnel) {
-    if (!trustedHttpsOrigin) {
-      throw new Error('Iroh Home transport is required and no independently trusted HTTPS fallback is declared');
-    }
+  const selection = await acquireHomeCarrierByPolicy({
+    descriptor,
+    preferredTransport: resolvedTarget.preferredTransport,
+    classifyFailure: (error) => error instanceof DaemonHomeReadinessError
+      ? { fallbackAllowed: error.probe.status !== 'auth_failed' }
+      : classifyIrohHomeCarrierFailure(error),
+    acquireIroh: async ({ endpoint }) => {
+      const ensureHomeTunnel = input.runtime?.ensureHomeTunnel;
+      if (!ensureHomeTunnel) {
+        throw new IrohError('unavailable', 'Native Iroh Home transport is unavailable');
+      }
+      const nativeLease = await ensureHomeTunnel({ descriptor });
+      try {
+        const identityReadiness = await identityProbe({
+          serverUrl: nativeLease.runtimeOrigin,
+          expectedServerIdentityId: expectedHomeServerIdentityId,
+        });
+        if (identityReadiness.status !== 'ready') {
+          throw new DaemonHomeReadinessError({
+            ...identityReadiness,
+            errorMessage: `Iroh Home verification failed: ${identityReadiness.errorMessage ?? identityReadiness.status}`,
+          });
+        }
+        if (input.token) {
+          const authenticatedReadiness = await probe({
+            serverUrl: nativeLease.runtimeOrigin,
+            token: input.token,
+            expectedServerIdentityId: expectedHomeServerIdentityId,
+          });
+          if (authenticatedReadiness.status !== 'ready') {
+            throw new DaemonHomeReadinessError({
+              ...authenticatedReadiness,
+              errorMessage: `Iroh Home verification failed: ${authenticatedReadiness.errorMessage ?? authenticatedReadiness.status}`,
+            });
+          }
+        }
+        if (input.isCancelled?.()) {
+          throw new IrohError('cancelled', 'Home transport is released');
+        }
+        return {
+          homeServerIdentityId: expectedHomeServerIdentityId,
+          endpointId: endpoint.endpointId,
+          status: 'ready' as const,
+          value: nativeLease,
+          release: nativeLease.release,
+        };
+      } catch (error) {
+        await nativeLease.release().catch(() => undefined);
+        throw error;
+      }
+    },
+  });
+
+  if (selection.kind === 'unavailable' || selection.kind === 'fail_closed') {
+    throw selection.error;
+  }
+  if (selection.kind === 'https') {
     const standardReadiness = input.token
-      ? await verifyTrustedFallback(trustedHttpsOrigin, input.token)
+      ? await verifyTrustedFallback(selection.runtimeOrigin, input.token)
       : await identityProbe({
-          serverUrl: trustedHttpsOrigin,
-          expectedServerIdentityId: descriptor.homeServerIdentityId,
+          serverUrl: selection.runtimeOrigin,
+          expectedServerIdentityId: expectedHomeServerIdentityId,
         });
     if (standardReadiness.status !== 'ready') {
       throw new DaemonHomeReadinessError({
@@ -218,95 +279,31 @@ async function prepareDaemonHomeIrohTransportOnce(
         errorMessage: `Trusted HTTPS Home verification failed: ${standardReadiness.errorMessage ?? standardReadiness.status}`,
       });
     }
-    return activateTrustedFallback(trustedHttpsOrigin);
+    return activateTrustedFallback(selection.runtimeOrigin);
   }
-  try {
-    const nativeLease = await ensureHomeTunnel({ descriptor });
-    const identityReadiness = await identityProbe({
-      serverUrl: nativeLease.runtimeOrigin,
-      expectedServerIdentityId: descriptor.homeServerIdentityId,
-    });
-    if (identityReadiness.status !== 'ready') {
-      await nativeLease.release().catch(() => undefined);
-      if (identityReadiness.status === 'auth_failed') {
-        throw new DaemonHomeReadinessError({
-          ...identityReadiness,
-          errorMessage: `Iroh Home verification failed: ${identityReadiness.errorMessage ?? 'identity rejected'}`,
-        });
-      }
-      if (trustedHttpsOrigin) {
-        const standardReadiness = await identityProbe({
-          serverUrl: trustedHttpsOrigin,
-          expectedServerIdentityId: descriptor.homeServerIdentityId,
-        });
-        if (standardReadiness.status === 'ready') {
-          return activateTrustedFallback(trustedHttpsOrigin);
-        }
-      }
-      throw new DaemonHomeReadinessError({
-        ...identityReadiness,
-        errorMessage: `Iroh Home verification failed: ${identityReadiness.errorMessage ?? identityReadiness.status}`,
-      });
-    }
 
-    if (input.token) {
-      const authenticatedReadiness = await probe({
-        serverUrl: nativeLease.runtimeOrigin,
-        token: input.token,
-        expectedServerIdentityId: descriptor.homeServerIdentityId,
-      });
-      if (authenticatedReadiness.status !== 'ready') {
-        await nativeLease.release().catch(() => undefined);
-        if (authenticatedReadiness.status === 'auth_failed') {
-          throw new DaemonHomeReadinessError({
-            ...authenticatedReadiness,
-            errorMessage: `Iroh Home verification failed: ${authenticatedReadiness.errorMessage ?? 'authentication rejected'}`,
-          });
-        }
-        if (trustedHttpsOrigin) {
-          const standardReadiness = await verifyTrustedFallback(trustedHttpsOrigin, input.token);
-          if (standardReadiness.status === 'ready') return activateTrustedFallback(trustedHttpsOrigin);
-        }
-        throw new DaemonHomeReadinessError({
-          ...authenticatedReadiness,
-          errorMessage: `Iroh Home verification failed: ${authenticatedReadiness.errorMessage ?? authenticatedReadiness.status}`,
-        });
-      }
-    }
-    if (input.isCancelled?.()) {
-      await nativeLease.release();
-      throw new DaemonHomeReadinessError({ status: 'server_unreachable', errorMessage: 'Home transport is released' });
-    }
-    const unpublish = publish(nativeLease.runtimeOrigin, 'iroh');
-    let released = false;
-    const active: ActiveDaemonHomeTransport = {
-      carrier: 'iroh',
-      observedPath: nativeLease.observedPath,
-      async release() {
-        if (released) return;
-        unpublish();
-        await nativeLease.release();
-        released = true;
-      },
-      verifyAuthenticated: async (token) => await probe({
-        serverUrl: nativeLease.runtimeOrigin,
-        token,
-        expectedServerIdentityId: descriptor.homeServerIdentityId,
-      }),
-    };
-    return active;
-  } catch (error) {
-    if (!classifyIrohHomeCarrierFailure(error).fallbackAllowed) throw error;
-    if (!trustedHttpsOrigin) throw error;
-    const standardReadiness = input.token
-      ? await verifyTrustedFallback(trustedHttpsOrigin, input.token)
-      : await identityProbe({
-        serverUrl: trustedHttpsOrigin,
-        expectedServerIdentityId: descriptor.homeServerIdentityId,
-      });
-    if (standardReadiness.status !== 'ready') throw error;
-    return activateTrustedFallback(trustedHttpsOrigin);
+  const nativeLease = selection.carrier.value;
+  if (input.isCancelled?.()) {
+    await selection.release();
+    throw new DaemonHomeReadinessError({ status: 'server_unreachable', errorMessage: 'Home transport is released' });
   }
+  const unpublish = publish(nativeLease.runtimeOrigin, 'iroh');
+  let released = false;
+  return {
+    carrier: 'iroh',
+    observedPath: nativeLease.observedPath,
+    async release() {
+      if (released) return;
+      unpublish();
+      await selection.release();
+      released = true;
+    },
+    verifyAuthenticated: async (token) => await probe({
+      serverUrl: nativeLease.runtimeOrigin,
+      token,
+      expectedServerIdentityId: expectedHomeServerIdentityId,
+    }),
+  };
 }
 
 export async function prepareDaemonHomeIrohTransport(
@@ -325,14 +322,15 @@ export async function applyDaemonHomeDescriptorRefresh(input: Readonly<{
   const descriptor = input.features.homeConnectionDescriptor;
   if (!descriptor) return 'ignored';
   const observedIdentity = input.features.capabilities.serverIdentity.serverIdentityId;
-  if (!observedIdentity || observedIdentity !== descriptor.homeServerIdentityId) {
-    throw new Error('Home connection descriptor identity does not match the observed server identity');
-  }
+  const resolvedTarget = await resolveHomeTarget({
+    input: { kind: 'descriptor', descriptor, authority: 'current_connection' },
+    readSavedProfile: async () => null,
+  });
+  assertResolvedHomeTargetIdentity(resolvedTarget, observedIdentity ?? '');
   const reconciliation = await (
     input.reconcileDescriptor
     ?? (async (nextDescriptor) => await reconcileActiveServerProfileHomeConnectionDescriptor(
       nextDescriptor,
-      { observation: 'public' },
     ))
   )(descriptor);
   if (reconciliation.outcome === 'updated') await input.requestReconnect();

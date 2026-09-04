@@ -1,7 +1,6 @@
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { mkdir, readFile, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { createServer } from 'node:net';
 
 import { WorkspaceManifestSchema } from '@happier-dev/protocol';
 import type { ScmBackendRegistry } from '@/scm/registry';
@@ -12,7 +11,6 @@ import type { WorkspaceExportBlobProvider } from '@/scm/workspace/workspaceExpor
 import type { WorkspaceExportMaterializationCustody } from '@/scm/workspace/workspaceExportMaterialization';
 import { materializeWorkspaceExportArtifactsWithScmWorkspace } from '@/scm/workspace/workspaceExportMaterialization';
 import type { DirectPeerOnDemandTransferScope } from '@/machines/transfer/directPeerTransport';
-import { connectWorkspaceSyncMachineTunnel, type WorkspaceSyncMachineTunnel } from './workspaceSyncMachineCarrierStream';
 import {
   createBufferTransferPayloadSource,
   createFileTransferPayloadSource,
@@ -25,94 +23,11 @@ type WorkspaceSyncSeedEnvelopeV1 = Readonly<{
   blobTransferIds: Readonly<Record<string, string>>;
 }>;
 
-const MACHINE_LOCAL_CAPABILITY_HEADER = 'X-Happier-Machine-Local-Capability';
 const WORKSPACE_SYNC_SEED_MATERIALIZATION_NAMING = {
   siblingCopySuffixBase: 'happier-sync-seed',
   backupDirectoryPrefix: '.happier-sync-backup',
   stagingIdPrefix: 'workspace-sync-seed',
 } as const;
-
-function sanitizeMachineLocalCapabilityHeader(
-  request: Buffer,
-  headerEnd: number,
-  expectedCapability: Buffer,
-): Buffer | null {
-  const requestLineEnd = request.indexOf('\r\n');
-  if (requestLineEnd < 0 || requestLineEnd >= headerEnd) return null;
-  let capabilityLine: Readonly<{ start: number; end: number }> | null = null;
-  let lineStart = requestLineEnd + 2;
-  while (lineStart <= headerEnd) {
-    const lineEnd = request.indexOf('\r\n', lineStart);
-    if (lineEnd < 0 || lineEnd > headerEnd) return null;
-    const line = request.subarray(lineStart, lineEnd);
-    const colon = line.indexOf(':');
-    if (colon >= 0
-      && line.subarray(0, colon).toString('ascii').trim().toLowerCase() === MACHINE_LOCAL_CAPABILITY_HEADER.toLowerCase()) {
-      if (capabilityLine) return null;
-      const supplied = Buffer.from(line.subarray(colon + 1).toString('ascii').trim(), 'ascii');
-      if (supplied.byteLength !== expectedCapability.byteLength
-        || !timingSafeEqual(supplied, expectedCapability)) return null;
-      capabilityLine = { start: lineStart, end: lineEnd + 2 };
-    }
-    lineStart = lineEnd + 2;
-  }
-  if (!capabilityLine) return null;
-  return Buffer.concat([
-    request.subarray(0, capabilityLine.start),
-    request.subarray(capabilityLine.end),
-  ]);
-}
-
-/** Adapts the carrier's capability-prefixed loopback socket to ordinary local HTTP. */
-export async function createWorkspaceSyncSeedTunnelHttpProxy(
-  tunnel: WorkspaceSyncMachineTunnel,
-): Promise<Readonly<{ localPort: number; requestHeaders: Readonly<Record<string, string>>; close(): Promise<void> }>> {
-  const expectedCapability = Buffer.from(tunnel.localCapability, 'ascii');
-  const sockets = new Set<import('node:net').Socket>();
-  const server = createServer((client) => {
-    sockets.add(client);
-    client.once('close', () => sockets.delete(client));
-    let request = Buffer.alloc(0);
-    const admit = (chunk: Buffer): void => {
-      request = Buffer.concat([request, chunk]);
-      if (request.byteLength > 16 * 1024) {
-        client.destroy();
-        return;
-      }
-      const headerEnd = request.indexOf('\r\n\r\n');
-      if (headerEnd < 0) return;
-      client.off('data', admit);
-      client.pause();
-      const sanitizedRequest = sanitizeMachineLocalCapabilityHeader(request, headerEnd, expectedCapability);
-      if (!sanitizedRequest) {
-        client.destroy();
-        return;
-      }
-      void connectWorkspaceSyncMachineTunnel(tunnel).then((carrier) => {
-        sockets.add(carrier);
-        carrier.once('close', () => sockets.delete(carrier));
-        carrier.write(sanitizedRequest);
-        client.pipe(carrier).pipe(client);
-        client.resume();
-      }, () => client.destroy());
-    };
-    client.on('data', admit);
-  });
-  await new Promise<void>((resolveListen, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => resolveListen());
-  });
-  const address = server.address();
-  if (!address || typeof address === 'string') throw new Error('Workspace sync seed proxy did not bind');
-  return {
-    localPort: address.port,
-    requestHeaders: { [MACHINE_LOCAL_CAPABILITY_HEADER]: tunnel.localCapability },
-    close: async () => {
-      for (const socket of sockets) socket.destroy();
-      await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
-    },
-  };
-}
 
 function blobTransferId(operationId: string, digest: string): string {
   return `${operationId}:blob:${createHash('sha256').update(digest).digest('hex')}`;

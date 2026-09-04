@@ -74,7 +74,7 @@ import {
   readServerEnabledBit,
   type ConnectedServiceId,
 } from '@happier-dev/protocol';
-import { classifyIrohHomeCarrierFailure, readIrohRelayConfigFromEnv } from '@happier-dev/iroh-native';
+import { readIrohRelayConfigFromEnv } from '@happier-dev/iroh-native';
 import { readOrCreateInstallationIdentity } from './identity/store';
 import {
   startPluginWebhookDaemonWorkerV1,
@@ -302,30 +302,25 @@ export async function startDaemon(
       initialMachineMetadata,
       startupSource,
       prepareServerTransport: async ({ persistedCredentials }) => {
-        let createdIrohRuntime;
-        try {
-          createdIrohRuntime = await createDaemonMachineIrohRuntime({
-            happyHomeDir: configuration.happyHomeDir,
-            relayConfig: readIrohRelayConfigFromEnv(process.env),
-          });
-        } catch (error) {
-          const classification = classifyIrohHomeCarrierFailure(error);
-          if (!classification.fallbackAllowed) throw error;
-          logger.warn('[DAEMON RUN] Iroh carrier is unreachable; evaluating independently trusted HTTPS fallback', {
-            failureClass: classification.failureClass,
-          });
-        }
-        if (createdIrohRuntime?.available) {
+        // Local native-endpoint initialization is optional carrier
+        // preparation. Its failure is handed to the Home transport owner as
+        // native-runtime unavailability; that owner is the single owner of the
+        // trusted-HTTPS-or-fail-closed decision, and it still fails closed for
+        // an Iroh-only Home or a selected-Iroh identity, authentication or
+        // descriptor-integrity failure. No fallback decision is made here.
+        const createdIrohRuntime = await createDaemonMachineIrohRuntime({
+          happyHomeDir: configuration.happyHomeDir,
+          relayConfig: readIrohRelayConfigFromEnv(process.env),
+        });
+        if (createdIrohRuntime.available) {
           preparedIrohState.machine = createdIrohRuntime;
-        } else if (createdIrohRuntime?.reason === 'startup_failed') {
-          preparedIrohState.failedStartupCleanup = createdIrohRuntime.shutdown;
-          const classification = classifyIrohHomeCarrierFailure(createdIrohRuntime.error);
-          if (!classification.fallbackAllowed) throw createdIrohRuntime.error;
-          logger.warn('[DAEMON RUN] Iroh carrier startup failed; evaluating independently trusted HTTPS fallback', {
-            failureClass: classification.failureClass,
+        } else {
+          if (createdIrohRuntime.reason === 'startup_failed') {
+            preparedIrohState.failedStartupCleanup = createdIrohRuntime.shutdown;
+          }
+          logger.warn('[DAEMON RUN] Iroh carrier is unavailable; the Home transport owner evaluates independently trusted HTTPS', {
+            reason: createdIrohRuntime.reason,
           });
-        } else if (createdIrohRuntime) {
-          logger.warn('[DAEMON RUN] Iroh native runtime is unavailable; evaluating independently trusted HTTPS fallback');
         }
         preparedIrohState.home = await prepareDaemonHomeIrohTransport({
           runtime: preparedIrohState.machine,
@@ -1540,7 +1535,7 @@ export async function startDaemon(
         credentials,
         daemonSessionMutationCustody,
         deviceLocalSecretStorage,
-        createWorkspaceSyncRuntime: async ({ machineId: registeredMachineId }) => {
+        createWorkspaceSyncRuntime: async ({ machineId: registeredMachineId, onStatusPublished }) => {
           if (
             workspaceSyncRuntime
             && workspaceSyncRuntimeMachineId === registeredMachineId
@@ -1572,6 +1567,7 @@ export async function startDaemon(
             localMachineId: registeredMachineId,
             releaseChannel: configuration.publicReleaseRing,
             credentials,
+            onStatusPublished,
             ...(openMachineCarrierTunnel ? { openMachineCarrierTunnel } : {}),
             ...(directPeerServerLifecycle
               ? { requestDirectTransferPayloadFile: directPeerServerLifecycle.requestPayloadFile }

@@ -15,6 +15,34 @@ const descriptor = {
 };
 
 describe('prepareDaemonHomeIrohTransport', () => {
+  it('publishes the descriptor-declared HTTPS origin when it differs from the canonical audience', async () => {
+    const httpsOnlyDescriptor = {
+      ...descriptor,
+      canonicalServerUrl: 'https://canonical-home.example.test',
+      endpoints: [{ kind: 'https' as const, url: 'https://ingress-home.example.test' }],
+    };
+    const probe = vi.fn(async () => ({ status: 'ready' as const }));
+    const publish = vi.fn(() => vi.fn());
+
+    const result = await prepareDaemonHomeIrohTransport({
+      runtime: null,
+      profile: {
+        serverUrl: httpsOnlyDescriptor.canonicalServerUrl,
+        homeConnectionDescriptor: httpsOnlyDescriptor,
+      } as never,
+      token: 'home-token',
+      probe,
+      publishRuntimeOrigin: publish,
+    });
+
+    expect(probe).toHaveBeenCalledWith(expect.objectContaining({
+      serverUrl: 'https://ingress-home.example.test',
+      expectedServerIdentityId: descriptor.homeServerIdentityId,
+    }));
+    expect(publish).toHaveBeenCalledWith('https://ingress-home.example.test', 'https');
+    expect(result.carrier).toBe('standard');
+  });
+
   it('publishes an identity-verified pre-auth lease and authenticates it without reacquiring', async () => {
     const releaseNative = vi.fn(async () => undefined);
     const runtime = {

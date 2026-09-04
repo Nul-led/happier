@@ -7,11 +7,9 @@ function makeSignal(overrides: Partial<AuthSignalsForProfile>): AuthSignalsForPr
     serverId: 'default',
     serverName: 'Happier Cloud',
     serverUrl: 'https://api.happier.dev',
-    hasCredentials: true,
-    isExpired: false,
+    credentialState: 'valid',
     machineRegistered: true,
     isActive: true,
-    reachability: 'verified',
     ...overrides,
   };
 }
@@ -25,7 +23,7 @@ describe('classifyAuth', () => {
   it('returns empty when all signals are healthy', () => {
     const findings = classifyAuth({
       hasAnyServerProfile: true,
-      signals: [makeSignal({ isActive: true, hasCredentials: true, machineRegistered: true })],
+      signals: [makeSignal({ isActive: true, credentialState: 'valid', machineRegistered: true })],
     });
     expect(findings).toEqual([]);
   });
@@ -33,7 +31,7 @@ describe('classifyAuth', () => {
   it('fires auth_missing_for_profile for the active profile when credentials are missing', () => {
     const findings = classifyAuth({
       hasAnyServerProfile: true,
-      signals: [makeSignal({ isActive: true, hasCredentials: false })],
+      signals: [makeSignal({ isActive: true, credentialState: 'missing' })],
     });
     expect(findings).toHaveLength(1);
     expect(findings[0].kind).toBe('auth_missing_for_profile');
@@ -43,7 +41,7 @@ describe('classifyAuth', () => {
   it('fires auth_expired_for_active_profile when the active profile\u2019s session has expired', () => {
     const findings = classifyAuth({
       hasAnyServerProfile: true,
-      signals: [makeSignal({ isActive: true, hasCredentials: true, isExpired: true })],
+      signals: [makeSignal({ isActive: true, credentialState: 'invalid' })],
     });
     expect(findings.map((f) => f.kind)).toEqual(['auth_expired_for_active_profile']);
   });
@@ -51,7 +49,7 @@ describe('classifyAuth', () => {
   it('fires machine_not_registered_for_profile when active profile has credentials but no machine id', () => {
     const findings = classifyAuth({
       hasAnyServerProfile: true,
-      signals: [makeSignal({ isActive: true, hasCredentials: true, machineRegistered: false })],
+      signals: [makeSignal({ isActive: true, credentialState: 'valid', machineRegistered: false })],
     });
     expect(findings.map((f) => f.kind)).toEqual(['machine_not_registered_for_profile']);
   });
@@ -60,8 +58,8 @@ describe('classifyAuth', () => {
     const findings = classifyAuth({
       hasAnyServerProfile: true,
       signals: [
-        makeSignal({ serverId: 'active', isActive: true, hasCredentials: true, machineRegistered: true }),
-        makeSignal({ serverId: 'company', isActive: false, hasCredentials: false, serverName: 'Company' }),
+        makeSignal({ serverId: 'active', isActive: true, credentialState: 'valid', machineRegistered: true }),
+        makeSignal({ serverId: 'company', isActive: false, credentialState: 'missing', serverName: 'Company' }),
       ],
     });
     expect(findings).toHaveLength(1);
@@ -73,9 +71,9 @@ describe('classifyAuth', () => {
     const findings = classifyAuth({
       hasAnyServerProfile: true,
       signals: [
-        makeSignal({ serverId: 'active', isActive: true, hasCredentials: false }),
-        makeSignal({ serverId: 'company', isActive: false, hasCredentials: false }),
-        makeSignal({ serverId: 'self-hosted', isActive: false, hasCredentials: false }),
+        makeSignal({ serverId: 'active', isActive: true, credentialState: 'missing' }),
+        makeSignal({ serverId: 'company', isActive: false, credentialState: 'missing' }),
+        makeSignal({ serverId: 'self-hosted', isActive: false, credentialState: 'missing' }),
       ],
     });
     const activeFindings = findings.filter((f) =>

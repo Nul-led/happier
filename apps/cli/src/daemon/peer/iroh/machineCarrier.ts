@@ -1,4 +1,5 @@
 import type { PeerTcpTunnelStreamConnection } from '@happier-dev/peer-transport';
+import { MACHINE_ALPN } from '@happier-dev/iroh-native/node';
 import {
     IrohMachineHandshakeV1Schema,
     type IrohMachineCarrierFlowV1,
@@ -9,7 +10,7 @@ import {
     type DirectRouteGrantTrustRoot,
 } from '../mediation/verifyDirectRouteGrantV1';
 
-export const MACHINE_CARRIER_ALPN_V1 = 'happier/machine/1' as const;
+export const MACHINE_CARRIER_ALPN_V1 = MACHINE_ALPN;
 export type MachineCarrierOperationKind = IrohMachineCarrierFlowV1;
 export type MachineCarrierRole = 'initiator' | 'acceptor';
 export const MACHINE_CARRIER_UNAVAILABLE_CODE = 'machine_carrier_unavailable' as const;
@@ -41,7 +42,8 @@ export type MachineCarrierTransportOpenInput = Readonly<{
     alpn: typeof MACHINE_CARRIER_ALPN_V1;
     remoteEndpointId: string;
     flow: MachineCarrierOperationKind;
-    operationId: string;
+    /** Present only when the target consumes a signed operation identity. */
+    operationId?: string;
     /** Exact canonical handshake bytes parsed and verified by `verifyMachineCarrierHandshakeV1`. */
     handshake: ReturnType<typeof IrohMachineHandshakeV1Schema.parse>;
 }>;

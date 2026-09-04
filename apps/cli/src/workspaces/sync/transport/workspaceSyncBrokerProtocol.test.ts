@@ -2,15 +2,14 @@ import { describe, expect, it } from 'vitest';
 import {
   BrokerControlFrameDecoder,
   BrokerProtocolError,
-  BrokerRequestStateMachine,
   createBrokerHelloProof,
   deriveWorkspaceSyncEndpointId,
+  encodeBrokerCommandFrame,
   encodeBrokerControlFrame,
   isBrokerTerminalErrorCode,
   parseBrokerControlV1,
-  WORKSPACE_SYNC_BROKER_COMMAND_DEADLINE_MS,
 } from './workspaceSyncBrokerProtocol';
-const validPolicy = { selection: 'all_files' as const, extraIgnorePatterns: [], extraIncludePatterns: [], includeGitDirectory: false };
+const validPolicy = { selection: 'all_files' as const, extraIgnorePatterns: [], extraIncludePatterns: [] };
 
 describe('workspace sync broker protocol', () => {
   it('frames control JSON with a big-endian length and decodes fragmented input', () => {
@@ -48,11 +47,11 @@ describe('workspace sync broker protocol', () => {
 
   it('exposes typed terminal error codes and a typed protocol error', () => {
     expect(isBrokerTerminalErrorCode('relationship_not_owned')).toBe(true);
+    expect(isBrokerTerminalErrorCode('cursor_invalidated')).toBe(true);
     expect(isBrokerTerminalErrorCode('something_else')).toBe(false);
     const error = new BrokerProtocolError('root_mismatch', 'root changed');
     expect(error.code).toBe('root_mismatch');
     expect(isBrokerTerminalErrorCode((error as { code?: unknown }).code)).toBe(true);
-    expect(WORKSPACE_SYNC_BROKER_COMMAND_DEADLINE_MS).toBeGreaterThan(0);
   });
 
   it('validates the fork-owned generic manager command union', () => {
@@ -65,6 +64,7 @@ describe('workspace sync broker protocol', () => {
       labels: { 'external.owner': 'happier-workspace-sync' },
     };
     expect(() => parseBrokerControlV1({ t: 'command', requestId: 'r1', command: { t: 'create', requestId: 'r1', session } })).not.toThrow();
+    expect(() => parseBrokerControlV1({ t: 'command', requestId: 'r1', command: { t: 'create', requestId: 'r1', session: { ...session, contentPolicy: { ...validPolicy, includeGitDirectory: false } } } })).toThrow(/contentPolicy/);
     expect(() => parseBrokerControlV1({ t: 'command', requestId: 'r1', command: { t: 'create', requestId: 'r1', session: { ...session, alpha: '/tmp/source' } } })).toThrow(/external/);
     expect(() => parseBrokerControlV1({ t: 'command', requestId: 'r1', command: { t: 'resume', requestId: 'r1', sessionIdentifier: 'mutagen-session-1' } })).not.toThrow();
     expect(() => parseBrokerControlV1({ t: 'command', requestId: 'r1', command: { t: 'resume', requestId: 'r1', relationshipId: 'rel-1' } })).toThrow();
@@ -73,10 +73,74 @@ describe('workspace sync broker protocol', () => {
     expect(() => parseBrokerControlV1({ t: 'command', requestId: 'r1', command: { t: 'bogus', requestId: 'r1' } })).toThrow(/unknown mutagen control command/);
   });
 
-  it('enforces the explicit request state machine', () => {
-    const state = new BrokerRequestStateMachine();
-    state.transition('CONTROL_AUTHENTICATING'); state.transition('CONTROL_READY'); state.transition('OPEN_VALIDATING');
-    expect(() => state.transition('STREAMING')).toThrow(/invalid broker state transition/);
-    state.fail(); expect(state.state).toBe('CLOSED');
+  it('requires bounded cursor pagination for exhaustive manager LIST', () => {
+    expect(() => parseBrokerControlV1({
+      t: 'command', requestId: 'r1',
+      command: { t: 'list', requestId: 'r1', limit: 100 },
+    })).not.toThrow();
+    expect(() => parseBrokerControlV1({
+      t: 'command', requestId: 'r1',
+      command: { t: 'list', requestId: 'r1', cursor: 'mutagen-session-100', limit: 100 },
+    })).not.toThrow();
+    expect(() => parseBrokerControlV1({
+      t: 'command', requestId: 'r1', command: { t: 'list', requestId: 'r1' },
+    })).toThrow(/limit/);
+    expect(() => parseBrokerControlV1({
+      t: 'command', requestId: 'r1', command: { t: 'list', requestId: 'r1', cursor: '', limit: 100 },
+    })).toThrow(/cursor/);
+    expect(() => parseBrokerControlV1({
+      t: 'command', requestId: 'r1', command: { t: 'list', requestId: 'r1', limit: 101 },
+    })).toThrow(/limit/);
+  });
+
+  it('admits a valid maximum-size content policy within the derived request-only frame limit', () => {
+    const pattern = 'x'.repeat(1024);
+    const command = {
+      t: 'create' as const,
+      requestId: 'r-max-policy',
+      session: {
+        alpha: 'external://opaque-alpha', beta: 'external://opaque-beta', mode: 'one-way-safe' as const,
+        contentPolicy: {
+          selection: 'all_files' as const,
+          extraIgnorePatterns: Array.from({ length: 128 }, (_, index) => `${index}-${pattern}`.slice(0, 1024)),
+          extraIncludePatterns: Array.from({ length: 128 }, (_, index) => `${index}-${pattern}`.slice(0, 1024)),
+        },
+        name: 'rel-max-policy', labels: { 'external.owner': 'happier-workspace-sync' },
+      },
+    };
+
+    expect(() => encodeBrokerControlFrame({ t: 'command', requestId: command.requestId, command })).toThrow(/too large/);
+    const frame = encodeBrokerCommandFrame(command);
+    expect(frame.readUInt32BE(0)).toBeGreaterThan(65_536);
+    expect(frame.readUInt32BE(0)).toBeLessThanOrEqual(2 * 1024 * 1024);
+  });
+
+  it('requires cursors on paged conflict and policy reads to be bounded identifiers', () => {
+    for (const t of ['list_conflicts', 'get_policy'] as const) {
+      expect(() => parseBrokerControlV1({
+        t: 'command', requestId: 'r1', command: {
+          t, requestId: 'r1', sessionIdentifier: 'session-1', limit: 100,
+        },
+      })).not.toThrow();
+      expect(() => parseBrokerControlV1({
+        t: 'command', requestId: 'r1', command: {
+          t, requestId: 'r1', sessionIdentifier: 'session-1', cursor: 'next-page', limit: 100,
+        },
+      })).not.toThrow();
+      expect(() => parseBrokerControlV1({
+        t: 'command', requestId: 'r1', command: {
+          t, requestId: 'r1', sessionIdentifier: 'session-1', cursor: '', limit: 100,
+        },
+      })).toThrow(/cursor/);
+    }
+  });
+
+  it('rejects negated positive include patterns at the broker command boundary', () => {
+    expect(() => encodeBrokerCommandFrame({
+      t: 'create', requestId: 'r1', session: {
+        alpha: 'external://alpha', beta: 'external://beta', mode: 'one-way-safe', name: 'session', labels: {},
+        contentPolicy: { selection: 'all_files', extraIgnorePatterns: [], extraIncludePatterns: ['!src/generated.ts'] },
+      },
+    })).toThrow(/extraIncludePatterns/);
   });
 });

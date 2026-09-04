@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 
 import {
   SSH_TUNNEL_SYSTEM_TASK_KINDS,
+  type SystemTaskJsonValue,
   SystemTaskSpecSchema,
 } from '@happier-dev/protocol';
 import {
@@ -57,7 +58,7 @@ import {
   createDaemonSshTunnelReleaseTaskKind,
   createDaemonSshTunnelStopTaskKind,
 } from './ssh/daemonSshTunnelSystemTasks';
-import { createLiveRemoteSshBootstrapTaskKind } from './ssh/liveRemoteSshBootstrap';
+import { createLiveRemoteSshBootstrapTaskKind, createLiveRemoteSshManageHostTaskKind } from './ssh/liveRemoteSshBootstrap';
 import { createSystemTasksRunner } from './systemTasksRunner';
 import { readDaemonStatusSnapshot } from '@/daemon/statusSnapshot';
 import { commandExistsInPath } from '@/daemon/service/commandExistsInPath';
@@ -209,10 +210,12 @@ export function getLiveSystemTasksRunnerAdapter(params: Readonly<{
     channel: 'stable' | 'preview' | 'dev';
     mode: 'user' | 'system';
   }>;
+  setupThisComputer?: (params: Record<string, unknown>) => Promise<SystemTaskJsonValue>;
 }> = {}): SystemTasksRunnerAdapter {
   const isExplicitInvocation = params.personalHomeOperations !== undefined
     || params.loadPersonalHomeRelocationDestination !== undefined
-    || params.personalHomeRuntime !== undefined;
+    || params.personalHomeRuntime !== undefined
+    || params.setupThisComputer !== undefined;
   if (!isExplicitInvocation && liveRunnerAdapter) {
     return liveRunnerAdapter;
   }
@@ -229,6 +232,7 @@ function createLiveSystemTasksRunnerAdapter(params: Readonly<{
     channel: 'stable' | 'preview' | 'dev';
     mode: 'user' | 'system';
   }>;
+  setupThisComputer?: (params: Record<string, unknown>) => Promise<SystemTaskJsonValue>;
 }>): SystemTasksRunnerAdapter {
   const personalHomeRuntime = params.personalHomeRuntime ?? { channel: 'stable', mode: 'user' } as const;
   const personalHomeOperations = params.personalHomeOperations
@@ -282,8 +286,40 @@ function createLiveSystemTasksRunnerAdapter(params: Readonly<{
           };
         },
       },
+      'setup.thisComputer.v1': {
+        run: async (ctx) => {
+          const raw = ctx.params;
+          if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+            throw new SystemTaskExecutionError('invalid_setup_params', 'This-computer setup parameters are invalid.');
+          }
+          const setupParams = raw as Record<string, unknown>;
+          ctx.emit({
+            type: 'progress',
+            stepId: 'setup.thisComputer.run',
+            message: 'Setting up this computer',
+          });
+          if (params.setupThisComputer) return await params.setupThisComputer(setupParams);
+
+          const activeRelayUrl = typeof setupParams.activeRelayUrl === 'string' ? setupParams.activeRelayUrl.trim() : '';
+          const channel = typeof setupParams.channel === 'string' ? setupParams.channel.trim() : '';
+          const setupArgs = [
+            ...(activeRelayUrl ? ['--relay-url', activeRelayUrl] : []),
+            ...(channel ? ['--channel', channel] : []),
+            ...(setupParams.installService === false ? ['--skip-daemon'] : []),
+            '--skip-providers',
+          ];
+          const { handleSetupCommand } = await import('@/cli/commands/setup');
+          await handleSetupCommand(setupArgs);
+          const status = await readLiveDaemonServiceStatusSnapshot({ target: { kind: 'local' } });
+          if (!status.machineId) {
+            throw new SystemTaskExecutionError('setup_machine_incomplete', 'This computer setup did not produce a registered machine.');
+          }
+          return { machineId: status.machineId };
+        },
+      },
       [DISCOVER_CONFIGURED_SSH_HOSTS_SYSTEM_TASK_KIND]: createDiscoverConfiguredSshHostsSystemTaskKind(),
       'remote.ssh.bootstrapMachine.v1': createLiveRemoteSshBootstrapTaskKind(),
+      'remote.ssh.manageHost.v1': createLiveRemoteSshManageHostTaskKind(),
       'daemon.service.status.v1': createDaemonServiceStatusTaskKind({
         readStatus: readLiveDaemonServiceStatusSnapshot,
         startService: async (params) => await runLiveDaemonServiceLifecycleAction(params, 'start'),

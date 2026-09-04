@@ -50,4 +50,18 @@ export interface ManagedWorkspaceSync {
   listConflicts(relationshipId: string, signal?: AbortSignal): Promise<WorkspaceSyncConflictListV1>;
   deleteConflictLoser(request: DeleteWorkspaceSyncConflictLoserV1, signal?: AbortSignal): Promise<WorkspaceSyncStatusV1>;
   readFile(request: ReadWorkspaceSyncFileV1, signal?: AbortSignal): Promise<ReadWorkspaceSyncFileResultV1>;
+  withAuthorizedSourceSeedExport<T>(
+    request: Readonly<{
+      operationId: string;
+      sourceWorkspaceRefId: string;
+      targetMachineId: string;
+      contentPolicy: WorkspaceContentPolicyV1;
+    }>,
+    exportSource: (canonicalSourcePath: string) => Promise<T>,
+  ): Promise<T>;
+  withSourceSeedAuthorization<T>(
+    operation: WorkspaceSyncRelationshipV1 | WorkspaceSyncCopyOnceV1,
+    ownershipHandles: readonly WorkspaceRootOwnershipHandle[],
+    action: () => Promise<T>,
+  ): Promise<T>;
 }

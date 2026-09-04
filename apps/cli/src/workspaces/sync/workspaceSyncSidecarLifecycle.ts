@@ -3,7 +3,6 @@ import type { TerminationEvent } from '@/subprocess/supervision/types';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { MutagenControlCommandV1 } from './transport/workspaceSyncBrokerProtocol';
 import type { WorkspaceSyncBrokerOpenContext } from './transport/workspaceSyncBroker';
-import type { Duplex } from 'node:stream';
 
 export type WorkspaceSyncVerifiedRuntime = Readonly<{
   managerPath: string;
@@ -49,9 +48,9 @@ export type WorkspaceSyncSidecarLifecycleDependencies = Readonly<{
     brokerInstanceId: string;
     launchNonce: string;
     launchSecret: Uint8Array;
-    openExternalStream(context: WorkspaceSyncBrokerOpenContext): Promise<Duplex>;
+    openExternalStream(context: WorkspaceSyncBrokerOpenContext): Promise<NodeJS.ReadWriteStream>;
   }>): Promise<WorkspaceSyncSidecarBroker>;
-  openExternalStream(context: WorkspaceSyncBrokerOpenContext): Promise<Duplex>;
+  openExternalStream(context: WorkspaceSyncBrokerOpenContext): Promise<NodeJS.ReadWriteStream>;
   spawn: SpawnWorkspaceSyncSidecar;
   ensurePrivateDirectory(path: string): Promise<void>;
   randomBytes(length: number): Uint8Array;
@@ -102,6 +101,9 @@ export class WorkspaceSyncSidecarLifecycle {
   private readonly supervisor: SupervisedProcess;
   private readonly reconciliationContext = new AsyncLocalStorage<boolean>();
   private spawnAttempt: Promise<Readonly<{ pid: number; waitForTermination(): Promise<TerminationEvent> }>> | null = null;
+  private stopAttempt: Promise<void> | null = null;
+  private lateSpawnSettlement: Promise<void> | null = null;
+  private lateSpawnProcess: WorkspaceSyncSidecarProcess | null = null;
   private activeProcess: WorkspaceSyncSidecarProcess | null = null;
   private activeBroker: WorkspaceSyncSidecarBroker | null = null;
   private currentReadiness: Readiness | null = null;
@@ -155,15 +157,26 @@ export class WorkspaceSyncSidecarLifecycle {
   }
 
   async stop(): Promise<void> {
-    if (this.stopping) return;
+    if (this.stopAttempt) return await this.stopAttempt;
     this.stopping = true;
+    const attempt = this.stopOwnedResources();
+    this.stopAttempt = attempt;
+    try {
+      await attempt;
+    } catch (error) {
+      if (this.stopAttempt === attempt) this.stopAttempt = null;
+      throw error;
+    }
+  }
+
+  private async stopOwnedResources(): Promise<void> {
     const cleanupFailures: unknown[] = [];
     const spawnAttempt = this.spawnAttempt;
     this.supervisor.markStopRequested({ reason: 'shutdown', requestedAtMs: Date.now() });
     const broker = this.activeBroker;
     const process = this.activeProcess;
-    this.activeProcess = null;
-    this.activeBroker = null;
+    if (this.activeBroker === broker) this.activeBroker = null;
+    if (this.activeProcess === process) this.activeProcess = null;
     if (broker) {
       await broker.command({ t: 'shutdown', requestId: this.dependencies.randomId() }).catch((error: unknown) => {
         cleanupFailures.push(error);
@@ -172,6 +185,7 @@ export class WorkspaceSyncSidecarLifecycle {
     if (process) {
       const graceMs = this.dependencies.shutdownGraceMs ?? 5_000;
       let exitedNaturally = false;
+      let processStopped = false;
       if (graceMs > 0) {
         let timer: ReturnType<typeof setTimeout> | undefined;
         exitedNaturally = await Promise.race([
@@ -183,14 +197,33 @@ export class WorkspaceSyncSidecarLifecycle {
         ]);
         if (timer !== undefined) clearTimeout(timer);
       }
-      if (!exitedNaturally) await process.stop().catch((error: unknown) => {
-        cleanupFailures.push(error);
-      });
+      if (!exitedNaturally) {
+        await process.stop().then(
+          () => { processStopped = true; },
+          (error: unknown) => { cleanupFailures.push(error); },
+        );
+      }
+      if (!exitedNaturally && !processStopped && this.activeProcess === null) this.activeProcess = process;
     }
-    await broker?.close().catch((error: unknown) => {
-      cleanupFailures.push(error);
-    });
+    if (broker) {
+      let brokerClosed = false;
+      await broker.close().then(
+        () => { brokerClosed = true; },
+        (error: unknown) => { cleanupFailures.push(error); },
+      );
+      if (!brokerClosed && this.activeBroker === null) this.activeBroker = broker;
+    }
     await spawnAttempt?.catch(() => undefined);
+    const lateSpawnSettlement = this.lateSpawnSettlement;
+    if (lateSpawnSettlement) {
+      if (this.lateSpawnProcess) {
+        await lateSpawnSettlement.catch((error: unknown) => { cleanupFailures.push(error); });
+      } else {
+        cleanupFailures.push(engineUnavailable(new Error('late sidecar spawn cleanup is pending')));
+      }
+    } else if (this.lateSpawnProcess) {
+      await this.stopLateSpawnProcess().catch((error: unknown) => { cleanupFailures.push(error); });
+    }
     const unavailable = engineUnavailable(new Error('sidecar lifecycle stopped'));
     this.currentReadiness?.reject(unavailable);
     this.currentAuthenticatedReadiness?.reject(unavailable);
@@ -203,6 +236,24 @@ export class WorkspaceSyncSidecarLifecycle {
     if (cleanupFailures.length > 1) {
       throw new AggregateError(cleanupFailures, 'Workspace sync sidecar cleanup failed');
     }
+  }
+
+  private async stopLateSpawnProcess(): Promise<void> {
+    const process = this.lateSpawnProcess;
+    if (!process) return;
+    await process.stop();
+    if (this.lateSpawnProcess === process) this.lateSpawnProcess = null;
+  }
+
+  private retainLateSpawn(spawn: Promise<WorkspaceSyncSidecarProcess>): void {
+    const settlement = spawn.then(async (lateProcess) => {
+      this.lateSpawnProcess = lateProcess;
+      await this.stopLateSpawnProcess();
+    }, () => undefined);
+    this.lateSpawnSettlement = settlement;
+    void settlement.finally(() => {
+      if (this.lateSpawnSettlement === settlement) this.lateSpawnSettlement = null;
+    }).catch(() => undefined);
   }
 
   async command(command: MutagenControlCommandV1, signal?: AbortSignal): Promise<unknown> {
@@ -254,17 +305,14 @@ export class WorkspaceSyncSidecarLifecycle {
         try {
           process = await Promise.race([spawn, startupDeadline]);
         } catch (error) {
-          void spawn.then(
-            async (lateProcess) => await lateProcess.stop().catch(() => undefined),
-            () => undefined,
-          );
+          this.retainLateSpawn(spawn);
           throw error;
         }
         this.assertNotStopping();
         termination = process.waitForTermination();
         const startup = (async () => {
           await broker.waitForReady(process.pid);
-          await broker.command({ t: 'list', requestId: this.dependencies.randomId() });
+          await broker.command({ t: 'list', requestId: this.dependencies.randomId(), limit: 100 });
         })();
         await Promise.race([
           startup,
@@ -296,10 +344,18 @@ export class WorkspaceSyncSidecarLifecycle {
       this.currentReadiness = null;
       return { pid: process.pid, waitForTermination: async () => await termination };
     } catch (error) {
-      await process?.stop().catch(() => undefined);
-      await broker?.close().catch(() => undefined);
-      this.activeProcess = null;
-      this.activeBroker = null;
+      if (process) {
+        await process.stop().then(
+          () => { if (this.activeProcess === process) this.activeProcess = null; },
+          () => { this.activeProcess = process; },
+        );
+      }
+      if (broker) {
+        await broker.close().then(
+          () => { if (this.activeBroker === broker) this.activeBroker = null; },
+          () => { this.activeBroker = broker; },
+        );
+      }
       this.ready = false;
       this.authenticated = false;
       const unavailable = engineUnavailable(error);

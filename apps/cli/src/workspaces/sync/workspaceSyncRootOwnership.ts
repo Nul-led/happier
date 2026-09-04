@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { chmod, mkdir, readFile, readdir, realpath } from 'node:fs/promises';
+import { chmod, mkdir, readFile, readdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { normalizeSessionHandoffWorkspaceRootPath } from '@happier-dev/protocol';
 
 import { readProcessIdentityByPid } from '@/daemon/processIdentity';
 import { getPathRemainderWithinBase } from '@/session/handoff/paths/sessionHandoffPathNormalization';
+import { realpathWithAbsentSuffix } from '@/utils/path/physicalAncestorPath';
 import { reclaimJsonOwnerFileLockSnapshot, withJsonOwnerFileLock } from '@/utils/fs/jsonOwnerFileLock';
 import { writeJsonAtomic } from '@/utils/fs/writeJsonAtomic';
 import { computeWorkspaceSyncRootFingerprint } from './workspaceSyncRootIdentity';
@@ -93,17 +94,20 @@ function parseRecord(raw: string): OwnershipRecordV2 | null {
   }
 }
 
+/**
+ * One physical spelling for every root, present or not. A root that does not
+ * exist yet is physicalized through its deepest existing ancestor so that an
+ * aliased parent (macOS `/var` versus `/private/var`) and its missing
+ * descendant cannot be treated as unrelated trees by the containment
+ * comparison below. Any resolution failure that is not plain absence fails
+ * closed rather than falling back to the requested spelling.
+ */
 async function resolveCanonicalRoot(input: string): Promise<string> {
   const normalized = normalizeSessionHandoffWorkspaceRootPath(input);
   if (!normalized) throw new Error('workspace root ownership root is unsafe');
-  try {
-    const localIdentity = normalizeSessionHandoffWorkspaceRootPath(await realpath(normalized));
-    if (!localIdentity) throw new Error('workspace root ownership real path is unsafe');
-    return localIdentity;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code && (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    return normalized;
-  }
+  const physical = normalizeSessionHandoffWorkspaceRootPath(await realpathWithAbsentSuffix(normalized));
+  if (!physical) throw new Error('workspace root ownership real path is unsafe');
+  return physical;
 }
 
 function overlaps(left: string, right: string): boolean {
@@ -160,11 +164,12 @@ export function createWorkspaceRootOwnershipManager(options: Readonly<{
   lockDirectory: string;
   processOwner?: ProcessOwner;
   inspectProcessOwner?: (pid: number) => Promise<ProcessOwnerObservation>;
+  reclaimRecordSnapshot?: typeof reclaimJsonOwnerFileLockSnapshot;
 }>): WorkspaceRootOwnershipManager {
   const lockDirectory = resolve(options.lockDirectory);
   const observeProcessOwner = options.inspectProcessOwner ?? inspectProcessOwner;
+  const reclaimRecordSnapshot = options.reclaimRecordSnapshot ?? reclaimJsonOwnerFileLockSnapshot;
   const inventoryLockPath = join(lockDirectory, '.inventory.lock');
-  const activeOwnership = new Set<ActiveOwnership>();
   let serialization: Promise<void> = Promise.resolve();
   let currentProcessOwner: Promise<ProcessOwner> | null = null;
 
@@ -205,7 +210,7 @@ export function createWorkspaceRootOwnershipManager(options: Readonly<{
   };
 
   const removeExactRecord = async (path: string, raw: string): Promise<boolean> => {
-    const result = await reclaimJsonOwnerFileLockSnapshot(path, raw);
+    const result = await reclaimRecordSnapshot(path, raw);
     if (result === 'ownership_unknown') {
       throw Object.assign(new Error('workspace root ownership is compromised'), {
         code: 'workspace_root_ownership_compromised',
@@ -241,14 +246,13 @@ export function createWorkspaceRootOwnershipManager(options: Readonly<{
       }),
       release: async () => await exclusive(async () => {
         if (released) return;
-        released = true;
-        activeOwnership.delete(entry);
         await withInventoryLock(async () => {
           const snapshot = await readSnapshot(entry.path);
           if (snapshot?.record && exactRecordOwner(snapshot.record, entry.owner, entry.processOwner)) {
             await removeExactRecord(entry.path, snapshot.raw);
           }
         });
+        released = true;
       }),
     };
   };
@@ -288,13 +292,16 @@ export function createWorkspaceRootOwnershipManager(options: Readonly<{
 
         const rootFingerprint = input.deferRootIdentityBinding
           ? null
-          : await computeWorkspaceSyncRootFingerprint(canonicalRoot).catch(() => null);
+          : await computeWorkspaceSyncRootFingerprint(canonicalRoot).catch(() => {
+              throw Object.assign(
+                new Error('Workspace root identity is unavailable'),
+                { code: 'workspace_root_identity_unavailable' },
+              );
+            });
         const owner = { ownerId, canonicalRoot, operation: input.operation, rootFingerprint } satisfies WorkspaceRootOwnership;
         const path = recordPath(lockDirectory, canonicalRoot);
         await writeJsonAtomic(path, { v: 2, ...owner, processOwner } satisfies OwnershipRecordV2);
-        const active = { owner, path, processOwner, lost: false } satisfies ActiveOwnership;
-        activeOwnership.add(active);
-        return createHandle(active);
+        return createHandle({ owner, path, processOwner, lost: false });
       });
     }),
   };

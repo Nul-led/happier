@@ -16,13 +16,11 @@ const policy = Object.freeze({
   selection: 'all_files' as const,
   extraIgnorePatterns: Object.freeze([]),
   extraIncludePatterns: Object.freeze([]),
-  includeGitDirectory: false,
   policyDigest: computeWorkspaceSyncPolicyDigest({
     v: 1,
     selection: 'all_files',
     extraIgnorePatterns: [],
     extraIncludePatterns: [],
-    includeGitDirectory: false,
   }),
 });
 

@@ -20,6 +20,13 @@ const rootOwnershipManager = createWorkspaceRootOwnershipManager({
   lockDirectory: join(tmpdir(), `workspace-sync-bootstrap-locks-${process.pid}`),
 });
 const crashChildPath = join(dirname(fileURLToPath(import.meta.url)), 'workspaceSyncTargetBootstrap.child.ts');
+const fakeMaterializationReceipt = {
+  v: 1 as const,
+  previousTargetName: null,
+  originalTargetIdentity: null,
+  promotedTargetIdentity: null,
+  expectedBackupIdentity: null,
+};
 
 async function replacementApproval(rootPath: string): Promise<HandoffTargetReplacementApprovalV1> {
   return {
@@ -245,7 +252,8 @@ describe('workspaceSyncTargetBootstrap', () => {
       materializeSeed: async ({ canonicalRoot }) => {
         await writeFile(join(canonicalRoot, 'seeded.txt'), 'seed');
         return {
-          receipt: { v: 1, previousTargetName: null },
+          receipt: fakeMaterializationReceipt,
+          bindPromotedTarget: async () => undefined,
           commit: async () => { committed += 1; },
           abort: async () => {
             aborted += 1;
@@ -265,7 +273,7 @@ describe('workspaceSyncTargetBootstrap', () => {
     await rm(fixture, { recursive: true, force: true });
   });
 
-  it('rehydrates durable replacement custody from the READY receipt', async () => {
+  it('rehydrates durable replacement custody from the sole materialization receipt beside READY', async () => {
     const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-bootstrap-rehydrate-custody-'));
     const target = join(fixture, 'target');
     await mkdir(target);
@@ -275,13 +283,16 @@ describe('workspaceSyncTargetBootstrap', () => {
       stagingDirectory: join(fixture, 'staging'),
       targetBootstrap: 'materialize_from_source_workspace',
       targetReplacementApproval: await replacementApproval(target),
-      materializeSeed: async ({ canonicalRoot }) => {
+      materializeSeed: async ({ canonicalRoot, materializationReceiptPath, originalTargetExists }) => {
         const materialization = await beginWorkspaceTargetMaterialization({
           targetPath: canonicalRoot,
           backupDirectoryPrefix: '.happier-sync-backup',
+          receiptPath: materializationReceiptPath,
+          originalTargetExists,
         });
         await mkdir(canonicalRoot);
         await writeFile(join(canonicalRoot, 'seeded.txt'), 'seed');
+        await materialization.custody.bindPromotedTarget();
         return materialization.custody;
       },
     }));
@@ -314,10 +325,14 @@ describe('workspaceSyncTargetBootstrap', () => {
       targetBootstrap: 'materialize_from_source_workspace',
       materializeSeed: async ({ canonicalRoot }) => {
         await writeFile(join(canonicalRoot, 'seeded.txt'), 'seed');
-        return { receipt: { v: 1, previousTargetName: null }, commit: async () => undefined, abort: async () => undefined };
+        return { receipt: fakeMaterializationReceipt, bindPromotedTarget: async () => undefined, commit: async () => undefined, abort: async () => undefined };
       },
     }));
 
+    const readyMarker = JSON.parse(await readFile(result.markerPath, 'utf8')) as Record<string, unknown>;
+    expect(readyMarker).not.toHaveProperty('materialization');
+    const operationDirectory = dirname(result.markerPath);
+    await expect(access(join(operationDirectory, 'materialization.json'))).resolves.toBeUndefined();
     await result.materializationCustody?.abort();
     await expect(readFile(target)).rejects.toMatchObject({ code: 'ENOENT' });
     await result.release();
@@ -336,10 +351,18 @@ describe('workspaceSyncTargetBootstrap', () => {
       contentSelection: 'git_worktree',
       createIfMissing: true,
       targetBootstrap: 'materialize_from_source_workspace',
-      prepareGitTarget: async ({ canonicalRoot }) => {
-        await writeFile(join(canonicalRoot, '.git-marker'), 'materialized');
-        return { receipt: { v: 1, previousTargetName: null }, commit: async () => undefined, abort: async () => undefined };
-      },
+      prepareGitTarget: async (request) => await prepareWorkspaceSyncGitTarget(request, {
+        realizeWorkspaceCheckout: async ({ targetPath }) => {
+          await expect(access(targetPath!)).rejects.toMatchObject({ code: 'ENOENT' });
+          await mkdir(targetPath!);
+          await writeFile(join(targetPath!, '.git-marker'), 'materialized');
+          return { kind: 'git_worktree', targetPath: targetPath!, branchName: 'test', created: true };
+        },
+        inspectWorkspaceLocation: async ({ candidatePath }) => ({
+          workspaceLocationScm: { provider: 'git', rootPath: candidatePath },
+          checkoutDiscovery: [{ kind: 'git_worktree' }],
+        }),
+      }),
     }));
 
     await result.materializationCustody?.abort();

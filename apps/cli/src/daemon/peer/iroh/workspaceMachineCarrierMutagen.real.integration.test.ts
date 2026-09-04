@@ -14,7 +14,6 @@ import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { access, mkdir, mkdtemp, open, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import type { Duplex } from 'node:stream';
 import tweetnacl from 'tweetnacl';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -36,6 +35,7 @@ import { createWorkspaceRootOwnershipManager } from '@/workspaces/sync/workspace
 import { createWorkspaceSyncTargetAuthority } from '@/workspaces/sync/workspaceSyncTargetAuthority';
 import { createWorkspaceSyncPeerIdentityValidator } from '@/workspaces/sync/transport/workspaceSyncPeerIdentity';
 import { createWorkspaceSyncRelationshipOwner } from '@/workspaces/sync/workspaceSyncRelationshipOwner';
+import type { WorkspaceSyncOwnedLocalAgent } from '@/workspaces/sync/workspaceSyncController';
 import { startPeerMediationLoopbackServer } from '../mediation/loopback/server';
 import { createDaemonMachineIrohRuntime } from './daemonMachineIrohRuntime';
 import { createWorkspaceMachineCarrierTunnelOpen } from './workspaceMachineCarrierTunnelOpen';
@@ -188,7 +188,6 @@ const contentPolicyInput = Object.freeze({
   selection: 'all_files' as const,
   extraIgnorePatterns: [] as const,
   extraIncludePatterns: [] as const,
-  includeGitDirectory: false,
 });
 
 function settingsSnapshot(
@@ -216,7 +215,9 @@ function createGrantMint(
       : request.scope.kind === 'bounded_transfer'
         ? request.scope.mode === 'single'
           ? request.scope.transferId
-          : request.scope.transferScopeId
+          : request.scope.mode === 'scope'
+            ? request.scope.transferScopeId
+            : 'carrier'
         : request.scope.kind;
     const payload = {
       ...binding,
@@ -333,7 +334,7 @@ describe('production handoff -> Mutagen manager -> broker -> controller -> nativ
       const targetRootOwnership = createWorkspaceRootOwnershipManager({
         lockDirectory: join(targetHome, 'daemon', 'workspace-sync', 'root-ownership'),
       });
-      const targetAgentStreams: Duplex[] = [];
+      const targetAgentStreams: WorkspaceSyncOwnedLocalAgent[] = [];
       const callMachineRpc = vi.fn(async () => {
         throw new Error('The composed target ingress must remain on the authenticated machine carrier');
       });
@@ -347,13 +348,13 @@ describe('production handoff -> Mutagen manager -> broker -> controller -> nativ
           rootOwnershipManager: targetRootOwnership,
         },
         openRootedAgent: async (request) => {
-          const stream = await launchWorkspaceSyncLocalAgent({
+          const agent = await launchWorkspaceSyncLocalAgent({
             executablePath: binaries.agent,
             args: ['synchronizer', '--external', '--root', request.canonicalRoot],
             ...(request.signal ? { signal: request.signal } : {}),
           });
-          targetAgentStreams.push(stream);
-          return stream;
+          targetAgentStreams.push(agent);
+          return agent;
         },
       });
       let sourceIroh: Awaited<ReturnType<typeof createDaemonMachineIrohRuntime>> | null = null;
@@ -391,7 +392,7 @@ describe('production handoff -> Mutagen manager -> broker -> controller -> nativ
             role: 'acceptor',
             allowedFlows: ['workspace_sync'],
             resolveApplicationTarget: async ({ handshake }) => {
-              if (handshake.initiator.kind !== 'machine') return null;
+              if (handshake.flow !== 'workspace_sync' || handshake.initiator.kind !== 'machine') return null;
               const ingress = await targetAuthority.acquireWorkspaceSyncMachineIngress({
                 operationId: handshake.operationId,
                 sourceMachineId: handshake.initiator.machineId,
@@ -528,6 +529,7 @@ describe('production handoff -> Mutagen manager -> broker -> controller -> nativ
         sourceWorkspaceRuntime = await createProductionDaemonWorkspaceSyncRuntime({
           happyHomeDir: sourceHome,
           activeServerDir: join(sourceHome, 'servers', 'server-1'),
+          activeServerId: 'server-1',
           localMachineId: sourceMachineId,
           releaseChannel: 'publicdev',
           credentials: { token: 'test-token', encryption: null },
@@ -629,7 +631,7 @@ describe('production handoff -> Mutagen manager -> broker -> controller -> nativ
         });
         if (!handoffResult.ok) throw new Error(JSON.stringify(handoffResult));
         expect(handoffResult.result).toMatchObject({
-          workspace: { kind: 'create_relationship', relationshipId },
+          workspace: { kind: 'relationship', relationshipId, created: true },
         });
         expect(currentSettings.workspaceSyncRelationshipsV1).toEqual([
           expect.objectContaining({ relationshipId, mode: 'keep_both_in_sync', enabled: true }),
@@ -716,7 +718,7 @@ describe('production handoff -> Mutagen manager -> broker -> controller -> nativ
         await sourceWorkspaceRuntime.workspaceSync.controller.terminate(relationshipId);
         await expect(sourceWorkspaceRuntime.workspaceSync.controller.get(relationshipId)).resolves.toBeNull();
         await waitFor(
-          () => targetAgentStreams.every((stream) => stream.destroyed),
+          () => targetAgentStreams.every((agent) => agent.stream.destroyed),
           'Target rooted Mutagen agent remained alive after relationship cancellation/half-close',
         );
         await sourceWorkspaceRuntime.stop();

@@ -124,7 +124,7 @@ describe('server profiles', () => {
           endpointId: 'c'.repeat(64),
           relayUrls: ['https://relay-new.example.test/'],
         }],
-      }, { observation: 'public' })).resolves.toMatchObject({ outcome: 'updated' });
+      })).resolves.toMatchObject({ outcome: 'updated' });
       expect((await getActiveServerProfile()).homeConnectionDescriptor).toEqual({
         ...descriptor,
         revision: 8,
@@ -132,7 +132,6 @@ describe('server profiles', () => {
           kind: 'iroh',
           endpointId: 'c'.repeat(64),
           relayUrls: ['https://relay-new.example.test/'],
-          directAddresses: ['127.0.0.1:7777'],
         }],
       });
 
@@ -140,12 +139,11 @@ describe('server profiles', () => {
       expect(currentDescriptor).toBeDefined();
       await expect(reconcileActiveServerProfileHomeConnectionDescriptor(
         currentDescriptor!,
-        { observation: 'public' },
       )).resolves.toMatchObject({ outcome: 'unchanged' });
       await expect(reconcileActiveServerProfileHomeConnectionDescriptor({
         ...descriptor,
         revision: 7,
-      }, { observation: 'public' })).resolves.toMatchObject({ outcome: 'stale' });
+      })).resolves.toMatchObject({ outcome: 'stale' });
 
       await setServerProfileEndpointsById({
         id: profile.id,
@@ -159,9 +157,174 @@ describe('server profiles', () => {
           kind: 'iroh',
           endpointId: 'c'.repeat(64),
           relayUrls: ['https://relay-new.example.test/'],
-          directAddresses: ['127.0.0.1:7777'],
         }],
       });
+    });
+  });
+
+  it('adopts the complete exact route generation without retaining omitted private fields or moving credentials', async () => {
+    await withTempDir('happier-cli-home-identity-route-', async (homeDir) => {
+      envScope.patch({ HAPPIER_HOME_DIR: homeDir, HAPPIER_SERVER_URL: undefined, HAPPIER_WEBAPP_URL: undefined });
+      vi.resetModules();
+      const { addServerProfile, adoptServerProfileHomeConnectionDescriptor, listServerProfiles } = await import('./serverProfiles');
+      const original = await addServerProfile({
+        name: 'Studio', serverUrl: 'https://old.example.test', webappUrl: 'https://app.example.test', use: true,
+      });
+      const credentialDir = join(homeDir, 'servers', original.id);
+      mkdirSync(credentialDir, { recursive: true });
+      await import('node:fs/promises').then(({ writeFile }) => writeFile(join(credentialDir, 'access.key'), 'immutable-owner'));
+      const first = {
+        v: 1 as const, homeServerIdentityId: 'srv_studio_home', canonicalServerUrl: 'https://old.example.test', revision: 1,
+        endpoints: [{ kind: 'iroh' as const, endpointId: 'b'.repeat(64), directAddresses: ['10.0.0.2:7777'] }],
+      };
+      await adoptServerProfileHomeConnectionDescriptor({ descriptor: first, expectedProfileId: original.id, observation: 'exact' });
+      const updated = await adoptServerProfileHomeConnectionDescriptor({
+        descriptor: {
+          ...first,
+          canonicalServerUrl: 'https://new.example.test',
+          revision: 2,
+          endpoints: [{ kind: 'iroh', endpointId: 'b'.repeat(64), relayUrls: ['https://relay.example.test/'] }],
+        },
+        observation: 'exact',
+      });
+
+      expect(updated.profile).toMatchObject({ id: original.id, serverUrl: 'https://new.example.test' });
+      expect(updated.profile.homeConnectionDescriptor?.endpoints).toEqual([{
+        kind: 'iroh', endpointId: 'b'.repeat(64), relayUrls: ['https://relay.example.test/'],
+      }]);
+      expect(await listServerProfiles()).toHaveLength(2);
+      expect(await readFile(join(credentialDir, 'access.key'), 'utf8')).toBe('immutable-owner');
+    });
+  });
+
+  it('keeps established exact routes over advisory Directory updates and promotes the same profile after exact observation', async () => {
+    await withTempDir('happier-cli-home-advisory-route-', async (homeDir) => {
+      envScope.patch({ HAPPIER_HOME_DIR: homeDir, HAPPIER_SERVER_URL: undefined, HAPPIER_WEBAPP_URL: undefined });
+      vi.resetModules();
+      const { adoptServerProfileHomeConnectionDescriptor } = await import('./serverProfiles');
+      const exact = {
+        v: 1 as const, homeServerIdentityId: 'srv_advisory_home', canonicalServerUrl: 'https://exact.example.test', revision: 1,
+        endpoints: [{ kind: 'https' as const, url: 'https://exact.example.test' }],
+      };
+      const created = await adoptServerProfileHomeConnectionDescriptor({ descriptor: exact, suggestedName: 'Studio', observation: 'exact' });
+      const directory = {
+        ...exact, canonicalServerUrl: 'https://directory.example.test', revision: 2,
+        endpoints: [{ kind: 'https' as const, url: 'https://directory.example.test' }],
+      };
+
+      const ignored = await adoptServerProfileHomeConnectionDescriptor({ descriptor: directory, observation: 'advisory' });
+      expect(ignored).toMatchObject({ outcome: 'stale', profile: { id: created.profile.id, serverUrl: exact.canonicalServerUrl } });
+
+      const advisoryOnly = await adoptServerProfileHomeConnectionDescriptor({
+        descriptor: { ...directory, homeServerIdentityId: 'srv_new_directory_home' },
+        suggestedName: 'Directory Home',
+        observation: 'advisory',
+      });
+      expect(advisoryOnly.profile.homeConnectionDescriptorAuthority).toBe('advisory');
+
+      const promoted = await adoptServerProfileHomeConnectionDescriptor({ descriptor: directory, expectedProfileId: created.profile.id, observation: 'exact' });
+      expect(promoted.profile).toMatchObject({ id: created.profile.id, serverUrl: directory.canonicalServerUrl, homeConnectionDescriptorAuthority: 'exact' });
+    });
+  });
+
+  it('keeps URL-equal identity-distinct Homes separate and never copies credentials by URL', async () => {
+    await withTempDir('happier-cli-home-url-distinct-', async (homeDir) => {
+      envScope.patch({ HAPPIER_HOME_DIR: homeDir, HAPPIER_SERVER_URL: undefined, HAPPIER_WEBAPP_URL: undefined });
+      vi.resetModules();
+      const { adoptServerProfileHomeConnectionDescriptor, listServerProfiles } = await import('./serverProfiles');
+      const base = { v: 1 as const, canonicalServerUrl: 'https://shared.example.test', revision: 1, endpoints: [{ kind: 'https' as const, url: 'https://shared.example.test' }] };
+      const first = await adoptServerProfileHomeConnectionDescriptor({
+        descriptor: { ...base, homeServerIdentityId: 'srv_home_alpha' }, suggestedName: 'Alpha', observation: 'exact',
+      });
+      const firstCredentialDir = join(homeDir, 'servers', first.profile.id);
+      mkdirSync(firstCredentialDir, { recursive: true });
+      await import('node:fs/promises').then(({ writeFile }) => writeFile(join(firstCredentialDir, 'access.key'), 'alpha-secret'));
+      const second = await adoptServerProfileHomeConnectionDescriptor({
+        descriptor: { ...base, homeServerIdentityId: 'srv_home_beta' }, suggestedName: 'Beta', observation: 'exact',
+      });
+
+      expect(second.profile.id).not.toBe(first.profile.id);
+      expect((await listServerProfiles()).filter((profile) => profile.serverUrl === 'https://shared.example.test')).toHaveLength(2);
+      expect(existsSync(join(homeDir, 'servers', second.profile.id, 'access.key'))).toBe(false);
+      expect(await readFile(join(firstCredentialDir, 'access.key'), 'utf8')).toBe('alpha-secret');
+    });
+  });
+
+  it('reports duplicate identity as a typed conflict without mutating settings or credentials', async () => {
+    await withTempDir('happier-cli-home-identity-conflict-', async (homeDir) => {
+      envScope.patch({ HAPPIER_HOME_DIR: homeDir, HAPPIER_SERVER_URL: undefined, HAPPIER_WEBAPP_URL: undefined });
+      vi.resetModules();
+      const { addServerProfile, adoptServerProfileHomeConnectionDescriptor, findServerProfileIdentityConflicts } = await import('./serverProfiles');
+      const { updateSettings } = await import('@/persistence');
+      const one = await addServerProfile({ name: 'One', serverUrl: 'https://one.example.test', webappUrl: 'https://one.example.test' });
+      const two = await addServerProfile({ name: 'Two', serverUrl: 'https://two.example.test', webappUrl: 'https://two.example.test' });
+      const descriptor = { v: 1 as const, homeServerIdentityId: 'srv_duplicate_home', canonicalServerUrl: 'https://one.example.test', revision: 1, endpoints: [{ kind: 'https' as const, url: 'https://one.example.test' }] };
+      await updateSettings((current) => ({ ...current, servers: {
+        ...current.servers,
+        [one.id]: { ...current.servers![one.id], homeConnectionDescriptor: descriptor },
+        [two.id]: { ...current.servers![two.id], homeConnectionDescriptor: { ...descriptor, canonicalServerUrl: 'https://two.example.test', endpoints: [{ kind: 'https', url: 'https://two.example.test' }] } },
+      } }));
+      const before = await readFile(join(homeDir, 'settings.json'), 'utf8');
+
+      await expect(adoptServerProfileHomeConnectionDescriptor({ descriptor: { ...descriptor, revision: 2 }, observation: 'exact' }))
+        .rejects.toMatchObject({ code: 'duplicate_identity', homeServerIdentityId: 'srv_duplicate_home' });
+      expect(await readFile(join(homeDir, 'settings.json'), 'utf8')).toBe(before);
+      expect(await findServerProfileIdentityConflicts()).toEqual([{ homeServerIdentityId: 'srv_duplicate_home', profileIds: [one.id, two.id] }]);
+    });
+  });
+
+  it('fails closed on a present-invalid descriptor without URL merge, descriptor erasure, or credential copy', async () => {
+    await withTempDir('happier-cli-corrupt-home-descriptor-', async (homeDir) => {
+      const serverUrl = 'https://corrupt.example.test';
+      envScope.patch({
+        HAPPIER_HOME_DIR: homeDir,
+        HAPPIER_SERVER_URL: undefined,
+        HAPPIER_WEBAPP_URL: undefined,
+      });
+      vi.resetModules();
+      const { updateSettings } = await import('@/persistence');
+      const { upsertServerProfileByUrl } = await import('./serverProfiles');
+      await updateSettings((current) => ({
+        ...current,
+        servers: {
+          ...current.servers,
+          corrupt: {
+            id: 'corrupt',
+            name: 'Corrupt Home',
+            serverUrl,
+            webappUrl: serverUrl,
+            createdAt: 1,
+            updatedAt: 1,
+            lastUsedAt: 1,
+            homeConnectionDescriptor: {
+              v: 1,
+              homeServerIdentityId: 'srv_corrupt_home',
+              canonicalServerUrl: serverUrl,
+              revision: 1,
+              endpoints: [{ kind: 'https', url: serverUrl }],
+              unknownAuthority: true,
+            },
+          },
+        },
+      }));
+      const derivedCredentialDir = join(homeDir, 'servers', deriveServerIdFromUrl(serverUrl));
+      mkdirSync(derivedCredentialDir, { recursive: true });
+      await import('node:fs/promises').then(({ writeFile }) => writeFile(
+        join(derivedCredentialDir, 'access.key'),
+        'must-not-copy',
+      ));
+      const settingsPath = join(homeDir, 'settings.json');
+      const before = await readFile(settingsPath, 'utf8');
+
+      await expect(upsertServerProfileByUrl({
+        name: 'Corrupt Home',
+        serverUrl,
+        webappUrl: serverUrl,
+        use: true,
+      })).rejects.toMatchObject({ code: 'invalid_home_descriptor', profileId: 'corrupt' });
+
+      expect(await readFile(settingsPath, 'utf8')).toBe(before);
+      expect(existsSync(join(homeDir, 'servers', 'corrupt', 'access.key'))).toBe(false);
     });
   });
 

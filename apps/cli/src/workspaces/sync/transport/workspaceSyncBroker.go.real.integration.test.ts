@@ -60,7 +60,7 @@ describe('real Go client to TypeScript workspace-sync broker correlation', { tim
       descriptor.end(broker.bootstrapDescriptor);
       await broker.waitForReady(child.pid);
       await rejectedDataPeer;
-      await expect(broker.command({ t: 'list', requestId: 'after-attach-failure' })).resolves.toEqual({
+      await expect(broker.command({ t: 'list', requestId: 'after-attach-failure', limit: 100 })).resolves.toEqual({
         controlSurvived: true,
       });
       await expect(exit, Buffer.concat(stderr).toString('utf8')).resolves.toEqual({ code: 0, signal: null });

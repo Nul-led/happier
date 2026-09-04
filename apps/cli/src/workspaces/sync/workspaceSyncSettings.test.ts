@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { validateWorkspaceSyncRelationships } from './workspaceSyncSettings';
 import { computeWorkspaceSyncPolicyDigest } from './workspaceSyncTypes';
 
-const policy = { v: 1 as const, selection: 'all_files' as const, extraIgnorePatterns: [], extraIncludePatterns: [], includeGitDirectory: false, policyDigest: '' };
+const policy = { v: 1 as const, selection: 'all_files' as const, extraIgnorePatterns: [], extraIncludePatterns: [], policyDigest: '' };
 policy.policyDigest = computeWorkspaceSyncPolicyDigest(policy);
 const relationship = (id: string, alpha = 'a', beta = 'b') => ({ v: 1 as const, relationshipId: id, controllerMachineId: 'machine-a', alphaWorkspaceRefId: alpha, betaWorkspaceRefId: beta, mode: 'keep_synced' as const, contentPolicy: policy, enabled: true, createdAtMs: 1, updatedAtMs: 1 });
 

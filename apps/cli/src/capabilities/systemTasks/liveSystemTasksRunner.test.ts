@@ -17,6 +17,28 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getLiveSystemTasksRunnerAdapter } from './liveSystemTasksRunner';
 
 describe('getLiveSystemTasksRunnerAdapter', () => {
+  it('registers the single remote.ssh.manageHost.v1 coordinator', async () => {
+    vi.resetModules();
+    const run = vi.fn(async () => ({ action: 'personalHome.create', registered: true }));
+    vi.doMock('./ssh/liveRemoteSshBootstrap', () => ({
+      createLiveRemoteSshBootstrapTaskKind: () => ({ run: async () => ({}) }),
+      createLiveRemoteSshManageHostTaskKind: () => ({ run }),
+    }));
+    const module = await import('./liveSystemTasksRunner');
+    const adapter = module.getLiveSystemTasksRunnerAdapter();
+    const started = await adapter.start({
+      spec: {
+        protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
+        kind: 'remote.ssh.manageHost.v1',
+        params: { action: 'personalHome.create' },
+      },
+    });
+    const { result } = await waitForResult(adapter, String((started as { taskId?: unknown }).taskId ?? ''));
+    expect(result).toMatchObject({ ok: true, data: { action: 'personalHome.create', registered: true } });
+    expect(run).toHaveBeenCalledOnce();
+    vi.doUnmock('./ssh/liveRemoteSshBootstrap');
+  });
+
   it('keeps the default singleton isolated from an explicitly targeted Personal Home invocation', async () => {
     vi.resetModules();
     const operations: PersonalHomeSystemTaskOperations = {
@@ -140,6 +162,26 @@ describe('getLiveSystemTasksRunnerAdapter', () => {
       kind: 'system.noop.v1',
       status: 'completed',
     });
+  });
+
+  it('registers setup.thisComputer.v1 through the canonical CLI setup owner', async () => {
+    const setupThisComputer = vi.fn(async (params: Record<string, unknown>) => ({
+      machineId: 'machine-local',
+      server: String(params.activeRelayUrl ?? ''),
+    }));
+    const adapter = getLiveSystemTasksRunnerAdapter({ setupThisComputer });
+    const started = await adapter.start({
+      spec: {
+        protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
+        kind: 'setup.thisComputer.v1',
+        params: { activeRelayUrl: 'http://127.0.0.1:43123', installService: true },
+      },
+    });
+    const { events, result } = await waitForResult(adapter, String((started as { taskId?: unknown }).taskId ?? ''));
+
+    expect(setupThisComputer).toHaveBeenCalledWith({ activeRelayUrl: 'http://127.0.0.1:43123', installService: true });
+    expect(events.some((event) => event.stepId === 'setup.thisComputer.run')).toBe(true);
+    expect(result).toMatchObject({ ok: true, data: { machineId: 'machine-local', server: 'http://127.0.0.1:43123' } });
   });
 
 });

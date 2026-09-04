@@ -35,7 +35,6 @@ function settingsSnapshot(sourceRoot: string, targetRoot: string): ActiveAccount
     selection: 'all_files' as const,
     extraIgnorePatterns: [],
     extraIncludePatterns: [],
-    includeGitDirectory: false,
   };
   const contentPolicy = {
     ...policyInput,
@@ -140,9 +139,14 @@ describe('production workspace opener -> native machine/1 -> Lane 08 ingress', (
       // The managed Mutagen agent is a genuine child-process boundary. This faithful
       // duplex substitutes only that external artifact and echoes the bytes its stdin consumes.
       openRootedAgent: async () => {
-        const agent = new PassThrough();
-        rootedAgents.push(agent);
-        return agent;
+        const stream = new PassThrough();
+        rootedAgents.push(stream);
+        return {
+          stream,
+          stop: async () => {
+            stream.destroy();
+          },
+        };
       },
     });
     let sourceRuntime: Awaited<ReturnType<typeof createDaemonMachineIrohRuntime>> | null = null;
@@ -166,13 +170,11 @@ describe('production workspace opener -> native machine/1 -> Lane 08 ingress', (
               selection: 'all_files',
               extraIgnorePatterns: [],
               extraIncludePatterns: [],
-              includeGitDirectory: false,
               policyDigest: computeWorkspaceSyncPolicyDigest({
                 v: 1,
                 selection: 'all_files',
                 extraIgnorePatterns: [],
                 extraIncludePatterns: [],
-                includeGitDirectory: false,
               }),
             },
           },
@@ -184,7 +186,6 @@ describe('production workspace opener -> native machine/1 -> Lane 08 ingress', (
           selection: 'all_files',
           extraIgnorePatterns: [],
           extraIncludePatterns: [],
-          includeGitDirectory: false,
         }),
         createIfMissing: true,
       });
@@ -219,7 +220,7 @@ describe('production workspace opener -> native machine/1 -> Lane 08 ingress', (
           role: 'acceptor',
           allowedFlows: ['workspace_sync'],
           resolveApplicationTarget: async ({ handshake }) => {
-            if (handshake.initiator.kind !== 'machine') return null;
+            if (handshake.flow !== 'workspace_sync' || handshake.initiator.kind !== 'machine') return null;
             const ingress = await targetAuthority.acquireWorkspaceSyncMachineIngress({
               operationId: handshake.operationId,
               sourceMachineId: handshake.initiator.machineId,
@@ -256,7 +257,8 @@ describe('production workspace opener -> native machine/1 -> Lane 08 ingress', (
         flow: 'workspace_sync',
       });
       expect(tunnel.observedPath).toBe(expectedPath);
-      const socket = await connectWorkspaceSyncMachineTunnel(tunnel);
+      const connection = await connectWorkspaceSyncMachineTunnel(tunnel);
+      const socket = connection.stream;
       const payload = Buffer.from('machine/1-to-lane08-nonzero-bytes');
       const echoed = once(socket, 'data');
       socket.write(payload);
@@ -280,8 +282,8 @@ describe('production workspace opener -> native machine/1 -> Lane 08 ingress', (
 
       socket.end();
       socket.destroy();
-      await tunnel.close();
-      await tunnel.close();
+      await connection.stop();
+      await connection.stop();
       await waitFor(
         () => rootedAgents[0]?.destroyed === true,
         'Lane 08 rooted agent remained leased after the native stream half-close/cancellation',

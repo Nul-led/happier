@@ -230,21 +230,17 @@ describe('buildDoctorRepairReport — --server <id> scoping', async () => {
       serverId: 'target-id',
       serverName: 'Target',
       serverUrl: 'http://127.0.0.1:52753',
-      hasCredentials: true,
-      isExpired: false,
+      credentialState: 'valid',
       machineRegistered: true,
       isActive: true,
-      reachability: 'verified',
     };
     const otherAuth: AuthSignalsForProfile = {
       serverId: 'other-id',
       serverName: 'Other',
       serverUrl: 'http://127.0.0.1:3005',
-      hasCredentials: false,
-      isExpired: false,
+      credentialState: 'missing',
       machineRegistered: false,
       isActive: false,
-      reachability: 'not-probed',
     };
 
     const report = await buildDoctorRepairReport({

@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { MACHINE_ALPN } from '@happier-dev/iroh-native/node';
 
 import {
   DIRECT_ROUTE_GRANT_TTL_MS,
@@ -86,9 +87,6 @@ export function createWorkspaceMachineCarrierTunnelOpen(input: Readonly<{
     if (request.sourceMachineId !== input.localMachineId) {
       throw machineCarrierUnavailableError();
     }
-    if (request.flow === 'file_transfer' && (!Number.isSafeInteger(request.maxBytes) || request.maxBytes! < 1)) {
-      throw machineCarrierUnavailableError();
-    }
     const target = await input.readTargetMachine(request.targetMachineId);
     const daemonState = target?.daemonState as { peerMediation?: { iroh?: { endpoint?: unknown } } } | null;
     const parsedEndpoint = IrohEndpointDescriptorV1Schema.safeParse(daemonState?.peerMediation?.iroh?.endpoint);
@@ -109,10 +107,10 @@ export function createWorkspaceMachineCarrierTunnelOpen(input: Readonly<{
         routeKind: 'iroh_peer',
         endpointFingerprint: parsedEndpoint.data.endpointId,
         ttlMs: request.flow === 'file_transfer'
-          ? DIRECT_ROUTE_GRANT_TTL_MS.boundedTransferSingle
+          ? DIRECT_ROUTE_GRANT_TTL_MS.finiteTransferCarrier
           : DIRECT_ROUTE_GRANT_TTL_MS.loopbackMachineRpcDefault,
         scope: request.flow === 'file_transfer'
-          ? { kind: 'bounded_transfer', mode: 'single', transferId: request.operationId, maxBytes: request.maxBytes! }
+          ? { kind: 'bounded_transfer', mode: 'carrier' }
           : {
               kind: 'machine_rpc',
               rpcScopeId: request.operationId,
@@ -131,7 +129,7 @@ export function createWorkspaceMachineCarrierTunnelOpen(input: Readonly<{
             machineId: request.targetMachineId,
             endpointId: parsedEndpoint.data.endpointId,
           },
-          operationKind: request.flow,
+          operationKind: request.flow === 'file_transfer' ? 'finite_transfer' : 'workspace_sync',
         },
       });
       const grant = SignedDirectRouteGrantV2Schema.parse(await input.mintGrant(grantRequest));
@@ -154,8 +152,9 @@ export function createWorkspaceMachineCarrierTunnelOpen(input: Readonly<{
         accountId: input.accountId,
         initiator: grant.payload.iroh?.initiator,
         target: grant.payload.iroh?.target,
-        flow: request.flow,
-        operationId: request.operationId,
+        ...(request.flow === 'file_transfer'
+          ? { flow: 'finite_transfer' as const }
+          : { flow: 'workspace_sync' as const, operationId: request.operationId }),
         grant,
         proof,
       });
@@ -169,11 +168,14 @@ export function createWorkspaceMachineCarrierTunnelOpen(input: Readonly<{
         nowMs: (input.nowMs ?? Date.now)(),
       });
       request.signal?.throwIfAborted();
-      const tunnel = await awaitNativeTunnelOpen(input.runtime.openTunnel({
-        alpn: 'happier/machine/1',
+      const openNativeTunnel = request.flow === 'file_transfer'
+        ? input.runtime.openHttpTunnel
+        : input.runtime.openTunnel;
+      const tunnel = await awaitNativeTunnelOpen(openNativeTunnel({
+        alpn: MACHINE_ALPN,
         remoteEndpointId: verified.remoteEndpointId,
         flow: handshake.flow,
-        operationId: handshake.operationId,
+        ...('operationId' in handshake ? { operationId: handshake.operationId } : {}),
         handshake,
       }, currentEndpoint.data), request.signal);
       if (tunnel.remoteEndpointId !== verified.remoteEndpointId) {

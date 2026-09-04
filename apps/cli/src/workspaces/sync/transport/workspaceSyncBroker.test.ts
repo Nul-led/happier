@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { connect as netConnect, createServer, Socket } from 'node:net';
@@ -8,7 +8,7 @@ import { once } from 'node:events';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { listenWorkspaceSyncBroker, createWorkspaceSyncBrokerEndpoint, type WorkspaceSyncBroker } from './workspaceSyncBroker';
-import { WorkspaceSyncBrokerClient } from './workspaceSyncBrokerClient';
+import { WorkspaceSyncBrokerClient } from './workspaceSyncBrokerClient.testkit';
 import {
   BrokerControlFrameDecoder,
   BrokerProtocolError,
@@ -17,6 +17,7 @@ import {
   deriveWorkspaceSyncEndpointId,
   encodeBrokerControlFrame,
   OPEN_REMOTE_DEADLINE_MS,
+  WORKSPACE_SYNC_BROKER_ATTACH_TTL_MS,
   type BrokerControlV1,
 } from './workspaceSyncBrokerProtocol';
 
@@ -256,6 +257,21 @@ describe('workspace sync broker moving bytes over real OS IPC', () => {
 });
 
 describe('workspace sync broker authentication and attach rules', () => {
+  it('does not remove a pre-existing endpoint before binding its owned listener', async () => {
+    if (process.platform === 'win32') return;
+    const directory = await mkdtemp(join(tmpdir(), 'wsbroker-owned-'));
+    const socketPath = join(directory, 'existing.sock');
+    await writeFile(socketPath, 'owned by another launch');
+
+    await expect(listenWorkspaceSyncBroker({
+      socketPath,
+      launchSecret: randomBytes(32),
+      openExternalStream: async () => new PeerStream(),
+    })).rejects.toBeInstanceOf(Error);
+    await expect(readFile(socketPath, 'utf8')).resolves.toBe('owned by another launch');
+    await rm(directory, { recursive: true, force: true });
+  });
+
   it('settles unauthenticated readiness when the broker closes', async () => {
     const fixture = await startBroker();
     const outcome = Promise.race([
@@ -303,7 +319,13 @@ describe('workspace sync broker authentication and attach rules', () => {
 
     expect(failure).toBeInstanceOf(AggregateError);
     expect((failure as AggregateError).errors).toHaveLength(1);
-    expect((failure as AggregateError).errors[0]).toMatchObject({ code: 'ERR_FS_EISDIR' });
+    const streamCleanupFailure = (failure as AggregateError).errors[0];
+    const streamCleanupCauses = streamCleanupFailure instanceof AggregateError
+      ? streamCleanupFailure.errors
+      : [streamCleanupFailure];
+    expect(streamCleanupCauses).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'ERR_FS_EISDIR' }),
+    ]));
     // Every caller observes the same terminal cleanup result; a concurrent
     // close cannot return early merely because another close owns teardown.
     expect(concurrentFailure).toBeInstanceOf(AggregateError);
@@ -313,26 +335,24 @@ describe('workspace sync broker authentication and attach rules', () => {
     await expect(stat(fixture.socketPath)).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(readdir(blocked.dataEndpoint)).resolves.toEqual(['occupied']);
 
+    await rm(blocked.dataEndpoint, { recursive: true });
+    await expect(fixture.broker.close()).resolves.toBeUndefined();
+    await expect(stat(blocked.dataEndpoint)).rejects.toMatchObject({ code: 'ENOENT' });
+
     socket.destroy();
   });
 
   it('keeps in-flight data endpoint creation in terminal close custody', async () => {
     if (process.platform === 'win32') return;
-    let releaseInitialDataRemove!: () => void;
-    const initialDataRemove = new Promise<void>((resolve) => { releaseInitialDataRemove = resolve; });
-    let dataRemoveStarted = false;
-    const dataListen = vi.fn(async () => undefined);
+    let releaseDataListen!: () => void;
+    const dataListenBlocked = new Promise<void>((resolve) => { releaseDataListen = resolve; });
+    const dataListen = vi.fn(async () => await dataListenBlocked);
     const fixture = await useFixture(await startBroker({
       createEndpoint: (endpointPath) => {
         const native = createWorkspaceSyncBrokerEndpoint({ endpointPath });
         if (!endpointPath.includes('/d-')) return native;
         return {
           ...native,
-          remove: async () => {
-            dataRemoveStarted = true;
-            await initialDataRemove;
-            await native.remove();
-          },
           listen: dataListen,
         };
       },
@@ -344,16 +364,16 @@ describe('workspace sync broker authentication and attach rules', () => {
       endpointId: deriveWorkspaceSyncEndpointId('rel-creating-endpoint', 'alpha'),
       expiresAtMs: Date.now() + OPEN_REMOTE_DEADLINE_MS,
     }));
-    await waitFor(() => dataRemoveStarted, 'data endpoint removal to begin');
+    await waitFor(() => dataListen.mock.calls.length === 1, 'data endpoint listen to begin');
 
     let closeSettled = false;
     const closing = fixture.broker.close().finally(() => { closeSettled = true; });
     await new Promise<void>((resolve) => setTimeout(resolve, 20));
     expect(closeSettled).toBe(false);
 
-    releaseInitialDataRemove();
+    releaseDataListen();
     await closing;
-    expect(dataListen).not.toHaveBeenCalled();
+    expect(dataListen).toHaveBeenCalledOnce();
     socket.destroy();
   });
 
@@ -544,9 +564,57 @@ describe('workspace sync broker authentication and attach rules', () => {
     socket.destroy();
   });
 
-  it('keeps the attach deadline active while the reserved data socket is still being validated', async () => {
+  it('grants a fresh broker-owned attach window after a slow but successful external open', async () => {
+    // Controlled clock: the remote carrier open consumes 10 of its 15
+    // seconds and then succeeds. The sidecar must still receive a full
+    // 30-second attach window counted from after the open, not the leftover
+    // open budget.
+    let nowMs = 1_000_000;
+    let releaseOpen!: () => void;
+    const openGate = new Promise<void>((resolve) => { releaseOpen = resolve; });
+    const fixture = await useFixture(await startBroker({
+      now: () => nowMs,
+      openExternalStream: async () => {
+        await openGate;
+        nowMs += 10_000;
+        return new PeerStream();
+      },
+    }));
+    const { socket, wire } = await openAuthenticatedRawControl(fixture);
+    const openStartedAtMs = nowMs;
+    socket.write(encodeBrokerControlFrame({
+      t: 'open_data',
+      requestId: 'req-slow-open',
+      endpointId: deriveWorkspaceSyncEndpointId('rel-slow-open', 'alpha'),
+      expiresAtMs: openStartedAtMs + OPEN_REMOTE_DEADLINE_MS,
+    }));
+    releaseOpen();
+    const ready = await wire.waitFor(
+      (frame) => frame.t === 'data_ready' && frame.requestId === 'req-slow-open',
+      'data_ready after the slow open',
+    );
+    if (ready.t !== 'data_ready') throw new Error('unreachable');
+    expect(ready.expiresAtMs).toBe(nowMs + WORKSPACE_SYNC_BROKER_ATTACH_TTL_MS);
+
+    // Attaching well past the original open deadline still succeeds.
+    nowMs = openStartedAtMs + OPEN_REMOTE_DEADLINE_MS + 5_000;
+    const data = createWorkspaceSyncBrokerEndpoint({ endpointPath: ready.dataEndpoint }).connect();
+    await once(data, 'connect');
+    socket.write(encodeBrokerControlFrame({
+      t: 'attach_data', streamId: ready.streamId, attachNonce: ready.attachNonce,
+    }));
+    await wire.waitFor(
+      (frame) => frame.t === 'data_ok' && frame.streamId === ready.streamId,
+      'data_ok after the open deadline has elapsed',
+    );
+    data.destroy();
+    socket.destroy();
+  });
+
+  it('keeps the broker-owned attach deadline active while the reserved data socket is still being validated', async () => {
     let validationStarted = false;
     const fixture = await useFixture(await startBroker({
+      attachTtlMs: 250,
       validatePeerIdentity: async ({ kind }) => {
         if (kind === 'data') {
           validationStarted = true;
@@ -556,14 +624,18 @@ describe('workspace sync broker authentication and attach rules', () => {
       },
     }));
     const { socket, wire } = await openAuthenticatedRawControl(fixture);
+    const openSentAtMs = Date.now();
     socket.write(encodeBrokerControlFrame({
       t: 'open_data',
       requestId: 'req-attach-deadline',
       endpointId: deriveWorkspaceSyncEndpointId('rel-attach-deadline', 'alpha'),
-      expiresAtMs: Date.now() + 250,
+      expiresAtMs: openSentAtMs + OPEN_REMOTE_DEADLINE_MS,
     }));
     const ready = await wire.waitFor((frame) => frame.t === 'data_ready', 'data_ready');
     if (ready.t !== 'data_ready') throw new Error('unreachable');
+    // The attach deadline is broker-owned: the client-supplied open deadline
+    // cannot shorten or extend it.
+    expect(ready.expiresAtMs).toBeGreaterThanOrEqual(openSentAtMs + 250);
 
     const data = createWorkspaceSyncBrokerEndpoint({ endpointPath: ready.dataEndpoint }).connect();
     await once(data, 'connect');
@@ -807,8 +879,8 @@ describe('workspace sync broker authentication and attach rules', () => {
     const preDispatchAbort = new AbortController();
     preDispatchAbort.abort();
     await expect(fixture.broker.command(
-      { t: 'list', requestId: 'cmd-3' },
-      { signal: preDispatchAbort.signal, timeoutMs: 5_000 },
+      { t: 'list', requestId: 'cmd-3', limit: 100 },
+      { signal: preDispatchAbort.signal },
     )).rejects.toMatchObject({ code: 'cancelled' });
 
     // Cancellation after dispatch asks the sidecar to stop, but the Mutagen outcome is unknown.
@@ -822,7 +894,7 @@ describe('workspace sync broker authentication and attach rules', () => {
       }, { once: true });
     }));
     const abort = new AbortController();
-    const abortable = fixture.broker.command({ t: 'list', requestId: 'cmd-4' }, { signal: abort.signal, timeoutMs: 5_000 });
+    const abortable = fixture.broker.command({ t: 'list', requestId: 'cmd-4', limit: 100 }, { signal: abort.signal });
     await waitFor(() => commandDispatched, 'sidecar command dispatch');
     abort.abort();
     await expect(abortable).rejects.toMatchObject({ code: 'indeterminate' });
@@ -830,7 +902,7 @@ describe('workspace sync broker authentication and attach rules', () => {
 
     // Commands before a sidecar authenticated fail closed.
     const fixture2 = await useFixture(await startBroker());
-    await expect(fixture2.broker.command({ t: 'list', requestId: 'cmd-5' })).rejects.toMatchObject({ code: 'agent_unavailable' });
+    await expect(fixture2.broker.command({ t: 'list', requestId: 'cmd-5', limit: 100 })).rejects.toMatchObject({ code: 'agent_unavailable' });
 
     await client.close();
   });
@@ -841,13 +913,13 @@ describe('workspace sync broker authentication and attach rules', () => {
     client.onCommand(async () => {
       await new Promise<void>(() => {});
     });
-    const pending = fixture.broker.command({ t: 'flush', requestId: 'cmd-drop', sessionIdentifier: 'mutagen-session-1' }, { timeoutMs: 10_000 });
+    const pending = fixture.broker.command({ t: 'flush', requestId: 'cmd-drop', sessionIdentifier: 'mutagen-session-1' });
     await waitFor(() => fixture.broker.hasInFlightCommands(), 'command dispatched to sidecar');
     await client.close();
     await expect(pending).rejects.toMatchObject({ code: 'indeterminate' });
   });
 
-  it('times out an in-flight sidecar command and delivers cancellation to its handler', async () => {
+  it('does not impose a broker-wide deadline and leaves cancellation to the operation owner', async () => {
     const fixture = await useFixture(await startBroker());
     const client = await connectClient(fixture);
     let cancelled = false;
@@ -857,10 +929,15 @@ describe('workspace sync broker authentication and attach rules', () => {
         reject(new BrokerProtocolError('cancelled', 'command cancelled'));
       }, { once: true });
     }));
-    await expect(fixture.broker.command(
-      { t: 'list', requestId: 'cmd-timeout' },
-      { timeoutMs: 10 },
-    )).rejects.toMatchObject({ code: 'indeterminate' });
+    const abort = new AbortController();
+    const command = fixture.broker.command(
+      { t: 'list', requestId: 'cmd-timeout', limit: 100 },
+      { signal: abort.signal, timeoutMs: 10 } as { signal: AbortSignal; timeoutMs: number },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(cancelled).toBe(false);
+    abort.abort();
+    await expect(command).rejects.toMatchObject({ code: 'indeterminate' });
     await waitFor(() => cancelled, 'sidecar command cancellation');
     await client.close();
   });

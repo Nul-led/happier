@@ -4,7 +4,6 @@ import { isLocalishServerUrl } from '@/server/serverUrlClassification';
 import {
   createServerUrlComparableKey,
   HomeConnectionDescriptorV1Schema,
-  mergePublicIrohEndpointObservation,
   type HomeConnectionDescriptorV1,
 } from '@happier-dev/protocol';
 import { existsSync } from 'node:fs';
@@ -33,7 +32,11 @@ async function maybeCopyAccessKeyFromDerivedUrlId(params: Readonly<{
   targetServerId: string;
   serverUrl: string;
   localServerUrl?: string;
+  hasObservedHomeIdentity?: boolean;
 }>): Promise<void> {
+  // This is only the released env/profile-id compatibility migration. Once a
+  // Home identity is observed, URL equality has no credential-transfer power.
+  if (params.hasObservedHomeIdentity) return;
   const serversDir = join(resolveHappyHomeDirFromEnvironment(process.env), 'servers');
   const targetDir = join(serversDir, params.targetServerId);
   const targetKeyPath = join(targetDir, 'access.key');
@@ -73,12 +76,48 @@ export type ServerProfile = Readonly<{
   updatedAt: number;
   lastUsedAt: number;
   homeConnectionDescriptor?: HomeConnectionDescriptorV1;
+  homeConnectionDescriptorAuthority?: 'advisory' | 'exact';
 }>;
 
 export type RemoveServerProfileResult = Readonly<{
   removed: ServerProfile;
   active: ServerProfile;
 }>;
+
+export type ServerProfileIdentityConflict = Readonly<{
+  homeServerIdentityId: string;
+  profileIds: readonly string[];
+}>;
+
+export class ServerProfileIdentityConflictError extends Error {
+  readonly name = 'ServerProfileIdentityConflictError';
+  readonly code = 'duplicate_identity' as const;
+
+  constructor(
+    readonly homeServerIdentityId: string,
+    readonly profileIds: readonly string[],
+  ) {
+    super(`Multiple Home profiles claim identity ${homeServerIdentityId}: ${profileIds.join(', ')}`);
+  }
+}
+
+export class ServerProfileIdentityMismatchError extends Error {
+  readonly name = 'ServerProfileIdentityMismatchError';
+  readonly code = 'identity_mismatch' as const;
+
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+export class ServerProfileDescriptorInvalidError extends Error {
+  readonly name = 'ServerProfileDescriptorInvalidError';
+  readonly code = 'invalid_home_descriptor' as const;
+
+  constructor(readonly profileId: string) {
+    super(`Server profile ${profileId || '<unknown>'} has an invalid Home connection descriptor`);
+  }
+}
 
 function asStringId(raw: string): string {
   const id = String(raw ?? '').trim();
@@ -101,6 +140,15 @@ function coerceProfile(value: any): ServerProfile | null {
   const updatedAt = Number.isFinite(value.updatedAt) ? Number(value.updatedAt) : 0;
   const lastUsedAt = Number.isFinite(value.lastUsedAt) ? Number(value.lastUsedAt) : 0;
   const homeConnectionDescriptorResult = HomeConnectionDescriptorV1Schema.safeParse(value.homeConnectionDescriptor);
+  const homeConnectionDescriptorAuthority = value.homeConnectionDescriptorAuthority === 'advisory'
+    ? 'advisory'
+    : homeConnectionDescriptorResult.success ? 'exact' : undefined;
+  if (
+    Object.prototype.hasOwnProperty.call(value, 'homeConnectionDescriptor')
+    && !homeConnectionDescriptorResult.success
+  ) {
+    throw new ServerProfileDescriptorInvalidError(idRaw);
+  }
 
   const serverUrl =
     legacyPublicServerUrlRaw && legacyPublicServerUrlRaw !== serverUrlRaw
@@ -127,12 +175,22 @@ function coerceProfile(value: any): ServerProfile | null {
     updatedAt,
     lastUsedAt,
     ...(homeConnectionDescriptorResult.success
-      ? { homeConnectionDescriptor: homeConnectionDescriptorResult.data }
+      ? {
+          homeConnectionDescriptor: homeConnectionDescriptorResult.data,
+          homeConnectionDescriptorAuthority,
+        }
       : {}),
   };
 }
 
+function assertValidStoredHomeDescriptors(servers: Record<string, any>): void {
+  for (const value of Object.values(servers)) {
+    coerceProfile(value);
+  }
+}
+
 function findProfileIdByIdentifier(servers: Record<string, any>, identifierRaw: string): string | null {
+  assertValidStoredHomeDescriptors(servers);
   const identifier = String(identifierRaw ?? '').trim();
   if (!identifier) return null;
   if (identifier in servers) return identifier;
@@ -144,10 +202,31 @@ function findProfileIdByIdentifier(servers: Record<string, any>, identifierRaw: 
     if (profile.id.toLowerCase() === lowered) return id;
     if (profile.name.toLowerCase() === lowered) return id;
   }
+  const identityMatches = findProfilesByHomeServerIdentityId(servers, identifier);
+  if (identityMatches.length > 1) {
+    throw new ServerProfileIdentityConflictError(identifier, identityMatches.map(([id]) => id).sort());
+  }
+  if (identityMatches[0]) return identityMatches[0][0];
   return findProfileIdByComparableUrl(servers, identifier);
 }
 
-function findProfileIdByComparableUrl(servers: Record<string, any>, serverUrlRaw: string): string | null {
+function findProfilesByHomeServerIdentityId(
+  servers: Record<string, any>,
+  homeServerIdentityId: string,
+): Array<readonly [string, ServerProfile]> {
+  return Object.entries(servers).flatMap(([id, value]) => {
+    const profile = coerceProfile(value);
+    return profile?.homeConnectionDescriptor?.homeServerIdentityId === homeServerIdentityId
+      ? [[id, profile] as const]
+      : [];
+  });
+}
+
+function findProfileIdByComparableUrl(
+  servers: Record<string, any>,
+  serverUrlRaw: string,
+  options: Readonly<{ identityFreeOnly?: boolean }> = {},
+): string | null {
   const serverUrl = String(serverUrlRaw ?? '').trim();
   if (!serverUrl) return null;
 
@@ -161,6 +240,7 @@ function findProfileIdByComparableUrl(servers: Record<string, any>, serverUrlRaw
   for (const [id, value] of Object.entries(servers)) {
     const profile = coerceProfile(value);
     if (!profile) continue;
+    if (options.identityFreeOnly && profile.homeConnectionDescriptor) continue;
     try {
       if (createServerUrlComparableKey(profile.serverUrl) === comparableKey) {
         return id;
@@ -192,11 +272,13 @@ function findProfileIdByLocalUrlAndWebapp(
   servers: Record<string, any>,
   localServerUrlRaw: string,
   webappUrlRaw: string,
+  options: Readonly<{ identityFreeOnly?: boolean }> = {},
 ): string | null {
   const localMatches: string[] = [];
   for (const [id, value] of Object.entries(servers)) {
     const profile = coerceProfile(value);
     if (!profile) continue;
+    if (options.identityFreeOnly && profile.homeConnectionDescriptor) continue;
     if (
       urlsReferToSameServer(profile.serverUrl, localServerUrlRaw) ||
       (profile.localServerUrl ? urlsReferToSameServer(profile.localServerUrl, localServerUrlRaw) : false)
@@ -241,6 +323,7 @@ export async function getActiveServerProfile(): Promise<ServerProfile> {
   const settings: any = await readSettings();
   const activeId = sanitizeServerIdForFilesystem(settings?.activeServerId ?? 'cloud', 'cloud');
   const servers = settings?.servers && typeof settings.servers === 'object' ? settings.servers : {};
+  assertValidStoredHomeDescriptors(servers);
   const active = coerceProfile((servers as any)[activeId]) ?? coerceProfile((servers as any).cloud);
   if (!active) {
     throw new Error(`Active server profile not found: ${activeId}`);
@@ -253,6 +336,7 @@ export async function useServerProfile(idRaw: string): Promise<ServerProfile> {
   const now = Date.now();
   await updateSettings((current: any) => {
     const servers = current?.servers && typeof current.servers === 'object' ? current.servers : {};
+    assertValidStoredHomeDescriptors(servers);
     const resolvedId = findProfileIdByIdentifier(servers as any, identifier);
     if (!resolvedId) {
       throw new Error(`Server profile not found: ${identifier}`);
@@ -276,6 +360,7 @@ export async function useServerProfile(idRaw: string): Promise<ServerProfile> {
     targetServerId: active.id,
     serverUrl: active.serverUrl,
     ...(active.localServerUrl ? { localServerUrl: active.localServerUrl } : {}),
+    hasObservedHomeIdentity: Boolean(active.homeConnectionDescriptor?.homeServerIdentityId),
   });
   return active;
 }
@@ -303,7 +388,15 @@ export async function addServerProfile(opts: Readonly<{
 
   await updateSettings((current: any) => {
     const servers = current?.servers && typeof current.servers === 'object' ? current.servers : {};
-    if ((servers as any)[id] && String((servers as any)[id]?.serverUrl ?? '').trim() !== serverUrl) {
+    assertValidStoredHomeDescriptors(servers);
+    const idCollision = coerceProfile((servers as any)[id]);
+    if (
+      idCollision
+      && (
+        idCollision.homeConnectionDescriptor !== undefined
+        || String((servers as any)[id]?.serverUrl ?? '').trim() !== serverUrl
+      )
+    ) {
       let attempt = 2;
       let nextId = `${id}-${attempt}`;
       while ((servers as any)[nextId]) {
@@ -360,76 +453,150 @@ export async function addServerProfile(opts: Readonly<{
  */
 export async function reconcileActiveServerProfileHomeConnectionDescriptor(
   descriptorInput: HomeConnectionDescriptorV1,
-  options: Readonly<{ observation?: 'exact' | 'public' }> = {},
 ): Promise<Readonly<{
   profile: ServerProfile;
   outcome: 'updated' | 'unchanged' | 'stale';
 }>> {
-  let descriptor = HomeConnectionDescriptorV1Schema.parse(descriptorInput);
+  const active = await getActiveServerProfile();
+  return await adoptServerProfileHomeConnectionDescriptor({
+    descriptor: descriptorInput,
+    expectedProfileId: active.id,
+    observation: 'exact',
+  });
+}
+
+/**
+ * Identity-first, non-credential-moving Home adoption. The local profile id is
+ * immutable; descriptor routes may advance only on the one identity owner.
+ */
+export async function adoptServerProfileHomeConnectionDescriptor(opts: Readonly<{
+  descriptor: HomeConnectionDescriptorV1;
+  expectedProfileId?: string;
+  suggestedName?: string;
+  webappUrl?: string;
+  observation: 'advisory' | 'exact';
+  use?: boolean;
+}>): Promise<Readonly<{
+  profile: ServerProfile;
+  outcome: 'updated' | 'unchanged' | 'stale';
+}>> {
+  const incoming = HomeConnectionDescriptorV1Schema.parse(opts.descriptor);
+  const expectedProfileId = opts.expectedProfileId ? asStringId(opts.expectedProfileId) : null;
+  let resolvedId = '';
   let outcome: 'updated' | 'unchanged' | 'stale' = 'unchanged';
-  await updateSettings((current) => {
-    const activeId = sanitizeServerIdForFilesystem(current.activeServerId ?? 'cloud', 'cloud');
-    const servers = current.servers ?? {};
-    const rawExisting = servers[activeId];
-    const existing = coerceProfile(rawExisting);
-    if (!existing) throw new Error(`Active server profile not found: ${activeId}`);
-    if (!urlsReferToSameServer(existing.serverUrl, descriptor.canonicalServerUrl)) {
-      throw new Error('Home descriptor canonical URL does not match the active server profile');
+
+  await updateSettings((current: any) => {
+    const servers = current?.servers && typeof current.servers === 'object' ? current.servers : {};
+    assertValidStoredHomeDescriptors(servers);
+    const identityMatches = findProfilesByHomeServerIdentityId(servers, incoming.homeServerIdentityId);
+    if (identityMatches.length > 1) {
+      throw new ServerProfileIdentityConflictError(
+        incoming.homeServerIdentityId,
+        identityMatches.map(([id]) => id).sort(),
+      );
     }
-    const previous = existing.homeConnectionDescriptor;
-    if (options.observation === 'public' && previous) {
-      const currentIrohEntry = previous.endpoints.find((endpoint) => endpoint.kind === 'iroh') ?? null;
-      const observedIrohEntry = descriptor.endpoints.find((endpoint) => endpoint.kind === 'iroh') ?? null;
-      const currentIroh = currentIrohEntry ? {
-        endpointId: currentIrohEntry.endpointId,
-        ...(currentIrohEntry.relayUrls ? { relayUrls: currentIrohEntry.relayUrls } : {}),
-        ...(currentIrohEntry.directAddresses ? { directAddresses: currentIrohEntry.directAddresses } : {}),
-      } : null;
-      const observedIroh = observedIrohEntry ? {
-        endpointId: observedIrohEntry.endpointId,
-        ...(observedIrohEntry.relayUrls ? { relayUrls: observedIrohEntry.relayUrls } : {}),
-        ...(observedIrohEntry.directAddresses ? { directAddresses: observedIrohEntry.directAddresses } : {}),
-      } : null;
-      const mergedIroh = mergePublicIrohEndpointObservation(currentIroh, observedIroh);
-      descriptor = {
-        ...descriptor,
-        endpoints: [
-          ...descriptor.endpoints.filter((endpoint) => endpoint.kind !== 'iroh'),
-          ...(mergedIroh ? [{ kind: 'iroh' as const, ...mergedIroh }] : []),
-        ],
-      };
+
+    const identityMatchId = identityMatches[0]?.[0] ?? null;
+    if (expectedProfileId && identityMatchId && expectedProfileId !== identityMatchId) {
+      throw new ServerProfileIdentityMismatchError(
+        `Observed Home identity belongs to profile ${identityMatchId}, not ${expectedProfileId}`,
+      );
     }
-    if (previous && previous.revision > descriptor.revision) {
+    const expectedRaw = expectedProfileId ? servers[expectedProfileId] : null;
+    const expected = expectedRaw ? coerceProfile(expectedRaw) : null;
+    if (expectedProfileId && !expected) {
+      throw new Error(`Server profile not found: ${expectedProfileId}`);
+    }
+    const expectedIdentity = expected?.homeConnectionDescriptor?.homeServerIdentityId;
+    if (expectedIdentity && expectedIdentity !== incoming.homeServerIdentityId) {
+      throw new ServerProfileIdentityMismatchError(
+        `Profile ${expectedProfileId} belongs to Home ${expectedIdentity}, not ${incoming.homeServerIdentityId}`,
+      );
+    }
+
+    resolvedId = identityMatchId ?? expectedProfileId ?? '';
+    if (!resolvedId) {
+      const requestedName = String(opts.suggestedName ?? '').trim() || new URL(incoming.canonicalServerUrl).hostname;
+      const baseId = deriveServerIdFromName(requestedName) || deriveServerIdFromUrl(incoming.canonicalServerUrl);
+      resolvedId = baseId;
+      let suffix = 2;
+      while (servers[resolvedId]) {
+        resolvedId = `${baseId}-${suffix}`;
+        suffix += 1;
+      }
+    }
+
+    const rawExisting = servers[resolvedId];
+    const existing = rawExisting ? coerceProfile(rawExisting) : null;
+    const previous = existing?.homeConnectionDescriptor;
+    const previousAuthority = existing?.homeConnectionDescriptorAuthority ?? (previous ? 'exact' : undefined);
+    const descriptor = incoming;
+    if (opts.observation === 'advisory' && previousAuthority === 'exact') {
       outcome = 'stale';
       return current;
     }
-    if (previous && previous.revision === descriptor.revision) {
+    const promotesAdvisory = opts.observation === 'exact' && previousAuthority === 'advisory';
+    if (!promotesAdvisory && previous && previous.revision > descriptor.revision) {
+      outcome = 'stale';
+      return current;
+    }
+    if (!promotesAdvisory && previous && previous.revision === descriptor.revision) {
       if (!isDeepStrictEqual(previous, descriptor)) {
-        throw new Error('Home descriptor conflicts with the active profile revision');
+        throw new Error('Home descriptor conflicts with the persisted profile revision');
       }
       return current;
     }
+
+    const now = Date.now();
+    const name = existing?.name || String(opts.suggestedName ?? '').trim() || new URL(descriptor.canonicalServerUrl).hostname;
+    const webappUrl = String(opts.webappUrl ?? existing?.webappUrl ?? '').trim()
+      || new URL(descriptor.canonicalServerUrl).origin;
     outcome = 'updated';
     return {
       ...current,
+      activeServerId: opts.use === true ? resolvedId : current?.activeServerId,
       servers: {
         ...servers,
-        [activeId]: {
-          ...rawExisting,
+        [resolvedId]: {
+          ...(rawExisting && typeof rawExisting === 'object' ? rawExisting : {}),
+          id: resolvedId,
+          name,
+          serverUrl: descriptor.canonicalServerUrl,
+          ...(existing?.localServerUrl ? { localServerUrl: existing.localServerUrl } : {}),
+          webappUrl,
+          createdAt: existing?.createdAt ?? now,
+          updatedAt: now,
+          lastUsedAt: opts.use === true ? now : (existing?.lastUsedAt ?? 0),
           homeConnectionDescriptor: descriptor,
-          updatedAt: Date.now(),
+          homeConnectionDescriptorAuthority: opts.observation,
         },
       },
     };
   });
-  return { profile: await getActiveServerProfile(), outcome };
+
+  return { profile: await getServerProfile(resolvedId), outcome };
+}
+
+export async function findServerProfileIdentityConflicts(): Promise<ServerProfileIdentityConflict[]> {
+  const profiles = await listServerProfiles();
+  const byIdentity = new Map<string, string[]>();
+  for (const profile of profiles) {
+    const identity = profile.homeConnectionDescriptor?.homeServerIdentityId;
+    if (!identity) continue;
+    const ids = byIdentity.get(identity) ?? [];
+    ids.push(profile.id);
+    byIdentity.set(identity, ids);
+  }
+  return [...byIdentity.entries()]
+    .filter(([, profileIds]) => profileIds.length > 1)
+    .map(([homeServerIdentityId, profileIds]) => ({ homeServerIdentityId, profileIds: profileIds.sort() }))
+    .sort((left, right) => left.homeServerIdentityId.localeCompare(right.homeServerIdentityId));
 }
 
 export async function setActiveServerProfileHomeConnectionDescriptor(
   descriptorInput: HomeConnectionDescriptorV1,
-  options: Readonly<{ observation?: 'exact' | 'public' }> = {},
 ): Promise<ServerProfile> {
-  return (await reconcileActiveServerProfileHomeConnectionDescriptor(descriptorInput, options)).profile;
+  return (await reconcileActiveServerProfileHomeConnectionDescriptor(descriptorInput)).profile;
 }
 
 export async function upsertServerProfileByUrl(opts: Readonly<{
@@ -449,8 +616,11 @@ export async function upsertServerProfileByUrl(opts: Readonly<{
   let resolvedId: string | null = null;
   await updateSettings((current: any) => {
     const servers = current?.servers && typeof current.servers === 'object' ? current.servers : {};
-    const matchedId = findProfileIdByComparableUrl(servers, serverUrl)
-      ?? (localServerUrl ? findProfileIdByLocalUrlAndWebapp(servers, localServerUrl, webappUrl) : null);
+    assertValidStoredHomeDescriptors(servers);
+    const matchedId = findProfileIdByComparableUrl(servers, serverUrl, { identityFreeOnly: true })
+      ?? (localServerUrl
+        ? findProfileIdByLocalUrlAndWebapp(servers, localServerUrl, webappUrl, { identityFreeOnly: true })
+        : null);
     if (!matchedId) {
       return current;
     }
@@ -496,6 +666,7 @@ export async function upsertServerProfileByUrl(opts: Readonly<{
       targetServerId: resolvedId,
       serverUrl,
       ...(localServerUrl ? { localServerUrl } : {}),
+      hasObservedHomeIdentity: false,
     });
   }
 
@@ -532,6 +703,7 @@ export async function setServerProfileEndpointsById(opts: Readonly<{
 
   await updateSettings((current: any) => {
     const servers = current?.servers && typeof current.servers === 'object' ? current.servers : {};
+    assertValidStoredHomeDescriptors(servers);
     const rawExisting = servers[id] && typeof servers[id] === 'object' ? servers[id] : {};
     const existing = coerceProfile(rawExisting);
     const name = existing?.name || requestedName || id;
@@ -583,6 +755,7 @@ export async function removeServerProfile(
 
   await updateSettings((current: any) => {
     const servers = current?.servers && typeof current.servers === 'object' ? current.servers : {};
+    assertValidStoredHomeDescriptors(servers);
     const existing = (servers as any)[resolvedId];
     if (!existing) {
       throw new Error(`Server profile not found: ${resolvedId}`);
