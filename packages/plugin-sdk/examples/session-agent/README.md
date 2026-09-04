@@ -5,11 +5,11 @@ Session Agent. Create the equivalent author-ready shape directly, then replace
 the generated runner's example behavior with the provider behavior you need:
 
 ```bash
-happier plugins create my-session-agent --template session-agent
+hdev plugins create my-session-agent --template session-agent
 cd my-session-agent
-happier plugins dev typecheck .
-happier plugins dev build .
-happier plugins test .
+hdev plugins dev typecheck .
+hdev plugins dev build .
+hdev plugins test .
 ```
 
 The template and this maintained reference use `definePlugin(...)` as the sole
@@ -31,16 +31,16 @@ cancellation terminal event and ignores a late confirmation result. The host
 continues to own input custody, interaction presentation, transcript
 persistence, currentness, and Session lifecycle.
 
-For live source development, continue with `happier plugins dev` or use the
+For live source development, continue with `hdev plugins dev` or use the
 documented headless development-source lifecycle:
 
 ```bash
-happier plugins install . --dev --trust --json
-happier plugins reload --json
-happier daemon restart --restart-session-runners --json
-happier plugins disable examples.session-agent --json
-happier plugins enable examples.session-agent --json
-happier plugins uninstall examples.session-agent --json
+hdev plugins install . --dev --trust --json
+hdev plugins reload --json
+hdev daemon restart --restart-session-runners --json
+hdev plugins disable examples.session-agent --json
+hdev plugins enable examples.session-agent --json
+hdev plugins uninstall examples.session-agent --json
 ```
 
 Select and open the Agent in Happier before a daemon restart, then reopen that
@@ -54,9 +54,9 @@ Complete the moving-byte author journey by packing to a new path outside the
 plugin root and installing that archive through the same canonical daemon flow:
 
 ```bash
-happier plugins pack . --out ../session-agent.tgz
-happier plugins install ../session-agent.tgz --kind archive --json
-happier plugins change approve <pendingChangeId> --json
+hdev plugins pack . --out ../session-agent.tgz
+hdev plugins install ../session-agent.tgz --kind archive --json
+hdev plugins change approve <pendingChangeId> --json
 ```
 
 Archive installation requires a present user to approve trust; `--trust` is
@@ -71,9 +71,9 @@ pack to a fresh archive path, then install and approve that archive through the
 same flow:
 
 ```bash
-happier plugins pack . --out ../session-agent-update.tgz
-happier plugins install ../session-agent-update.tgz --kind archive --json
-happier plugins change approve <pendingChangeId> --json
+hdev plugins pack . --out ../session-agent-update.tgz
+hdev plugins install ../session-agent-update.tgz --kind archive --json
+hdev plugins change approve <pendingChangeId> --json
 ```
 
 Reopen the selected Agent after approval and verify the new behavior. This is
@@ -84,8 +84,8 @@ A failing edit must never replace working bytes. Break the reasoning delta's
 `channel` to an unknown member and run the same author commands:
 
 ```bash
-happier plugins dev typecheck .
-happier plugins dev build .
+hdev plugins dev typecheck .
+hdev plugins dev build .
 ```
 
 Both refuse the change, no daemon generation is requested, and the installed
@@ -94,8 +94,8 @@ rebuild, and reload to move the same plugin identity onto a fresh current
 generation:
 
 ```bash
-happier plugins dev build .
-happier plugins reload --json
+hdev plugins dev build .
+hdev plugins reload --json
 ```
 
 For the hard-revocation check, leave a confirmation pending and choose

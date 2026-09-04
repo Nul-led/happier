@@ -19,7 +19,7 @@ Build, test, and load this plugin independently through the normal managed
 source-author commands:
 
 ```sh
-happier plugins dev build .
-happier plugins test .
-happier plugins dev
+hdev plugins dev build .
+hdev plugins test .
+hdev plugins dev
 ```

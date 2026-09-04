@@ -19,12 +19,13 @@ metadata; structured deprecation remains separate. The generated
 examples, host wiring, source tests, and loaded development-stack lifecycle QA
 establish feature readiness.
 
-Tool and Command declarations are currently deferred for external authors.
-Both require their canonical host-catalog and loaded development-stack proof,
-including replacement, disable, and uninstall currentness, before their
-generated availability metadata or public docs can advertise them as usable.
-Preview status does not waive correctness, installability, lifecycle cleanup,
-security disclosure, examples, or documentation.
+Tool and Command declarations are available in the current source contract, as
+recorded by the canonical capability matrix. Loaded development-stack evidence
+for either capability may still be `not-recorded`; that is an evidence status,
+not source unavailability. Public registry release is a separate publication
+boundary, and this workspace README does not claim that release or loaded
+validation. Preview status does not waive correctness, installability,
+lifecycle cleanup, security disclosure, examples, or documentation.
 
 ## Cross-plugin protocol authoring
 

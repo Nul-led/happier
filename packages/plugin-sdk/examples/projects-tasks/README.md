@@ -7,7 +7,7 @@ Data client through `@happier-dev/plugin-ui/data`; its declarative fallback
 binds that same admitted query through the host Collection List.
 
 It is not an ordinary authoring template. Start a new plugin with
-`happier plugins create` and declare ordinary contributions through
+`hdev plugins create` and declare ordinary contributions through
 `definePlugin(...)`; the canonical author build projects its cold manifest.
 
 The surface asks for an existing Project ID, presents only the query's declared

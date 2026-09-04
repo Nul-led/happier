@@ -51,7 +51,6 @@ export type { PluginHttpMethod } from '../manifest.js';
 export type { PluginRequestInterceptorContribution } from '../manifest.js';
 export type { PublicHostAccessCapability } from '../manifest.js';
 export type { PluginManifest } from '../manifest.js';
-export type { PluginManifestAuthorInput } from '../manifest.js';
 export type { PluginManifestDiagnostic } from '../manifest.js';
 export type { PluginManifestParseResult } from '../manifest.js';
 export type { PluginTestkitManifest } from '../manifest.js';

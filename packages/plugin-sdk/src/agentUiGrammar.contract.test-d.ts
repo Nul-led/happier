@@ -8,9 +8,9 @@
  * can actually reach stays authorable, and the shapes it cannot satisfy fail to
  * typecheck where they are written.
  */
-import type { PluginManifestAuthorInput } from './manifest.js';
+import type { PluginManifest } from './manifest.js';
 
-type AgentContributions = NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['agents']>;
+type AgentContributions = NonNullable<NonNullable<PluginManifest['contributes']>['agents']>;
 
 const supported: AgentContributions = [{
     id: 'acme.agent',

@@ -7,8 +7,8 @@ publication cutover. A distributable package root additionally supplies its
 npm package contract and generated daemon entrypoint.
 
 ```bash
-happier plugins doctor ./index.ts
-happier plugins dev ./index.ts # available after that cutover
+hdev plugins doctor ./index.ts
+hdev plugins dev ./index.ts # available after that cutover
 ```
 
 The canonical author build evaluates this same module and emits the cold canonical

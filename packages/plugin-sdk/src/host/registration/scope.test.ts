@@ -995,12 +995,14 @@ describe('plugin registration scope targets', () => {
         };
         const prepareReviewWorkspace = vi.fn();
         const verifyPreparedReviewWorkspace = vi.fn();
+        const resolveWorkspaceTransfer = vi.fn();
         const runtime = {
             handlers: {
                 detection,
                 workspaceIntegration: {
                     prepareReviewWorkspace,
                     verifyPreparedReviewWorkspace,
+                    resolveWorkspaceTransfer,
                 },
             },
         } satisfies BackendRuntime;
@@ -1032,6 +1034,11 @@ describe('plugin registration scope targets', () => {
         expect(registration.value.handlers.workspaceIntegration?.prepareReviewWorkspace)
             .toBeTypeOf('function');
         expect(registration.value.handlers.workspaceIntegration?.verifyPreparedReviewWorkspace)
+            .toBeTypeOf('function');
+        // The combined transfer leaf is the atomic entries+metadata result the
+        // host prefers. Dropping it here silently demotes a backend to the two
+        // racing compatibility leaves.
+        expect(registration.value.handlers.workspaceIntegration?.resolveWorkspaceTransfer)
             .toBeTypeOf('function');
         detection.detectRepo = vi.fn(() => ({ isRepo: true, rootPath: '/late', mode: '.git' as const }));
         expect(registration.value.handlers.detection?.detectRepo?.({ cwd: '/workspace' }))

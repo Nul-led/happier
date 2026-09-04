@@ -247,7 +247,7 @@ describe('General Sessions package-local projections', () => {
 
     it('projects canonical Session contracts through local author types', () => {
         expectTypeOf<protocol.SessionMessageProvenanceV1>()
-            .toMatchTypeOf<SessionMessageProvenanceV1>();
+            .toEqualTypeOf<SessionMessageProvenanceV1>();
         expectTypeOf<PublicSessionMessageProvenanceV1>()
             .toEqualTypeOf<SessionMessageProvenanceV1>();
         expectTypeOf<SessionMessageRole>().toEqualTypeOf<protocol.SessionMessageRole>();

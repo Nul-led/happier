@@ -8,7 +8,7 @@ canonical author build derives the cold manifest and verifies parity with that
 definition.
 
 It is not an ordinary authoring template. Start a new plugin with
-`happier plugins create` and declare ordinary contributions through
+`hdev plugins create` and declare ordinary contributions through
 `definePlugin(...)`; the canonical author build projects its cold manifest.
 
 The mounted browser entry uses only the public hosted client. It waits for the
@@ -35,10 +35,10 @@ runtime. No separate release representation is created for feature QA.
 Run the package through the canonical author owners:
 
 ```bash
-happier plugins dev typecheck .
-happier plugins dev build .
-happier plugins test .
-happier plugins dev
+hdev plugins dev typecheck .
+hdev plugins dev build .
+hdev plugins test .
+hdev plugins dev
 ```
 
 Exercise browser/frame and activation lifecycle evidence through the existing

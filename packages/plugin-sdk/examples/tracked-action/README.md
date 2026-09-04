@@ -12,8 +12,8 @@ surface instead.
 Run the package-local checks with the standard authoring tools:
 
 ```bash
-happier plugins dev typecheck .
-happier plugins test .
+hdev plugins dev typecheck .
+hdev plugins test .
 ```
 
 Tracking is deliberately absent from the beginner scaffold. Use it for work

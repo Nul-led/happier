@@ -454,6 +454,11 @@ export type PluginUiSelectActionInputTargetedSubmittedV1 = {
     connectedAccount:
         | { kind: 'none' }
         | { kind: 'selected'; fieldPath: string; ref: QualifiedConnectedAccountRef };
+    /** Host-resolved, non-secret labels for confirmation UI. IDs are never substituted. */
+    presentation: {
+        connectedAccountLabel: string | null;
+        machineDisplayName: string | null;
+    };
 };
 
 /** Exact result arms: targeted submitted, no-invoke Session draft, or cancellation. */

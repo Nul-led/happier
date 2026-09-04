@@ -8,6 +8,7 @@ import {
     type WorkspacePackageSpec,
 } from '../../scripts/testing/vitestWorkspacePackageResolution.ts';
 import { ISOLATED_EXAMPLE_BUILD_ROOT } from './scripts/buildExampleProjects.mjs';
+import { PLUGIN_SDK_AUTHORED_TEST_INCLUDE } from './vitest.config.ts';
 
 const packageRoot = fileURLToPath(new URL('.', import.meta.url));
 const workspacePackages: readonly WorkspacePackageSpec[] = [
@@ -46,6 +47,10 @@ export default defineConfig({
         'happier-plugin-sdk-source-workspace-package-sources',
     )],
     test: {
+        // Keep source validation rooted at the authored tree. Prepared API
+        // publishers intentionally create complete package-local `.tmp.*`
+        // copies, and a concurrent copy must never become a second test tree.
+        include: [...PLUGIN_SDK_AUTHORED_TEST_INCLUDE],
         env: {
             HAPPIER_PLUGIN_SDK_SOURCE_ONLY: '1',
         },

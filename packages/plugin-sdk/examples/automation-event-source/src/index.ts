@@ -1,6 +1,9 @@
 import { definePlugin } from '@happier-dev/plugin-sdk';
 import type { BackgroundServiceContext } from '@happier-dev/plugin-sdk/background-services';
-import type { PluginJsonSchema } from '@happier-dev/plugin-sdk/protocol';
+import {
+  defineProtocolObject,
+  defineProtocolString,
+} from '@happier-dev/plugin-sdk/protocol';
 import {
   admitCheckpointedPluginEventObservationV1,
   createPluginEventAutomationSetupResultV1JsonSchema,
@@ -63,12 +66,14 @@ export async function runRepositoryPushObserver(context: BackgroundServiceContex
   await waitForRetirement(context.signal);
 }
 
-const repositoryInputSchema = {
-  type: 'object',
-  properties: { repository: { type: 'string', minLength: 1 } },
-  required: ['repository'],
-  additionalProperties: false,
-} satisfies PluginJsonSchema;
+const repositoryInputSchema = defineProtocolObject({
+  repository: defineProtocolString({ minLength: 1 }),
+}, { policy: 'closed' });
+
+const repositoryPushPayloadSchema = defineProtocolObject({
+  repository: defineProtocolString(),
+  ref: defineProtocolString(),
+}, { policy: 'closed' });
 
 export const { manifest, activate } = definePlugin({
   id: PLUGIN_ID,
@@ -86,16 +91,14 @@ export const { manifest, activate } = definePlugin({
       scopes: ['global'],
       surfaces: ['plugin'],
       dangerLevel: 'safe',
-      inputSchema: repositoryInputSchema,
+      inputSchema: repositoryInputSchema.jsonSchema,
       inputHints: {
         title: 'Repository',
         fields: [{ path: 'repository', title: 'Repository', widget: 'text', required: true }],
       },
-      resultSchema: createPluginEventAutomationSetupResultV1JsonSchema(1, repositoryInputSchema),
+      resultSchema: createPluginEventAutomationSetupResultV1JsonSchema(1, repositoryInputSchema.jsonSchema),
       run: async (input) => {
-        // The host validates this input against `inputSchema` before dispatch;
-        // the narrowing below mirrors that admitted shape.
-        const { repository } = input as Readonly<{ repository: string }>;
+        const { repository } = repositoryInputSchema.parse(input);
         return {
           v: 1,
           sourceInstanceId: repository,
@@ -112,22 +115,14 @@ export const { manifest, activate } = definePlugin({
         kind: 'event',
         title: 'Repository pushed',
         description: 'A push was observed in the selected repository.',
-        payloadSchema: {
-          type: 'object',
-          properties: {
-            repository: { type: 'string' },
-            ref: { type: 'string' },
-          },
-          required: ['repository', 'ref'],
-          additionalProperties: false,
-        },
+        payloadSchema: repositoryPushPayloadSchema.jsonSchema,
         automation: {
           v: 1,
           eligible: true,
           source: {
             sourceContractVersion: 1,
             supportedObservationTransports: ['checkpointedPull'],
-            sourceConfigSchema: repositoryInputSchema,
+            sourceConfigSchema: repositoryInputSchema.jsonSchema,
             setupActionRef: {
               pluginId: PLUGIN_ID,
               localId: 'setup-repository',

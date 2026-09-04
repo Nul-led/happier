@@ -85,7 +85,7 @@ export type PluginInvocationCaller =
     | Readonly<{
         kind: 'host';
         domain: 'ingress';
-        originSurface: 'http' | 'webhook';
+        originSurface: 'webhook';
         contribution: PluginInvocationContributionIdentity;
     }>
     | Readonly<{

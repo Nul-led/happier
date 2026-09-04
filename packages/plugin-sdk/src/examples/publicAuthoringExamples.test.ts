@@ -1082,7 +1082,8 @@ describe('public SDK authoring examples', { timeout: 60_000 }, () => {
         }
 
         expect(source).toContain("from '@happier-dev/channels-protocol/v1'");
-        expect(source).toContain("'happier.channels'");
+        expect(source).toContain('CONVERSATION_CORE_PLUGIN_ID_V1');
+        expect(source).not.toContain("'happier.channels'");
         expect(source).toContain('ConversationProvidersContributionProtocolV1.contribute({');
         expect(source).not.toContain('descriptor:');
         expect(source).not.toContain('renderers:');
@@ -2274,21 +2275,21 @@ describe('public SDK authoring examples', { timeout: 60_000 }, () => {
         const readme = readFileSync(join(examplesRoot, 'session-agent', 'README.md'), 'utf8');
 
         for (const command of [
-            'happier plugins create my-session-agent',
-            'happier plugins dev typecheck .',
-            'happier plugins dev build .',
-            'happier plugins test .',
-            'happier plugins install . --dev --trust --json',
-            'happier plugins reload --json',
-            'happier daemon restart --restart-session-runners --json',
-            'happier plugins pack . --out ../session-agent.tgz',
-            'happier plugins install ../session-agent.tgz --kind archive --json',
-            'happier plugins change approve <pendingChangeId> --json',
-            'happier plugins pack . --out ../session-agent-update.tgz',
-            'happier plugins install ../session-agent-update.tgz --kind archive --json',
-            'happier plugins disable examples.session-agent --json',
-            'happier plugins enable examples.session-agent --json',
-            'happier plugins uninstall examples.session-agent --json',
+            'hdev plugins create my-session-agent',
+            'hdev plugins dev typecheck .',
+            'hdev plugins dev build .',
+            'hdev plugins test .',
+            'hdev plugins install . --dev --trust --json',
+            'hdev plugins reload --json',
+            'hdev daemon restart --restart-session-runners --json',
+            'hdev plugins pack . --out ../session-agent.tgz',
+            'hdev plugins install ../session-agent.tgz --kind archive --json',
+            'hdev plugins change approve <pendingChangeId> --json',
+            'hdev plugins pack . --out ../session-agent-update.tgz',
+            'hdev plugins install ../session-agent-update.tgz --kind archive --json',
+            'hdev plugins disable examples.session-agent --json',
+            'hdev plugins enable examples.session-agent --json',
+            'hdev plugins uninstall examples.session-agent --json',
         ]) {
             expect(readme).toContain(command);
         }
@@ -2307,9 +2308,11 @@ describe('public SDK authoring examples', { timeout: 60_000 }, () => {
         // not by copying this package's files over a generic scaffold. The
         // retired copy flow left the generated `test/index.test.mjs` invoking a
         // scaffold Action this reference does not declare, so the templated
-        // create command is the fact that keeps `happier plugins test .`
-        // executable for the reader.
-        expect(readme).toContain('happier plugins create my-session-agent --template session-agent');
+        // create command is the fact that keeps `hdev plugins test .`
+        // executable for the reader. Maintained source examples name the
+        // development-lane `hdev` CLI; published copies name the public
+        // `happier` command instead.
+        expect(readme).toContain('hdev plugins create my-session-agent --template session-agent');
         expect(readme).not.toContain("copy this package's");
     });
 

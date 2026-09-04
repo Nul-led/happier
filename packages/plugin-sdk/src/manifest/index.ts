@@ -49,7 +49,6 @@ export { PluginIdSchema } from '../manifest.js';
 export type { PluginJsonSchemaValidator } from '../manifest.js';
 export type { PluginLocalizedStringV2 } from '../manifest.js';
 export type { PluginManifest } from '../manifest.js';
-export type { PluginManifestAuthorInput } from '../manifest.js';
 export type { PluginManifestDiagnostic } from '../manifest.js';
 export type { PluginManifestParseResult } from '../manifest.js';
 export type { PluginRequestInterceptorContribution } from '../manifest.js';

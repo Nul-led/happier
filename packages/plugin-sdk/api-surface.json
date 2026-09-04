@@ -9346,14 +9346,6 @@
     },
     {
       "specifier": "./manifest",
-      "exportName": "PluginManifestAuthorInput",
-      "kind": "type",
-      "sourceModule": "src/manifest.ts",
-      "sourceExport": "PluginManifestAuthorInput",
-      "realm": "any"
-    },
-    {
-      "specifier": "./manifest",
       "exportName": "PluginManifestDiagnostic",
       "kind": "type",
       "sourceModule": "src/manifest.ts",

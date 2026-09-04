@@ -361,6 +361,10 @@ export type WorkspaceTransferRequest = Readonly<{
     strategy: 'transfer_snapshot';
     includeIgnoredMode: 'exclude' | 'include_selected';
     ignoredIncludeGlobs: readonly string[];
+    /** Include repository-ignored paths before applying the explicit policy overlay. */
+    includeAllIgnored?: boolean;
+    /** Ordered, bounded Git-ignore patterns supplied by the workspace policy owner. */
+    extraIgnorePatterns?: readonly string[];
 }>;
 
 export type WorkspaceTransferResult = Readonly<{
@@ -447,16 +451,36 @@ export type WorkspaceIntegrationHandlers = Readonly<{
             workspaceCheckoutMaterialization: WorkspaceCheckoutMaterializationRequest;
         }>
     ) => Promise<WorkspaceCheckoutMaterializationResult | void> | WorkspaceCheckoutMaterializationResult | void;
+    /**
+     * Resolves the transfer entries and their metadata together from one
+     * observation of the workspace. Prefer this over the separate
+     * entries/metadata leaves: those are invoked independently, so a backend
+     * that stages an artifact while listing entries cannot guarantee the
+     * metadata describing that artifact came from the same repository state.
+     * The host uses this handler when present and falls back to the separate
+     * callbacks otherwise.
+     */
+    resolveWorkspaceTransfer?: (
+        input: Readonly<{
+            context: BackendRuntimeContext;
+            workspaceTransfer: WorkspaceTransferRequest;
+            artifactDirectory?: string;
+        }>
+    ) => Promise<WorkspaceTransferResult | null> | WorkspaceTransferResult | null;
+    /** Compatibility leaf for backends that do not implement `resolveWorkspaceTransfer`. */
     resolveWorkspaceTransferEntries?: (
         input: Readonly<{
             context: BackendRuntimeContext;
             workspaceTransfer: WorkspaceTransferRequest;
+            artifactDirectory?: string;
         }>
     ) => Promise<readonly WorkspaceTransferEntry[] | null> | readonly WorkspaceTransferEntry[] | null;
+    /** Compatibility leaf for backends that do not implement `resolveWorkspaceTransfer`. */
     resolveWorkspaceTransferMetadata?: (
         input: Readonly<{
             context: BackendRuntimeContext;
             workspaceTransfer: WorkspaceTransferRequest;
+            artifactDirectory?: string;
         }>
     ) => Promise<WorkspaceTransferMetadata | null> | WorkspaceTransferMetadata | null;
     assertPortableWorkspaceEntries?: (

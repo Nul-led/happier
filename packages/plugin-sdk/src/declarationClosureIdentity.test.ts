@@ -1547,7 +1547,7 @@ describe('normal SDK declaration closure identities', () => {
         const sourceFile = parseSource('services/sessions.ts', sourceText);
 
         expect(exportedTypeAlias(sourceFile, 'SessionMessageProvenanceV1')?.type.getText(sourceFile))
-            .toContain('kind: string');
+            .toContain("kind: 'happierApp'");
         expect(exportedCallableTypeText(sourceFile, 'SessionMessageProvenanceV1Schema'))
             .toContain('SessionSchema<SessionMessageProvenanceV1>');
         expect(reexportedName(

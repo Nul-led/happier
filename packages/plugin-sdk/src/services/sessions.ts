@@ -109,21 +109,21 @@ export const SessionServerStartSpawnDraftV1Schema: SessionSchema<SessionServerSt
  * shape here keeps external author declarations closed over the SDK instead
  * of naming a private Protocol package.
  */
-export type SessionMessageProvenanceV1 = Readonly<{ v: 1; kind: string }> & (
-    | Readonly<{
+export type SessionMessageProvenanceV1 =
+    | {
         v: 1;
         kind: 'happierApp';
-        actor: Readonly<{ kind: 'owner' }> | Readonly<{ kind: 'sharedCollaborator' }>;
-    }>
-    | Readonly<{ v: 1; kind: 'cli' }>
-    | Readonly<{ v: 1; kind: 'voice' }>
-    | Readonly<{
+        actor: { kind: 'owner' } | { kind: 'sharedCollaborator' };
+    }
+    | { v: 1; kind: 'cli' }
+    | { v: 1; kind: 'voice' }
+    | {
         v: 1;
         kind: 'happierSession';
         sourceSessionId: string;
         via: 'action' | 'mcp';
-    }>
-    | Readonly<{
+    }
+    | {
         v: 1;
         kind: 'pluginSession';
         pluginId: string;
@@ -131,35 +131,31 @@ export type SessionMessageProvenanceV1 = Readonly<{ v: 1; kind: string }> & (
         surface: 'cli' | 'mcp' | 'agent' | 'ui' | 'background' | 'unspecified';
         sourceRef?: string;
         sourceRevisionOrEpoch?: string;
-        externalActor?: Readonly<{ kind: 'human' | 'bot'; displayNameSnapshot?: string }>;
+        externalActor?: { kind: 'human' | 'bot'; displayNameSnapshot?: string };
         contentProvenance?: 'original' | 'forwarded' | 'viaBot';
-    }>
-    | Readonly<{
+    }
+    | {
         v: 1;
         kind: 'automation';
         automationId: string;
         runId: string;
-    }>
-    | Readonly<{ v: 1; kind: 'agentTerminal'; agentId: string }>
-    | Readonly<{
+    }
+    | {
         v: 1;
         kind: 'host';
         producer:
             | 'happierApp'
             | 'cli'
-            | 'daemonInitialPrompt'
             | 'sessionAction'
             | 'happierMcp'
             | 'pluginSession'
-            | 'connectedService'
             | 'automation'
             | 'voiceInput'
-            | 'agentTerminal'
             | 'externalSessionHistory'
             | 'runtimeTranscript'
             | 'executionRunVoice'
             | 'agentRuntimeFirstInput';
-    }>);
+    };
 /** Canonical runtime validator with an SDK-local author declaration. */
 export const SessionMessageProvenanceV1Schema: SessionSchema<SessionMessageProvenanceV1> = protocolSessionMessageProvenanceV1Schema;
 

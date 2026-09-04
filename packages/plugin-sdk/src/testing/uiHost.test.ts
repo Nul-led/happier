@@ -893,6 +893,10 @@ describe('createPluginUiTestkit', () => {
                 contributor: operation.contributor,
             },
             connectedAccount: { kind: 'none' as const },
+            presentation: {
+                connectedAccountLabel: null,
+                machineDisplayName: 'Development Mac',
+            },
         };
         const fixture = await createPluginUiTestkit({
             identity,
@@ -1008,6 +1012,10 @@ describe('createPluginUiTestkit', () => {
                 contributor: operation.contributor,
             },
             connectedAccount: { kind: 'none' as const },
+            presentation: {
+                connectedAccountLabel: null,
+                machineDisplayName: 'Development Mac',
+            },
         };
         const opened = vi.fn(async () => undefined);
         const fixture = await createPluginUiTestkit({

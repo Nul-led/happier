@@ -59,7 +59,7 @@ export type SessionTranscriptGetExternalShareableResultV1 = {
         text: string;
         origin: {
             v: 1;
-            producer: 'happierApp' | 'cli' | 'daemonInitialPrompt' | 'sessionAction' | 'happierMcp' | 'pluginSession' | 'connectedService' | 'automation' | 'voiceInput' | 'agentTerminal' | 'externalSessionHistory' | 'runtimeTranscript' | 'executionRunVoice' | 'agentRuntimeFirstInput';
+            producer: 'happierApp' | 'cli' | 'sessionAction' | 'happierMcp' | 'pluginSession' | 'automation' | 'voiceInput' | 'externalSessionHistory' | 'runtimeTranscript' | 'executionRunVoice' | 'agentRuntimeFirstInput';
             actor: 'owner' | 'collaborator' | 'machine';
             sourceAuthority?: {
                 sourceRef: string;
@@ -84,7 +84,7 @@ export type SessionTranscriptGetExternalShareableResultV1 = {
             localId: string;
             origin: {
                 v: 1;
-                producer: 'happierApp' | 'cli' | 'daemonInitialPrompt' | 'sessionAction' | 'happierMcp' | 'pluginSession' | 'connectedService' | 'automation' | 'voiceInput' | 'agentTerminal' | 'externalSessionHistory' | 'runtimeTranscript' | 'executionRunVoice' | 'agentRuntimeFirstInput';
+                producer: 'happierApp' | 'cli' | 'sessionAction' | 'happierMcp' | 'pluginSession' | 'automation' | 'voiceInput' | 'externalSessionHistory' | 'runtimeTranscript' | 'executionRunVoice' | 'agentRuntimeFirstInput';
                 actor: 'owner' | 'collaborator' | 'machine';
                 sourceAuthority?: {
                     sourceRef: string;
@@ -823,7 +823,6 @@ export type PluginActionInputById = {
                 selection: 'git_worktree' | 'all_files';
                 extraIgnorePatterns: readonly string[];
                 extraIncludePatterns: readonly string[];
-                includeGitDirectory: boolean;
                 policyDigest: string;
             };
         } | {
@@ -834,7 +833,6 @@ export type PluginActionInputById = {
                 selection: 'git_worktree' | 'all_files';
                 extraIgnorePatterns: readonly string[];
                 extraIncludePatterns: readonly string[];
-                includeGitDirectory: boolean;
                 policyDigest: string;
             };
             flushBeforeCommit: true;
@@ -843,9 +841,6 @@ export type PluginActionInputById = {
             relationshipId: string;
             flushBeforeCommit: boolean;
         } | undefined;
-        workspaceSyncSourceWorkspaceRefId?: string | undefined;
-        workspaceSyncTargetWorkspaceRefId?: string | undefined;
-        workspaceSyncSettingsVersion?: number | undefined;
     };
     readonly "session.handoff.status.get": {
         [x: string]: unknown;
@@ -6663,9 +6658,112 @@ export type PluginActionResultById = {
             }[] | undefined;
         }[] | undefined;
     };
-    readonly "session.handoff": string | number | boolean | readonly JsonValue[] | {
-        readonly [key: string]: JsonValue;
-    } | null;
+    readonly "session.handoff": {
+        handoffId: string;
+        status: {
+            [x: string]: unknown;
+            handoffId: string;
+            status: 'completed' | 'failed' | 'pending' | 'aborted' | 'awaiting_user_resume' | 'reconciliation_required' | 'ready_for_cutover' | 'in_progress' | 'awaiting_recovery';
+            phase: 'importing' | 'finalizing' | 'preparing' | 'negotiating_transport' | 'staging_target' | 'cutover' | 'transferring' | 'resuming';
+            recoveryActions: readonly ('restart_on_source' | 'keep_stopped')[];
+            jobId?: string | undefined;
+            progress?: {
+                [x: string]: unknown;
+                updatedAtMs: number;
+                checkpoint: 'plan' | 'scan_source' | 'transfer_blobs' | 'stage_target' | 'apply' | 'import_session' | 'finalize';
+                planned: {
+                    [x: string]: unknown;
+                    totalFiles?: number | undefined;
+                    totalBytes?: number | undefined;
+                    added?: number | undefined;
+                    changed?: number | undefined;
+                    removed?: number | undefined;
+                };
+                transferred: {
+                    [x: string]: unknown;
+                    files?: number | undefined;
+                    bytes?: number | undefined;
+                    blobs?: number | undefined;
+                };
+                resumable: boolean;
+                applied?: {
+                    [x: string]: unknown;
+                    files?: number | undefined;
+                    bytes?: number | undefined;
+                } | undefined;
+                remaining?: {
+                    [x: string]: unknown;
+                    files?: number | undefined;
+                    bytes?: number | undefined;
+                } | undefined;
+                current?: {
+                    [x: string]: unknown;
+                    relativePath?: string | undefined;
+                    digest?: string | undefined;
+                    phaseDetail?: string | undefined;
+                } | undefined;
+                warnings?: readonly ('blocking_divergence_detected' | 'problematic_source_entries' | 'resumed_existing_job')[] | undefined;
+            } | undefined;
+            workspacePreflightSummary?: {
+                [x: string]: unknown;
+                addedPathsCount: number;
+                changedPathsCount: number;
+                removedPathsCount: number;
+                totalBytes?: number | undefined;
+            } | undefined;
+            transportStrategy?: 'direct_peer' | 'server_routed_stream' | null | undefined;
+            failure?: {
+                code: 'target_identity_conflict' | 'agent_version_unsupported';
+                message?: string | undefined;
+            } | undefined;
+        };
+        workspace?: {
+            kind: 'none';
+        } | {
+            kind: 'copied';
+            operationId: string;
+            status?: {
+                relationshipId: string;
+                controllerMachineId: string;
+                state: 'error' | 'paused' | 'starting' | 'conflicted' | 'watching' | 'flushing' | 'disconnected' | 'controller_unavailable' | 'stopped';
+                alphaPath: string;
+                betaPath: string;
+                mode: 'copy_once' | 'keep_synced' | 'mirror_exactly' | 'keep_both_in_sync';
+                changedFiles: number;
+                conflictCount: number;
+                lastSuccessfulSyncAtMs: number | null;
+                errorCode?: string | undefined;
+            } | undefined;
+            cleanupWarning?: {
+                code: string;
+                message: string;
+            } | undefined;
+        } | {
+            kind: 'relationship';
+            relationshipId: string;
+            created: boolean;
+            status?: {
+                relationshipId: string;
+                controllerMachineId: string;
+                state: 'error' | 'paused' | 'starting' | 'conflicted' | 'watching' | 'flushing' | 'disconnected' | 'controller_unavailable' | 'stopped';
+                alphaPath: string;
+                betaPath: string;
+                mode: 'copy_once' | 'keep_synced' | 'mirror_exactly' | 'keep_both_in_sync';
+                changedFiles: number;
+                conflictCount: number;
+                lastSuccessfulSyncAtMs: number | null;
+                errorCode?: string | undefined;
+            } | undefined;
+            cleanupWarning?: {
+                code: string;
+                message: string;
+            } | undefined;
+        } | undefined;
+        warning?: {
+            code: string;
+            message: string;
+        } | undefined;
+    };
     readonly "session.handoff.status.get": string | number | boolean | readonly JsonValue[] | {
         readonly [key: string]: JsonValue;
     } | null;
@@ -10900,7 +10998,7 @@ export type PluginActionResultById = {
             text: string;
             origin: {
                 v: 1;
-                producer: 'happierApp' | 'cli' | 'daemonInitialPrompt' | 'sessionAction' | 'happierMcp' | 'pluginSession' | 'connectedService' | 'automation' | 'voiceInput' | 'agentTerminal' | 'externalSessionHistory' | 'runtimeTranscript' | 'executionRunVoice' | 'agentRuntimeFirstInput';
+                producer: 'happierApp' | 'cli' | 'sessionAction' | 'happierMcp' | 'pluginSession' | 'automation' | 'voiceInput' | 'externalSessionHistory' | 'runtimeTranscript' | 'executionRunVoice' | 'agentRuntimeFirstInput';
                 actor: 'owner' | 'collaborator' | 'machine';
                 sourceAuthority?: {
                     sourceRef: string;
@@ -10925,7 +11023,7 @@ export type PluginActionResultById = {
                 localId: string;
                 origin: {
                     v: 1;
-                    producer: 'happierApp' | 'cli' | 'daemonInitialPrompt' | 'sessionAction' | 'happierMcp' | 'pluginSession' | 'connectedService' | 'automation' | 'voiceInput' | 'agentTerminal' | 'externalSessionHistory' | 'runtimeTranscript' | 'executionRunVoice' | 'agentRuntimeFirstInput';
+                    producer: 'happierApp' | 'cli' | 'sessionAction' | 'happierMcp' | 'pluginSession' | 'automation' | 'voiceInput' | 'externalSessionHistory' | 'runtimeTranscript' | 'executionRunVoice' | 'agentRuntimeFirstInput';
                     actor: 'owner' | 'collaborator' | 'machine';
                     sourceAuthority?: {
                         sourceRef: string;

@@ -1,7 +1,7 @@
 # React Native Development Plugin Example
 
 This is a maintained conformance/reference package. It is not an ordinary authoring template:
-start a new plugin with `happier plugins create` and declare ordinary contributions through
+start a new plugin with `hdev plugins create` and declare ordinary contributions through
 `definePlugin(...)`; the canonical author build projects its cold manifest.
 
 The cold `.happier-plugin/plugin.json` uses `entrypoints.development` and a React Native renderer with a

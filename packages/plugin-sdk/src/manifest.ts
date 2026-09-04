@@ -7,6 +7,7 @@ import {
   PluginContributionIdentityV1Schema as canonicalPluginContributionIdentityV1Schema,
   PluginIdJsonSchema as canonicalPluginIdJsonSchema,
   PluginIdSchema as canonicalPluginIdSchema,
+  validatePublicPluginManifestPolicy,
 } from '@happier-dev/protocol/plugins/manifest';
 import type {
   ComposerContentMediaKindV1,
@@ -372,23 +373,6 @@ export const PluginContributionIdentityV1Schema: ProtocolComposableSchema<Plugin
 export const PluginIdJsonSchema: PluginJsonSchema = canonicalPluginIdJsonSchema;
 export const PluginIdSchema: ProtocolComposableSchema<string> = canonicalPluginIdSchema;
 
-type DeferredPublicHostAccessCapability =
-  | 'browser'
-  | 'clipboard'
-  | 'externalLinks';
-const DEFERRED_PUBLIC_HOST_ACCESS_CAPABILITIES = new Set<string>([
-  'browser',
-  'clipboard',
-  'externalLinks',
-]);
-type ParsedRequiredHostAccessRequest = Readonly<{ capability: string }>;
-
-function isPublicRequiredHostAccessRequest<TRequest extends ParsedRequiredHostAccessRequest>(
-  request: TRequest,
-): request is Exclude<TRequest, { capability: DeferredPublicHostAccessCapability }> {
-  return !DEFERRED_PUBLIC_HOST_ACCESS_CAPABILITIES.has(request.capability);
-}
-
 // Protocol's `PluginLocalizedStringV2Schema` and `PluginContributionReferenceV2Schema`
 // both project a mutable object arm. These are spelled the same way so the
 // declarative grammar below stays structurally identical to Protocol's, which
@@ -449,19 +433,19 @@ export type PublicHostAccessCapability =
   | 'terminal'
   | 'storage.account'
   | 'mcp';
-/** Public author input accepted by the canonical manifest schema. */
-export type PluginManifestAuthorInput = {
-  schemaVersion: 2;
-  id: string;
-  version: string;
-  displayName: PluginLocalizedStringV2;
-  description?: PluginLocalizedStringV2;
-  engines?: { happier?: string };
-  runtime: { apiVersion: 1 };
-  entrypoints?: { daemon?: string; development?: string };
-  brand?: { iconResourceId: string };
-  activation?: { events?: readonly Readonly<{ kind: 'startup' }>[] };
-  hostAccess?: Readonly<{
+/** Portable author-manifest value accepted by the canonical manifest schema. */
+export interface PluginManifest {
+  readonly schemaVersion: 2;
+  readonly id: string;
+  readonly version: string;
+  readonly displayName: PluginLocalizedStringV2;
+  readonly description?: PluginLocalizedStringV2;
+  readonly engines?: Readonly<{ happier?: string }>;
+  readonly runtime: Readonly<{ apiVersion: 1 }>;
+  readonly entrypoints?: Readonly<{ daemon?: string; development?: string }>;
+  readonly brand?: Readonly<{ iconResourceId: string }>;
+  readonly activation?: Readonly<{ events?: readonly Readonly<{ kind: 'startup' }>[] }>;
+  readonly hostAccess?: Readonly<{
     required?: readonly Readonly<{
       id: string;
       reason: PluginLocalizedStringV2;
@@ -475,11 +459,11 @@ export type PluginManifestAuthorInput = {
       scope: Readonly<Record<string, unknown>>;
     }>[];
   }>;
-  secrets?: readonly Readonly<{
+  readonly secrets?: readonly Readonly<{
     id: string;
     readonly [key: string]: unknown;
   }>[];
-  contributes?: Readonly<{
+  readonly contributes?: Readonly<{
     [TKey in
       | 'commands'
       | 'tools'
@@ -645,34 +629,13 @@ export type PluginManifestAuthorInput = {
     browserTargets?: readonly PluginBrowserTargetContributionInput[];
     browserActions?: readonly PluginBrowserActionContributionInput[];
   }>;
-  metadata?: Readonly<Record<string, JsonValue>>;
-};
-
-/**
- * A portable author-manifest value accepts immutable literal declarations and
- * readonly normalized projections without exposing Protocol's output graph.
- */
-export interface PluginManifest {
-  readonly schemaVersion: 2;
-  readonly id: string;
-  readonly version: string;
-  readonly displayName: PluginLocalizedStringV2;
-  readonly description?: PluginLocalizedStringV2;
-  readonly engines?: Readonly<NonNullable<PluginManifestAuthorInput['engines']>>;
-  readonly runtime: Readonly<PluginManifestAuthorInput['runtime']>;
-  readonly entrypoints?: Readonly<NonNullable<PluginManifestAuthorInput['entrypoints']>>;
-  readonly brand?: Readonly<NonNullable<PluginManifestAuthorInput['brand']>>;
-  readonly activation?: Readonly<NonNullable<PluginManifestAuthorInput['activation']>>;
-  readonly hostAccess?: PluginManifestAuthorInput['hostAccess'];
-  readonly secrets?: PluginManifestAuthorInput['secrets'];
-  readonly contributes?: PluginManifestAuthorInput['contributes'];
-  readonly metadata?: PluginManifestAuthorInput['metadata'];
+  readonly metadata?: Readonly<Record<string, JsonValue>>;
 }
 
 /** Canonical readonly contribution collection returned by public structural parsing. */
 export type PluginContributes = Readonly<{
-  agents: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['agents']>;
-  providers: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['providers']>;
+  agents: NonNullable<NonNullable<PluginManifest['contributes']>['agents']>;
+  providers: NonNullable<NonNullable<PluginManifest['contributes']>['providers']>;
   actions: readonly (Readonly<{
     id: string;
     readonly [key: string]: unknown;
@@ -682,36 +645,36 @@ export type PluginContributes = Readonly<{
     surfaces: readonly string[];
     dangerLevel: string;
   }>)[];
-  commands: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['commands']>;
-  tools: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['tools']>;
-  resources: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['resources']>;
-  transcriptActivities: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['transcriptActivities']>;
-  sessionInfoSections: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['sessionInfoSections']>;
-  sessionHeaderActions: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['sessionHeaderActions']>;
-  settings: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['settings']>;
-  events: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['events']>;
-  executionRunProfiles: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['executionRunProfiles']>;
-  notifications: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['notifications']>;
-  notificationChannels: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['notificationChannels']>;
-  scmHostingProviders: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['scmHostingProviders']>;
-  scmBackends: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['scmBackends']>;
-  connectedAccountDescriptors: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['connectedAccountDescriptors']>;
-  managedDependencies: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['managedDependencies']>;
-  systemTools: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['systemTools']>;
-  promptAssets: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['promptAssets']>;
-  hooks: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['hooks']>;
-  voiceModelPacks: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['voiceModelPacks']>;
-  voiceProviders: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['voiceProviders']>;
-  backgroundServices: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['backgroundServices']>;
-  daemonDatabases: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['daemonDatabases']>;
-  composerReferences: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['composerReferences']>;
-  searchProviders: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['searchProviders']>;
-  composerAttachments: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['composerAttachments']>;
-  composerControls: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['composerControls']>;
-  composerRegions: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['composerRegions']>;
-  openableContentViewers: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['openableContentViewers']>;
-  accountCollections: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['accountCollections']>;
-  webhooks: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['webhooks']>;
+  commands: NonNullable<NonNullable<PluginManifest['contributes']>['commands']>;
+  tools: NonNullable<NonNullable<PluginManifest['contributes']>['tools']>;
+  resources: NonNullable<NonNullable<PluginManifest['contributes']>['resources']>;
+  transcriptActivities: NonNullable<NonNullable<PluginManifest['contributes']>['transcriptActivities']>;
+  sessionInfoSections: NonNullable<NonNullable<PluginManifest['contributes']>['sessionInfoSections']>;
+  sessionHeaderActions: NonNullable<NonNullable<PluginManifest['contributes']>['sessionHeaderActions']>;
+  settings: NonNullable<NonNullable<PluginManifest['contributes']>['settings']>;
+  events: NonNullable<NonNullable<PluginManifest['contributes']>['events']>;
+  executionRunProfiles: NonNullable<NonNullable<PluginManifest['contributes']>['executionRunProfiles']>;
+  notifications: NonNullable<NonNullable<PluginManifest['contributes']>['notifications']>;
+  notificationChannels: NonNullable<NonNullable<PluginManifest['contributes']>['notificationChannels']>;
+  scmHostingProviders: NonNullable<NonNullable<PluginManifest['contributes']>['scmHostingProviders']>;
+  scmBackends: NonNullable<NonNullable<PluginManifest['contributes']>['scmBackends']>;
+  connectedAccountDescriptors: NonNullable<NonNullable<PluginManifest['contributes']>['connectedAccountDescriptors']>;
+  managedDependencies: NonNullable<NonNullable<PluginManifest['contributes']>['managedDependencies']>;
+  systemTools: NonNullable<NonNullable<PluginManifest['contributes']>['systemTools']>;
+  promptAssets: NonNullable<NonNullable<PluginManifest['contributes']>['promptAssets']>;
+  hooks: NonNullable<NonNullable<PluginManifest['contributes']>['hooks']>;
+  voiceModelPacks: NonNullable<NonNullable<PluginManifest['contributes']>['voiceModelPacks']>;
+  voiceProviders: NonNullable<NonNullable<PluginManifest['contributes']>['voiceProviders']>;
+  backgroundServices: NonNullable<NonNullable<PluginManifest['contributes']>['backgroundServices']>;
+  daemonDatabases: NonNullable<NonNullable<PluginManifest['contributes']>['daemonDatabases']>;
+  composerReferences: NonNullable<NonNullable<PluginManifest['contributes']>['composerReferences']>;
+  searchProviders: NonNullable<NonNullable<PluginManifest['contributes']>['searchProviders']>;
+  composerAttachments: NonNullable<NonNullable<PluginManifest['contributes']>['composerAttachments']>;
+  composerControls: NonNullable<NonNullable<PluginManifest['contributes']>['composerControls']>;
+  composerRegions: NonNullable<NonNullable<PluginManifest['contributes']>['composerRegions']>;
+  openableContentViewers: NonNullable<NonNullable<PluginManifest['contributes']>['openableContentViewers']>;
+  accountCollections: NonNullable<NonNullable<PluginManifest['contributes']>['accountCollections']>;
+  webhooks: NonNullable<NonNullable<PluginManifest['contributes']>['webhooks']>;
   requestInterceptors: readonly PluginRequestInterceptorContribution[];
   browserTargets: readonly PluginBrowserTargetContribution[];
   browserActions: readonly PluginBrowserActionContribution[];
@@ -742,8 +705,8 @@ export type PluginContributes = Readonly<{
     operations: Readonly<Record<string, string>>;
     surfaces?: unknown;
   }>)[];
-  mcp: Required<NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['mcp']>>;
-  ui: Required<NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['ui']>>;
+  mcp: Required<NonNullable<NonNullable<PluginManifest['contributes']>['mcp']>>;
+  ui: Required<NonNullable<NonNullable<PluginManifest['contributes']>['ui']>>;
 }>;
 
 /** Canonical portable manifest projected through declaration-safe SDK types. */
@@ -793,24 +756,6 @@ export type PluginManifestParseResult =
   | Readonly<{ ok: true; manifest: ParsedPluginManifest }>
   | Readonly<{ ok: false; diagnostics: readonly PluginManifestDiagnostic[] }>;
 
-function readPublicManifestDiagnostics(
-  manifest: Readonly<{
-    hostAccess: Readonly<{ required: readonly ParsedRequiredHostAccessRequest[] }>;
-  }>,
-  input: unknown,
-): PluginManifestDiagnostic[] {
-  const diagnostics: PluginManifestDiagnostic[] = [];
-  manifest.hostAccess.required.forEach((request, index) => {
-    if (!DEFERRED_PUBLIC_HOST_ACCESS_CAPABILITIES.has(request.capability)) return;
-    diagnostics.push({
-      code: 'plugin_manifest_invalid',
-      path: ['hostAccess', 'required', index, 'capability'],
-      message: `HostAccess capability '${request.capability}' is deferred from public plugin authoring: no host authority or service owner binds it yet.`,
-    });
-  });
-  return diagnostics;
-}
-
 /**
  * Parses the canonical cold manifest without consulting host version,
  * installation, trust, or currentness state.
@@ -818,26 +763,15 @@ function readPublicManifestDiagnostics(
 export function parsePluginManifest(input: unknown): PluginManifestParseResult {
   const parsed = ingestPluginManifestV2(input);
   if (!parsed.ok) return parsed;
-  const diagnostics = readPublicManifestDiagnostics(parsed.manifest, input);
+  const diagnostics = validatePublicPluginManifestPolicy(parsed.manifest);
   if (diagnostics.length > 0) return { ok: false, diagnostics };
-  type CanonicalRequiredHostAccessRequest =
-    (typeof parsed.manifest.hostAccess.required)[number];
-  const publicRequiredHostAccess = parsed.manifest.hostAccess.required.filter(
-    (request): request is Exclude<
-      CanonicalRequiredHostAccessRequest,
-      { capability: DeferredPublicHostAccessCapability }
-    > => isPublicRequiredHostAccessRequest(request),
-  );
+  // The Protocol parser retains the broad internal HostAccess union. The
+  // policy check above proves no deferred public capability remains, which is
+  // the invariant represented by the SDK's narrower declaration projection.
+  const publicManifest = parsed.manifest as unknown as ParsedPluginManifest;
   return {
     ok: true,
-    manifest: {
-      ...parsed.manifest,
-      hostAccess: {
-        ...parsed.manifest.hostAccess,
-        required: publicRequiredHostAccess,
-      },
-      contributes: parsed.manifest.contributes,
-    },
+    manifest: publicManifest,
   };
 }
 

@@ -118,9 +118,11 @@ Provider, Account, Resource, or background capabilities.
 The Voice leaves use only the final public `/voice`, `/voice/client`, and
 `/voice/speech` subpaths. The browser client entry binds its two conversation
 providers in the browser realm; the code-defined daemon activation binds the
-distinct STT and TTS runtimes. The raw-capable browser declaration is
-intentionally fail-closed in this source proof until the generic credential
-permission materializer is integrated.
+distinct STT and TTS runtimes. The raw-capable browser declaration exercises
+the generic credential permission materializer at connection time for the
+exact declared HTTPS origin and `authorization` header. Its runtime still
+advertises `effectCalls: 'none'`; raw credential access does not grant
+tool-effect authority.
 
 `definition.ts` is the sole projected source of truth. `index.ts` applies
 `definePlugin(publicAuthoringDefinition)`; the canonical author build projects
@@ -136,10 +138,10 @@ owner (the published copy of this example names the public `happier` command
 instead):
 
 ```bash
-happier plugins dev typecheck .
-happier plugins dev build .
-happier plugins test .
-happier plugins dev
+hdev plugins dev typecheck .
+hdev plugins dev build .
+hdev plugins test .
+hdev plugins dev
 ```
 
 Use the existing development stack for daemon restart, invocation, mounted-host,
@@ -148,7 +150,7 @@ and lifecycle QA. Do not create a separate release representation.
 Start a normal plugin with the smaller scaffold:
 
 ```bash
-happier plugins create my-plugin
+hdev plugins create my-plugin
 cd my-plugin
-happier plugins dev
+hdev plugins dev
 ```

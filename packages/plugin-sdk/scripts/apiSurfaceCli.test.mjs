@@ -1109,13 +1109,13 @@ test('SDK source inventory assigns Voice exports to the three author publication
   );
 });
 
-test('SDK source inventory publishes the mutable manifest author input with its Agent UI dependency', async () => {
+test('SDK source inventory keeps the raw mutable manifest input private', async () => {
   const report = await readCurrentPackageSourceReport();
   const manifestTypeExports = report.inventory.symbols
     .filter((symbol) => symbol.specifier === './manifest' && symbol.kind === 'type')
     .map((symbol) => symbol.exportName);
 
-  assert.equal(manifestTypeExports.includes('PluginManifestAuthorInput'), true);
+  assert.equal(manifestTypeExports.includes('PluginManifestAuthorInput'), false);
   assert.equal(manifestTypeExports.includes('PluginAgentUiContribution'), true);
   assert.equal(manifestTypeExports.includes('PluginManifest'), true);
 });

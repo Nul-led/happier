@@ -48,6 +48,10 @@ const preparedSelection = {
         contributor: preparedOperation.contributor,
     },
     connectedAccount: { kind: 'none' as const },
+    presentation: {
+        connectedAccountLabel: null,
+        machineDisplayName: 'Development Mac',
+    },
 };
 
 describe('plugin UI domain client transport adapter', () => {
@@ -879,6 +883,10 @@ describe('plugin UI domain client transport adapter', () => {
                                         contributor: operation.contributor,
                                     },
                                     connectedAccount: { kind: 'none' },
+                                    presentation: {
+                                        connectedAccountLabel: null,
+                                        machineDisplayName: 'Development Mac',
+                                    },
                                 }
                                 : null,
                         }));
@@ -950,6 +958,10 @@ describe('plugin UI domain client transport adapter', () => {
                     contributor: operation.contributor,
                 },
                 connectedAccount: { kind: 'selected' as const, fieldPath: 'credentialRef', ref: accountA },
+                presentation: {
+                    connectedAccountLabel: 'Account A',
+                    machineDisplayName: 'Development Mac',
+                },
             },
             {
                 kind: 'submitted' as const,
@@ -961,6 +973,10 @@ describe('plugin UI domain client transport adapter', () => {
                     contributor: operation.contributor,
                 },
                 connectedAccount: { kind: 'selected' as const, fieldPath: 'credentialRef', ref: accountB },
+                presentation: {
+                    connectedAccountLabel: 'Account B',
+                    machineDisplayName: 'Development Mac',
+                },
             },
         ];
         const sent: PluginUiHostApiWireEnvelopeV1[] = [];
@@ -1160,6 +1176,10 @@ describe('plugin UI domain client transport adapter', () => {
                                     contributor: operation.contributor,
                                 },
                                 connectedAccount: { kind: 'none' },
+                                presentation: {
+                                    connectedAccountLabel: null,
+                                    machineDisplayName: 'Development Mac',
+                                },
                             },
                         }));
                     }

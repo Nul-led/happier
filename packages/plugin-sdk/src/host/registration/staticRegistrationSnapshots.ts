@@ -480,6 +480,7 @@ const SCM_BACKEND_HANDLER_METHODS = Object.freeze({
         'realizeWorkspaceCheckout',
         'createWorkspaceCheckout',
         'materializeWorkspaceCheckout',
+        'resolveWorkspaceTransfer',
         'resolveWorkspaceTransferEntries',
         'resolveWorkspaceTransferMetadata',
         'assertPortableWorkspaceEntries',

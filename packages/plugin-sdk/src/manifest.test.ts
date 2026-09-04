@@ -11,7 +11,6 @@ import type {
     PluginContributes,
     PluginContributionIdentity,
     PluginManifest,
-    PluginManifestAuthorInput,
     PluginManifestDiagnostic,
     PluginManifestParseResult,
     PluginJsonSchemaValidator,
@@ -200,7 +199,6 @@ describe('manifest authoring contract', () => {
             'PluginJsonSchemaValidator',
             'PluginLocalizedStringV2',
             'PluginManifest',
-            'PluginManifestAuthorInput',
             'PluginManifestDiagnostic',
             'PluginManifestParseResult',
             'PluginRequestInterceptorContribution',
@@ -235,7 +233,7 @@ describe('manifest authoring contract', () => {
             'utf8',
         );
 
-        expect(publicBarrelSource).toContain(
+        expect(publicBarrelSource).not.toContain(
             "export type { PluginManifestAuthorInput } from '../manifest.js';",
         );
         expect(publicBarrelSource).toContain(
@@ -689,13 +687,6 @@ describe('manifest authoring contract', () => {
         // remains mutable and internal.
         expectTypeOf<PluginManifest>()
             .not.toMatchTypeOf<protocol.PluginManifest>();
-        // The mutable schema input is published only as the source type for
-        // the portable readonly author projection; they must not collapse
-        // into a second spelling of the same manifest contract.
-        expectTypeOf<PluginManifestAuthorInput>()
-            .toMatchTypeOf<PluginManifest>();
-        expectTypeOf<PluginManifest>()
-            .not.toEqualTypeOf<PluginManifestAuthorInput>();
         expectTypeOf<ParsedPluginManifest>()
             .toMatchTypeOf<PluginManifest>();
         expectTypeOf<NonNullable<PluginManifest['contributes']>>()

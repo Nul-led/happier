@@ -19,10 +19,10 @@ by `src/examples/publicAuthoringExamples.test.ts`. That owner also verifies
 the action through the public testkit. Run the package-local lifecycle with the canonical managed source-author owner:
 
 ```bash
-happier plugins dev typecheck .
-happier plugins dev build .
-happier plugins test .
-happier plugins dev
+hdev plugins dev typecheck .
+hdev plugins dev build .
+hdev plugins test .
+hdev plugins dev
 ```
 
 Use the existing development stack to exercise activation, restart, invocation,

@@ -201,6 +201,10 @@ test('plugin-sdk keeps publication preparation separate from ordinary source val
   );
   assert.equal(packageJson.scripts['typecheck:local'], 'yarn -s typecheck:source && yarn -s typecheck:tests');
   assert.equal(packageJson.scripts['generated:finite'], 'yarn -s check:action-type-map');
+  assert.ok(
+    packageJson.scripts['test:prepared'].startsWith('vitest run --config vitest.config.ts && '),
+    'the prepared test lane must use the authored-source collection boundary before adjacent tests',
+  );
   assert.equal(packageJson.scripts['test:finite'], 'yarn -s test:prepared');
   assert.equal(packageJson.scripts['typecheck:finite'], 'yarn -s typecheck:tests:prepared');
 });

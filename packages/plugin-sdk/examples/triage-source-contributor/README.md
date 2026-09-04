@@ -18,10 +18,10 @@ source-author commands; the declared `@happier-dev/triage-protocol` dependency
 resolves through the running CLI's prepublication closure:
 
 ```sh
-happier plugins dev typecheck .
-happier plugins dev build .
-happier plugins test .
-happier plugins pack .
+hdev plugins dev typecheck .
+hdev plugins dev build .
+hdev plugins test .
+hdev plugins pack .
 ```
 
 This proves the public Developer Preview source-contract authoring surface

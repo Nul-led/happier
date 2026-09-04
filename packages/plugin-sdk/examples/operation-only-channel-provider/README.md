@@ -17,15 +17,15 @@ records source availability and loaded proof. Do not use that pair as the
 beginner template.
 
 Inside this repository, run the normal managed author loop with the
-development-lane CLI (the published copy of this example names the public
-`happier` command instead):
+development-lane CLI:
 
 ```sh
-happier plugins dev build .
-happier plugins test .
-happier plugins dev
+hdev plugins dev build .
+hdev plugins test .
+hdev plugins dev
 ```
 
-The `@happier-dev/channels-protocol` dependency is maintained Developer
-Preview source: the published example ships the published Developer Preview
-release range, not the workspace placeholder version.
+The `@happier-dev/channels-protocol` dependency resolves from maintained
+Developer Preview source in this repository. This example is not selected into
+the published Plugin SDK package until release automation can supply an exact
+published Channels Protocol version.

@@ -105,7 +105,7 @@ describe('Session input canonical SDK projections', () => {
         expectTypeOf<CanonicalSessionServerStartSpawnDraftV1>()
             .toMatchTypeOf<PublicSessionServerStartSpawnDraftV1>();
         expectTypeOf<CanonicalSessionMessageProvenanceV1>()
-            .toMatchTypeOf<PublicSessionMessageProvenanceV1>();
+            .toEqualTypeOf<PublicSessionMessageProvenanceV1>();
         expectTypeOf<typeof sessions.SessionIdSchema>()
             .toEqualTypeOf<ProtocolComposableSchema<PublicSessionId>>();
         expectTypeOf<typeof sessions.AgentPermissionIntentV1Schema>()

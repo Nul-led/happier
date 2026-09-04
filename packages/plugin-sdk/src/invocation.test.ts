@@ -63,7 +63,7 @@ describe('Plugin invocation context', () => {
             | Readonly<{
                 kind: 'host';
                 domain: 'ingress';
-                originSurface: 'http' | 'webhook';
+                originSurface: 'webhook';
                 contribution: PluginInvocationContributionIdentity;
             }>
             | Readonly<{

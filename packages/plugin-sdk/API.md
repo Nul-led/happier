@@ -1096,7 +1096,6 @@
 | `./manifest` | `PluginJsonSchemaValidator` | type | any |
 | `./manifest` | `PluginLocalizedStringV2` | type | any |
 | `./manifest` | `PluginManifest` | type | any |
-| `./manifest` | `PluginManifestAuthorInput` | type | any |
 | `./manifest` | `PluginManifestDiagnostic` | type | any |
 | `./manifest` | `PluginManifestParseResult` | type | any |
 | `./manifest` | `PluginRequestInterceptorContribution` | type | any |

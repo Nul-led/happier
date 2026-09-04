@@ -336,7 +336,7 @@ async function typecheckEmittedAuthorDeclarations(
         join(repoRoot, 'scripts', 'workspaces', 'runTypeScriptCli.mjs'),
         '-p',
         configPath,
-    ]);
+    ], { timeoutMs: 120_000 });
 }
 
 async function prepareExternalTargetedPackageBuild(): Promise<ExternalTargetedPackageBuild> {

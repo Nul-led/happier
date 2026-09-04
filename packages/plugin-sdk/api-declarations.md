@@ -1290,7 +1290,7 @@ type PluginInvocationCaller = Readonly<{
 }> | Readonly<{
     kind: 'host';
     domain: 'ingress';
-    originSurface: 'http' | 'webhook';
+    originSurface: 'webhook';
     contribution: PluginInvocationContributionIdentity;
 }> | Readonly<{
     kind: 'automationRun';
@@ -3142,7 +3142,6 @@ type PluginActionInputById = {
                 selection: 'git_worktree' | 'all_files';
                 extraIgnorePatterns: readonly string[];
                 extraIncludePatterns: readonly string[];
-                includeGitDirectory: boolean;
                 policyDigest: string;
             };
         } | {
@@ -3153,7 +3152,6 @@ type PluginActionInputById = {
                 selection: 'git_worktree' | 'all_files';
                 extraIgnorePatterns: readonly string[];
                 extraIncludePatterns: readonly string[];
-                includeGitDirectory: boolean;
                 policyDigest: string;
             };
             flushBeforeCommit: true;
@@ -3162,9 +3160,6 @@ type PluginActionInputById = {
             relationshipId: string;
             flushBeforeCommit: boolean;
         } | undefined;
-        workspaceSyncSourceWorkspaceRefId?: string | undefined;
-        workspaceSyncTargetWorkspaceRefId?: string | undefined;
-        workspaceSyncSettingsVersion?: number | undefined;
     };
     readonly "session.handoff.status.get": {
         [x: string]: unknown;
@@ -9008,9 +9003,112 @@ type PluginActionResultById = {
             }[] | undefined;
         }[] | undefined;
     };
-    readonly "session.handoff": string | number | boolean | readonly JsonValue[] | {
-        readonly [key: string]: JsonValue;
-    } | null;
+    readonly "session.handoff": {
+        handoffId: string;
+        status: {
+            [x: string]: unknown;
+            handoffId: string;
+            status: 'completed' | 'failed' | 'pending' | 'aborted' | 'awaiting_user_resume' | 'reconciliation_required' | 'ready_for_cutover' | 'in_progress' | 'awaiting_recovery';
+            phase: 'importing' | 'finalizing' | 'preparing' | 'negotiating_transport' | 'staging_target' | 'cutover' | 'transferring' | 'resuming';
+            recoveryActions: readonly ('restart_on_source' | 'keep_stopped')[];
+            jobId?: string | undefined;
+            progress?: {
+                [x: string]: unknown;
+                updatedAtMs: number;
+                checkpoint: 'plan' | 'scan_source' | 'transfer_blobs' | 'stage_target' | 'apply' | 'import_session' | 'finalize';
+                planned: {
+                    [x: string]: unknown;
+                    totalFiles?: number | undefined;
+                    totalBytes?: number | undefined;
+                    added?: number | undefined;
+                    changed?: number | undefined;
+                    removed?: number | undefined;
+                };
+                transferred: {
+                    [x: string]: unknown;
+                    files?: number | undefined;
+                    bytes?: number | undefined;
+                    blobs?: number | undefined;
+                };
+                resumable: boolean;
+                applied?: {
+                    [x: string]: unknown;
+                    files?: number | undefined;
+                    bytes?: number | undefined;
+                } | undefined;
+                remaining?: {
+                    [x: string]: unknown;
+                    files?: number | undefined;
+                    bytes?: number | undefined;
+                } | undefined;
+                current?: {
+                    [x: string]: unknown;
+                    relativePath?: string | undefined;
+                    digest?: string | undefined;
+                    phaseDetail?: string | undefined;
+                } | undefined;
+                warnings?: readonly ('blocking_divergence_detected' | 'problematic_source_entries' | 'resumed_existing_job')[] | undefined;
+            } | undefined;
+            workspacePreflightSummary?: {
+                [x: string]: unknown;
+                addedPathsCount: number;
+                changedPathsCount: number;
+                removedPathsCount: number;
+                totalBytes?: number | undefined;
+            } | undefined;
+            transportStrategy?: 'direct_peer' | 'server_routed_stream' | null | undefined;
+            failure?: {
+                code: 'target_identity_conflict' | 'agent_version_unsupported';
+                message?: string | undefined;
+            } | undefined;
+        };
+        workspace?: {
+            kind: 'none';
+        } | {
+            kind: 'copied';
+            operationId: string;
+            status?: {
+                relationshipId: string;
+                controllerMachineId: string;
+                state: 'error' | 'paused' | 'starting' | 'conflicted' | 'watching' | 'flushing' | 'disconnected' | 'controller_unavailable' | 'stopped';
+                alphaPath: string;
+                betaPath: string;
+                mode: 'copy_once' | 'keep_synced' | 'mirror_exactly' | 'keep_both_in_sync';
+                changedFiles: number;
+                conflictCount: number;
+                lastSuccessfulSyncAtMs: number | null;
+                errorCode?: string | undefined;
+            } | undefined;
+            cleanupWarning?: {
+                code: string;
+                message: string;
+            } | undefined;
+        } | {
+            kind: 'relationship';
+            relationshipId: string;
+            created: boolean;
+            status?: {
+                relationshipId: string;
+                controllerMachineId: string;
+                state: 'error' | 'paused' | 'starting' | 'conflicted' | 'watching' | 'flushing' | 'disconnected' | 'controller_unavailable' | 'stopped';
+                alphaPath: string;
+                betaPath: string;
+                mode: 'copy_once' | 'keep_synced' | 'mirror_exactly' | 'keep_both_in_sync';
+                changedFiles: number;
+                conflictCount: number;
+                lastSuccessfulSyncAtMs: number | null;
+                errorCode?: string | undefined;
+            } | undefined;
+            cleanupWarning?: {
+                code: string;
+                message: string;
+            } | undefined;
+        } | undefined;
+        warning?: {
+            code: string;
+            message: string;
+        } | undefined;
+    };
     readonly "session.handoff.status.get": string | number | boolean | readonly JsonValue[] | {
         readonly [key: string]: JsonValue;
     } | null;
@@ -13245,7 +13343,7 @@ type PluginActionResultById = {
             text: string;
             origin: {
                 v: 1;
-                producer: 'happierApp' | 'cli' | 'daemonInitialPrompt' | 'sessionAction' | 'happierMcp' | 'pluginSession' | 'connectedService' | 'automation' | 'voiceInput' | 'agentTerminal' | 'externalSessionHistory' | 'runtimeTranscript' | 'executionRunVoice' | 'agentRuntimeFirstInput';
+                producer: 'happierApp' | 'cli' | 'sessionAction' | 'happierMcp' | 'pluginSession' | 'automation' | 'voiceInput' | 'externalSessionHistory' | 'runtimeTranscript' | 'executionRunVoice' | 'agentRuntimeFirstInput';
                 actor: 'owner' | 'collaborator' | 'machine';
                 sourceAuthority?: {
                     sourceRef: string;
@@ -13270,7 +13368,7 @@ type PluginActionResultById = {
                 localId: string;
                 origin: {
                     v: 1;
-                    producer: 'happierApp' | 'cli' | 'daemonInitialPrompt' | 'sessionAction' | 'happierMcp' | 'pluginSession' | 'connectedService' | 'automation' | 'voiceInput' | 'agentTerminal' | 'externalSessionHistory' | 'runtimeTranscript' | 'executionRunVoice' | 'agentRuntimeFirstInput';
+                    producer: 'happierApp' | 'cli' | 'sessionAction' | 'happierMcp' | 'pluginSession' | 'automation' | 'voiceInput' | 'externalSessionHistory' | 'runtimeTranscript' | 'executionRunVoice' | 'agentRuntimeFirstInput';
                     actor: 'owner' | 'collaborator' | 'machine';
                     sourceAuthority?: {
                         sourceRef: string;
@@ -31855,7 +31953,7 @@ type SessionTranscriptGetExternalShareableResultV1 = {
         text: string;
         origin: {
             v: 1;
-            producer: 'happierApp' | 'cli' | 'daemonInitialPrompt' | 'sessionAction' | 'happierMcp' | 'pluginSession' | 'connectedService' | 'automation' | 'voiceInput' | 'agentTerminal' | 'externalSessionHistory' | 'runtimeTranscript' | 'executionRunVoice' | 'agentRuntimeFirstInput';
+            producer: 'happierApp' | 'cli' | 'sessionAction' | 'happierMcp' | 'pluginSession' | 'automation' | 'voiceInput' | 'externalSessionHistory' | 'runtimeTranscript' | 'executionRunVoice' | 'agentRuntimeFirstInput';
             actor: 'owner' | 'collaborator' | 'machine';
             sourceAuthority?: {
                 sourceRef: string;
@@ -31880,7 +31978,7 @@ type SessionTranscriptGetExternalShareableResultV1 = {
             localId: string;
             origin: {
                 v: 1;
-                producer: 'happierApp' | 'cli' | 'daemonInitialPrompt' | 'sessionAction' | 'happierMcp' | 'pluginSession' | 'connectedService' | 'automation' | 'voiceInput' | 'agentTerminal' | 'externalSessionHistory' | 'runtimeTranscript' | 'executionRunVoice' | 'agentRuntimeFirstInput';
+                producer: 'happierApp' | 'cli' | 'sessionAction' | 'happierMcp' | 'pluginSession' | 'automation' | 'voiceInput' | 'externalSessionHistory' | 'runtimeTranscript' | 'executionRunVoice' | 'agentRuntimeFirstInput';
                 actor: 'owner' | 'collaborator' | 'machine';
                 sourceAuthority?: {
                     sourceRef: string;
@@ -34529,6 +34627,7 @@ Declared by `dist/agentRuntime/executionRun.d.ts` as `AgentExecutionRunRuntime`.
 interface AgentExecutionRunRuntime extends Disposable {
     send(input: AgentSessionInput, options?: Readonly<{
         signal?: AbortSignal;
+        causalPermissionAuthority?: AgentSessionSendRequest['causalPermissionAuthority'];
     }>): Promise<AgentExecutionRunSendResult>;
     stop(options?: Readonly<{
         signal?: AbortSignal;
@@ -38866,7 +38965,7 @@ type TerminalPromptInput = Readonly<{
 Declared by `node_modules/@happier-dev/agents/dist/runtime/terminal/control.d.ts` as `TerminalSpecialKey`.
 
 ```ts
-type TerminalSpecialKey = 'Enter' | 'Escape' | 'Tab' | 'ShiftTab' | 'CtrlC' | 'Backspace';
+type TerminalSpecialKey = 'Enter' | 'Escape' | 'ArrowUp' | 'ArrowDown' | 'Tab' | 'ShiftTab' | 'CtrlC' | 'Backspace';
 ```
 
 
@@ -45289,8 +45388,8 @@ Declared by `dist/manifest.d.ts` as `PluginContributes`.
 
 ```ts
 type PluginContributes = Readonly<{
-    agents: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['agents']>;
-    providers: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['providers']>;
+    agents: NonNullable<NonNullable<PluginManifest['contributes']>['agents']>;
+    providers: NonNullable<NonNullable<PluginManifest['contributes']>['providers']>;
     actions: readonly (Readonly<{
         id: string;
         readonly [key: string]: unknown;
@@ -45300,36 +45399,36 @@ type PluginContributes = Readonly<{
         surfaces: readonly string[];
         dangerLevel: string;
     }>)[];
-    commands: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['commands']>;
-    tools: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['tools']>;
-    resources: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['resources']>;
-    transcriptActivities: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['transcriptActivities']>;
-    sessionInfoSections: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['sessionInfoSections']>;
-    sessionHeaderActions: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['sessionHeaderActions']>;
-    settings: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['settings']>;
-    events: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['events']>;
-    executionRunProfiles: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['executionRunProfiles']>;
-    notifications: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['notifications']>;
-    notificationChannels: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['notificationChannels']>;
-    scmHostingProviders: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['scmHostingProviders']>;
-    scmBackends: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['scmBackends']>;
-    connectedAccountDescriptors: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['connectedAccountDescriptors']>;
-    managedDependencies: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['managedDependencies']>;
-    systemTools: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['systemTools']>;
-    promptAssets: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['promptAssets']>;
-    hooks: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['hooks']>;
-    voiceModelPacks: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['voiceModelPacks']>;
-    voiceProviders: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['voiceProviders']>;
-    backgroundServices: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['backgroundServices']>;
-    daemonDatabases: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['daemonDatabases']>;
-    composerReferences: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['composerReferences']>;
-    searchProviders: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['searchProviders']>;
-    composerAttachments: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['composerAttachments']>;
-    composerControls: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['composerControls']>;
-    composerRegions: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['composerRegions']>;
-    openableContentViewers: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['openableContentViewers']>;
-    accountCollections: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['accountCollections']>;
-    webhooks: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['webhooks']>;
+    commands: NonNullable<NonNullable<PluginManifest['contributes']>['commands']>;
+    tools: NonNullable<NonNullable<PluginManifest['contributes']>['tools']>;
+    resources: NonNullable<NonNullable<PluginManifest['contributes']>['resources']>;
+    transcriptActivities: NonNullable<NonNullable<PluginManifest['contributes']>['transcriptActivities']>;
+    sessionInfoSections: NonNullable<NonNullable<PluginManifest['contributes']>['sessionInfoSections']>;
+    sessionHeaderActions: NonNullable<NonNullable<PluginManifest['contributes']>['sessionHeaderActions']>;
+    settings: NonNullable<NonNullable<PluginManifest['contributes']>['settings']>;
+    events: NonNullable<NonNullable<PluginManifest['contributes']>['events']>;
+    executionRunProfiles: NonNullable<NonNullable<PluginManifest['contributes']>['executionRunProfiles']>;
+    notifications: NonNullable<NonNullable<PluginManifest['contributes']>['notifications']>;
+    notificationChannels: NonNullable<NonNullable<PluginManifest['contributes']>['notificationChannels']>;
+    scmHostingProviders: NonNullable<NonNullable<PluginManifest['contributes']>['scmHostingProviders']>;
+    scmBackends: NonNullable<NonNullable<PluginManifest['contributes']>['scmBackends']>;
+    connectedAccountDescriptors: NonNullable<NonNullable<PluginManifest['contributes']>['connectedAccountDescriptors']>;
+    managedDependencies: NonNullable<NonNullable<PluginManifest['contributes']>['managedDependencies']>;
+    systemTools: NonNullable<NonNullable<PluginManifest['contributes']>['systemTools']>;
+    promptAssets: NonNullable<NonNullable<PluginManifest['contributes']>['promptAssets']>;
+    hooks: NonNullable<NonNullable<PluginManifest['contributes']>['hooks']>;
+    voiceModelPacks: NonNullable<NonNullable<PluginManifest['contributes']>['voiceModelPacks']>;
+    voiceProviders: NonNullable<NonNullable<PluginManifest['contributes']>['voiceProviders']>;
+    backgroundServices: NonNullable<NonNullable<PluginManifest['contributes']>['backgroundServices']>;
+    daemonDatabases: NonNullable<NonNullable<PluginManifest['contributes']>['daemonDatabases']>;
+    composerReferences: NonNullable<NonNullable<PluginManifest['contributes']>['composerReferences']>;
+    searchProviders: NonNullable<NonNullable<PluginManifest['contributes']>['searchProviders']>;
+    composerAttachments: NonNullable<NonNullable<PluginManifest['contributes']>['composerAttachments']>;
+    composerControls: NonNullable<NonNullable<PluginManifest['contributes']>['composerControls']>;
+    composerRegions: NonNullable<NonNullable<PluginManifest['contributes']>['composerRegions']>;
+    openableContentViewers: NonNullable<NonNullable<PluginManifest['contributes']>['openableContentViewers']>;
+    accountCollections: NonNullable<NonNullable<PluginManifest['contributes']>['accountCollections']>;
+    webhooks: NonNullable<NonNullable<PluginManifest['contributes']>['webhooks']>;
     requestInterceptors: readonly PluginRequestInterceptorContribution[];
     browserTargets: readonly PluginBrowserTargetContribution[];
     browserActions: readonly PluginBrowserActionContribution[];
@@ -45362,8 +45461,8 @@ type PluginContributes = Readonly<{
         operations: Readonly<Record<string, string>>;
         surfaces?: unknown;
     }>)[];
-    mcp: Required<NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['mcp']>>;
-    ui: Required<NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['ui']>>;
+    mcp: Required<NonNullable<NonNullable<PluginManifest['contributes']>['mcp']>>;
+    ui: Required<NonNullable<NonNullable<PluginManifest['contributes']>['ui']>>;
 }>;
 ```
 
@@ -45847,49 +45946,25 @@ interface PluginManifest {
     readonly version: string;
     readonly displayName: PluginLocalizedStringV2;
     readonly description?: PluginLocalizedStringV2;
-    readonly engines?: Readonly<NonNullable<PluginManifestAuthorInput['engines']>>;
-    readonly runtime: Readonly<PluginManifestAuthorInput['runtime']>;
-    readonly entrypoints?: Readonly<NonNullable<PluginManifestAuthorInput['entrypoints']>>;
-    readonly brand?: Readonly<NonNullable<PluginManifestAuthorInput['brand']>>;
-    readonly activation?: Readonly<NonNullable<PluginManifestAuthorInput['activation']>>;
-    readonly hostAccess?: PluginManifestAuthorInput['hostAccess'];
-    readonly secrets?: PluginManifestAuthorInput['secrets'];
-    readonly contributes?: PluginManifestAuthorInput['contributes'];
-    readonly metadata?: PluginManifestAuthorInput['metadata'];
-}
-```
-
-
-### `./manifest` — `PluginManifestAuthorInput` (type)
-
-Declared by `dist/manifest.d.ts` as `PluginManifestAuthorInput`.
-
-```ts
-type PluginManifestAuthorInput = {
-    schemaVersion: 2;
-    id: string;
-    version: string;
-    displayName: PluginLocalizedStringV2;
-    description?: PluginLocalizedStringV2;
-    engines?: {
+    readonly engines?: Readonly<{
         happier?: string;
-    };
-    runtime: {
+    }>;
+    readonly runtime: Readonly<{
         apiVersion: 1;
-    };
-    entrypoints?: {
+    }>;
+    readonly entrypoints?: Readonly<{
         daemon?: string;
         development?: string;
-    };
-    brand?: {
+    }>;
+    readonly brand?: Readonly<{
         iconResourceId: string;
-    };
-    activation?: {
+    }>;
+    readonly activation?: Readonly<{
         events?: readonly Readonly<{
             kind: 'startup';
         }>[];
-    };
-    hostAccess?: Readonly<{
+    }>;
+    readonly hostAccess?: Readonly<{
         required?: readonly Readonly<{
             id: string;
             reason: PluginLocalizedStringV2;
@@ -45903,11 +45978,11 @@ type PluginManifestAuthorInput = {
             scope: Readonly<Record<string, unknown>>;
         }>[];
     }>;
-    secrets?: readonly Readonly<{
+    readonly secrets?: readonly Readonly<{
         id: string;
         readonly [key: string]: unknown;
     }>[];
-    contributes?: Readonly<{
+    readonly contributes?: Readonly<{
         [TKey in 'commands' | 'tools' | 'resources' | 'transcriptActivities' | 'sessionInfoSections' | 'sessionHeaderActions' | 'settings' | 'events' | 'executionRunProfiles' | 'notifications' | 'notificationChannels' | 'scmHostingProviders' | 'scmBackends' | 'connectedAccountDescriptors' | 'managedDependencies' | 'hooks' | 'voiceModelPacks' | 'voiceProviders' | 'backgroundServices' | 'composerReferences' | 'searchProviders' | 'composerControls' | 'composerRegions' | 'openableContentViewers' | 'accountCollections' | 'webhooks' | 'pluginContributionPoints' | 'targetedPluginContributions']?: readonly Readonly<{
             id: string;
             readonly [key: string]: unknown;
@@ -46046,8 +46121,8 @@ type PluginManifestAuthorInput = {
         browserTargets?: readonly PluginBrowserTargetContributionInput[];
         browserActions?: readonly PluginBrowserActionContributionInput[];
     }>;
-    metadata?: Readonly<Record<string, JsonValue>>;
-};
+    readonly metadata?: Readonly<Record<string, JsonValue>>;
+}
 ```
 
 
@@ -59951,13 +60026,20 @@ type WorkspaceIntegrationHandlers = Readonly<{
         context: BackendRuntimeContext;
         workspaceCheckoutMaterialization: WorkspaceCheckoutMaterializationRequest;
     }>) => Promise<WorkspaceCheckoutMaterializationResult | void> | WorkspaceCheckoutMaterializationResult | void;
+    resolveWorkspaceTransfer?: (input: Readonly<{
+        context: BackendRuntimeContext;
+        workspaceTransfer: WorkspaceTransferRequest;
+        artifactDirectory?: string;
+    }>) => Promise<WorkspaceTransferResult | null> | WorkspaceTransferResult | null;
     resolveWorkspaceTransferEntries?: (input: Readonly<{
         context: BackendRuntimeContext;
         workspaceTransfer: WorkspaceTransferRequest;
+        artifactDirectory?: string;
     }>) => Promise<readonly WorkspaceTransferEntry[] | null> | readonly WorkspaceTransferEntry[] | null;
     resolveWorkspaceTransferMetadata?: (input: Readonly<{
         context: BackendRuntimeContext;
         workspaceTransfer: WorkspaceTransferRequest;
+        artifactDirectory?: string;
     }>) => Promise<WorkspaceTransferMetadata | null> | WorkspaceTransferMetadata | null;
     assertPortableWorkspaceEntries?: (input: Readonly<{
         entries: readonly Readonly<{
@@ -60020,6 +60102,8 @@ type WorkspaceTransferRequest = Readonly<{
     strategy: 'transfer_snapshot';
     includeIgnoredMode: 'exclude' | 'include_selected';
     ignoredIncludeGlobs: readonly string[];
+    includeAllIgnored?: boolean;
+    extraIgnorePatterns?: readonly string[];
 }>;
 ```
 
@@ -61258,29 +61342,26 @@ type SessionMessagePart = Readonly<{
 Declared by `dist/services/sessions.d.ts` as `SessionMessageProvenanceV1`.
 
 ```ts
-type SessionMessageProvenanceV1 = Readonly<{
-    v: 1;
-    kind: string;
-}> & (Readonly<{
+type SessionMessageProvenanceV1 = {
     v: 1;
     kind: 'happierApp';
-    actor: Readonly<{
+    actor: {
         kind: 'owner';
-    }> | Readonly<{
+    } | {
         kind: 'sharedCollaborator';
-    }>;
-}> | Readonly<{
+    };
+} | {
     v: 1;
     kind: 'cli';
-}> | Readonly<{
+} | {
     v: 1;
     kind: 'voice';
-}> | Readonly<{
+} | {
     v: 1;
     kind: 'happierSession';
     sourceSessionId: string;
     via: 'action' | 'mcp';
-}> | Readonly<{
+} | {
     v: 1;
     kind: 'pluginSession';
     pluginId: string;
@@ -61288,25 +61369,21 @@ type SessionMessageProvenanceV1 = Readonly<{
     surface: 'cli' | 'mcp' | 'agent' | 'ui' | 'background' | 'unspecified';
     sourceRef?: string;
     sourceRevisionOrEpoch?: string;
-    externalActor?: Readonly<{
+    externalActor?: {
         kind: 'human' | 'bot';
         displayNameSnapshot?: string;
-    }>;
+    };
     contentProvenance?: 'original' | 'forwarded' | 'viaBot';
-}> | Readonly<{
+} | {
     v: 1;
     kind: 'automation';
     automationId: string;
     runId: string;
-}> | Readonly<{
-    v: 1;
-    kind: 'agentTerminal';
-    agentId: string;
-}> | Readonly<{
+} | {
     v: 1;
     kind: 'host';
-    producer: 'happierApp' | 'cli' | 'daemonInitialPrompt' | 'sessionAction' | 'happierMcp' | 'pluginSession' | 'connectedService' | 'automation' | 'voiceInput' | 'agentTerminal' | 'externalSessionHistory' | 'runtimeTranscript' | 'executionRunVoice' | 'agentRuntimeFirstInput';
-}>);
+    producer: 'happierApp' | 'cli' | 'sessionAction' | 'happierMcp' | 'pluginSession' | 'automation' | 'voiceInput' | 'externalSessionHistory' | 'runtimeTranscript' | 'executionRunVoice' | 'agentRuntimeFirstInput';
+};
 ```
 
 
@@ -67846,6 +67923,10 @@ type PluginUiSelectActionInputTargetedSubmittedV1 = {
         fieldPath: string;
         ref: QualifiedConnectedAccountRef;
     };
+    presentation: {
+        connectedAccountLabel: string | null;
+        machineDisplayName: string | null;
+    };
 };
 ```
 
@@ -71799,6 +71880,7 @@ Reached from a published signature; not itself a published export.
 interface SessionPermissionsServiceV1 {
     requestDecision(request: SessionPermissionDecisionRequestV1, options?: Readonly<{
         signal?: AbortSignal;
+        acknowledgeDecisionApplication?: (decision: SessionPermissionDecisionResultV1) => Promise<void>;
     }>): Promise<SessionPermissionDecisionResultV1>;
     getMode(): SessionPermissionModeV1;
 }
@@ -98818,6 +98900,12 @@ const PluginCollectionUiQueryRequestV1Schema: z.ZodObject<{
         z.ZodBoolean
     ]>>>;
     cursor: z.ZodOptional<z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>>;
+    readerContext: z.ZodObject<{
+        pluginId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
+        collectionId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
+        schemaVersion: z.ZodNumber;
+        contractDigest: z.ZodString;
+    }, z.core.$strict>;
 }, z.core.$strict>;
 ```
 

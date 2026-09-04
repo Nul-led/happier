@@ -16,9 +16,9 @@ currentness, cancellation, quotas, and close/reload behavior.
 Run the normal external-author commands from this directory:
 
 ```sh
-happier plugins dev typecheck .
-happier plugins test .
-happier plugins dev
+hdev plugins dev typecheck .
+hdev plugins test .
+hdev plugins dev
 ```
 
 The source workload measurement is gated by
