@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   assertPersonalHomeRelocationDestinationAllowsActivation,
+  assertPersonalHomeRelocationDestinationAllowsMaintenance,
   createPersonalHomeRelocationDestinationOwner,
   type PersonalHomeRelocationDestinationReceivedCandidate,
   type PersonalHomeRelocationDestinationStageInput,
@@ -58,6 +59,8 @@ async function fixture() {
   const inspectReceivedCandidate = vi.fn(async (): Promise<PersonalHomeRelocationDestinationReceivedCandidate> => ({ outcome: 'absent' }));
   const hasUploadReservation = vi.fn(async (): Promise<boolean> => false);
   const cleanupUploadReservation = vi.fn(async () => undefined);
+  const preflightDestination = vi.fn(async () => undefined);
+  const finalizeCandidate = vi.fn(async () => undefined);
   const owner = createPersonalHomeRelocationDestinationOwner({
     dataDir,
     quarantine,
@@ -69,6 +72,8 @@ async function fixture() {
     abortCandidate,
     hasUploadReservation,
     cleanupUploadReservation,
+    preflightDestination,
+    finalizeCandidate,
   });
   const stage = {
     operationId: 'system-task:11111111-1111-4111-8111-111111111111',
@@ -78,10 +83,38 @@ async function fixture() {
     expectedCanonicalServerUrl: 'https://source.example.test',
     sourceDescriptorRevision: 7,
   };
-  return { dataDir, owner, stage, quarantine, stageCandidate, inspectReceivedCandidate, activate, attestActive, abortCandidate, hasUploadReservation, cleanupUploadReservation };
+  return { dataDir, owner, stage, quarantine, stageCandidate, inspectReceivedCandidate, activate, attestActive, abortCandidate, hasUploadReservation, cleanupUploadReservation, preflightDestination, finalizeCandidate };
 }
 
 describe('destination-local Personal Home relocation owner', () => {
+  it('preflights an absent destination before reporting it safe to reserve', async () => {
+    const { owner, stage, preflightDestination } = await fixture();
+    preflightDestination.mockRejectedValueOnce(new Error('destination contains unrelated Personal Home data'));
+
+    await expect(owner.status(stage.operationId)).rejects.toThrow('unrelated Personal Home data');
+    expect(preflightDestination).toHaveBeenCalledTimes(1);
+  });
+
+  it('admits stopped maintenance only for the exact receiving relocation operation', async () => {
+    const { dataDir, stage, owner } = await fixture();
+    await writeInterruptedReceivingMarker(dataDir, stage);
+
+    await expect(assertPersonalHomeRelocationDestinationAllowsMaintenance(dataDir, {
+      operationId: stage.operationId,
+      action: 'attest',
+    })).resolves.toBeUndefined();
+    await expect(assertPersonalHomeRelocationDestinationAllowsMaintenance(dataDir, {
+      operationId: 'system-task:22222222-2222-4222-8222-222222222222',
+      action: 'materialize_endpoint',
+    })).rejects.toMatchObject({ code: 'PERSONAL_HOME_RELOCATION_DESTINATION_ACTIVATION_BLOCKED' });
+
+    await owner.stage(stage);
+    await expect(assertPersonalHomeRelocationDestinationAllowsMaintenance(dataDir, {
+      operationId: stage.operationId,
+      action: 'attest',
+    })).rejects.toMatchObject({ code: 'PERSONAL_HOME_RELOCATION_DESTINATION_ACTIVATION_BLOCKED' });
+  });
+
   it('persists a quarantined stage result and returns it without replay after a lost response', async () => {
     const { owner, stage, quarantine, stageCandidate } = await fixture();
 
@@ -183,6 +216,27 @@ describe('destination-local Personal Home relocation owner', () => {
     expect(attestActive).toHaveBeenCalledTimes(1);
   });
 
+  it('reports candidate cleanup attention after activation and converges it on commit retry', async () => {
+    const { owner, stage, finalizeCandidate, activate } = await fixture();
+    await owner.stage(stage);
+    finalizeCandidate.mockRejectedValueOnce(new Error('rollback artifact busy'));
+    const input = {
+      operationId: stage.operationId,
+      publishedDescriptor: {
+        v: 1 as const,
+        homeServerIdentityId: 'srv_home_1',
+        canonicalServerUrl: 'https://source.example.test',
+        revision: 10,
+        endpoints: [{ kind: 'https' as const, url: 'https://source.example.test' }],
+      },
+    };
+
+    await expect(owner.commit(input)).resolves.toMatchObject({ status: 'active', cleanupNeedsAttention: true });
+    await expect(owner.commit(input)).resolves.not.toHaveProperty('cleanupNeedsAttention');
+    expect(activate).toHaveBeenCalledTimes(1);
+    expect(finalizeCandidate).toHaveBeenCalledTimes(2);
+  });
+
   it('re-quarantines an ambiguous activation and can safely retry commit', async () => {
     const { owner, stage, quarantine, attestActive } = await fixture();
     await owner.stage(stage);
@@ -205,6 +259,25 @@ describe('destination-local Personal Home relocation owner', () => {
     });
     await expect(owner.commit(input)).resolves.toMatchObject({ status: 'active' });
     expect(quarantine).toHaveBeenCalledTimes(3);
+  });
+
+  it('rejects destination commit when authenticated data counts drift from the staged candidate', async () => {
+    const { owner, stage, attestActive } = await fixture();
+    await owner.stage(stage);
+    attestActive.mockResolvedValueOnce({
+      authenticated: true,
+      homeServerIdentityId: 'srv_home_1',
+      accountCount: 2,
+      sessionCount: 0,
+    });
+    await expect(owner.commit({
+      operationId: stage.operationId,
+      publishedDescriptor: {
+        v: 1, homeServerIdentityId: 'srv_home_1', canonicalServerUrl: 'https://source.example.test',
+        revision: 10, endpoints: [{ kind: 'https', url: 'https://source.example.test' }],
+      },
+    })).rejects.toMatchObject({ code: 'relocation_destination_recovery_required' });
+    await expect(owner.status(stage.operationId)).resolves.toMatchObject({ status: 'recovery_required' });
   });
 
   it('fails closed on changed retry facts, a stale descriptor, or a bundle digest mismatch', async () => {

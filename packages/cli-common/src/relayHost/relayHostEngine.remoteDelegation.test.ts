@@ -100,6 +100,7 @@ describe('RelayHostEngine remote installation ownership', () => {
     expect(installCommand).toContain('--server-binary');
     expect(installCommand).toContain('/home/remote/.happier/happier-server/preview/current/bin/happier-server');
     expect(installCommand).toContain('--mode system');
+    expect(installCommand).toMatch(/^sudo -n /u);
   });
 
   it('surfaces the canonical remote installer error instead of interpreting partial output', async () => {
@@ -172,6 +173,7 @@ describe('RelayHostEngine remote uninstall delegation', () => {
     expect(command).toContain('--mode user');
     expect(command).toContain('--yes');
     expect(command).toContain('--json');
+    expect(command).not.toMatch(/^sudo\b/u);
     // Thin transport adapter: the source side makes no deletion decision of its own.
     expect(command).not.toContain('rm ');
     expect(command).not.toContain('systemctl');
@@ -200,6 +202,7 @@ describe('RelayHostEngine remote uninstall delegation', () => {
     expect(command).toContain('$HOME/.happier/cli/current/happier relay host uninstall');
     expect(command).toContain("--channel 'stable'");
     expect(command).toContain('--mode system');
+    expect(command).toMatch(/^sudo -n /u);
   });
 
   it('never names persistent Home data in any source-side uninstall command', async () => {

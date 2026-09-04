@@ -1,7 +1,8 @@
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -52,7 +53,7 @@ describe('RelayHostEngine (Personal Home mutation seam)', () => {
     vi.clearAllMocks();
   });
 
-  async function createInstalledPersonalHomeRuntime(): Promise<Readonly<{
+  async function createInstalledPersonalHomeRuntime(options: Readonly<{ withInitializedHome?: boolean }> = {}): Promise<Readonly<{
     homeDir: string;
     defaults: ReturnType<typeof resolveRelayRuntimeDefaults>;
     dispose: () => Promise<void>;
@@ -73,6 +74,22 @@ describe('RelayHostEngine (Personal Home mutation seam)', () => {
       'AUTH_ANONYMOUS_SIGNUP_ENABLED=0',
       'HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED=1',
     ].join('\n') + '\n', 'utf8');
+    if (options.withInitializedHome) {
+      const migrationName = '20260903000000_test';
+      const migrationSql = 'CREATE TABLE test_fixture (id TEXT);';
+      const migrationDir = join(defaults.installRoot, 'bin', 'prisma', 'sqlite', 'migrations', migrationName);
+      await mkdir(migrationDir, { recursive: true });
+      await writeFile(join(migrationDir, 'migration.sql'), migrationSql, 'utf8');
+      await mkdir(defaults.dataDir, { recursive: true });
+      const { DatabaseSync } = await import('node:sqlite');
+      const database = new DatabaseSync(join(defaults.dataDir, 'happier-server-light.sqlite'));
+      database.exec('CREATE TABLE SimpleCache (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+      database.exec('CREATE TABLE _prisma_migrations (migration_name TEXT NOT NULL, checksum TEXT NOT NULL, finished_at TEXT, rolled_back_at TEXT)');
+      database.prepare('INSERT INTO SimpleCache (key, value) VALUES (?, ?)').run('server.identity.v1', 'home-test');
+      database.prepare('INSERT INTO _prisma_migrations (migration_name, checksum, finished_at) VALUES (?, ?, ?)')
+        .run(migrationName, createHash('sha256').update(migrationSql).digest('hex'), '2026-09-03T00:00:00.000Z');
+      database.close();
+    }
     return {
       homeDir,
       defaults,
@@ -116,11 +133,31 @@ describe('RelayHostEngine (Personal Home mutation seam)', () => {
   }
 
   function mockHealthyLocalHome(): void {
-    globalThis.fetch = vi.fn(async () => ({
-      ok: true,
-      status: 200,
-      json: async () => ({ ok: true }),
-    })) as unknown as typeof fetch;
+    globalThis.fetch = vi.fn(async () => {
+      const homeDir = mockedLocalHost.homeDir;
+      if (homeDir) {
+        const unitPath = join(homeDir, '.config', 'systemd', 'user', 'happier-server-preview.service');
+        const unit = await readFile(unitPath, 'utf8').catch(() => '');
+        const receiptPath = unit.match(/^Environment=HAPPIER_SERVER_STARTUP_RECEIPT_PATH=(.+)$/mu)?.[1]?.replace(/^"|"$/gu, '');
+        const nonce = unit.match(/^Environment=HAPPIER_SERVER_STARTUP_RECEIPT_NONCE=(.+)$/mu)?.[1]?.replace(/^"|"$/gu, '');
+        if (receiptPath && nonce) {
+          await mkdir(dirname(receiptPath), { recursive: true });
+          await writeFile(receiptPath, JSON.stringify({
+            nonce,
+            pid: process.pid,
+            host: '127.0.0.1',
+            port: 43123,
+            personalHomeReadiness: {
+              authenticated: true,
+              homeServerIdentityId: 'home-test',
+              accountCount: 1,
+              sessionCount: 0,
+            },
+          }));
+        }
+      }
+      return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    }) as unknown as typeof fetch;
     mockedLocalListener.state = 'healthy';
   }
 
@@ -158,7 +195,7 @@ describe('RelayHostEngine (Personal Home mutation seam)', () => {
   }
 
   it('restart with an omitted purpose inherits the persisted Personal Home purpose and takes the Home operation lock', async () => {
-    const runtime = await createInstalledPersonalHomeRuntime();
+    const runtime = await createInstalledPersonalHomeRuntime({ withInitializedHome: true });
     const lockEvents: string[] = [];
     try {
       mockLinuxHost(runtime.homeDir);
@@ -269,7 +306,7 @@ describe('RelayHostEngine (Personal Home mutation seam)', () => {
   }, 30_000);
 
   it('does not deadlock lifecycle control inside an operation that already holds the Home lock in this process', async () => {
-    const runtime = await createInstalledPersonalHomeRuntime();
+    const runtime = await createInstalledPersonalHomeRuntime({ withInitializedHome: true });
     try {
       mockLinuxHost(runtime.homeDir);
       mockHealthyLocalHome();

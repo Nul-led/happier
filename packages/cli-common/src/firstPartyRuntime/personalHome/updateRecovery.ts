@@ -3,16 +3,24 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 
 import { replacePersonalHomeFileDurably, syncPersonalHomeParentDirectory } from './durableFile.js';
-import type { PersonalHomeRuntimeLayout } from './layout.js';
+import { resolvePersonalHomeRuntimeArtifactPaths, type PersonalHomeRuntimeLayout } from './layout.js';
+import { parsePersonalHomeAuthenticatedReadiness, type PersonalHomeAuthenticatedReadiness } from './readiness.js';
 import { createPersonalHomePathProtection } from './protection.js';
 
-const UPDATE_RECOVERY_FILE = 'runtime-update-recovery.v1.json';
 const RUNTIME_BACKUP_PREFIX = '.relay-runtime-backup-';
 const RESTORE_POINT_PREFIX = 'pre-upgrade-';
 
 export type PersonalHomeUpdateRecoveryRecordV1 = Readonly<{
   version: 1;
-  phase: 'prepared' | 'committed';
+  phase: 'prepared' | 'activated' | 'committed';
+  expectedStartupNonce?: string;
+  activation?: Readonly<{
+    nonce: string;
+    pid: number;
+    host: string;
+    port: number;
+    readiness: PersonalHomeAuthenticatedReadiness;
+  }> | null;
   priorRunning: boolean;
   previousServiceDefinitionExisted: boolean;
   runtimeBackup: Readonly<{
@@ -31,7 +39,7 @@ export type PersonalHomeUpdateRecoveryRecordV1 = Readonly<{
 }>;
 
 export function resolvePersonalHomeUpdateRecoveryPath(layout: PersonalHomeRuntimeLayout): string {
-  return join(layout.dataDir, '.operations', UPDATE_RECOVERY_FILE);
+  return resolvePersonalHomeRuntimeArtifactPaths(layout).updateRecoveryPath;
 }
 
 function parseBoolean(value: unknown, field: string): boolean {
@@ -54,9 +62,9 @@ function parseOwnedName(value: unknown, prefix: string, suffix: string, field: s
 export function parsePersonalHomeUpdateRecoveryRecord(value: unknown): PersonalHomeUpdateRecoveryRecordV1 {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Personal Home update recovery record is invalid');
   const raw = value as Record<string, unknown>;
-  const allowed = new Set(['version', 'phase', 'priorRunning', 'previousServiceDefinitionExisted', 'runtimeBackup', 'restorePoint']);
+  const allowed = new Set(['version', 'phase', 'expectedStartupNonce', 'activation', 'priorRunning', 'previousServiceDefinitionExisted', 'runtimeBackup', 'restorePoint']);
   if (Object.keys(raw).some((key) => !allowed.has(key))) throw new Error('Personal Home update recovery record has unknown fields');
-  if (raw.version !== 1 || (raw.phase !== 'prepared' && raw.phase !== 'committed')) throw new Error('Personal Home update recovery version or phase is invalid');
+  if (raw.version !== 1 || !['prepared', 'activated', 'committed'].includes(String(raw.phase))) throw new Error('Personal Home update recovery version or phase is invalid');
   if (!raw.runtimeBackup || typeof raw.runtimeBackup !== 'object' || Array.isArray(raw.runtimeBackup)) throw new Error('Personal Home update recovery runtime backup is invalid');
   if (!raw.restorePoint || typeof raw.restorePoint !== 'object' || Array.isArray(raw.restorePoint)) throw new Error('Personal Home update recovery restore point is invalid');
   const runtime = raw.runtimeBackup as Record<string, unknown>;
@@ -69,9 +77,31 @@ export function parsePersonalHomeUpdateRecoveryRecord(value: unknown): PersonalH
   const homeServerIdentityId = typeof restore.homeServerIdentityId === 'string' ? restore.homeServerIdentityId.trim() : '';
   const schemaVersion = typeof restore.schemaVersion === 'string' ? restore.schemaVersion.trim() : '';
   if (!homeServerIdentityId || !schemaVersion) throw new Error('Personal Home update recovery identity or schema is invalid');
+  const expectedStartupNonce = typeof raw.expectedStartupNonce === 'string' ? raw.expectedStartupNonce.trim() : '';
+  let activation: PersonalHomeUpdateRecoveryRecordV1['activation'] = null;
+  if (raw.activation !== undefined && raw.activation !== null) {
+    if (typeof raw.activation !== 'object' || Array.isArray(raw.activation)) throw new Error('Personal Home update recovery activation evidence is invalid');
+    const value = raw.activation as Record<string, unknown>;
+    if (Object.keys(value).some((key) => !['nonce', 'pid', 'host', 'port', 'readiness'].includes(key))) throw new Error('Personal Home update recovery activation evidence has unknown fields');
+    const readiness = parsePersonalHomeAuthenticatedReadiness(value.readiness);
+    const nonce = typeof value.nonce === 'string' ? value.nonce.trim() : '';
+    const host = typeof value.host === 'string' ? value.host.trim().toLowerCase() : '';
+    const pid = value.pid;
+    const port = value.port;
+    if (!nonce || host !== '127.0.0.1' || !Number.isSafeInteger(pid) || Number(pid) < 1 || !Number.isInteger(port) || Number(port) < 1 || Number(port) > 65535 || !readiness) {
+      throw new Error('Personal Home update recovery activation evidence is invalid');
+    }
+    activation = Object.freeze({ nonce, pid: Number(pid), host, port: Number(port), readiness });
+  }
+  if (expectedStartupNonce && expectedStartupNonce.length > 256) throw new Error('Personal Home update recovery startup nonce is invalid');
+  if (activation && expectedStartupNonce && activation.nonce !== expectedStartupNonce) throw new Error('Personal Home update recovery activation nonce does not match');
+  if (activation && activation.readiness.homeServerIdentityId !== homeServerIdentityId) throw new Error('Personal Home update recovery activation identity does not match');
+  if (raw.phase === 'activated' && (!activation || !expectedStartupNonce)) throw new Error('Personal Home activated update is missing exact activation evidence');
   return Object.freeze({
     version: 1,
-    phase: raw.phase,
+    phase: raw.phase as PersonalHomeUpdateRecoveryRecordV1['phase'],
+    ...(expectedStartupNonce ? { expectedStartupNonce } : {}),
+    ...(raw.activation === undefined ? {} : { activation }),
     priorRunning: parseBoolean(raw.priorRunning, 'prior-running fact'),
     previousServiceDefinitionExisted: parseBoolean(raw.previousServiceDefinitionExisted, 'service-definition fact'),
     runtimeBackup: Object.freeze({

@@ -22,6 +22,7 @@ export type SetupMachineDaemonStatus = Readonly<{
   credentialState?: 'missing' | 'valid' | 'invalid' | 'unknown';
   machineRegistrationState?: 'no-local-id' | 'local-only' | 'server-confirmed';
   machineId: string | null;
+  activeServerId?: string | null;
 }>;
 
 export type SetupMachineReadiness = Readonly<{
@@ -58,11 +59,17 @@ export type SetupMachineRecipeSteps = Readonly<{
 }>;
 
 export type SetupMachineRecipeExecutor = Readonly<{
-  configureRelay: (profile: SetupMachineRelayProfile) => Promise<void>;
+  configureRelay: (profile: SetupMachineRelayProfile) => Promise<void | string>;
   readAuthStatus: () => Promise<SetupMachineAuthStatus>;
-  requestAuthPairing: () => Promise<Readonly<{ publicKey: string } & Record<string, unknown>>>;
-  waitForAuthPairing: (publicKey: string) => Promise<Readonly<{ machineId: string | null }>>;
+  requestAuthPairing?: () => Promise<Readonly<{ publicKey: string } & Record<string, unknown>>>;
+  waitForAuthPairing?: (publicKey: string) => Promise<Readonly<{ machineId: string | null }>>;
   approveAuthPairing?: (publicKey: string) => Promise<void>;
+  enrollAuthPairing?: (params: Readonly<{
+    approvePairingRequest?: (params: Readonly<{
+      publicKey: string;
+      requestPayload: Readonly<Record<string, unknown>>;
+    }>) => Promise<void>;
+  }>) => Promise<Readonly<{ publicKey: string | null; machineId: string | null }>>;
   installDaemonService?: () => Promise<void>;
   startDaemonService?: () => Promise<void>;
   waitForReadyDaemon?: (params: Readonly<{ signal?: AbortSignal }>) => Promise<SetupMachineDaemonStatus>;
@@ -135,8 +142,27 @@ export async function runSetupMachineRecipe(params: Readonly<{
 
   const shouldPair = credentialState !== 'valid' || machineRegistrationState !== 'server-confirmed';
   if (shouldPair) {
-    emitProgress(stepIds.authRequest, 'Requesting pairing');
-    const requestRaw = await params.executor.requestAuthPairing();
+    if (params.executor.enrollAuthPairing) {
+      emitProgress(stepIds.authRequest, 'Requesting pairing');
+      emitProgress(stepIds.authWait, 'Waiting for pairing');
+      const enrolled = await params.executor.enrollAuthPairing({
+        ...(params.approvePairingRequest
+          ? { approvePairingRequest: params.approvePairingRequest }
+          : {}),
+      });
+      publicKey = enrolled.publicKey;
+      machineId = enrolled.machineId ?? statusMachineId;
+      if (params.requireMachineIdAfterAuthWait === true && !machineId) {
+        throw new SystemTaskExecutionError('machine_id_unavailable', 'Auth pairing did not return a machine id.');
+      }
+    } else {
+      const requestAuthPairing = params.executor.requestAuthPairing;
+      const waitForAuthPairing = params.executor.waitForAuthPairing;
+      if (!requestAuthPairing || !waitForAuthPairing) {
+        throw new SystemTaskExecutionError('auth_enrollment_unavailable', 'No authentication enrollment owner is available.');
+      }
+      emitProgress(stepIds.authRequest, 'Requesting pairing');
+      const requestRaw = await requestAuthPairing();
     const resolvedPublicKey = typeof requestRaw.publicKey === 'string' ? requestRaw.publicKey.trim() : '';
     if (!resolvedPublicKey) {
       throw new SystemTaskExecutionError('invalid_cli_response', 'Missing auth request public key.');
@@ -158,7 +184,7 @@ export async function runSetupMachineRecipe(params: Readonly<{
     }
 
     emitProgress(stepIds.authWait, 'Waiting for pairing');
-    const waitResult = await params.executor.waitForAuthPairing(publicKey);
+    const waitResult = await waitForAuthPairing(publicKey);
     const waitedMachineId = typeof waitResult.machineId === 'string' && waitResult.machineId.trim()
       ? waitResult.machineId.trim()
       : null;
@@ -173,10 +199,11 @@ export async function runSetupMachineRecipe(params: Readonly<{
       } catch {
         // best-effort fallback only
       }
-    }
+      }
 
     if (params.requireMachineIdAfterAuthWait === true && !machineId) {
       throw new SystemTaskExecutionError('machine_id_unavailable', 'Auth pairing did not return a machine id.');
+    }
     }
   }
 

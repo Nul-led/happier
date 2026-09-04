@@ -6,6 +6,8 @@ import { SERVER_BINARY_TARGETS, resolveCurrentBinaryTarget, resolveExecutableNam
 import { commandExists, compileBunBinary, ensureFileExists, execOrThrow, resolveBunCommand, type RunCommand } from './commands.js';
 import { finalizeRuntimeArtifactPayload } from './finalizeRuntimeArtifactPayload.js';
 import { compilePrismaMigrateBinary } from './compilePrismaMigrateBinary.js';
+import { stageIrohNativeReleaseEvidence } from './stageIrohNativeReleaseEvidence.js';
+import { writePersonalHomeServerArtifactCapability } from '../firstPartyRuntime/personalHome/artifactContract.js';
 import {
   resolveRequestedServerDbProviders,
   resolveServerBinarySidecarEntries,
@@ -173,6 +175,7 @@ export async function buildServerBinaryArtifactPayload({
   compileBinary = compileBunBinary,
   compilePrismaBinary = compilePrismaMigrateBinary,
   copyPath = defaultCopyPath,
+  includeIrohNativeReleaseEvidence = false,
 }: {
   repoRoot: string;
   payloadDir: string;
@@ -189,6 +192,7 @@ export async function buildServerBinaryArtifactPayload({
   compileBinary?: typeof compileBunBinary;
   compilePrismaBinary?: typeof compilePrismaMigrateBinary;
   copyPath?: (entry: { sourcePath: string; destPath: string; recursive: boolean }, fallbackCopyPath: typeof defaultCopyPath) => Promise<void>;
+  includeIrohNativeReleaseEvidence?: boolean;
 }): Promise<{ executableName: string; entrypoint: string; migrationEntrypoint?: string }> {
   const bunCommand = resolveBunCommand({ commandProbe, processEnv: env });
   if (!bunCommand) {
@@ -273,6 +277,13 @@ export async function buildServerBinaryArtifactPayload({
       copyPath,
     });
   }
+  await stageIrohNativeReleaseEvidence({
+    repoRoot,
+    payloadDir,
+    required: includeIrohNativeReleaseEvidence,
+    runCommand,
+  });
+  await writePersonalHomeServerArtifactCapability(payloadDir);
   await finalizeRuntimeArtifactPayload(payloadDir);
 
   return {

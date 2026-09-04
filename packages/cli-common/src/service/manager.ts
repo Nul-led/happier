@@ -1,5 +1,5 @@
 import { dirname, join } from 'node:path';
-import { chmod, mkdir, rename, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { userInfo } from 'node:os';
 
@@ -57,7 +57,12 @@ export type PlannedCommand = Readonly<{
   completePlanOnExpectedFailure?: boolean;
   fallbackCommands?: readonly PlannedCommand[];
 }>;
-export type ServicePlan = Readonly<{ writes: PlannedWrite[]; commands: PlannedCommand[] }>;
+export type ServiceDefinitionRemoval = Readonly<{ path: string; beforeCommandIndex: number }>;
+export type ServicePlan = Readonly<{
+  writes: PlannedWrite[];
+  commands: PlannedCommand[];
+  removals?: readonly ServiceDefinitionRemoval[];
+}>;
 export type ServiceRegistrationState = 'registered' | 'absent';
 
 function windowsPowerShellCommandArgs(command: string): readonly string[] {
@@ -263,11 +268,12 @@ export function planServiceAction(params: Readonly<{
   if (!backend) throw new Error('backend is required');
   if (!action) throw new Error('action is required');
   if (!label) throw new Error('label is required');
+  if (action === 'uninstall' && !definitionPath) throw new Error('definitionPath is required for uninstall');
 
   const writes: PlannedWrite[] = [];
   const commands: PlannedCommand[] = [];
 
-  if (action === 'install') {
+  if (action === 'install' || ((action === 'start' || action === 'restart') && contents)) {
     if (!definitionPath) throw new Error('definitionPath is required for install');
     writes.push({ path: definitionPath, contents, mode: 0o644 });
   }
@@ -290,12 +296,12 @@ export function planServiceAction(params: Readonly<{
         cmd: 'systemctl',
         args: [...prefix, 'disable', '--now', unitName],
         expectedFailure: 'service-absent',
-        completePlanOnExpectedFailure: true,
       });
       commands.push({ cmd: 'systemctl', args: [...prefix, 'daemon-reload'] });
-      return { writes, commands };
+      return { writes, commands, removals: [{ path: definitionPath, beforeCommandIndex: 1 }] };
     }
     if (action === 'start') {
+      if (writes.length > 0) commands.push({ cmd: 'systemctl', args: [...prefix, 'daemon-reload'] });
       commands.push({ cmd: 'systemctl', args: persistent ? [...prefix, 'enable', '--now', unitName] : [...prefix, 'start', unitName] });
       return { writes, commands };
     }
@@ -312,6 +318,7 @@ export function planServiceAction(params: Readonly<{
       return { writes, commands };
     }
     if (action === 'restart') {
+      if (writes.length > 0) commands.push({ cmd: 'systemctl', args: [...prefix, 'daemon-reload'] });
       commands.push({ cmd: 'systemctl', args: [...prefix, 'restart', unitName] });
       return { writes, commands };
     }
@@ -361,7 +368,9 @@ export function planServiceAction(params: Readonly<{
           ...(action === 'uninstall' ? { expectedFailure: 'service-absent' as const } : { allowFail: true }),
         });
       }
-      return { writes, commands };
+      return action === 'uninstall'
+        ? { writes, commands, removals: [{ path: definitionPath, beforeCommandIndex: commands.length }] }
+        : { writes, commands };
     }
     if (action === 'restart') {
       if (bootstrapCommands && serviceDomain) {
@@ -438,7 +447,7 @@ export function planServiceAction(params: Readonly<{
           qualifiedTaskName: name,
         })),
       });
-      return { writes, commands };
+      return { writes, commands, removals: [{ path: definitionPath, beforeCommandIndex: commands.length }] };
     }
     if (action === 'start') {
       commands.push({ cmd: 'schtasks', args: ['/Run', '/TN', name] });
@@ -474,7 +483,15 @@ export async function applyServicePlan(plan: ServicePlan, options: Readonly<{ ru
     await writeAtomicTextFile(w.path, w.contents, w.mode ?? 0o644);
   }
   if (options.runCommands === false) return;
-  for (const c of plan.commands) {
+  const removals = [...(plan.removals ?? [])];
+  const applyRemovals = async (beforeCommandIndex: number): Promise<void> => {
+    for (const removal of removals.filter((entry) => entry.beforeCommandIndex === beforeCommandIndex)) {
+      await rm(removal.path, { force: true });
+    }
+  };
+  for (let commandIndex = 0; commandIndex < plan.commands.length; commandIndex += 1) {
+    await applyRemovals(commandIndex);
+    const c = plan.commands[commandIndex]!;
     if (launchdUsedLegacyLoadFallback && c.cmd === 'launchctl') {
       const first = Array.isArray(c.args) ? String(c.args[0] ?? '').trim() : '';
       if (first === 'enable' || first === 'kickstart') {
@@ -551,6 +568,7 @@ export async function applyServicePlan(plan: ServicePlan, options: Readonly<{ ru
       throw new Error(`[service] command failed (${status ?? 'unknown'}): ${c.cmd} ${c.args.join(' ')}${details}`.trim());
     }
   }
+  await applyRemovals(plan.commands.length);
 }
 
 export function isBenignServiceAbsenceFailure(params: Readonly<{

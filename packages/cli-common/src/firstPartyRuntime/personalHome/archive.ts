@@ -16,7 +16,7 @@ import {
   serializePersonalHomeManifest,
   type PersonalHomeBackupManifestV1,
 } from './manifest.js';
-import { replacePersonalHomeFileDurably } from './durableFile.js';
+import { publishPersonalHomeFileNoClobberDurably } from './durableFile.js';
 import { createPersonalHomePathProtection } from './protection.js';
 
 export type PersonalHomeArchiveResult = Readonly<{ path: string; sha256: string; archiveBytes: number }>;
@@ -58,7 +58,7 @@ export async function createPersonalHomeArchive(params: Readonly<{ stagingDir: s
     await tar.create({ cwd: staging, file: temporary, portable: true, noMtime: true, follow: false, noDirRecurse: true }, names);
     const sha256 = await sha256File(temporary); await protect(temporary, 'file');
     await verifyPersonalHomeArchive(temporary);
-    await replacePersonalHomeFileDurably(temporary, output);
+    await publishPersonalHomeFileNoClobberDurably(temporary, output);
     return { path: output, sha256, archiveBytes: (await stat(output)).size };
   } catch (error) { await rm(temporary, { force: true }).catch(() => undefined); throw error; }
 }

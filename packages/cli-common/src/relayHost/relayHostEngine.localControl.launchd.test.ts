@@ -1,7 +1,8 @@
-import { homedir } from 'node:os';
+import { mkdtemp, rm } from 'node:fs/promises';
+import * as nodeOs from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 async function mockLaunchdLocalControlModules(params: Readonly<{
   calls: Array<{ cmd: string; args: readonly string[] }>;
@@ -36,6 +37,18 @@ async function mockLaunchdLocalControlModules(params: Readonly<{
 }
 
 describe('RelayHostEngine (local launchd control)', () => {
+  let testHomeDir = '';
+
+  beforeEach(async () => {
+    testHomeDir = await mkdtemp(join(nodeOs.tmpdir(), 'relay-host-launchd-control-'));
+    vi.doMock('node:os', () => ({ ...nodeOs, homedir: () => testHomeDir }));
+  });
+
+  afterEach(async () => {
+    vi.doUnmock('node:os');
+    await rm(testHomeDir, { recursive: true, force: true });
+  });
+
   it('bootstraps the launchd service when starting the local relay runtime', async () => {
     const originalPlatform = process.platform;
     const originalGetuid = (process as unknown as { getuid?: (() => number) | undefined }).getuid;
@@ -65,7 +78,7 @@ describe('RelayHostEngine (local launchd control)', () => {
       });
 
       const launchctlCalls = calls.filter((call) => call.cmd === 'launchctl').map((call) => call.args.join(' '));
-      expect(launchctlCalls).toContain(`bootstrap gui/501 ${join(homedir(), 'Library', 'LaunchAgents', 'happier-server.plist')}`);
+      expect(launchctlCalls).toContain(`bootstrap gui/501 ${join(testHomeDir, 'Library', 'LaunchAgents', 'happier-server.plist')}`);
       expect(launchctlCalls).toContain('enable gui/501/happier-server');
       expect(launchctlCalls).toContain('kickstart -k gui/501/happier-server');
     } finally {
@@ -109,8 +122,8 @@ describe('RelayHostEngine (local launchd control)', () => {
 
       const launchctlCalls = calls.filter((call) => call.cmd === 'launchctl').map((call) => call.args.join(' '));
       expect(launchctlCalls).toContain('kickstart -k gui/501/happier-server');
-      expect(launchctlCalls).not.toContain(`bootstrap gui/501 ${join(homedir(), 'Library', 'LaunchAgents', 'happier-server.plist')}`);
-      expect(launchctlCalls).not.toContain(`load -w ${join(homedir(), 'Library', 'LaunchAgents', 'happier-server.plist')}`);
+      expect(launchctlCalls).not.toContain(`bootstrap gui/501 ${join(testHomeDir, 'Library', 'LaunchAgents', 'happier-server.plist')}`);
+      expect(launchctlCalls).not.toContain(`load -w ${join(testHomeDir, 'Library', 'LaunchAgents', 'happier-server.plist')}`);
     } finally {
       Object.defineProperty(process, 'platform', { value: originalPlatform });
       if (originalGetuid) (process as unknown as { getuid?: (() => number) | undefined }).getuid = originalGetuid;
@@ -161,7 +174,7 @@ describe('RelayHostEngine (local launchd control)', () => {
       });
 
       const launchctlCalls = calls.filter((call) => call.cmd === 'launchctl').map((call) => call.args.join(' '));
-      expect(launchctlCalls).toContain(`bootstrap gui/501 ${join(homedir(), 'Library', 'LaunchAgents', 'happier-server.plist')}`);
+      expect(launchctlCalls).toContain(`bootstrap gui/501 ${join(testHomeDir, 'Library', 'LaunchAgents', 'happier-server.plist')}`);
       expect(launchctlCalls).toContain('enable gui/501/happier-server');
       expect(launchctlCalls).toContain('kickstart -k gui/501/happier-server');
     } finally {

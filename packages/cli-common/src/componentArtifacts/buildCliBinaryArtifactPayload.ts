@@ -42,6 +42,7 @@ import { stageCliProxyApiManagedRuntime } from './stageCliProxyApiManagedRuntime
 import { stageProcessCustodyRuntime } from './stageProcessCustodyRuntime.js';
 import { CLI_RUNTIME_SIDECAR_ENTRIES } from './cliRuntimeSidecars.js';
 import { writeCliBinaryArtifactRuntimeAssetBuildManifest } from './refreshCliBinaryArtifactRuntimeAssetBuildManifest.js';
+import { stageIrohNativeReleaseEvidence } from './stageIrohNativeReleaseEvidence.js';
 
 export const CLI_RUNTIME_EXTERNAL_PACKAGES = [
   '@huggingface/transformers',
@@ -745,6 +746,7 @@ async function stageCliBinaryArtifactSupportPayload({
   supportArtifactFingerprint,
   goVersion,
   preserveCompilePayloadAssets = false,
+  includeIrohNativeReleaseEvidence = false,
 }: {
   repoRoot: string;
   payloadDir: string;
@@ -757,6 +759,7 @@ async function stageCliBinaryArtifactSupportPayload({
   supportArtifactFingerprint?: string;
   goVersion?: string;
   preserveCompilePayloadAssets?: boolean;
+  includeIrohNativeReleaseEvidence?: boolean;
 }): Promise<Readonly<{
   entrypoint: string;
   workspaceRuntimeIdentity: string;
@@ -819,6 +822,12 @@ async function stageCliBinaryArtifactSupportPayload({
     prebuiltExecutablePath: processCustodyRuntimeExecutablePath,
   });
   await stageDeferredVoiceInferenceRuntimeArchive(payloadDir, target);
+  await stageIrohNativeReleaseEvidence({
+    repoRoot,
+    payloadDir,
+    required: includeIrohNativeReleaseEvidence,
+    runCommand,
+  });
   if (expectedSupportFingerprint) {
     await writeFile(
       join(payloadDir, DAEMON_SUPPORT_ENTRYPOINT),
@@ -865,6 +874,7 @@ export async function buildCliBinaryArtifactSupportPayload({
   supportArtifactFingerprint,
   goVersion,
   preserveCompilePayloadAssets = false,
+  includeIrohNativeReleaseEvidence = false,
 }: {
   repoRoot: string;
   payloadDir: string;
@@ -877,6 +887,7 @@ export async function buildCliBinaryArtifactSupportPayload({
   supportArtifactFingerprint?: string;
   goVersion?: string;
   preserveCompilePayloadAssets?: boolean;
+  includeIrohNativeReleaseEvidence?: boolean;
 }): Promise<Readonly<{
   entrypoint: string;
   workspaceRuntimeIdentity: string;
@@ -894,6 +905,7 @@ export async function buildCliBinaryArtifactSupportPayload({
     supportArtifactFingerprint,
     goVersion,
     preserveCompilePayloadAssets,
+    includeIrohNativeReleaseEvidence,
   }), {
     // The support identity is computed from the installed CLI workspace
     // publication. Keep that existing publication stable until every byte has
@@ -919,6 +931,7 @@ export async function buildCliBinaryArtifactPayload({
   cliProxyApiManagedRuntimeExecutablePath,
   processCustodyRuntimeExecutablePath,
   requiredCliDistInputFingerprint,
+  includeIrohNativeReleaseEvidence = false,
 }: {
   repoRoot: string;
   payloadDir: string;
@@ -931,6 +944,7 @@ export async function buildCliBinaryArtifactPayload({
   cliProxyApiManagedRuntimeExecutablePath?: string;
   processCustodyRuntimeExecutablePath?: string;
   requiredCliDistInputFingerprint?: string;
+  includeIrohNativeReleaseEvidence?: boolean;
 }): Promise<{ executableName: string; entrypoint: string }> {
   await rm(payloadDir, { recursive: true, force: true });
   await mkdir(payloadDir, { recursive: true });
@@ -958,6 +972,7 @@ export async function buildCliBinaryArtifactPayload({
     // Bun executable (for example its managed JS runtime). New immutable
     // daemon support artifacts stage into an empty payload instead.
     preserveCompilePayloadAssets: true,
+    includeIrohNativeReleaseEvidence,
   });
   writeCliBinaryArtifactRuntimeAssetBuildManifest({
     payloadDir,

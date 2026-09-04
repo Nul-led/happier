@@ -1,4 +1,6 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import * as nodeChildProcess from 'node:child_process';
+import * as nodeOs from 'node:os';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -161,7 +163,7 @@ describe('RelayHostEngine (Personal Home purpose)', () => {
         selfHostRelayBinaryOverride: serverBinaryPath,
         purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
         env: { PORT: '43123', AUTH_ANONYMOUS_SIGNUP_ENABLED: '0' },
-      })).rejects.toThrow('Personal Home is still running after the managed service stop');
+      })).rejects.toThrow('Relay runtime stop command completed without proving its terminal service state');
     } finally {
       Object.defineProperty(process, 'platform', { value: originalPlatform });
       vi.doUnmock('../firstPartyRuntime/relayRuntimeInstall.js');
@@ -246,6 +248,17 @@ describe('RelayHostEngine (Personal Home purpose)', () => {
         const actual = await vi.importActual<typeof import('node:os')>('node:os');
         return { ...actual, homedir: () => homeDir };
       });
+      vi.doMock('node:child_process', async () => {
+        const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');
+        return {
+          ...actual,
+          spawnSync: () => ({
+            status: 0,
+            stdout: 'LoadState=not-found\nActiveState=inactive\nSubState=dead\nUnitFileState=disabled\n',
+            stderr: '',
+          }),
+        };
+      });
       const payloadRoot = join(homeDir, 'payload');
       await mkdir(payloadRoot, { recursive: true });
       const serverBinaryPath = join(payloadRoot, 'happier-server');
@@ -290,6 +303,8 @@ describe('RelayHostEngine (Personal Home purpose)', () => {
       expect(status.anonymousSignupEnabled).toBe(false);
     } finally {
       Object.defineProperty(process, 'platform', { value: originalPlatform });
+      vi.doUnmock('node:child_process');
+      vi.doUnmock('node:os');
       vi.resetModules();
       vi.clearAllMocks();
       await rm(homeDir, { recursive: true, force: true });
@@ -318,23 +333,30 @@ describe('RelayHostEngine (Personal Home purpose)', () => {
 
   it('reports canonical origin and persistent layout facts for a managed Personal Home', async () => {
     const originalPlatform = process.platform;
-    Object.defineProperty(process, 'platform', { value: 'linux' });
+    const homeDir = await mkdtemp(join(tmpdir(), 'personal-home-engine-status-'));
     try {
-      vi.doMock('node:os', async () => {
-        const actual = await vi.importActual<typeof import('node:os')>('node:os');
-        return { ...actual, homedir: () => '/tmp/personal-home-engine-test' };
-      });
-      vi.doMock('node:fs', async () => {
-        const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
-        return { ...actual, existsSync: () => false };
-      });
-      vi.doMock('node:child_process', async () => {
-        const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');
-        return {
-          ...actual,
-          spawnSync: () => ({ status: 0, stdout: 'LoadState=not-found\n', stderr: '' }),
-        };
-      });
+      vi.resetModules();
+      Object.defineProperty(process, 'platform', { value: 'linux' });
+      vi.doMock('node:os', () => ({ ...nodeOs, homedir: () => homeDir }));
+      vi.doMock('node:child_process', () => ({
+        ...nodeChildProcess,
+        spawnSync: () => ({ status: 0, stdout: 'LoadState=not-found\n', stderr: '' }),
+      }));
+
+      const canonicalServerUrl = 'http://127.0.0.1:43123';
+      const defaults = resolveRelayRuntimeDefaults({ platform: 'linux', mode: 'user', channel: 'stable', homeDir });
+      await mkdir(join(defaults.installRoot, 'bin'), { recursive: true });
+      await mkdir(defaults.configDir, { recursive: true });
+      await writeFile(join(defaults.installRoot, 'bin', 'happier-server'), '#!/bin/sh\n', 'utf8');
+      await writeFile(join(defaults.installRoot, 'self-host-state.json'), JSON.stringify({
+        version: 'stable-1',
+        purpose: { kind: 'personal-home', canonicalServerUrl },
+      }), 'utf8');
+      await writeFile(join(defaults.configDir, 'server.env'), [
+        'PORT=43123',
+        `HAPPIER_CANONICAL_SERVER_URL=${canonicalServerUrl}`,
+        '',
+      ].join('\n'), 'utf8');
 
       const { createRelayHostEngine } = await import('./relayHostEngine.js');
       const engine = createRelayHostEngine({
@@ -351,24 +373,23 @@ describe('RelayHostEngine (Personal Home purpose)', () => {
         target: { kind: 'local' },
         channel: 'stable',
         mode: 'user',
-        purpose: {
-          kind: 'personal-home',
-          canonicalServerUrl: 'http://127.0.0.1:43123',
-        },
       });
 
-      expect(status.canonicalServerUrl).toBe('http://127.0.0.1:43123');
+      expect(status.canonicalServerUrl).toBe(canonicalServerUrl);
       expect(status.purpose).toEqual({
         kind: 'personal-home',
-        canonicalServerUrl: 'http://127.0.0.1:43123',
+        canonicalServerUrl,
       });
       expect(status.layout?.dataDir).toContain('/.happier/self-host/data');
       expect(status.layout?.databasePath).toBe(`${status.layout?.dataDir}/happier-server-light.sqlite`);
       expect(status.dataPresent).toBe(false);
     } finally {
       Object.defineProperty(process, 'platform', { value: originalPlatform });
+      vi.doUnmock('node:child_process');
+      vi.doUnmock('node:os');
       vi.resetModules();
       vi.clearAllMocks();
+      await rm(homeDir, { recursive: true, force: true });
     }
   });
 

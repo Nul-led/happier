@@ -21,6 +21,7 @@ async function writeReadySnapshot({
   const stagingRoot = join(cliDir, '.runner-snapshots', '.staging');
   const stagingEntrypoint = join(stagingRoot, 'package-dist', 'index.mjs');
   await mkdir(dirname(stagingEntrypoint), { recursive: true });
+  await writeFile(join(stagingRoot, 'package.json'), '{"name":"@happier-dev/cli"}\n', 'utf8');
   await writeFile(stagingEntrypoint, 'export {};\n', 'utf8');
   const writtenManifest = cliDistBuildManifest.writeCliDistBuildManifest(stagingEntrypoint, {
     outputDir: dirname(stagingEntrypoint),

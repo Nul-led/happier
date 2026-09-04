@@ -68,6 +68,8 @@ export interface RelayRuntimeStatusSnapshot {
 }
 
 type RelayRuntimeStatusResult = Readonly<{
+  channel: 'stable' | 'preview' | 'dev';
+  mode: 'user' | 'system';
   installed: boolean;
   version: string | null;
   relayUrl: string;
@@ -605,7 +607,7 @@ export function createRelayRuntimeStatusTaskKind(deps: Pick<RelayRuntimeKindDeps
         message: 'Checking relay runtime health',
       });
 
-      return await buildRelayRuntimeStatusResult(snapshot, deps.checkHealth);
+      return await buildRelayRuntimeStatusResult(snapshot, deps.checkHealth, parsed);
     },
   };
 }
@@ -660,7 +662,7 @@ export function createRelayRuntimeStartTaskKind(deps: Pick<RelayRuntimeKindDeps,
         message: 'Checking relay runtime health',
       });
 
-      return await buildRelayRuntimeStatusResult(snapshot, deps.checkHealth);
+      return await buildRelayRuntimeStatusResult(snapshot, deps.checkHealth, parsed);
     },
   };
 }
@@ -674,7 +676,7 @@ export function createRelayRuntimeRestartTaskKind(deps: Pick<RelayRuntimeKindDep
       await deps.control({ ...parsed, action: 'restart' });
       const snapshot = await deps.readStatus(parsed);
       ctx.emit({ type: 'progress', stepId: 'relay.status.health', message: 'Checking relay runtime health' });
-      return await buildRelayRuntimeStatusResult(snapshot, deps.checkHealth);
+      return await buildRelayRuntimeStatusResult(snapshot, deps.checkHealth, parsed);
     },
   };
 }
@@ -732,12 +734,15 @@ export function createRelayRuntimeUninstallTaskKind(deps: Pick<RelayRuntimeKindD
 async function buildRelayRuntimeStatusResult(
   snapshot: RelayRuntimeStatusSnapshot,
   checkHealth: (params: Readonly<{ baseUrl: string }>) => Promise<boolean>,
+  runtimeTarget: Pick<RelayRuntimeTaskParams, 'channel' | 'mode'>,
 ): Promise<RelayRuntimeStatusResult> {
   const healthy = typeof snapshot.healthy === 'boolean'
     ? snapshot.healthy
     : await checkHealth({ baseUrl: snapshot.baseUrl });
 
   return {
+    channel: runtimeTarget.channel ?? 'stable',
+    mode: runtimeTarget.mode ?? 'user',
     installed: snapshot.installed,
     version: snapshot.version,
     relayUrl: snapshot.baseUrl,

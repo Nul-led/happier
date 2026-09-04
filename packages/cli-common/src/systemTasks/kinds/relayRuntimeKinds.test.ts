@@ -1013,6 +1013,8 @@ describe('relay runtime shared system task kinds', () => {
       },
     ]);
     expect(result).toEqual({
+      channel: 'stable',
+      mode: 'user',
       installed: true,
       version: '1.2.3',
       service: {
@@ -1059,6 +1061,8 @@ describe('relay runtime shared system task kinds', () => {
     });
 
     expect(result).toEqual({
+      channel: 'preview',
+      mode: 'user',
       installed: true,
       version: '1.2.3',
       service: {
@@ -1169,6 +1173,8 @@ describe('relay runtime shared system task kinds', () => {
       },
     ]);
     expect(result).toEqual({
+      channel: 'preview',
+      mode: 'user',
       installed: true,
       version: '2.3.4',
       relayUrl: 'http://127.0.0.1:3005',

@@ -179,7 +179,13 @@ export type {
   PersonalHomeSqliteMigrationRecord,
 } from './personalHome/stagedMigrationFrontier.js';
 
-export { installOrUpdateRelayRuntimeLocal, uninstallRelayRuntimePayloadLocal } from './relayRuntimeInstall.js';
+export {
+  installOrUpdateRelayRuntimeLocal,
+  PERSONAL_HOME_UPDATER_FORWARD_RECOVERY_CAPABILITY,
+  PERSONAL_HOME_UPDATER_FORWARD_RECOVERY_CAPABILITY_ENV,
+  uninstallRelayRuntimePayloadLocal,
+  waitForRelayRuntimeStartupReceipt,
+} from './relayRuntimeInstall.js';
 
 export {
   PERSONAL_HOME_SIGNUP_POLICY_ENV_KEY,
@@ -192,8 +198,9 @@ export {
 } from './personalHomeSignupPolicy.js';
 export type { PersonalHomeSignupPolicyState } from './personalHomeSignupPolicy.js';
 
-export { resolvePersonalHomeRuntimeLayout, assertLayoutPath } from './personalHome/layout.js';
-export type { PersonalHomeRuntimeLayout } from './personalHome/layout.js';
+export { resolvePersonalHomeRuntimeLayout, resolvePersonalHomeRuntimeArtifactPaths, assertLayoutPath } from './personalHome/layout.js';
+export type { PersonalHomeRuntimeLayout, PersonalHomeRuntimeArtifactPaths } from './personalHome/layout.js';
+export { replacePersonalHomeFileDurably } from './personalHome/durableFile.js';
 export {
   assertPersonalHomeBootAdmission,
   PersonalHomeBootAdmissionError,
@@ -222,11 +229,31 @@ export {
 export { runPersonalHomeBootstrap } from './personalHome/bootstrap.js';
 export type { PersonalHomeBootstrapDeps, PersonalHomeBootstrapResult } from './personalHome/bootstrap.js';
 export { PersonalHomeCredentialsUnverifiedError } from './personalHome/bootstrap.js';
-export { PersonalHomeOperationsError, createPersonalHomeEraseConfirmationToken } from './personalHome/operations.js';
 export {
+  runPersonalHomeBootstrapFromSystemTasks,
+  PersonalHomeDescriptorUnverifiedError,
+  PersonalHomeExistingRuntimeConflictError,
+} from './personalHome/bootstrapSystemTasks.js';
+export type {
+  PersonalHomeBootstrapSystemTaskDeps,
+  PersonalHomeBootstrapTaskKind,
+  PersonalHomeBootstrapTaskOptions,
+  PersonalHomeEndpointSnapshot,
+  PersonalHomeExistingRuntimeDisposition,
+} from './personalHome/bootstrapSystemTasks.js';
+export {
+  PERSONAL_HOME_SERVER_ARTIFACT_CAPABILITY_FILE,
+  PersonalHomeArtifactAdmissionError,
+  assertPersonalHomeServerArtifactCapability,
+  writePersonalHomeServerArtifactCapability,
+} from './personalHome/artifactContract.js';
+export { PersonalHomeOperationsError } from './personalHome/operations.js';
+export {
+  assertPersonalHomeRelocationDestinationAllowsMaintenance,
   createPersonalHomeRelocationDestinationOwner,
   PersonalHomeRelocationDestinationError,
 } from './personalHome/relocationDestination.js';
+export type { PersonalHomeRelocationDestinationMaintenanceAdmission } from './personalHome/relocationDestination.js';
 export { PersonalHomeArchiveError } from './personalHome/archive.js';
 export { PersonalHomeRestoreError } from './personalHome/restore.js';
 export {

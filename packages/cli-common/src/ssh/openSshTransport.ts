@@ -39,6 +39,7 @@ function buildOpenSshTransportArgs(params: Readonly<{
   connectTimeoutSec?: number;
   serverAliveIntervalSec?: number;
   serverAliveCountMax?: number;
+  tty?: boolean;
   portFlag: '-p' | '-P';
 }>): Readonly<{ args: string[]; env?: NodeJS.ProcessEnv }> {
   if (params.auth.mode === 'keyFile' && !String(params.auth.privateKeyPath ?? '').trim()) {
@@ -118,6 +119,7 @@ export function buildOpenSshCommand(params: Readonly<{
   connectTimeoutSec?: number;
   serverAliveIntervalSec?: number;
   serverAliveCountMax?: number;
+  tty?: boolean;
 }>): Readonly<{
   command: string;
   args: string[];
@@ -137,7 +139,7 @@ export function buildOpenSshCommand(params: Readonly<{
     portFlag: '-p',
   });
 
-  const nextArgs = [...args, target, ...params.remoteCommand];
+  const nextArgs = [...args, ...(params.tty ? ['-t'] : []), target, ...params.remoteCommand];
   const commandLabel = params.remoteCommand.length >= 2
     ? `${params.remoteCommand[0]} ${params.remoteCommand[1]} …`
     : `${params.remoteCommand[0] ?? 'remote'} …`;
@@ -155,6 +157,8 @@ export function buildOpenScpCommand(params: Readonly<{
   target: string;
   localPath: string;
   remotePath: string;
+  direction?: 'upload' | 'download';
+  recursive?: boolean;
   sshConfigFile?: string;
   knownHostsPath?: string;
   knownHostsMode?: OpenSshKnownHostsMode;
@@ -182,11 +186,15 @@ export function buildOpenScpCommand(params: Readonly<{
     portFlag: '-P',
   });
 
+  const direction = params.direction ?? 'upload';
+  const endpoints = direction === 'upload'
+    ? [params.localPath, `${target}:${params.remotePath}`]
+    : [`${target}:${params.remotePath}`, params.localPath];
   return {
     command: params.scpBin,
-    args: [...args, '-r', params.localPath, `${target}:${params.remotePath}`],
+    args: [...args, ...(params.recursive === false ? [] : ['-r']), ...endpoints],
     ...(env ? { env } : {}),
-    redactedLabel: `${params.scpBin} ${params.localPath} ${target}:…`,
+    redactedLabel: `${params.scpBin} ${direction === 'upload' ? '… ' + target + ':…' : target + ':… …'}`,
   };
 }
 
@@ -236,6 +244,10 @@ export function buildSshKeyscanInvocation(params: Readonly<{
 
 export function redactSshText(text: string): string {
   return String(text ?? '')
+    .replace(/("(?:claimSecret|pairingSecret|secretKey|masterSecret|approvalSecret|secretB64Url|token)"\s*:\s*")[^"]*(")/giu, '$1[redacted-secret]$2')
+    .replace(/("stateFile"\s*:\s*")[^"]*(")/giu, '$1[redacted-path]$2')
+    .replace(/(Bearer\s+)[^\s"']+/giu, '$1[redacted-secret]')
+    .replace(/(--(?:api-token|claim-secret|pairing-secret)(?:=|\s+))[^\s"']+/giu, '$1[redacted-secret]')
     .replace(/Identity file\s+\S+/gi, 'Identity file [redacted-path]')
     .replace(/password:\s*[^\s]+/gi, 'password: [redacted-secret]')
     .replace(/HAPPIER_SSH_PASSWORD=\S+/gi, 'HAPPIER_SSH_PASSWORD=[redacted-secret]');

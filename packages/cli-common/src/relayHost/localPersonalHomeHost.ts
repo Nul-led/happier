@@ -197,18 +197,20 @@ export function createLocalPersonalHomeHost(target: LocalPersonalHomeHostTarget)
       activate,
       readServiceStatus,
       attestActivatedHome,
-      attestStagedHome: async ({ layout }) => await attestPersonalHomeRelocationDestinationWithServerCommand({
+      attestStagedHome: async ({ layout, operationId }) => await attestPersonalHomeRelocationDestinationWithServerCommand({
         layout,
         serverBinary,
+        operationId,
       }),
       runMigrationProcess: runMigrationProcess('personal-home relocation destination staged migration'),
-      materializeEndpoint: async ({ layout, sourceDescriptorRevision }) => {
+      materializeEndpoint: async ({ layout, operationId, sourceDescriptorRevision }) => {
         const status = await engine.readStatus(runtimeParams);
         const canonicalServerUrl = status.canonicalServerUrl?.trim() ?? '';
         if (!canonicalServerUrl) throw new Error('Relocation destination canonical server URL is unavailable');
         return await materializePersonalHomeRelocationEndpointWithServerCommand({
           layout,
           serverBinary,
+          operationId,
           canonicalServerUrl,
           sourceDescriptorRevision,
         });

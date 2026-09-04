@@ -208,9 +208,9 @@ describe('Personal Home production adapters', () => {
         sourceDescriptorRevision: 3,
       };
 
+      await expect(owner.status(stageInput.operationId)).rejects.toMatchObject({ code: 'destination_not_empty' });
       await expect(owner.stage(stageInput)).rejects.toMatchObject({ code: 'destination_not_empty' });
-      await expect(owner.status(stageInput.operationId)).resolves.toMatchObject({ status: 'recovery_required' });
-      await expect(owner.abort(stageInput.operationId)).resolves.toMatchObject({ status: 'recovery_required' });
+      await expect(owner.abort(stageInput.operationId)).rejects.toMatchObject({ code: 'relocation_destination_not_staged' });
 
       await expect(readFile(destination.layout.masterSecretPath, 'utf8')).resolves.toBe('unrelated-master-secret');
       await expect(readFile(join(destination.layout.publicFilesDir, 'public.txt'), 'utf8')).resolves.toBe('unrelated-public');
@@ -223,6 +223,50 @@ describe('Personal Home production adapters', () => {
         accountCount: 1,
         sessionCount: 0,
       });
+    } finally {
+      await rm(sourceHomeDir, { recursive: true, force: true });
+      await rm(destinationHomeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('aborts only the verified relocation candidate and preserves pre-existing config and backups', { timeout: 120_000 }, async () => {
+    const sourceHomeDir = await mkdtemp(join(tmpdir(), 'happier-home-relocation-candidate-source-'));
+    const destinationHomeDir = await mkdtemp(join(tmpdir(), 'happier-home-relocation-candidate-destination-'));
+    try {
+      await seedPersonalHome({ homeDir: sourceHomeDir, homeServerIdentityId: 'srv_home_source', marker: 'source' });
+      const sourceOperations = await createCanonicalPersonalHomeOperations({
+        homeDir: sourceHomeDir, platform: 'linux', mode: 'user', readHappierVersion: async () => '0.0.0-test',
+        readPurpose: async () => ({ kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43110' }),
+        lifecycle: { isRunning: async () => false, stop: async () => undefined, start: async () => undefined, healthCheck: async () => true },
+      });
+      const bundle = await sourceOperations.backup();
+      const defaults = resolveRelayRuntimeDefaults({ platform: 'linux', mode: 'user', channel: 'stable', homeDir: destinationHomeDir });
+      const destinationMigrations = resolveInstalledPersonalHomeSqliteMigrationPaths({ installRoot: defaults.installRoot, platform: 'linux' });
+      await mkdir(join(destinationMigrations.migrationsDir, '20260901000000_init'), { recursive: true });
+      await writeFile(join(destinationMigrations.migrationsDir, '20260901000000_init', 'migration.sql'), 'CREATE TABLE relocation_fixture (id TEXT);');
+      const configText = `HAPPIER_SERVER_LIGHT_DATA_DIR=${defaults.dataDir}\nAUTH_ANONYMOUS_SIGNUP_ENABLED=0\n`;
+      await mkdir(defaults.configDir, { recursive: true });
+      await mkdir(join(defaults.dataDir, 'backups'), { recursive: true });
+      await writeFile(join(defaults.configDir, 'server.env'), configText);
+      await writeFile(join(defaults.dataDir, 'backups', 'preexisting.tar'), 'preexisting-backup');
+      const owner = await createCanonicalPersonalHomeRelocationDestinationOwner({
+        homeDir: destinationHomeDir, platform: 'linux', mode: 'user', channel: 'stable',
+        quarantine: async () => undefined, activate: async () => undefined,
+        readServiceStatus: async () => ({ running: false, quarantined: true }),
+        attestActivatedHome: async () => ({ authenticated: true, homeServerIdentityId: 'srv_home_source', accountCount: 1, sessionCount: 0 }),
+        attestStagedHome: async () => ({ authenticated: true, homeServerIdentityId: 'srv_home_source', accountCount: 1, sessionCount: 0 }),
+        runMigrationProcess: async () => undefined,
+        materializeEndpoint: async () => ({ homeServerIdentityId: 'srv_home_source', canonicalServerUrl: 'https://destination.example.test', minimumOuterRevisionExclusive: 2 }),
+      });
+      const input = {
+        operationId: 'operation-candidate-abort', archivePath: bundle.path, bundleSha256: bundle.sha256,
+        expectedHomeServerIdentityId: 'srv_home_source', expectedCanonicalServerUrl: 'http://127.0.0.1:43110', sourceDescriptorRevision: 1,
+      };
+      await expect(owner.stage(input)).resolves.toMatchObject({ status: 'quarantined' });
+      await expect(owner.abort(input.operationId)).resolves.toMatchObject({ status: 'aborted' });
+      await expect(readFile(join(defaults.configDir, 'server.env'), 'utf8')).resolves.toBe(configText);
+      await expect(readFile(join(defaults.dataDir, 'backups', 'preexisting.tar'), 'utf8')).resolves.toBe('preexisting-backup');
+      await expect(stat(resolvePersonalHomeRuntimeLayout({ homeDir: destinationHomeDir }).databasePath)).rejects.toMatchObject({ code: 'ENOENT' });
     } finally {
       await rm(sourceHomeDir, { recursive: true, force: true });
       await rm(destinationHomeDir, { recursive: true, force: true });
@@ -388,6 +432,56 @@ describe('Personal Home production adapters', () => {
     await mkdir(defaults.configDir, { recursive: true });
     await writeFile(join(defaults.configDir, 'server.env'), [`HAPPIER_SERVER_LIGHT_DATA_DIR=${defaults.dataDir}`, `HAPPIER_SERVER_LIGHT_FILES_DIR=${join(defaults.dataDir, 'backups')}`, 'HAPPIER_PUBLIC_SERVER_URL=http://127.0.0.1:43110', ''].join('\n'));
     await expect(resolveCanonicalPersonalHomeRuntimeLayout({ homeDir, platform: 'linux', mode: 'user' })).rejects.toThrow(/overlaps runtime/u);
+  });
+
+  it.each([
+    ['data root', (homeDir: string) => ({ HAPPIER_SERVER_LIGHT_DATA_DIR: join(homeDir, '.happier') })],
+    ['public files root', (homeDir: string) => ({ HAPPIER_SERVER_LIGHT_FILES_DIR: join(homeDir, '.happier') })],
+    ['private files root', (homeDir: string) => ({ HAPPIER_SERVER_LIGHT_PRIVATE_FILES_DIR: join(homeDir, '.happier') })],
+    ['public files log ancestor', (homeDir: string) => ({
+      HAPPIER_SERVER_LIGHT_FILES_DIR: join(homeDir, 'logs-parent'),
+      HAPPIER_SELF_HOST_LOG_DIR: join(homeDir, 'logs-parent', 'current'),
+    })],
+  ])('rejects a destructive %s that contains the managed install or log root', async (_label, override) => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'happier-home-production-ancestor-'));
+    try {
+      const defaults = resolveRelayRuntimeDefaults({ platform: 'linux', mode: 'user', channel: 'stable', homeDir });
+      await mkdir(defaults.configDir, { recursive: true });
+      await writeFile(join(defaults.configDir, 'server.env'), [
+        ...Object.entries({
+          HAPPIER_SERVER_LIGHT_DATA_DIR: defaults.dataDir,
+          ...override(homeDir),
+        }).map(([key, value]) => `${key}=${value}`),
+        'AUTH_ANONYMOUS_SIGNUP_ENABLED=0',
+        '',
+      ].join('\n'));
+      await expect(resolveCanonicalPersonalHomeRuntimeLayout({ homeDir, platform: 'linux', mode: 'user' })).rejects.toThrow(/Unsafe Personal Home data root/u);
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('supports dedicated external public/private roots which do not overlap managed runtime paths', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'happier-home-production-external-roots-'));
+    try {
+      const defaults = resolveRelayRuntimeDefaults({ platform: 'linux', mode: 'user', channel: 'stable', homeDir });
+      const publicRoot = join(homeDir, 'dedicated-public');
+      const privateRoot = join(homeDir, 'dedicated-private');
+      await mkdir(defaults.configDir, { recursive: true });
+      await writeFile(join(defaults.configDir, 'server.env'), [
+        `HAPPIER_SERVER_LIGHT_DATA_DIR=${defaults.dataDir}`,
+        `HAPPIER_SERVER_LIGHT_FILES_DIR=${publicRoot}`,
+        `HAPPIER_SERVER_LIGHT_PRIVATE_FILES_DIR=${privateRoot}`,
+        'AUTH_ANONYMOUS_SIGNUP_ENABLED=0',
+        '',
+      ].join('\n'));
+      await expect(resolveCanonicalPersonalHomeRuntimeLayout({ homeDir, platform: 'linux', mode: 'user' })).resolves.toMatchObject({
+        publicFilesDir: publicRoot,
+        privateFilesDir: privateRoot,
+      });
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+    }
   });
 
   it('uses persisted server.env rather than ambient process env and applies sanitized config transactionally', async () => {

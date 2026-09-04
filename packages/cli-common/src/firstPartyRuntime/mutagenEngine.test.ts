@@ -23,7 +23,7 @@ import {
   resolveMutagenEngineReleaseTag,
 } from './mutagenEngineArtifact.js';
 const FIXTURE_RELEASE_COMMIT = '3a4774da2a75a0d2a5343e4980d9a03aa44ca81c';
-const APPROVED_FORK_RELEASE_COMMIT = '6cbea9c5febe35880b50ec2e5f0ea1d52c7b1521';
+const APPROVED_FORK_RELEASE_COMMIT = '334d778e8c4bf055ad00e0f3991a8e5ed543950c';
 const MUTAGEN_UMBRELLA_LICENSE = `Unless otherwise specified, all code in this repository is made available under
 the terms of the MIT License, the text of which can be found below.
 
@@ -70,7 +70,7 @@ describe('Mutagen engine artifact contract', () => {
   it('pins the approved fork, upstream, toolchain, protocol, and target matrix', () => {
     expect(MUTAGEN_ENGINE_FORK_SOURCE_BASE_COMMIT).toMatch(/^[0-9a-f]{40}$/u);
     expect(MUTAGEN_ENGINE_FORK_RELEASE_COMMIT).toBe(APPROVED_FORK_RELEASE_COMMIT);
-    expect(MUTAGEN_ENGINE_VERSION).toBe('0.18.1-happier.5');
+    expect(MUTAGEN_ENGINE_VERSION).toBe('0.18.1-happier.8');
     expect(MUTAGEN_ENGINE_UPSTREAM_COMMIT).toBe('a225ae50aee3d7ebb59139203cb84e8a6a3ff4bf');
     expect(MUTAGEN_ENGINE_UPSTREAM_TAG).toBe('v0.18.1');
     expect(MUTAGEN_ENGINE_GO_VERSION).toBe('1.22.12');

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { lstat, mkdir, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, join, posix, win32 } from 'node:path';
 
 import type { PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
 
@@ -28,11 +28,12 @@ import {
   finalizePersonalHomeRestoreWithLease,
   hasMeaningfulPersonalHomeData,
   inspectPersonalHomeRestoreRecovery,
+  PersonalHomeRestoreError,
+  recoverPersonalHomeRestoreWithLease,
   restorePersonalHomeBackupWithLease,
 } from './restore.js';
 import { verifyPersonalHomeArchive } from './archive.js';
 import { fingerprintMasterSecret } from './manifest.js';
-import { erasePersonalHomeData } from './erase.js';
 import {
   createPersonalHomeRelocationDestinationOwner,
   type PersonalHomeRelocationDestinationOwner,
@@ -51,58 +52,88 @@ import {
   type PersonalHomeMigrationProcessRunner,
 } from './stagedMigrationFrontier.js';
 
-function isWithin(root: string, candidate: string): boolean {
-  const child = relative(resolve(root), resolve(candidate));
-  return child === '' || (!child.startsWith('..') && !isAbsolute(child));
+function pathApi(platform: NodeJS.Platform) {
+  return platform === 'win32' ? win32 : posix;
+}
+
+function canonicalPath(platform: NodeJS.Platform, value: string): string {
+  return pathApi(platform).normalize(pathApi(platform).resolve(value));
+}
+
+function comparablePath(platform: NodeJS.Platform, value: string): string {
+  const normalized = canonicalPath(platform, value);
+  return platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
+function isWithin(root: string, candidate: string, platform: NodeJS.Platform = process.platform): boolean {
+  const api = pathApi(platform);
+  const child = api.relative(canonicalPath(platform, root), canonicalPath(platform, candidate));
+  return child === '' || (!child.startsWith('..') && !api.isAbsolute(child));
 }
 
 export async function validateCanonicalPersonalHomeLayout(
   layout: PersonalHomeRuntimeLayout,
   trusted: Readonly<{ homeDir: string; installRoot: string; configDir: string }>,
 ): Promise<void> {
-  if (resolve(layout.installRoot) !== resolve(trusted.installRoot) || resolve(layout.configDir) !== resolve(trusted.configDir)) {
+  const platform = layout.platform;
+  const api = pathApi(platform);
+  const canonical = (value: string): string => canonicalPath(platform, value);
+  const comparable = (value: string): string => comparablePath(platform, value);
+  const homeDir = canonical(trusted.homeDir);
+  const installRoot = canonical(layout.installRoot);
+  const configDir = canonical(layout.configDir);
+  const logsDir = canonical(layout.logsDir);
+  if (comparable(layout.installRoot) !== comparable(trusted.installRoot) || comparable(layout.configDir) !== comparable(trusted.configDir)) {
     throw new Error('Personal Home layout is not owned by the managed runtime defaults');
   }
-  if (!isWithin(layout.dataDir, layout.databasePath) || !isWithin(layout.dataDir, layout.masterSecretPath)) {
+  const destructiveDirectories = [layout.dataDir, layout.publicFilesDir, layout.privateFilesDir, layout.backupsDir, layout.derivedDataDir];
+  const protectedAncestors = [homeDir, installRoot, configDir, logsDir];
+  for (const target of destructiveDirectories) {
+    const normalized = canonical(target);
+    if (!api.isAbsolute(normalized)
+      || comparable(normalized) === comparable(api.parse(normalized).root)
+      || comparable(normalized) === comparable(homeDir)
+      || protectedAncestors.some((protectedRoot) => isWithin(normalized, protectedRoot, platform))) {
+      throw new Error('Unsafe Personal Home data root: destructive target overlaps a filesystem, user-home, install, config, or log root');
+    }
+  }
+  if (!isWithin(layout.dataDir, layout.databasePath, platform) || !isWithin(layout.dataDir, layout.masterSecretPath, platform)) {
     throw new Error('Personal Home database and master secret must remain inside the canonical data root');
   }
-  const roots = [layout.publicFilesDir, layout.privateFilesDir].map((path) => resolve(path));
-  if (roots[0] === roots[1] || isWithin(roots[0], roots[1]) || isWithin(roots[1], roots[0])) {
+  const roots = [layout.publicFilesDir, layout.privateFilesDir].map(canonical);
+  if (comparable(roots[0]!) === comparable(roots[1]!) || isWithin(roots[0]!, roots[1]!, platform) || isWithin(roots[1]!, roots[0]!, platform)) {
     throw new Error('Personal Home public and private file roots must not overlap');
   }
-  for (const unsafe of [trusted.configDir, dirname(trusted.installRoot)]) {
-    if (resolve(layout.dataDir) === resolve(unsafe)) throw new Error('Unsafe Personal Home data root');
-  }
-  const reserved = [layout.databasePath, layout.masterSecretPath, layout.backupsDir, layout.derivedDataDir, join(layout.dataDir, 'runtime'), layout.configDir];
+  const reserved = [layout.databasePath, layout.masterSecretPath, layout.backupsDir, layout.derivedDataDir, api.join(layout.dataDir, 'runtime'), layout.configDir];
   for (const root of roots) {
-    if (root === resolve(layout.dataDir) || root === resolve(layout.installRoot) || root === resolve(layout.configDir)) throw new Error('Unsafe Personal Home file root');
-    for (const path of reserved) if (isWithin(root, path) || isWithin(path, root)) throw new Error('Personal Home file root overlaps runtime, credentials, backups, or derived data');
+    if (comparable(root) === comparable(layout.dataDir) || comparable(root) === comparable(layout.installRoot) || comparable(root) === comparable(layout.configDir)) throw new Error('Unsafe Personal Home file root');
+    for (const path of reserved) if (isWithin(root, path, platform) || isWithin(path, root, platform)) throw new Error('Personal Home file root overlaps runtime, credentials, backups, or derived data');
   }
-  const homeDir = resolve(trusted.homeDir);
   const controlledRoots = [
     { target: layout.configDir, fallbackBoundary: layout.configDir },
     { target: layout.dataDir, fallbackBoundary: layout.dataDir },
-    { target: layout.publicFilesDir, fallbackBoundary: isWithin(layout.dataDir, layout.publicFilesDir) ? layout.dataDir : layout.publicFilesDir },
-    { target: layout.privateFilesDir, fallbackBoundary: isWithin(layout.dataDir, layout.privateFilesDir) ? layout.dataDir : layout.privateFilesDir },
+    { target: layout.publicFilesDir, fallbackBoundary: isWithin(layout.dataDir, layout.publicFilesDir, platform) ? layout.dataDir : layout.publicFilesDir },
+    { target: layout.privateFilesDir, fallbackBoundary: isWithin(layout.dataDir, layout.privateFilesDir, platform) ? layout.dataDir : layout.privateFilesDir },
   ];
   for (const { target, fallbackBoundary } of controlledRoots) {
-    const boundary = isWithin(homeDir, target) ? homeDir : fallbackBoundary;
-    await rejectSymbolicLinksAtOrBelowBoundary(boundary, target);
+    const boundary = isWithin(homeDir, target, platform) ? homeDir : fallbackBoundary;
+    await rejectSymbolicLinksAtOrBelowBoundary(boundary, target, platform);
   }
 }
 
-async function rejectSymbolicLinksAtOrBelowBoundary(boundary: string, target: string): Promise<void> {
-  const resolvedBoundary = resolve(boundary);
-  const resolvedTarget = resolve(target);
-  if (!isWithin(resolvedBoundary, resolvedTarget)) throw new Error('Personal Home path escapes its trusted boundary');
+async function rejectSymbolicLinksAtOrBelowBoundary(boundary: string, target: string, platform: NodeJS.Platform = process.platform): Promise<void> {
+  const api = pathApi(platform);
+  const resolvedBoundary = canonicalPath(platform, boundary);
+  const resolvedTarget = canonicalPath(platform, target);
+  if (!isWithin(resolvedBoundary, resolvedTarget, platform)) throw new Error('Personal Home path escapes its trusted boundary');
   // Platform-owned aliases above this explicit boundary are trusted; every component the caller
   // controls at or below it must remain a real directory/path rather than a link.
-  const child = relative(resolvedBoundary, resolvedTarget);
+  const child = api.relative(resolvedBoundary, resolvedTarget);
   const paths = [resolvedBoundary];
   if (child) {
     let cursor = resolvedBoundary;
     for (const segment of child.split(/[\\/]+/u)) {
-      cursor = join(cursor, segment);
+      cursor = api.join(cursor, segment);
       paths.push(cursor);
     }
   }
@@ -363,10 +394,11 @@ export async function createCanonicalPersonalHomeRelocationDestinationOwner(para
   activate(): Promise<void>;
   readServiceStatus(): Promise<Readonly<{ running: boolean; quarantined: boolean }>>;
   attestActivatedHome(): Promise<import('./readiness.js').PersonalHomeAuthenticatedReadiness>;
-  attestStagedHome(input: Readonly<{ layout: PersonalHomeRuntimeLayout }>): Promise<PersonalHomeAuthenticatedReadiness>;
+  attestStagedHome(input: Readonly<{ layout: PersonalHomeRuntimeLayout; operationId: string }>): Promise<PersonalHomeAuthenticatedReadiness>;
   runMigrationProcess: PersonalHomeMigrationProcessRunner;
   materializeEndpoint(input: Readonly<{
     layout: PersonalHomeRuntimeLayout;
+    operationId: string;
     sourceDescriptorRevision: number;
   }>): Promise<Readonly<{
     homeServerIdentityId: string;
@@ -401,6 +433,15 @@ export async function createCanonicalPersonalHomeRelocationDestinationOwner(para
 
   return createPersonalHomeRelocationDestinationOwner({
     dataDir: initialLayout.dataDir,
+    preflightDestination: async () => {
+      const layout = await resolveAttestedLayout();
+      if (await hasMeaningfulPersonalHomeData(layout)) {
+        throw new PersonalHomeRestoreError(
+          'destination_not_empty',
+          'Relocation destination contains unrelated Personal Home data',
+        );
+      }
+    },
     quarantine: params.quarantine,
     readServiceStatus: params.readServiceStatus,
     activate: params.activate,
@@ -435,20 +476,13 @@ export async function createCanonicalPersonalHomeRelocationDestinationOwner(para
       if (restored.outcome !== 'restored') {
         throw new Error(restored.error ?? 'Personal Home relocation destination restore failed');
       }
-      const finalization = await finalizePersonalHomeRestoreWithLease({
-        layout,
-        operationLeaseHeld: true,
-        finalizeConfiguration: (artifact) => finalizePersonalHomeSanitizedConfiguration(layout, artifact),
-      });
-      if (finalization.outcome !== 'finalized') {
-        throw new Error(finalization.error ?? 'Personal Home relocation destination restore finalization failed');
-      }
-      const authenticatedReadiness = await params.attestStagedHome({ layout });
+      const authenticatedReadiness = await params.attestStagedHome({ layout, operationId: input.operationId });
       if (authenticatedReadiness.homeServerIdentityId !== input.expectedHomeServerIdentityId) {
         throw new Error('Stopped relocation authentication attestation identity does not match the restored Home');
       }
       const endpoint = await params.materializeEndpoint({
         layout,
+        operationId: input.operationId,
         sourceDescriptorRevision: input.sourceDescriptorRevision,
       });
       if (endpoint.homeServerIdentityId !== input.expectedHomeServerIdentityId) {
@@ -488,7 +522,7 @@ export async function createCanonicalPersonalHomeRelocationDestinationOwner(para
         const [identity, counts, authenticatedReadiness, configuration, secret] = await Promise.all([
           readCanonicalPersonalHomeIdentity(layout),
           readPersonalHomeDataCountsFromSqlite(layout.databasePath),
-          params.attestStagedHome({ layout }),
+          params.attestStagedHome({ layout, operationId: input.operationId }),
           readPersonalHomeSanitizedConfiguration(layout),
           readFile(layout.masterSecretPath),
         ]);
@@ -511,20 +545,11 @@ export async function createCanonicalPersonalHomeRelocationDestinationOwner(para
         await assertRestoredPersonalHomeAllowlistedFilesReadable(layout, manifest);
         const endpoint = await params.materializeEndpoint({
           layout,
+          operationId: input.operationId,
           sourceDescriptorRevision: input.sourceDescriptorRevision,
         });
         if (endpoint.homeServerIdentityId !== manifest.homeServerIdentityId) {
           throw new Error('Interrupted relocation endpoint identity does not match the restored Home');
-        }
-        if (recovery.status === 'finalization_available') {
-          const finalization = await finalizePersonalHomeRestoreWithLease({
-            layout,
-            operationLeaseHeld: true,
-            finalizeConfiguration: (artifact) => finalizePersonalHomeSanitizedConfiguration(layout, artifact),
-          });
-          if (finalization.outcome !== 'finalized') {
-            throw new Error(finalization.error ?? 'Interrupted relocation restore finalization failed');
-          }
         }
         return { outcome: 'restored', ...endpoint, ...authenticatedReadiness };
       } catch (error) {
@@ -536,9 +561,28 @@ export async function createCanonicalPersonalHomeRelocationDestinationOwner(para
     },
     abortCandidate: async () => {
       const layout = await resolveAttestedLayout();
-      const erase = await erasePersonalHomeData({ layout, operationLeaseHeld: true, operation: 'relocate' });
-      if (erase.outcome === 'partial') {
-        throw new Error(erase.error ?? 'Personal Home relocation candidate cleanup was incomplete.');
+      const recovery = await recoverPersonalHomeRestoreWithLease({
+        layout,
+        operationLeaseHeld: true,
+        isHomeRunning: async () => (await params.readServiceStatus()).running,
+        stopHome: params.quarantine,
+        startHome: async () => { throw new Error('A relocation destination abort must not activate the destination.'); },
+        healthCheck: async () => false,
+        recoverConfiguration: (artifact) => recoverPersonalHomeSanitizedConfiguration(layout, artifact),
+      });
+      if (recovery.outcome !== 'rolled_back') {
+        throw new Error(recovery.error ?? 'Personal Home relocation candidate rollback was incomplete.');
+      }
+    },
+    finalizeCandidate: async () => {
+      const layout = await resolveAttestedLayout();
+      const finalization = await finalizePersonalHomeRestoreWithLease({
+        layout,
+        operationLeaseHeld: true,
+        finalizeConfiguration: (artifact) => finalizePersonalHomeSanitizedConfiguration(layout, artifact),
+      });
+      if (finalization.outcome === 'recovery_required') {
+        throw new Error(finalization.error ?? 'Personal Home relocation candidate cleanup requires attention.');
       }
     },
   });
@@ -547,6 +591,7 @@ export async function createCanonicalPersonalHomeRelocationDestinationOwner(para
 export async function attestPersonalHomeRelocationDestinationWithServerCommand(params: Readonly<{
   layout: PersonalHomeRuntimeLayout;
   serverBinary: string;
+  operationId: string;
   processEnv?: NodeJS.ProcessEnv;
 }>): Promise<PersonalHomeAuthenticatedReadiness> {
   const envText = await readFile(join(params.layout.configDir, 'server.env'), 'utf8');
@@ -557,6 +602,7 @@ export async function attestPersonalHomeRelocationDestinationWithServerCommand(p
       ...(params.processEnv ?? process.env),
       ...parseEnvText(envText),
       HAPPIER_SERVER_LOG_LEVEL: 'silent',
+      HAPPIER_PERSONAL_HOME_RELOCATION_OPERATION_ID: params.operationId,
     },
     encoding: 'utf8',
     timeout: 120_000,
@@ -581,6 +627,7 @@ export async function attestPersonalHomeRelocationDestinationWithServerCommand(p
 export async function materializePersonalHomeRelocationEndpointWithServerCommand(params: Readonly<{
   layout: PersonalHomeRuntimeLayout;
   serverBinary: string;
+  operationId: string;
   canonicalServerUrl: string;
   sourceDescriptorRevision: number;
   processEnv?: NodeJS.ProcessEnv;
@@ -595,7 +642,11 @@ export async function materializePersonalHomeRelocationEndpointWithServerCommand
     '--materialize-iroh-endpoint-descriptor',
     `--source-descriptor-revision=${params.sourceDescriptorRevision}`,
   ], {
-    env: { ...(params.processEnv ?? process.env), ...parseEnvText(envText) },
+    env: {
+      ...(params.processEnv ?? process.env),
+      ...parseEnvText(envText),
+      HAPPIER_PERSONAL_HOME_RELOCATION_OPERATION_ID: params.operationId,
+    },
     encoding: 'utf8',
     timeout: 120_000,
     maxBuffer: 1024 * 1024,

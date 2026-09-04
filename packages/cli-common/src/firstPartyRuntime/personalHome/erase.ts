@@ -1,7 +1,8 @@
 import { lstat, readdir, rm } from 'node:fs/promises';
-import { isAbsolute, parse, resolve } from 'node:path';
+import { homedir } from 'node:os';
+import { posix, win32 } from 'node:path';
 
-import { assertLayoutPath, type PersonalHomeRuntimeLayout } from './layout.js';
+import { resolvePersonalHomeRuntimeArtifactPaths, type PersonalHomeRuntimeLayout } from './layout.js';
 import { isPersonalHomeOperationLockHeld } from './lock.js';
 
 export class PersonalHomeEraseError extends Error {
@@ -29,21 +30,52 @@ type PersonalHomeEraseFilesystem = Readonly<{
 }>;
 
 const defaultFilesystem: PersonalHomeEraseFilesystem = { lstat, readdir, rm };
+const pathApi = (platform: NodeJS.Platform) => platform === 'win32' ? win32 : posix;
+const comparablePath = (platform: NodeJS.Platform, value: string): string => {
+  const api = pathApi(platform);
+  const normalized = api.normalize(api.resolve(value));
+  return platform === 'win32' ? normalized.toLowerCase() : normalized;
+};
+const isWithinPath = (platform: NodeJS.Platform, root: string, candidate: string): boolean => {
+  const api = pathApi(platform);
+  const normalizedRoot = comparablePath(platform, root);
+  const normalizedCandidate = comparablePath(platform, candidate);
+  return normalizedCandidate === normalizedRoot || normalizedCandidate.startsWith(`${normalizedRoot}${api.sep}`);
+};
+
 export function resolvePersonalHomeEraseTargets(layout: PersonalHomeRuntimeLayout): readonly string[] {
-  const dataRoot = resolve(layout.dataDir);
+  const api = pathApi(layout.platform);
+  const dataRoot = api.resolve(layout.dataDir);
+  const artifacts = resolvePersonalHomeRuntimeArtifactPaths(layout);
   return [...new Set([
     layout.databasePath, `${layout.databasePath}-wal`, `${layout.databasePath}-shm`, layout.publicFilesDir,
     layout.privateFilesDir, layout.masterSecretPath, layout.backupsDir, layout.derivedDataDir,
-    layout.irohEndpointKeyPath, resolve(dataRoot, '.operations', 'restore-journal.json'),
-    resolve(dataRoot, '.operations', 'relocation-source.json'), resolve(dataRoot, '.operations', 'relocation-destination.json'),
-    resolve(layout.configDir, 'server.env'),
-  ].map((path) => resolve(path)))];
+    layout.irohEndpointKeyPath, artifacts.irohEndpointDescriptorPath, artifacts.homeConnectionDescriptorPath,
+    artifacts.startupReceiptPath, artifacts.updateRecoveryPath, artifacts.restoreJournalPath,
+    artifacts.relocationSourcePath, artifacts.relocationDestinationPath,
+    api.resolve(layout.configDir, 'server.env'),
+  ].map((path) => api.resolve(path)))];
 }
 
-function resolveValidatedDataRoot(layout: PersonalHomeRuntimeLayout): string {
-  const dataRoot = assertLayoutPath(layout, layout.dataDir);
-  if (!isAbsolute(dataRoot) || dataRoot === parse(dataRoot).root) {
+function resolveValidatedDataRoot(layout: PersonalHomeRuntimeLayout, userHomeDir: string): string {
+  const api = pathApi(layout.platform);
+  const dataRoot = api.normalize(api.resolve(layout.dataDir));
+  const comparableDataRoot = comparablePath(layout.platform, dataRoot);
+  if (!api.isAbsolute(dataRoot)
+    || comparableDataRoot === comparablePath(layout.platform, api.parse(dataRoot).root)
+    || comparableDataRoot === comparablePath(layout.platform, userHomeDir)) {
     throw new PersonalHomeEraseError('unsafe_data_root', 'Refusing to erase an unsafe Personal Home data root.');
+  }
+  const protectedRoots = [dataRoot, userHomeDir].map((value) => comparablePath(layout.platform, value));
+  for (const directory of [layout.publicFilesDir, layout.privateFilesDir, layout.backupsDir, layout.derivedDataDir]) {
+    const candidate = comparablePath(layout.platform, directory);
+    const root = comparablePath(layout.platform, api.parse(api.resolve(directory)).root);
+    const containsProtectedRoot = protectedRoots.some((protectedRoot) => (
+      protectedRoot === candidate || protectedRoot.startsWith(`${candidate}${api.sep}`)
+    ));
+    if (candidate === root || containsProtectedRoot) {
+      throw new PersonalHomeEraseError('unsafe_data_root', `Refusing to erase an overlapping Personal Home directory target: ${directory}`);
+    }
   }
   return dataRoot;
 }
@@ -52,13 +84,40 @@ export async function erasePersonalHomeData(params: Readonly<{
   layout: PersonalHomeRuntimeLayout;
   operationLeaseHeld: true;
   operation?: 'erase' | 'relocate';
+  userHomeDir?: string;
 }>, filesystem: PersonalHomeEraseFilesystem = defaultFilesystem): Promise<PersonalHomeEraseResult> {
-  const dataRoot = resolveValidatedDataRoot(params.layout);
+  const api = pathApi(params.layout.platform);
+  const dataRoot = resolveValidatedDataRoot(params.layout, params.userHomeDir ?? homedir());
+  const artifacts = resolvePersonalHomeRuntimeArtifactPaths(params.layout);
+  for (const target of [
+    params.layout.irohEndpointKeyPath,
+    artifacts.irohEndpointDescriptorPath,
+    artifacts.homeConnectionDescriptorPath,
+    artifacts.startupReceiptPath,
+    artifacts.updateRecoveryPath,
+    artifacts.restoreJournalPath,
+    artifacts.relocationSourcePath,
+    artifacts.relocationDestinationPath,
+  ]) {
+    if (!isWithinPath(params.layout.platform, dataRoot, target)) {
+      throw new PersonalHomeEraseError('unsafe_data_root', `Refusing to erase a runtime artifact outside the canonical data root: ${target}`);
+    }
+  }
   if (!(await isPersonalHomeOperationLockHeld(dataRoot, params.operation ?? 'erase'))) {
     throw new PersonalHomeEraseError('unsafe_data_root', 'Personal Home erase requires the facade operation lease.');
   }
   const targets = resolvePersonalHomeEraseTargets(params.layout)
-    .filter((target) => target !== resolve(dataRoot, '.operations', 'lock'));
+    .filter((target) => comparablePath(params.layout.platform, target) !== comparablePath(params.layout.platform, artifacts.operationLockPath));
+  const protectedRoots = [api.parse(dataRoot).root, params.userHomeDir ?? homedir()]
+    .map((value) => comparablePath(params.layout.platform, value));
+  for (const target of targets) {
+    const candidate = comparablePath(params.layout.platform, target);
+    if (protectedRoots.some((protectedRoot) => (
+      candidate === protectedRoot || protectedRoot.startsWith(`${candidate}${api.sep}`)
+    ))) {
+      throw new PersonalHomeEraseError('unsafe_data_root', `Refusing to erase an overlapping Personal Home target: ${target}`);
+    }
+  }
   const existingTargets: string[] = [];
   for (const target of targets) {
     const info = await filesystem.lstat(target).catch((error: NodeJS.ErrnoException) => error.code === 'ENOENT' ? null : Promise.reject(error));
@@ -67,13 +126,31 @@ export async function erasePersonalHomeData(params: Readonly<{
     existingTargets.push(target);
   }
 
-  const ownedTargetSet = new Set(targets);
-  const readRemainingUnknownPaths = async (): Promise<readonly string[]> => (await filesystem.readdir(dataRoot).catch(
-    (error: NodeJS.ErrnoException) => error.code === 'ENOENT' ? [] : Promise.reject(error),
-  ))
-    .filter((name) => name !== '.operations' && name !== 'runtime')
-    .map((name) => resolve(dataRoot, name))
-    .filter((path) => !ownedTargetSet.has(path));
+  const ownedTargetSet = new Set(targets.map((target) => comparablePath(params.layout.platform, target)));
+  const retainedPathSet = new Set([
+    comparablePath(params.layout.platform, artifacts.operationLockPath),
+  ]);
+  const readRemainingUnknownPaths = async (): Promise<readonly string[]> => {
+    const unknown: string[] = [];
+    const collect = async (directory: string): Promise<void> => {
+      const names = await filesystem.readdir(directory).catch(
+        (error: NodeJS.ErrnoException) => error.code === 'ENOENT' ? [] : Promise.reject(error),
+      );
+      for (const name of names) {
+        const candidate = api.resolve(directory, name);
+        const comparable = comparablePath(params.layout.platform, candidate);
+        if (ownedTargetSet.has(comparable) || retainedPathSet.has(comparable)) continue;
+        const info = await filesystem.lstat(candidate).catch(
+          (error: NodeJS.ErrnoException) => error.code === 'ENOENT' ? null : Promise.reject(error),
+        );
+        if (!info) continue;
+        if (info.isDirectory() && !info.isSymbolicLink()) await collect(candidate);
+        else unknown.push(candidate);
+      }
+    };
+    await collect(dataRoot);
+    return unknown;
+  };
 
   const removedPaths: string[] = [];
   for (let index = 0; index < existingTargets.length; index += 1) {
@@ -118,6 +195,6 @@ export async function erasePersonalHomeData(params: Readonly<{
     }
   }
   const remainingUnknownPaths = await readRemainingUnknownPaths();
-  await filesystem.lstat(resolve(dataRoot, '.operations', 'lock'));
+  await filesystem.lstat(api.resolve(dataRoot, '.operations', 'lock'));
   return { outcome: 'completed', removedPaths, remainingOwnedPaths: [], remainingUnknownPaths, error: null };
 }

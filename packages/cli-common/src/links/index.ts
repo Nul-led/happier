@@ -1,4 +1,9 @@
-import { isLoopbackHostname, normalizeHostnameForLoopbackCheck } from '@happier-dev/protocol';
+import {
+  encodeTerminalConnectLinkV4Payload,
+  isLoopbackHostname,
+  normalizeHostnameForLoopbackCheck,
+  type HomeConnectionDescriptorV1,
+} from '@happier-dev/protocol';
 
 export type TerminalConnectLinks = Readonly<{
   webUrl: string;
@@ -14,6 +19,23 @@ export type TerminalConnectPairingContext = Readonly<{
   secretB64Url: string;
   createdAtMs: number;
   expiresAtMs: number;
+}>;
+
+export type TerminalConnectDescriptorTarget = Readonly<{
+  webappUrl: string;
+  homeConnectionDescriptor: HomeConnectionDescriptorV1;
+  publicKeyB64Url: string;
+  pairing: TerminalConnectPairingContext;
+  supportsTokenOnly?: boolean;
+}>;
+
+export type TerminalConnectUrlOnlyCompatibilityTarget = Readonly<{
+  webappUrl: string;
+  serverUrl: string;
+  publicKeyB64Url: string;
+  serverIdentityId?: string;
+  pairing?: TerminalConnectPairingContext | null;
+  supportsTokenOnly?: boolean;
 }>;
 
 function stripTrailingSlash(url: string): string {
@@ -74,14 +96,9 @@ function sanitizeServerUrlForMobileLink(raw: string): string | null {
   return stripTrailingSlash(parsed.toString());
 }
 
-export function buildTerminalConnectLinks(params: Readonly<{
-  webappUrl: string;
-  serverUrl: string;
-  publicKeyB64Url: string;
-  serverIdentityId?: string;
-  pairing?: TerminalConnectPairingContext | null;
-  supportsTokenOnly?: boolean;
-}>): TerminalConnectLinks {
+export function buildTerminalConnectUrlOnlyCompatibilityLinks(
+  params: TerminalConnectUrlOnlyCompatibilityTarget,
+): TerminalConnectLinks {
   const webappUrl = stripTrailingSlash(String(params.webappUrl ?? '').trim());
   const webServerUrl = sanitizeServerUrlForWebLink(params.serverUrl, webappUrl);
   const mobileServerUrl = sanitizeServerUrlForMobileLink(params.serverUrl);
@@ -120,6 +137,40 @@ export function buildTerminalConnectLinks(params: Readonly<{
     mobileUrl: mobileServerUrl
       ? `happier://terminal?key=${publicKeyB64Url}&server=${encodedMobileServerUrl}${pairingSuffix}${tokenOnlyCapabilitySuffix}`
       : `happier://terminal?key=${publicKeyB64Url}${pairingSuffix}${tokenOnlyCapabilitySuffix}`,
+  };
+}
+
+/**
+ * Descriptor targets are authority-bearing and therefore emit only the opaque,
+ * closed V4 payload. URL-only callers remain on the explicitly named released
+ * compatibility path above until their 0.2.11 support window is retired.
+ */
+export function buildTerminalConnectLinks(
+  params: TerminalConnectDescriptorTarget | TerminalConnectUrlOnlyCompatibilityTarget,
+): TerminalConnectLinks {
+  if (!('homeConnectionDescriptor' in params)) {
+    return buildTerminalConnectUrlOnlyCompatibilityLinks(params);
+  }
+
+  const webappUrl = stripTrailingSlash(String(params.webappUrl ?? '').trim());
+  const payload = encodeTerminalConnectLinkV4Payload({
+    v: 4,
+    publicKeyB64Url: params.publicKeyB64Url,
+    pairing: {
+      v: 3,
+      secretB64Url: params.pairing.secretB64Url,
+      createdAtMs: params.pairing.createdAtMs,
+      expiresAtMs: params.pairing.expiresAtMs,
+      homeServerIdentityId: params.homeConnectionDescriptor.homeServerIdentityId,
+      supportsTokenOnly: params.supportsTokenOnly === true,
+    },
+    homeConnectionDescriptor: params.homeConnectionDescriptor,
+  });
+  const opaqueParameter = `v4=${payload}`;
+
+  return {
+    webUrl: `${webappUrl}/terminal/connect#${opaqueParameter}`,
+    mobileUrl: `happier://terminal?${opaqueParameter}`,
   };
 }
 

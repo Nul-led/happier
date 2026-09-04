@@ -17,13 +17,16 @@ import { withPersonalHomeOperationLock } from './lock.js';
 import { fingerprintMasterSecret, type PersonalHomeBackupManifestV1 } from './manifest.js';
 import type { ManagedRelayPurpose } from './personalHomeRuntimeSpec.js';
 import {
+  assertPersonalHomeRelocationSourceAllowsActivation,
+  assertPersonalHomeRelocationSourceAllowsOperation,
   coordinatePersonalHomeRelocation,
   inspectPersonalHomeRelocationSourceRecovery,
   type PersonalHomeRelocationSourceCoordinatorParams,
   type PersonalHomeRelocationSourceRecoveryFacts,
   type PersonalHomeRelocationSourceResult,
 } from './relocationCoordinator.js';
-import type { PersonalHomeRelocationDestinationOwner } from './relocationDestination.js';
+import { assertPersonalHomeRelocationDestinationAllowsActivation, type PersonalHomeRelocationDestinationOwner } from './relocationDestination.js';
+import { readPersonalHomeUpdateRecoveryRecord } from './updateRecovery.js';
 import {
   inspectPersonalHomeRestoreRecovery,
   finalizePersonalHomeRestoreWithLease,
@@ -61,6 +64,7 @@ export class PersonalHomeOperationsError extends Error {
       | 'operation_cancelled'
       | 'restore_unavailable'
       | 'restore_recovery_required'
+      | 'operation_recovery_required'
       | 'relocation_unavailable',
     message: string,
     cause?: unknown,
@@ -178,17 +182,6 @@ export type PersonalHomeEraseConfirmationFacts = Readonly<{
   paths: readonly string[];
   estimatedBytes: number | null;
 }>;
-
-export function createPersonalHomeEraseConfirmationToken(facts: PersonalHomeEraseConfirmationFacts): string {
-  const payload = JSON.stringify({
-    v: 1,
-    canonicalServerUrl: facts.canonicalServerUrl,
-    homeServerIdentityId: facts.homeServerIdentityId,
-    paths: [...facts.paths].sort(),
-    estimatedBytes: facts.estimatedBytes,
-  });
-  return createHash('sha256').update(payload).digest('hex');
-}
 
 export type PersonalHomeEraseOperationInput = Readonly<{
   confirm(facts: PersonalHomeEraseConfirmationFacts): Promise<boolean>;
@@ -310,6 +303,27 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
       const currentPurpose = await deps.readPurpose(); assertPersonalHomePurpose(currentPurpose); assertExpectedPurpose(currentPurpose, context);
       const currentLayout = await deps.resolveLayout(); await deps.validateLayout(currentLayout);
       if (JSON.stringify(currentLayout) !== JSON.stringify(initialLayout) || currentPurpose.canonicalServerUrl !== initialPurpose.canonicalServerUrl) throw new PersonalHomeOperationsError('purpose_not_personal_home', 'Personal Home purpose or canonical layout changed while waiting for the operation lease.');
+      if (kind !== 'inspect') {
+        const updateRecovery = await readPersonalHomeUpdateRecoveryRecord(initialLayout);
+        if (updateRecovery && updateRecovery.phase !== 'committed') {
+          throw new PersonalHomeOperationsError('operation_recovery_required', 'Personal Home runtime update recovery must complete before another data operation can continue.');
+        }
+        try {
+          if (kind === 'relocate') {
+            const operationId = 'operationId' in context && typeof context.operationId === 'string' ? context.operationId : '';
+            await assertPersonalHomeRelocationSourceAllowsOperation(initialLayout.dataDir, operationId);
+          } else {
+            await assertPersonalHomeRelocationSourceAllowsActivation(initialLayout.dataDir);
+          }
+          await assertPersonalHomeRelocationDestinationAllowsActivation(initialLayout.dataDir);
+        } catch (error) {
+          throw new PersonalHomeOperationsError(
+            'operation_recovery_required',
+            error instanceof Error ? error.message : 'Personal Home operation recovery is required.',
+            error,
+          );
+        }
+      }
       if (reconcileRestore) {
         const reconciliation = await reconcileRestoreWithLease(initialLayout);
         if (reconciliation.outcome === 'recovery_required' && kind !== 'inspect') {
@@ -621,6 +635,43 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
           'Personal Home restore recovery or finalization is required before erasing data.',
         );
       }
+      const paths = resolvePersonalHomeEraseTargets(layout);
+      const estimatedBytes = await estimateOwnedBytes(paths);
+      const identity = await requireIdentity(layout);
+      checkCancelled(input);
+      input.progress?.('awaiting_confirmation');
+      if (!await input.confirm({
+        canonicalServerUrl: purpose.canonicalServerUrl,
+        homeServerIdentityId: identity.homeServerIdentityId,
+        paths,
+        estimatedBytes,
+      })) {
+        throw new PersonalHomeEraseError(
+          'confirmation_required',
+          'Personal Home data deletion was not explicitly confirmed.',
+        );
+      }
+      checkCancelled(input);
+
+      const currentPurpose = await deps.readPurpose();
+      assertPersonalHomePurpose(currentPurpose);
+      assertExpectedPurpose(currentPurpose, input);
+      const currentLayout = await deps.resolveLayout();
+      await deps.validateLayout(currentLayout);
+      const currentIdentity = await requireIdentity(currentLayout);
+      const currentPaths = resolvePersonalHomeEraseTargets(currentLayout);
+      const currentEstimatedBytes = await estimateOwnedBytes(currentPaths);
+      if (currentPurpose.canonicalServerUrl !== purpose.canonicalServerUrl
+        || JSON.stringify(currentLayout) !== JSON.stringify(layout)
+        || currentIdentity.homeServerIdentityId !== identity.homeServerIdentityId
+        || JSON.stringify(currentPaths) !== JSON.stringify(paths)
+        || currentEstimatedBytes !== estimatedBytes) {
+        throw new PersonalHomeOperationsError(
+          'purpose_not_personal_home',
+          'Personal Home identity, layout, or erase preview changed after confirmation; erase was not attempted.',
+        );
+      }
+
       const wasRunning = await deps.lifecycle.isRunning();
       if (wasRunning) {
         input.progress?.('stopping_home');
@@ -633,28 +684,7 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
           await restorePreviouslyRunningHomeOrRethrow('Erase', error);
         }
       }
-      const paths = resolvePersonalHomeEraseTargets(layout);
-      const estimatedBytes = await estimateOwnedBytes(paths);
-      const identity = await readIdentityOrNull(layout);
-      try {
-        checkCancelled(input);
-        input.progress?.('awaiting_confirmation');
-        if (!await input.confirm({
-          canonicalServerUrl: purpose.canonicalServerUrl,
-          homeServerIdentityId: identity?.homeServerIdentityId ?? null,
-          paths,
-          estimatedBytes,
-        })) {
-          throw new PersonalHomeEraseError(
-            'confirmation_required',
-            'Personal Home data deletion was not explicitly confirmed.',
-          );
-        }
-        checkCancelled(input);
-      } catch (error) {
-        if (wasRunning) await restorePreviouslyRunningHomeOrRethrow('Erase', error);
-        throw error;
-      }
+      checkCancelled(input);
       input.progress?.('erasing');
       const result = await erasePersonalHomeData({ layout, operationLeaseHeld: true });
       return {
@@ -719,16 +749,6 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
                 );
               }
               if (stillRunning) throw stopError;
-              try {
-                await activateSource();
-                const recovered = await readSourceServiceStatus();
-                if (!recovered.running || recovered.quarantined) throw new Error('the source service did not report active');
-              } catch (recoveryError) {
-                throw new PersonalHomeOperationsError(
-                  'home_restart_failed',
-                  `Relocation was not attempted after an ambiguous stop; the source Home could not be restored and needs attention: ${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}.`,
-                );
-              }
               throw stopError;
             }
           }

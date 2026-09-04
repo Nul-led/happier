@@ -4,10 +4,21 @@ import {
   normalizeHostnameForLoopbackCheck,
 } from '@happier-dev/protocol';
 import { normalizePublicReleaseRingLabel } from '@happier-dev/release-runtime/releaseRings';
-
+import {
+  assertResolvedHomeTargetIdentity,
+  createTransferableHomeTargetInput,
+  parseResolvedHomeTarget,
+  type ResolvedHomeTarget,
+} from '../../homeTarget/homeTarget.js';
+import type { HappierJsonExecutor } from '../executors/happierJsonExecutor.js';
 import { SystemTaskExecutionError } from '../runSystemTask.js';
 import { redactSensitiveSystemTaskJsonValue, type InteractiveSystemTaskKind } from '../interactiveTaskKinds.js';
-import { runSetupMachineRecipe, type SetupMachineRecipeExecutor } from '../recipes/setupMachineRecipe.js';
+import {
+  resolveSetupMachineReadiness,
+  runSetupMachineRecipe,
+  type SetupMachineRecipeExecutor,
+} from '../recipes/setupMachineRecipe.js';
+import { runRemoteHomeEnrollmentRecipe } from '../recipes/remoteHomeEnrollmentRecipe.js';
 import {
   createRemoteSetupMachineRecipeHappierExecutor,
   createSetupMachineRecipeExecutorFromRemoteCommandRunner,
@@ -151,6 +162,7 @@ export interface RemoteBootstrapMachineParams {
     webappUrl?: string;
     publicRelayUrl?: string;
   }>;
+  homeTarget?: ResolvedHomeTarget;
   requireLocalApproval?: boolean;
   channel?: 'stable' | 'preview' | 'dev';
   serviceMode?: 'user' | 'none';
@@ -194,11 +206,13 @@ export type RemoteSshBootstrapMachineDeps = Readonly<{
     parsed: RemoteBootstrapMachineParams;
     auth: RemoteSshAuth;
     knownHostsMode: 'app' | 'system';
+    signal?: AbortSignal;
   }>) => Promise<void>;
   approveLocalAuthRequest: (params: Readonly<{
     publicKey: string;
+    homeServerIdentityId: string;
     parsed: RemoteBootstrapMachineParams;
-    // Verbatim remote `auth request` pairing context plus the requester's
+    // Verbatim short-lived v3 pairing context plus the requester's
     // token-only capability, forwarded so the local approval seals a
     // pairing-bound v3 response. The approval owner validates them; this seam
     // never fabricates pairing material.
@@ -210,13 +224,19 @@ export type RemoteSshBootstrapMachineDeps = Readonly<{
     auth: RemoteSshAuth;
     knownHostsMode: 'app' | 'system';
     localServerUrl?: string;
+    signal?: AbortSignal;
   }>) => RemoteSshBootstrapHappierJsonExecutor;
+  createRemoteEnrollmentExecutor?: (params: Readonly<{
+    parsed: RemoteBootstrapMachineParams;
+    auth: RemoteSshAuth;
+    knownHostsMode: 'app' | 'system';
+    signal?: AbortSignal;
+  }>) => HappierJsonExecutor;
   runRemoteCommand: (params: Readonly<{
     label:
       | 'auth.status'
+      | 'daemon.status'
       | 'server.configure'
-      | 'auth.request'
-      | 'auth.wait'
       | 'daemon.service.list'
       | 'daemon.service.install'
       | 'daemon.service.uninstallAll'
@@ -226,6 +246,7 @@ export type RemoteSshBootstrapMachineDeps = Readonly<{
     auth: RemoteSshAuth;
     knownHostsMode: 'app' | 'system';
     data?: Record<string, unknown>;
+    signal?: AbortSignal;
   }>) => Promise<RemoteCommandResult>;
 }>;
 
@@ -241,6 +262,12 @@ export function createRemoteSshBootstrapMachineTaskKind(
 }>> {
   return {
     async run(ctx) {
+      const runRemoteCommand: RemoteSshBootstrapMachineDeps['runRemoteCommand'] = async (params) => (
+        await deps.runRemoteCommand({ ...params, signal: ctx.signal })
+      );
+      const installRemoteCli: RemoteSshBootstrapMachineDeps['installRemoteCli'] = async (params) => {
+        await deps.installRemoteCli({ ...params, signal: ctx.signal });
+      };
       let cleanupTempIdentityFile: (() => Promise<void>) | null = null;
       try {
         const parsedRaw = parseRemoteBootstrapMachineParams(ctx.params);
@@ -262,7 +289,11 @@ export function createRemoteSshBootstrapMachineTaskKind(
         let parsedLocalForApproval = parsedRaw;
 
         const relayRuntimeEnabled = parsedRemote.relayRuntime?.enabled === true;
-        if (isLoopbackRelayUrl(parsedRemote.relay.relayUrl) && !relayRuntimeEnabled) {
+        if (
+          isLoopbackRelayUrl(parsedRemote.relay.relayUrl)
+          && !relayRuntimeEnabled
+          && !parsedRemote.homeTarget?.descriptor
+        ) {
           throw new SystemTaskExecutionError(
             'relay_url_unreachable',
             'Remote setup cannot use a loopback Relay URL. Provide relay.publicRelayUrl.',
@@ -318,7 +349,7 @@ export function createRemoteSshBootstrapMachineTaskKind(
         });
 
         const relayInstall = requireOk(
-          await deps.runRemoteCommand({
+          await runRemoteCommand({
             label: 'relay.runtime.install',
             parsed: parsedRemote,
             auth,
@@ -393,20 +424,68 @@ export function createRemoteSshBootstrapMachineTaskKind(
         auth,
         knownHostsMode,
         ...(relayRuntimeLocalServerUrl ? { localServerUrl: relayRuntimeLocalServerUrl } : {}),
-        runRemoteCommand: deps.runRemoteCommand,
+        runRemoteCommand,
+        signal: ctx.signal,
         ...(deps.createHappierJsonExecutor ? { createHappierJsonExecutor: deps.createHappierJsonExecutor } : {}),
       });
 
-      const recipeExecutor: SetupMachineRecipeExecutor = createSetupMachineRecipeExecutorFromRemoteCommandRunner({
+      const serviceRecipeExecutor = createSetupMachineRecipeExecutorFromRemoteCommandRunner({
         parsed: parsedRemote,
         auth,
         knownHostsMode,
         ...(relayRuntimeLocalServerUrl ? { localServerUrl: relayRuntimeLocalServerUrl } : {}),
         serviceMode: parsedRemote.serviceMode ?? 'user',
-        installRemoteCli: deps.installRemoteCli,
-        runRemoteCommand: deps.runRemoteCommand,
+        installRemoteCli,
+        runRemoteCommand,
+        signal: ctx.signal,
         ...(deps.createHappierJsonExecutor ? { createHappierJsonExecutor: deps.createHappierJsonExecutor } : {}),
       });
+      let enrolledRemoteProfileId: string | null = null;
+      const recipeExecutor: SetupMachineRecipeExecutor = {
+        ...serviceRecipeExecutor,
+        configureRelay: async (profile) => {
+          const configuredProfileId = await serviceRecipeExecutor.configureRelay(profile);
+          if (typeof configuredProfileId === 'string' && configuredProfileId.trim()) {
+            enrolledRemoteProfileId = configuredProfileId.trim();
+          }
+          return configuredProfileId;
+        },
+        enrollAuthPairing: async ({ approvePairingRequest }) => {
+          const enrollmentExecutor = deps.createRemoteEnrollmentExecutor?.({
+            parsed: parsedRemote,
+            auth,
+            knownHostsMode,
+            signal: ctx.signal,
+          });
+          if (!enrollmentExecutor) {
+            throw new SystemTaskExecutionError(
+              'remote_cli_update_required',
+              'Remote Home enrollment requires the canonical streaming SSH executor.',
+            );
+          }
+          let publicKey: string | null = null;
+          const result = await runRemoteHomeEnrollmentRecipe({
+            executor: enrollmentExecutor,
+            homeTargetInput: parsedRemote.homeTarget
+              ? createTransferableHomeTargetInput(parsedRemote.homeTarget)
+              : { kind: 'https_url', url: parsedRemote.relay.relayUrl },
+            signal: ctx.signal,
+            timeoutMs: 10 * 60_000,
+            approvePairingRequest: async (request) => {
+              publicKey = request.publicKey;
+              if (!approvePairingRequest) {
+                throw new SystemTaskExecutionError('approval_required', 'Pairing approval is required.');
+              }
+              await approvePairingRequest({
+                publicKey: request.publicKey,
+                requestPayload: request,
+              });
+            },
+          });
+          enrolledRemoteProfileId = result.remoteProfileId;
+          return { publicKey, machineId: result.machineId };
+        },
+      };
 
       let shouldManageService = (parsedRemote.serviceMode ?? 'user') !== 'none';
       if (shouldManageService) {
@@ -442,12 +521,10 @@ export function createRemoteSshBootstrapMachineTaskKind(
                 'daemon.service.uninstallAll',
               );
             } else {
-              shouldManageService = false;
-              ctx.emit({
-                type: 'progress',
-                stepId: 'daemon.service.preflight',
-                message: 'Keeping existing remote background services unchanged',
-              });
+              throw new SystemTaskExecutionError(
+                'service_reconciliation_declined',
+                'Remote background services must be reconciled before setup can continue.',
+              );
             }
           }
         }
@@ -456,10 +533,21 @@ export function createRemoteSshBootstrapMachineTaskKind(
       const recipeResult = await runSetupMachineRecipe({
         relayProfile,
         executor: recipeExecutor,
+        ...(parsedRemote.homeTarget?.descriptor
+          ? {
+              initialAuthStatus: {
+                authenticated: false,
+                credentialState: 'missing' as const,
+                machineRegistrationState: 'no-local-id' as const,
+                machineId: null,
+              },
+            }
+          : {}),
         steps: {
+          configureRelay: !parsedRemote.homeTarget?.descriptor,
           installService: shouldManageService,
           startService: shouldManageService,
-          verifyService: false,
+          verifyService: shouldManageService,
         },
         stepIds: {
           authRequest: 'ssh.auth.request',
@@ -474,6 +562,25 @@ export function createRemoteSshBootstrapMachineTaskKind(
           });
         },
         approvePairingRequest: async ({ publicKey, requestPayload }) => {
+          const homeServerIdentityId = typeof requestPayload.homeServerIdentityId === 'string'
+            ? requestPayload.homeServerIdentityId.trim()
+            : '';
+          if (!homeServerIdentityId) {
+            throw new SystemTaskExecutionError(
+              'remote_cli_update_required',
+              'The remote Happier CLI does not provide authenticated v3 Home identity context.',
+            );
+          }
+          if (parsedRemote.homeTarget) {
+            try {
+              assertResolvedHomeTargetIdentity(parsedRemote.homeTarget, homeServerIdentityId);
+            } catch {
+              throw new SystemTaskExecutionError(
+                'home_identity_mismatch',
+                'Remote Home identity does not match the selected Home.',
+              );
+            }
+          }
           const approvalPayload = redactRemoteBootstrapPayload(requestPayload);
           if (!shouldAutoApproveAuthRequest(parsedRemote, approvalPayload)) {
             const approval = await ctx.prompt({
@@ -490,6 +597,7 @@ export function createRemoteSshBootstrapMachineTaskKind(
           try {
             await deps.approveLocalAuthRequest({
               publicKey,
+              homeServerIdentityId,
               parsed: parsedLocalForApproval,
               ...(requestPayload.pairing !== undefined && requestPayload.pairing !== null
                 ? { pairing: requestPayload.pairing }
@@ -497,7 +605,10 @@ export function createRemoteSshBootstrapMachineTaskKind(
               ...(requestPayload.supportsTokenOnly === true ? { supportsTokenOnly: true } : {}),
             });
           } catch (error) {
-            if (parsedRemote.requireLocalApproval === true && shouldIgnoreLocalApprovalError(error)) {
+            if (
+              (parsedRemote.requireLocalApproval === true || Boolean(parsedRemote.homeTarget))
+              && shouldIgnoreLocalApprovalError(error)
+            ) {
               throw new SystemTaskExecutionError(
                 'local_approval_required',
                 'Remote setup requires local approval, but this CLI is not authenticated.',
@@ -509,6 +620,36 @@ export function createRemoteSshBootstrapMachineTaskKind(
           }
         },
       });
+
+      if (parsedRemote.homeTarget) {
+        const confirmed = resolveSetupMachineReadiness(await recipeExecutor.readAuthStatus());
+        if (
+          confirmed.credentialState !== 'valid'
+          || confirmed.machineRegistrationState !== 'server-confirmed'
+          || !confirmed.machineId
+        ) {
+          throw new SystemTaskExecutionError(
+            'machine_registration_unconfirmed',
+            'The selected Home did not confirm the remote machine registration.',
+          );
+        }
+        if (recipeResult.machineId && recipeResult.machineId !== confirmed.machineId) {
+          throw new SystemTaskExecutionError(
+            'machine_identity_mismatch',
+            'The selected Home confirmed a different remote machine identity.',
+          );
+        }
+        if (
+          shouldManageService
+          && enrolledRemoteProfileId
+          && recipeResult.daemonStatus?.activeServerId !== enrolledRemoteProfileId
+        ) {
+          throw new SystemTaskExecutionError(
+            'daemon_home_mismatch',
+            'The background service is not connected through the enrolled Home profile.',
+          );
+        }
+      }
 
       ctx.emit({
         type: 'progress',
@@ -550,6 +691,12 @@ export function parseRemoteBootstrapMachineParams(params: unknown): RemoteBootst
   const identityPrivateKey = sshRecord && typeof sshRecord.identityPrivateKey === 'string'
     ? sshRecord.identityPrivateKey.trim()
     : '';
+  if (Object.prototype.hasOwnProperty.call(value, 'expectedHomeServerIdentityId')) {
+    throw new SystemTaskExecutionError(
+      'invalid_params',
+      'expectedHomeServerIdentityId is not a supported remote bootstrap target; use homeTarget.',
+    );
+  }
 
   return {
     ssh,
@@ -559,6 +706,7 @@ export function parseRemoteBootstrapMachineParams(params: unknown): RemoteBootst
       ...(typeof relayRecord.webappUrl === 'string' ? { webappUrl: relayRecord.webappUrl } : {}),
       ...(typeof relayRecord.publicRelayUrl === 'string' ? { publicRelayUrl: relayRecord.publicRelayUrl } : {}),
     },
+    ...(value.homeTarget !== undefined ? { homeTarget: parseResolvedHomeTarget(value.homeTarget) } : {}),
     requireLocalApproval: value.requireLocalApproval === true,
     channel: normalizePublicReleaseRingLabel(value.channel) || 'stable',
     serviceMode: value.serviceMode === 'none' ? 'none' : 'user',

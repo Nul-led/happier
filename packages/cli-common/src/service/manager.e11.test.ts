@@ -45,6 +45,7 @@ describe('E11 canonical service lifecycle', () => {
       args,
       expectedFailure: 'service-absent',
     }));
+    expect(plan.removals).toEqual([{ path: '/tmp/definition', beforeCommandIndex: plan.commands.length === 2 && backend === 'systemd-user' ? 1 : plan.commands.length }]);
   });
 
   it('plans Windows teardown through typed scheduler commands', () => {
@@ -61,6 +62,10 @@ describe('E11 canonical service lifecycle', () => {
     expect(plan.commands[0]?.args.at(-1)).toContain('Stop-ScheduledTask');
     expect(plan.commands[1]?.args.at(-1)).toContain('Unregister-ScheduledTask');
     expect(plan.commands.every((command) => command.allowFail !== true)).toBe(true);
+    expect(plan.removals).toEqual([{
+      path: 'C:\\Users\\test\\.happier\\services\\dev.happier.stack.exp.ps1',
+      beforeCommandIndex: plan.commands.length,
+    }]);
   });
 
   it('only classifies explicit backend absence as benign', () => {

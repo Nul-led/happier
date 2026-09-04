@@ -31,6 +31,10 @@ export type RunHappierOptions = Readonly<{
   cwd?: string;
   signal?: AbortSignal;
   timeoutMs?: number;
+  onStdoutChunk?: (text: string) => void;
+  includeStdoutInError?: boolean;
+  /** Ephemeral process input. Callers must keep credentials and durable secrets out. */
+  input?: string;
 }>;
 
 export interface HappierJsonExecutor {
@@ -47,6 +51,8 @@ type CommandExecutionResult = Readonly<{
   stderr: string;
 }>;
 
+const MAX_HAPPIER_PROCESS_INPUT_BYTES = 64 * 1024;
+
 async function runCommandCapture(params: Readonly<{
   command: string;
   args: readonly string[];
@@ -54,7 +60,12 @@ async function runCommandCapture(params: Readonly<{
   cwd?: string;
   signal?: AbortSignal;
   timeoutMs?: number;
+  input?: string;
+  onStdoutChunk?: (text: string) => void;
 }>): Promise<CommandExecutionResult> {
+  if (params.input !== undefined && Buffer.byteLength(params.input, 'utf8') > MAX_HAPPIER_PROCESS_INPUT_BYTES) {
+    throw new SystemTaskExecutionError('input_limit_exceeded', 'Happier CLI input exceeds the supported size.');
+  }
   const invocation = resolveWindowsCommandInvocation({
     command: params.command,
     args: [...params.args],
@@ -67,7 +78,7 @@ async function runCommandCapture(params: Readonly<{
     const child = spawn(invocation.command, invocation.args, {
       env: params.env,
       cwd: params.cwd,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
       windowsVerbatimArguments: invocation.windowsVerbatimArguments,
     });
@@ -115,8 +126,22 @@ async function runCommandCapture(params: Readonly<{
       rejectPromise(new Error(`Command timed out: ${params.command}`));
     }, Number.isFinite(params.timeoutMs) ? Math.max(1, Math.floor(params.timeoutMs as number)) : 60_000);
 
-    child.stdout?.on('data', (chunk: Buffer) => stdoutChunks.push(chunk));
+    child.stdout?.on('data', (chunk: Buffer) => {
+      stdoutChunks.push(chunk);
+      params.onStdoutChunk?.(chunk.toString('utf8'));
+    });
     child.stderr?.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
+    child.stdin?.on('error', () => {
+      // The child exit/error event is the command authority. An early exit can
+      // close stdin while bounded input is still being written; do not turn
+      // that expected EPIPE into an unhandled process error.
+    });
+
+    if (params.input !== undefined) {
+      child.stdin?.end(params.input);
+    } else {
+      child.stdin?.end();
+    }
 
     child.once('error', (error) => {
       if (settled) return;
@@ -386,6 +411,8 @@ export function createLocalHappierJsonExecutor(params: Readonly<{
         cwd: opts?.cwd,
         signal: opts?.signal,
         timeoutMs: opts?.timeoutMs,
+        input: opts?.input,
+        onStdoutChunk: opts?.onStdoutChunk,
       }).catch((error: unknown) => {
         const message = error instanceof Error && error.message.trim()
           ? error.message.trim()

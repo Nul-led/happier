@@ -215,6 +215,8 @@ describe('PersonalHomeOperations facade', () => {
     endpoints: [{ kind: 'https' as const, url: 'http://127.0.0.1:43110' }],
   };
   const makeRelocateInput = (): PersonalHomeRelocateInput => {
+    let destinationStatusReads = 0;
+    const absentDestination = { operationId: 'system-task:relocation-1', status: 'absent' as const };
     let descriptorReads = 0;
     return ({
     operationId: 'system-task:relocation-1',
@@ -231,7 +233,7 @@ describe('PersonalHomeOperations facade', () => {
         accountCount: 1,
         sessionCount: 0,
       }),
-      status: async (operationId) => ({
+      status: async (operationId) => destinationStatusReads++ === 0 ? absentDestination : ({
         operationId,
         status: 'quarantined',
         bundleSha256: 'a'.repeat(64),
@@ -703,7 +705,52 @@ describe('PersonalHomeOperations facade', () => {
     }
   });
 
-  it('confirms the exact stopped-Home erase targets under the operation lock before deleting', { timeout: 60_000 }, async () => {
+  it('refuses erase before confirmation when the installed Home identity is unreadable', async () => {
+    const { root, layout } = await fixture('erase-unreadable-identity');
+    try {
+      const confirm = vi.fn(async () => false);
+      const { deps, events, setRunning } = makeDeps(layout, {
+        readIdentity: async () => { throw new Error('identity database unavailable'); },
+      });
+      setRunning(true);
+
+      await expect(createPersonalHomeOperations(deps).erase({ confirm })).rejects.toMatchObject({
+        code: 'identity_unavailable',
+      });
+      expect(confirm).not.toHaveBeenCalled();
+      expect(events).not.toContain('home:stop');
+      await expect(readFile(layout.databasePath, 'utf8')).resolves.toBe('sqlite-fixture');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses erase before stop when the confirmed Home identity becomes unreadable', async () => {
+    const { root, layout } = await fixture('erase-identity-unreadable-after-confirmation');
+    try {
+      let identityReads = 0;
+      const { deps, events, setRunning } = makeDeps(layout, {
+        readIdentity: async () => {
+          identityReads += 1;
+          if (identityReads > 1) throw new Error('identity database became unavailable');
+          return { homeServerIdentityId: 'home-identity', schemaVersion: '1' };
+        },
+      });
+      setRunning(true);
+      const confirm = vi.fn(async () => true);
+
+      await expect(createPersonalHomeOperations(deps).erase({ confirm })).rejects.toMatchObject({
+        code: 'identity_unavailable',
+      });
+      expect(confirm).toHaveBeenCalledTimes(1);
+      expect(events).not.toContain('home:stop');
+      await expect(readFile(layout.databasePath, 'utf8')).resolves.toBe('sqlite-fixture');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('confirms the exact running-Home erase preview, revalidates it, then stops and deletes', { timeout: 60_000 }, async () => {
     const { root, layout } = await fixture('erase');
     try {
       const sibling = join(root, 'sibling.txt');
@@ -735,13 +782,53 @@ describe('PersonalHomeOperations facade', () => {
       expect(result.removedPaths).toContain(layout.databasePath);
       expect(result.remainingUnknownPaths).toContain(join(layout.dataDir, 'user-marker.txt'));
       expect(result.stoppedRunningHome).toBe(true);
-      expect(order.indexOf('home:stop')).toBeLessThan(order.indexOf('confirm'));
-      expect(order.indexOf('confirm')).toBeLessThan(order.indexOf('progress:erasing'));
+      expect(order.indexOf('confirm')).toBeLessThan(order.indexOf('home:stop'));
+      expect(order.indexOf('home:stop')).toBeLessThan(order.indexOf('progress:erasing'));
       expect(order).not.toContain('home:start');
       expect(events).toEqual([]);
       await expect(stat(layout.databasePath)).rejects.toMatchObject({ code: 'ENOENT' });
       await expect(stat(join(layout.dataDir, '.operations', 'lock'))).rejects.toMatchObject({ code: 'ENOENT' });
       await expect(readFile(sibling, 'utf8')).resolves.toBe('preserve');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('blocks erase before confirmation or stop while update recovery is uncommitted', async () => {
+    const { root, layout } = await fixture('erase-update-recovery');
+    const operationDir = join(layout.dataDir, '.operations');
+    const recoveryPath = join(operationDir, 'runtime-update-recovery.v1.json');
+    await mkdir(operationDir, { recursive: true });
+    await writeFile(recoveryPath, JSON.stringify({
+      version: 1,
+      phase: 'prepared',
+      priorRunning: true,
+      previousServiceDefinitionExisted: true,
+      runtimeBackup: {
+        directoryName: '.relay-runtime-backup-owned',
+        hasPayload: true,
+        hasRestorableServerBinary: true,
+        hasMigrations: true,
+        previousEnvText: null,
+        previousStateText: null,
+      },
+      restorePoint: {
+        fileName: 'pre-upgrade-owned.tar',
+        homeServerIdentityId: 'home-identity',
+        schemaVersion: '1',
+      },
+    }));
+    try {
+      const { deps, events, setRunning } = makeDeps(layout);
+      setRunning(true);
+      const confirm = vi.fn(async () => true);
+
+      await expect(createPersonalHomeOperations(deps).erase({ confirm })).rejects.toMatchObject({
+        code: 'operation_recovery_required',
+      });
+      expect(confirm).not.toHaveBeenCalled();
+      expect(events).not.toContain('home:stop');
+      await expect(readFile(recoveryPath, 'utf8')).resolves.toContain('"phase":"prepared"');
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -781,7 +868,7 @@ describe('PersonalHomeOperations facade', () => {
   it.each([
     ['decline', async () => false],
     ['prompt failure', async () => { throw new Error('prompt transport failed'); }],
-  ])('restarts a previously running Home and preserves bytes on erase %s', { timeout: 60_000 }, async (_label, confirm) => {
+  ])('leaves a running Home untouched and preserves bytes on erase %s', { timeout: 60_000 }, async (_label, confirm) => {
     const { root, layout } = await fixture('erase-declined');
     try {
       let running = true;
@@ -795,7 +882,7 @@ describe('PersonalHomeOperations facade', () => {
         },
       });
       await expect(createPersonalHomeOperations(deps).erase({ confirm })).rejects.toBeTruthy();
-      expect(events).toEqual(['home:stop', 'home:start']);
+      expect(events).toEqual([]);
       await expect(readFile(layout.databasePath, 'utf8')).resolves.toBe('sqlite-fixture');
       await expect(readFile(layout.masterSecretPath, 'utf8')).resolves.toBe('master-secret-fixture');
     } finally {
@@ -806,7 +893,7 @@ describe('PersonalHomeOperations facade', () => {
   it.each([
     ['declined confirmation', async () => false, async () => { throw new Error('service start failed'); }],
     ['prompt failure', async () => { throw new Error('prompt transport failed'); }, async () => undefined],
-  ])('reports that erase was not performed and the Home restart needs attention after %s', { timeout: 60_000 }, async (_label, confirm, start) => {
+  ])('does not invoke restart after %s because confirmation precedes the lifecycle boundary', { timeout: 60_000 }, async (_label, confirm, start) => {
     const { root, layout } = await fixture('erase-restart-failed');
     try {
       let running = true;
@@ -819,10 +906,7 @@ describe('PersonalHomeOperations facade', () => {
         },
       });
 
-      await expect(createPersonalHomeOperations(deps).erase({ confirm })).rejects.toMatchObject({
-        code: 'home_restart_failed',
-        message: expect.stringMatching(/erase was not performed.*restart.*needs attention/iu),
-      });
+      await expect(createPersonalHomeOperations(deps).erase({ confirm })).rejects.not.toMatchObject({ code: 'home_restart_failed' });
       await expect(readFile(layout.databasePath, 'utf8')).resolves.toBe('sqlite-fixture');
       await expect(readFile(layout.masterSecretPath, 'utf8')).resolves.toBe('master-secret-fixture');
     } finally {
@@ -848,7 +932,7 @@ describe('PersonalHomeOperations facade', () => {
       await expect(createPersonalHomeOperations(deps).erase({ confirm })).rejects.toThrow('partial stop');
       expect(events).toEqual(['home:stop', 'home:start']);
       expect(running).toBe(true);
-      expect(confirm).not.toHaveBeenCalled();
+      expect(confirm).toHaveBeenCalledTimes(1);
       await expect(readFile(layout.databasePath, 'utf8')).resolves.toBe('sqlite-fixture');
       await expect(readFile(layout.masterSecretPath, 'utf8')).resolves.toBe('master-secret-fixture');
     } finally { await rm(root, { recursive: true, force: true }); }
@@ -872,26 +956,26 @@ describe('PersonalHomeOperations facade', () => {
         code: 'home_restart_failed',
         message: expect.stringMatching(/erase was not performed.*partial stop.*restart.*needs attention/iu),
       });
-      expect(confirm).not.toHaveBeenCalled();
+      expect(confirm).toHaveBeenCalledTimes(1);
       await expect(readFile(layout.databasePath, 'utf8')).resolves.toBe('sqlite-fixture');
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
-  it('deletes only the captured locked layout when ambient path resolution changes after confirmation', { timeout: 60_000 }, async () => {
+  it('aborts without stopping or deleting when the canonical layout changes after confirmation', { timeout: 60_000 }, async () => {
     const first = await fixture('erase-layout-first');
     const second = await fixture('erase-layout-second');
     try {
       let current = first.layout;
       const { deps } = makeDeps(first.layout, { resolveLayout: async () => current });
-      await createPersonalHomeOperations(deps).erase({
+      await expect(createPersonalHomeOperations(deps).erase({
         confirm: async (facts) => {
           expect(facts.paths).toContain(first.layout.databasePath);
           expect(facts.paths).not.toContain(second.layout.databasePath);
           current = second.layout;
           return true;
         },
-      });
-      await expect(stat(first.layout.databasePath)).rejects.toMatchObject({ code: 'ENOENT' });
+      })).rejects.toMatchObject({ code: 'purpose_not_personal_home' });
+      await expect(readFile(first.layout.databasePath, 'utf8')).resolves.toBe('sqlite-fixture');
       await expect(readFile(second.layout.databasePath, 'utf8')).resolves.toBe('sqlite-fixture');
       await expect(readFile(second.layout.masterSecretPath, 'utf8')).resolves.toBe('master-secret-fixture');
     } finally {
@@ -960,7 +1044,7 @@ describe('PersonalHomeOperations facade', () => {
           ...deps.lifecycle,
           quarantine: async () => { events.push('home:quarantine'); quarantined = true; },
           activate: async () => { events.push('home:activate'); quarantined = false; },
-          readServiceStatus: async () => ({ running: false, quarantined }),
+          readServiceStatus: async () => ({ running: !quarantined, quarantined }),
         },
       });
       const result = await ops.relocate({
@@ -1039,12 +1123,16 @@ describe('PersonalHomeOperations facade', () => {
         readServiceStatus: async () => ({ running, quarantined }),
       };
       const reserving = makeRelocateInput();
+      let destinationStatusReads = 0;
       await expect(createPersonalHomeOperations({ ...deps, lifecycle }).relocate({
         ...reserving,
         destination: {
           ...reserving.destination,
           stage: async () => { throw new Error('transport closed'); },
-          status: async () => { throw new Error('destination unreachable'); },
+          status: async (operationId) => {
+            if (destinationStatusReads++ === 0) return { operationId, status: 'absent' as const };
+            throw new Error('destination unreachable');
+          },
         },
       })).rejects.toThrow('transport closed');
       expect(running).toBe(false);

@@ -304,6 +304,28 @@ describe('Personal Home backup and restore owner', () => {
     }
   });
 
+  it('never replaces a pre-existing backup output', async () => {
+    const { root, layout } = await fixture();
+    try {
+      const outputPath = join(root, 'existing.tar');
+      await writeFile(outputPath, 'user-owned-existing-backup');
+      await expect(createPersonalHomeBackup({
+        layout, outputPath, stagingDir: join(root, 'staging-no-clobber'),
+        homeServerIdentityId: 'home-identity', schemaVersion: '1', happierVersion: '0.0.0',
+        configuration: {
+          homeServerIdentityId: 'home-identity', canonicalServerUrl: 'http://127.0.0.1:43123',
+          encryptionStoragePolicy: 'plaintext_only', defaultAccountMode: 'plain',
+          anonymousSignupPhase: 'loopback-bootstrap-then-disabled',
+        },
+        sqlite: sqliteOk,
+      }))
+        .rejects.toMatchObject({ code: 'EEXIST' });
+      await expect(readFile(outputPath, 'utf8')).resolves.toBe('user-owned-existing-backup');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('uses one restrictive private archive snapshot after accepting caller-controlled archive bytes', async () => {
     const root = await mkdtemp(join(tmpdir(), 'happier-personal-home-archive-snapshot-'));
     try {

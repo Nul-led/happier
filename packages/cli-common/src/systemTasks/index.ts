@@ -71,6 +71,11 @@ export {
   type SetupMachineRelayProfile,
 } from './recipes/setupMachineRecipe.js';
 export {
+  runRemoteHomeEnrollmentRecipe,
+  type RemoteHomeEnrollmentPairingRequest,
+  type RemoteHomeEnrollmentResult,
+} from './recipes/remoteHomeEnrollmentRecipe.js';
+export {
   applyBackgroundServiceSetupGuidance,
   type BackgroundServiceSetupGuidanceCancellationReason,
   type BackgroundServiceSetupGuidanceFlowResult,

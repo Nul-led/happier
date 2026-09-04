@@ -8,7 +8,7 @@ export type PinnedRunnerSnapshotLocation = Readonly<{
   workspaceRuntimeIdentity: string;
 }>;
 
-export const PINNED_RUNNER_LAYOUT_VERSION: 'package-dist-v5';
+export const PINNED_RUNNER_LAYOUT_VERSION: 'package-dist-v6';
 export const PINNED_RUNNER_MANAGED_PROVIDER_RUNTIME_RELATIVE_PATH: readonly string[];
 export const PINNED_RUNNER_NO_MANAGED_PROVIDER_RUNTIME_SHA256: string;
 

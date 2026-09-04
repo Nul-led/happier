@@ -24,6 +24,7 @@ export type PersonalHomeRelocationSourceResult = Readonly<{
   publishedDescriptor?: HomeConnectionDescriptorV1;
   recoveryAction?: 'finish_move' | 'return_to_source';
   destinationTransferCleanupNeedsAttention?: true;
+  destinationCleanupNeedsAttention?: true;
 }>;
 
 export type PersonalHomeRelocationPublicationFacts = Readonly<{
@@ -72,9 +73,9 @@ export type PersonalHomeRelocationSourceCoordinatorParams = Readonly<{
 type SourceMarker = Readonly<{
   version: 1;
   operationId: string;
-  phase: 'source_reserved' | 'destination_staged' | 'source_quarantined' | 'pending' | 'destination_published' | 'committed' | 'returning_to_source' | 'returned_to_source';
+  phase: 'preparing_source' | 'source_reserved' | 'destination_staged' | 'source_quarantined' | 'pending' | 'destination_published' | 'committed' | 'returning_to_source' | 'returned_to_source';
   destinationMachineId: string;
-  bundleSha256: string;
+  bundleSha256?: string;
   /** Whether the source Home was in service when this relocation reserved it.
    * An automatic rollback restores exactly that state; an explicit return to
    * the original Home always puts it back in service. Older markers omit it and
@@ -89,6 +90,7 @@ type SourceMarker = Readonly<{
   sourceDescriptorRevision: number;
   sourceDescriptor: HomeConnectionDescriptorV1;
   destinationTransferCleanupNeedsAttention?: true;
+  destinationCleanupNeedsAttention?: true;
 }>;
 
 export class PersonalHomeRelocationSourceActivationBlockedError extends Error {
@@ -127,11 +129,11 @@ function parseSourceMarker(raw: string): SourceMarker {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid marker');
   const marker = value as Record<string, unknown>;
   const sourceDescriptor = HomeConnectionDescriptorV1Schema.safeParse(marker.sourceDescriptor);
-  if (Object.keys(marker).some((key) => !['version', 'operationId', 'phase', 'destinationMachineId', 'bundleSha256', 'sourceArchivePath', 'sourcePriorRunning', 'homeServerIdentityId', 'sourceCanonicalServerUrl', 'sourceDescriptorRevision', 'sourceDescriptor', 'destinationTransferCleanupNeedsAttention'].includes(key))
+  if (Object.keys(marker).some((key) => !['version', 'operationId', 'phase', 'destinationMachineId', 'bundleSha256', 'sourceArchivePath', 'sourcePriorRunning', 'homeServerIdentityId', 'sourceCanonicalServerUrl', 'sourceDescriptorRevision', 'sourceDescriptor', 'destinationTransferCleanupNeedsAttention', 'destinationCleanupNeedsAttention'].includes(key))
     || marker.version !== 1
     || typeof marker.operationId !== 'string' || !marker.operationId
     || typeof marker.destinationMachineId !== 'string' || !marker.destinationMachineId
-    || typeof marker.bundleSha256 !== 'string' || !/^[a-f0-9]{64}$/u.test(marker.bundleSha256)
+    || (marker.bundleSha256 !== undefined && (typeof marker.bundleSha256 !== 'string' || !/^[a-f0-9]{64}$/u.test(marker.bundleSha256)))
     || typeof marker.homeServerIdentityId !== 'string' || !marker.homeServerIdentityId
     || typeof marker.sourceCanonicalServerUrl !== 'string' || !marker.sourceCanonicalServerUrl
     || typeof marker.sourceDescriptorRevision !== 'number' || !Number.isSafeInteger(marker.sourceDescriptorRevision) || marker.sourceDescriptorRevision < 1
@@ -140,9 +142,11 @@ function parseSourceMarker(raw: string): SourceMarker {
     || sourceDescriptor.data.canonicalServerUrl !== marker.sourceCanonicalServerUrl
     || sourceDescriptor.data.revision !== marker.sourceDescriptorRevision
     || (marker.destinationTransferCleanupNeedsAttention !== undefined && marker.destinationTransferCleanupNeedsAttention !== true)
+    || (marker.destinationCleanupNeedsAttention !== undefined && marker.destinationCleanupNeedsAttention !== true)
     || (marker.sourceArchivePath !== undefined && (typeof marker.sourceArchivePath !== 'string' || !isAbsolute(marker.sourceArchivePath)))
     || (marker.sourcePriorRunning !== undefined && typeof marker.sourcePriorRunning !== 'boolean')
-    || typeof marker.phase !== 'string' || !['source_reserved', 'destination_staged', 'source_quarantined', 'pending', 'destination_published', 'committed', 'returning_to_source', 'returned_to_source'].includes(marker.phase)
+    || typeof marker.phase !== 'string' || !['preparing_source', 'source_reserved', 'destination_staged', 'source_quarantined', 'pending', 'destination_published', 'committed', 'returning_to_source', 'returned_to_source'].includes(marker.phase)
+    || (!['preparing_source', 'returning_to_source', 'returned_to_source'].includes(marker.phase) && typeof marker.bundleSha256 !== 'string')
     || (marker.phase === 'source_reserved' && typeof marker.sourceArchivePath !== 'string')) {
     throw new Error('invalid marker');
   }
@@ -209,6 +213,22 @@ export async function assertPersonalHomeRelocationSourceAllowsActivation(dataDir
   }
 }
 
+/** An existing source marker is resumable only by its exact relocation operation. */
+export async function assertPersonalHomeRelocationSourceAllowsOperation(dataDir: string, operationId: string): Promise<void> {
+  let marker: SourceMarker | null;
+  try {
+    marker = await readSourceMarker(dataDir);
+  } catch (error) {
+    throw new PersonalHomeRelocationSourceActivationBlockedError(
+      error instanceof Error ? error.message : 'Personal Home relocation source state is unreadable.',
+    );
+  }
+  if (marker && marker.operationId !== operationId
+    && !(marker.phase === 'returned_to_source' && marker.destinationTransferCleanupNeedsAttention !== true)) {
+    throw new PersonalHomeRelocationSourceActivationBlockedError('Another Personal Home relocation operation owns this source.');
+  }
+}
+
 async function writeSourceMarker(dataDir: string, marker: SourceMarker): Promise<void> {
   const directory = join(dataDir, '.operations');
   const target = sourceMarkerPath(dataDir);
@@ -268,10 +288,14 @@ function destinationPublicationFacts(
   };
 }
 
-function cleanupAttentionFacts(marker: SourceMarker): Readonly<{ destinationTransferCleanupNeedsAttention: true }> | Readonly<Record<string, never>> {
-  return marker.destinationTransferCleanupNeedsAttention === true
-    ? { destinationTransferCleanupNeedsAttention: true }
-    : {};
+function cleanupAttentionFacts(marker: SourceMarker): Readonly<{
+  destinationTransferCleanupNeedsAttention?: true;
+  destinationCleanupNeedsAttention?: true;
+}> {
+  return {
+    ...(marker.destinationTransferCleanupNeedsAttention === true ? { destinationTransferCleanupNeedsAttention: true as const } : {}),
+    ...(marker.destinationCleanupNeedsAttention === true ? { destinationCleanupNeedsAttention: true as const } : {}),
+  };
 }
 
 /** Both Homes stay stopped and intact; only the named recovery action is safe. */
@@ -353,6 +377,10 @@ export async function coordinatePersonalHomeRelocation(
   let createdReservation = false;
   let staged: PersonalHomeRelocationDestinationFacts;
   if (!marker) {
+    const destinationPreflight = await params.destination.status(params.operationId);
+    if (destinationPreflight.status !== 'absent') {
+      throw new Error('Relocation destination is not empty and available for this operation.');
+    }
     const sourceDescriptor = HomeConnectionDescriptorV1Schema.nullable().parse(
       await params.readPublishedDescriptor(params.homeServerIdentityId),
     );
@@ -362,8 +390,24 @@ export async function coordinatePersonalHomeRelocation(
       || sourceDescriptor.revision !== params.sourceDescriptorRevision) {
       throw new Error('The current Personal Home source descriptor could not be authoritatively read before relocation.');
     }
-    const { wasRunning } = await params.stopSource();
+    const sourceStatus = await params.readSourceServiceStatus();
+    marker = {
+      version: 1,
+      operationId: params.operationId,
+      phase: 'preparing_source',
+      destinationMachineId: params.destinationMachineId,
+      sourcePriorRunning: sourceStatus.running,
+      homeServerIdentityId: params.homeServerIdentityId,
+      sourceCanonicalServerUrl: params.sourceCanonicalServerUrl,
+      sourceDescriptorRevision: params.sourceDescriptorRevision,
+      sourceDescriptor,
+    };
+    await writeSourceMarker(params.sourceDataDir, marker);
     try {
+      const { wasRunning } = await params.stopSource();
+      if (wasRunning !== marker.sourcePriorRunning) {
+        throw new Error('Personal Home source running state changed while relocation was preparing to stop it.');
+      }
       const backup = await params.createFinalBackup();
       if (!isAbsolute(backup.archivePath) || !/^[a-f0-9]{64}$/u.test(backup.bundleSha256)) {
         throw new Error('Final Personal Home relocation backup did not return a valid source-local archive receipt.');
@@ -375,7 +419,7 @@ export async function coordinatePersonalHomeRelocation(
         destinationMachineId: params.destinationMachineId,
         bundleSha256: backup.bundleSha256,
         sourceArchivePath: backup.archivePath,
-        sourcePriorRunning: wasRunning,
+        sourcePriorRunning: marker.sourcePriorRunning,
         homeServerIdentityId: params.homeServerIdentityId,
         sourceCanonicalServerUrl: params.sourceCanonicalServerUrl,
         sourceDescriptorRevision: params.sourceDescriptorRevision,
@@ -384,12 +428,32 @@ export async function coordinatePersonalHomeRelocation(
       await writeSourceMarker(params.sourceDataDir, marker);
       createdReservation = true;
     } catch (error) {
-      // Nothing was reserved, so the source returns to exactly its prior state.
-      if (wasRunning) await params.activateSource();
+      await releaseReservationToSource(
+        params,
+        marker,
+        'automatic_rollback',
+        'Personal Home relocation preparation failed and the source could not be restored.',
+      );
       throw error;
     }
   } else {
     assertMarkerMatchesRequest(marker, params);
+  }
+
+  if (marker.phase === 'preparing_source') {
+    await releaseReservationToSource(
+      params,
+      marker,
+      'automatic_rollback',
+      'Interrupted Personal Home relocation preparation could not restore the source.',
+    );
+    return {
+      operationId: marker.operationId,
+      status: 'returned',
+      destinationMachineId: marker.destinationMachineId,
+      sourceDescriptorRevision: marker.sourceDescriptorRevision,
+      publishedDescriptor: marker.sourceDescriptor,
+    };
   }
 
   let destinationStatus: Awaited<ReturnType<typeof params.destination.status>> = createdReservation
@@ -433,7 +497,7 @@ export async function coordinatePersonalHomeRelocation(
       staged = await params.destination.stage({
         operationId: params.operationId,
         archivePath: marker.sourceArchivePath!,
-        bundleSha256: marker.bundleSha256,
+        bundleSha256: marker.bundleSha256!,
         expectedHomeServerIdentityId: params.homeServerIdentityId,
         expectedCanonicalServerUrl: params.sourceCanonicalServerUrl,
         sourceDescriptorRevision: params.sourceDescriptorRevision,
@@ -545,7 +609,13 @@ export async function coordinatePersonalHomeRelocation(
     if (!current || !descriptorMatchesSource(current, marker.sourceDescriptor)) {
       return pendingRelocation(marker, 'finish_move');
     }
-    await params.destination.abort(params.operationId);
+    const cleanup = await params.destination.abort(params.operationId);
+    if (cleanup.transferCleanupNeedsAttention === true) {
+      marker = { ...marker, destinationTransferCleanupNeedsAttention: true };
+    } else {
+      const { destinationTransferCleanupNeedsAttention: _attention, ...cleanedMarker } = marker;
+      marker = cleanedMarker;
+    }
     await writeSourceMarker(params.sourceDataDir, { ...marker, phase: 'returning_to_source' });
     await params.activateSource();
     const sourceService = await params.readSourceServiceStatus();
@@ -596,8 +666,13 @@ export async function coordinatePersonalHomeRelocation(
   // the published Home, so recovery may only finish the move.
   marker = { ...marker, phase: 'destination_published' };
   await writeSourceMarker(params.sourceDataDir, marker);
-  await params.destination.commit({ operationId: params.operationId, publishedDescriptor: authoritative });
-  await writeSourceMarker(params.sourceDataDir, { ...marker, phase: 'committed' });
+  const committedDestination = await params.destination.commit({ operationId: params.operationId, publishedDescriptor: authoritative });
+  marker = {
+    ...marker,
+    phase: 'committed',
+    ...(committedDestination.cleanupNeedsAttention === true ? { destinationCleanupNeedsAttention: true as const } : {}),
+  };
+  await writeSourceMarker(params.sourceDataDir, marker);
   return {
     operationId: params.operationId,
     status: 'committed',

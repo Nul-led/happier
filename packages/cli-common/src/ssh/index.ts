@@ -40,11 +40,11 @@ export {
 } from './openSshLocalPortForward.js';
 
 export {
+  OpenSshExecutionError,
+  runOpenSshRemoteCommand,
+  transferOpenSshFile,
   copyLocalDirectoryToRemoteSync,
-  runOpenSshPosixShellCommandSync,
-  runOpenSshRemoteCommandSync,
-  runRemoteJsonSync,
-  runRemoteTextSync,
   sshKeyscanSync,
   type OpenSshCommandResult,
+  type OpenSshExecutionErrorCode,
 } from './openSshRunner.js';

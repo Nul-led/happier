@@ -17,3 +17,6 @@ export {
 export {
   SystemTaskExecutionError,
 } from './runSystemTask.js';
+export {
+  createOpenSshHappierJsonExecutor,
+} from './executors/openSshHappierJsonExecutor.js';

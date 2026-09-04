@@ -50,6 +50,7 @@ export function createSetupMachineRecipeExecutorFromHappierJsonExecutor(params: 
       daemon?: { running?: unknown };
       service?: { installed?: unknown };
       auth?: { needsAuth?: unknown; machineId?: unknown };
+      server?: { activeServerId?: unknown };
     };
     return {
       serviceInstalled: record.service?.installed === true,
@@ -59,6 +60,9 @@ export function createSetupMachineRecipeExecutorFromHappierJsonExecutor(params: 
       machineRegistrationState: readMachineRegistrationState(record.auth),
       machineId: typeof record.auth?.machineId === 'string' && record.auth.machineId.trim()
         ? record.auth.machineId.trim()
+        : null,
+      activeServerId: typeof record.server?.activeServerId === 'string' && record.server.activeServerId.trim()
+        ? record.server.activeServerId.trim()
         : null,
     };
   };

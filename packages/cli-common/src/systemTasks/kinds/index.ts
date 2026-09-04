@@ -70,6 +70,8 @@ export {
 export {
   createRemoteSshManageHostTaskKind,
   redactRemoteSshManageHostPayload,
+  parseRemotePersonalHomeApprovalInput,
+  type RemotePersonalHomeApprovalInput,
   type RemoteSshManageHostAction,
   type RemoteSshManageHostDeps,
 } from './remoteSshManageHostKind.js';

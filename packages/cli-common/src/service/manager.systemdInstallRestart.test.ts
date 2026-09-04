@@ -36,4 +36,21 @@ describe('planServiceAction (systemd install)', () => {
             { cmd: 'systemctl', args: ['--user', 'restart', 'happier-server-dev.service'] },
         ]);
     });
+
+    it('reloads a freshly written transient start definition before starting it', () => {
+        const plan = planServiceAction({
+            backend: 'systemd-user',
+            action: 'start',
+            label: 'happier-server-dev',
+            definitionPath: '/home/dev/.config/systemd/user/happier-server-dev.service',
+            definitionContents: '[Service]\nEnvironment=HAPPIER_SERVER_STARTUP_RECEIPT_NONCE=fresh\n',
+            persistent: false,
+        });
+
+        expect(plan.writes).toHaveLength(1);
+        expect(plan.commands).toEqual([
+            { cmd: 'systemctl', args: ['--user', 'daemon-reload'] },
+            { cmd: 'systemctl', args: ['--user', 'start', 'happier-server-dev.service'] },
+        ]);
+    });
 });

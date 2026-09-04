@@ -4,11 +4,60 @@ import { tmpdir } from 'node:os';
 
 import { describe, expect, it } from 'vitest';
 
-import { resolvePersonalHomeRuntimeLayout } from './layout.js';
+import { resolvePersonalHomeRuntimeArtifactPaths, resolvePersonalHomeRuntimeLayout } from './layout.js';
 import { erasePersonalHomeData } from './erase.js';
 import { acquirePersonalHomeOperationLock, withPersonalHomeOperationLock } from './lock.js';
 
 describe('Personal Home erase', () => {
+  it.each([
+    ['linux root', 'linux' as const, '/', '/home/alice'],
+    ['linux user home', 'linux' as const, '/home/alice', '/home/alice'],
+    ['Windows drive root', 'win32' as const, 'C:\\', 'C:\\Users\\alice'],
+    ['Windows user home', 'win32' as const, 'C:\\Users\\Alice', 'c:\\users\\alice\\'],
+  ])('refuses the %s as a destructive data root', async (_label, platform, dataDir, userHomeDir) => {
+    const layout = {
+      ...resolvePersonalHomeRuntimeLayout({ platform, homeDir: userHomeDir }),
+      dataDir,
+    };
+    await expect(erasePersonalHomeData(
+      { layout, operationLeaseHeld: true, userHomeDir },
+    )).rejects.toMatchObject({ code: 'unsafe_data_root' });
+  });
+
+  it('refuses destructive directory roots that overlap the data root', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-personal-home-erase-overlap-'));
+    const layout = {
+      ...resolvePersonalHomeRuntimeLayout({ homeDir: root, platform: 'linux' }),
+      publicFilesDir: root,
+    };
+    await mkdir(layout.dataDir, { recursive: true });
+    await expect(withPersonalHomeOperationLock(layout.dataDir, 'erase', async () => (
+      erasePersonalHomeData({ layout, operationLeaseHeld: true, userHomeDir: join(root, 'home') })
+    ))).rejects.toMatchObject({ code: 'unsafe_data_root' });
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('refuses a file-shaped owned target that resolves to the user-home root', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-personal-home-erase-file-root-'));
+    const userHomeDir = join(root, 'home');
+    const layout = {
+      ...resolvePersonalHomeRuntimeLayout({ homeDir: userHomeDir, platform: 'linux' }),
+      databasePath: userHomeDir,
+    };
+    await mkdir(layout.dataDir, { recursive: true });
+    await mkdir(userHomeDir, { recursive: true });
+    try {
+      await withPersonalHomeOperationLock(layout.dataDir, 'erase', async () => {
+        await expect(erasePersonalHomeData({ layout, operationLeaseHeld: true, userHomeDir })).rejects.toMatchObject({
+          code: 'unsafe_data_root',
+        });
+      });
+      await expect(lstat(userHomeDir)).resolves.toBeTruthy();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('requires the facade operation lease before deleting the data root', async () => {
     const root = await mkdtemp(join(tmpdir(), 'happier-personal-home-erase-'));
     const layout = resolvePersonalHomeRuntimeLayout({
@@ -59,6 +108,70 @@ describe('Personal Home erase', () => {
     await expect(readFile(sibling, 'utf8')).resolves.toBe('preserve');
     await expect(readFile(join(layout.dataDir, 'marker.txt'), 'utf8')).resolves.toBe('remove');
     await expect(readFile(join(layout.configDir, 'server.env'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('removes continuity descriptors, startup readiness, and update recovery artifacts', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-personal-home-erase-continuity-'));
+    const layout = resolvePersonalHomeRuntimeLayout({
+      homeDir: root,
+      env: {
+        HAPPIER_SELF_HOST_INSTALL_ROOT: join(root, 'runtime-install'),
+        HAPPIER_SERVER_LIGHT_DATA_DIR: join(root, 'runtime-install', 'data'),
+      },
+    });
+    const artifacts = resolvePersonalHomeRuntimeArtifactPaths(layout);
+    await mkdir(layout.dataDir, { recursive: true });
+    await mkdir(layout.configDir, { recursive: true });
+    await writeFile(join(layout.configDir, 'server.env'), 'managed=1');
+    for (const path of [
+      layout.irohEndpointKeyPath,
+      artifacts.irohEndpointDescriptorPath,
+      artifacts.homeConnectionDescriptorPath,
+      artifacts.startupReceiptPath,
+      artifacts.updateRecoveryPath,
+    ]) {
+      await mkdir(join(path, '..'), { recursive: true });
+      await writeFile(path, 'continuity');
+    }
+    await withPersonalHomeOperationLock(layout.dataDir, 'erase', async () => {
+      await expect(erasePersonalHomeData({ layout, operationLeaseHeld: true })).resolves.toMatchObject({
+        outcome: 'completed',
+        remainingOwnedPaths: [],
+      });
+    });
+    for (const path of [
+      layout.irohEndpointKeyPath,
+      artifacts.irohEndpointDescriptorPath,
+      artifacts.homeConnectionDescriptorPath,
+      artifacts.startupReceiptPath,
+      artifacts.updateRecoveryPath,
+    ]) await expect(lstat(path)).rejects.toMatchObject({ code: 'ENOENT' });
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('inspects runtime and operation residuals without treating those directories as blanket-retained', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-personal-home-erase-residuals-'));
+    const layout = resolvePersonalHomeRuntimeLayout({
+      homeDir: root,
+      env: {
+        HAPPIER_SELF_HOST_INSTALL_ROOT: join(root, 'runtime-install'),
+        HAPPIER_SERVER_LIGHT_DATA_DIR: join(root, 'runtime-install', 'data'),
+      },
+    });
+    const artifacts = resolvePersonalHomeRuntimeArtifactPaths(layout);
+    const runtimeResidual = join(layout.dataDir, 'runtime', 'unexpected.json');
+    const operationResidual = join(layout.dataDir, '.operations', 'unexpected.json');
+    await mkdir(join(layout.dataDir, '.operations'), { recursive: true });
+    await mkdir(join(layout.dataDir, 'runtime'), { recursive: true });
+    await writeFile(runtimeResidual, 'unexpected');
+    await writeFile(operationResidual, 'unexpected');
+    await withPersonalHomeOperationLock(layout.dataDir, 'erase', async () => {
+      const result = await erasePersonalHomeData({ layout, operationLeaseHeld: true });
+      expect(result.outcome).toBe('completed');
+      expect(result.remainingUnknownPaths).toEqual(expect.arrayContaining([runtimeResidual, operationResidual]));
+      expect(result.remainingUnknownPaths).not.toContain(artifacts.operationLockPath);
+    });
+    await rm(root, { recursive: true, force: true });
   });
 
   it('preflights every owned target before deleting any when a later target is unsafe', async () => {

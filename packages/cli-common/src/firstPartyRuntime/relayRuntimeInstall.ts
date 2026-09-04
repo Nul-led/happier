@@ -45,6 +45,7 @@ import { resolvePersonalHomeRuntimeLayout } from './personalHome/layout.js';
 import type { PersonalHomeRuntimeLayout } from './personalHome/layout.js';
 import type { PersonalHomeRestorePoint } from './personalHome/restorePoint.js';
 import type { PersonalHomeRestoreHooks } from './personalHome/restore.js';
+import { parsePersonalHomeAuthenticatedReadiness, type PersonalHomeAuthenticatedReadiness } from './personalHome/readiness.js';
 import {
     readPersonalHomeUpdateRecoveryRecord,
     removePersonalHomeUpdateRecoveryRecord,
@@ -65,6 +66,8 @@ const RELAY_RUNTIME_STARTUP_RECEIPT_WAIT_MS = 10_000;
 const RELAY_RUNTIME_STARTUP_RECEIPT_POLL_MS = 100;
 const SERVER_STARTUP_RECEIPT_PATH_ENV = 'HAPPIER_SERVER_STARTUP_RECEIPT_PATH';
 const SERVER_STARTUP_RECEIPT_NONCE_ENV = 'HAPPIER_SERVER_STARTUP_RECEIPT_NONCE';
+export const PERSONAL_HOME_UPDATER_FORWARD_RECOVERY_CAPABILITY_ENV = 'HAPPIER_UPDATER_FORWARD_RECOVERY_CAPABILITY';
+export const PERSONAL_HOME_UPDATER_FORWARD_RECOVERY_CAPABILITY = 'personal-home-update-record-v1';
 const MANAGED_RELAY_PURPOSE_ENV = 'HAPPIER_MANAGED_RELAY_PURPOSE';
 const QUALIFIED_CONNECTED_ACCOUNTS_V4_ACTIVATION_MIGRATION =
     '20260725100000_activate_qualified_connected_accounts_v4';
@@ -586,10 +589,10 @@ async function writeJsonFile(path: string, value: unknown): Promise<void> {
     await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
 }
 
-async function waitForRelayRuntimeStartupReceipt(params: Readonly<{
+export async function waitForRelayRuntimeStartupReceipt(params: Readonly<{
     path: string;
     nonce: string;
-}>): Promise<Readonly<{ nonce: string; pid: number; host: string; port: number }>> {
+}>): Promise<Readonly<{ nonce: string; pid: number; host: string; port: number; readiness: PersonalHomeAuthenticatedReadiness | null }>> {
     const deadline = Date.now() + RELAY_RUNTIME_STARTUP_RECEIPT_WAIT_MS;
     while (Date.now() <= deadline) {
         const receipt = await readFile(params.path, 'utf8')
@@ -604,8 +607,9 @@ async function waitForRelayRuntimeStartupReceipt(params: Readonly<{
         const port = typeof receipt?.port === 'number' && Number.isInteger(receipt.port)
             ? receipt.port
             : 0;
+        const readiness = parsePersonalHomeAuthenticatedReadiness(receipt?.personalHomeReadiness);
         if (nonce === params.nonce && pid > 0 && isPidPresent(pid) && host && port >= 1 && port <= 65535) {
-            return { nonce, pid, host, port };
+            return { nonce, pid, host, port, readiness };
         }
         await new Promise<void>((resolve) => setTimeout(resolve, RELAY_RUNTIME_STARTUP_RECEIPT_POLL_MS));
     }
@@ -995,56 +999,62 @@ async function assertQualifiedConnectedAccountsV4RollbackAllowed(params: Readonl
 async function reconcileInterruptedPersonalHomeUpdate(params: Readonly<{
     layout: PersonalHomeRuntimeLayout;
     record: PersonalHomeUpdateRecoveryRecordV1;
-    platform: NodeJS.Platform;
     homeDir: string;
     backend: ServiceBackend;
     serviceName: string;
     serverBinaryName: string;
     installRoot: string;
-    binDir: string;
-    configEnvPath: string;
-    statePath: string;
-    migrationsDir: string;
     stdoutPath: string;
     stderrPath: string;
-    fallbackBaseUrl: string;
     runServiceCommands: boolean;
-    skipHealthCheck: boolean;
-    assertStopped(): Promise<void>;
-    openRestorePoint(context: Readonly<{
-        archivePath: string;
-        expectedHomeServerIdentityId: string;
-        schemaVersion: string;
-    }>): Promise<PersonalHomeRestorePoint>;
-    restoreHooks: PersonalHomeRestoreHooks;
-    runMigrationAppliedCheckCommand?: MigrationAppliedCheckRunner;
 }>): Promise<void> {
     const references = resolvePersonalHomeUpdateRecoveryReferences({ layout: params.layout, record: params.record });
-    if (params.record.phase === 'committed') {
+    if (params.record.phase === 'committed' || params.record.phase === 'activated') {
         await rm(references.runtimeBackupRoot, { recursive: true, force: true });
         await rm(references.restorePointPath, { force: true });
         await removePersonalHomeUpdateRecoveryRecord(params.layout);
         return;
     }
 
-    const runtimeBackupInfo = await stat(references.runtimeBackupRoot);
-    if (!runtimeBackupInfo.isDirectory()) throw new Error('[relay-runtime] interrupted update runtime backup is not a directory');
-    if (references.payloadBackupDir && !(await stat(references.payloadBackupDir)).isDirectory()) {
-        throw new Error('[relay-runtime] interrupted update payload backup is not a directory');
-    }
-    if (references.migrationsBackupDir && !(await stat(references.migrationsBackupDir)).isDirectory()) {
-        throw new Error('[relay-runtime] interrupted update migrations backup is not a directory');
-    }
-    if (params.record.runtimeBackup.hasRestorableServerBinary && !references.payloadBackupDir) {
-        throw new Error('[relay-runtime] interrupted update server-binary fact has no payload backup');
-    }
-    const restorePoint = await params.openRestorePoint({
-        archivePath: references.restorePointPath,
-        expectedHomeServerIdentityId: params.record.restorePoint.homeServerIdentityId,
-        schemaVersion: params.record.restorePoint.schemaVersion,
-    });
+    if (params.record.phase === 'prepared') {
+        const receipt = params.record.expectedStartupNonce
+            ? await readFile(join(params.layout.dataDir, 'startup-receipt.json'), 'utf8').then(tryParseJsonObject).catch(() => null)
+            : null;
+        const receiptReadiness = parsePersonalHomeAuthenticatedReadiness(receipt?.personalHomeReadiness);
+        const receiptNonce = typeof receipt?.nonce === 'string' ? receipt.nonce : '';
+        const receiptIdentityMatches = receiptReadiness?.homeServerIdentityId === params.record.restorePoint.homeServerIdentityId;
+        const receiptPid = Number(receipt?.pid);
+        const receiptHost = String(receipt?.host ?? '').trim().toLowerCase();
+        const receiptPort = Number(receipt?.port);
+        const configuredEnv = await readFile(join(params.layout.configDir, 'server.env'), 'utf8')
+            .then(parseEnvText)
+            .catch(() => null);
+        const configuredPort = Number(configuredEnv?.PORT);
+        if (receiptNonce === params.record.expectedStartupNonce
+            && receiptIdentityMatches
+            && Number.isSafeInteger(receiptPid) && receiptPid > 0 && isPidPresent(receiptPid)
+            && receiptHost === '127.0.0.1'
+            && Number.isInteger(configuredPort) && configuredPort >= 1 && configuredPort <= 65535
+            && receiptPort === configuredPort) {
+            // The exact authenticated candidate became writable. Recovery is forward-only: an
+            // older snapshot must never erase writes that candidate may already have acknowledged.
+            await writePersonalHomeUpdateRecoveryRecord(params.layout, Object.freeze({
+                ...params.record,
+                phase: 'activated',
+                activation: {
+                    nonce: receiptNonce,
+                    pid: receiptPid,
+                    host: receiptHost,
+                    port: receiptPort,
+                    readiness: receiptReadiness,
+                },
+            }));
+            await rm(references.runtimeBackupRoot, { recursive: true, force: true });
+            await rm(references.restorePointPath, { force: true });
+            await removePersonalHomeUpdateRecoveryRecord(params.layout);
+            return;
+        }
 
-    if (params.runServiceCommands) {
         const candidateSpec = buildRelayRuntimeServiceSpec({
             serviceName: params.serviceName,
             installRoot: params.installRoot,
@@ -1054,108 +1064,16 @@ async function reconcileInterruptedPersonalHomeUpdate(params: Readonly<{
             stderrPath: params.stderrPath,
         });
         const candidateDefinition = buildServiceDefinition({ backend: params.backend, homeDir: params.homeDir, spec: candidateSpec });
-        const stopPlan = planServiceAction({
+        await applyServicePlan(planServiceAction({
             backend: params.backend,
-            action: 'stop',
+            action: 'quarantine',
             label: candidateSpec.label,
             definitionPath: candidateDefinition.path,
             persistent: true,
-        });
-        await applyServicePlan(stopPlan, { runCommands: true });
-    }
-    await params.assertStopped();
-
-    const candidateContainsBoundaryMigration = [
-        join(params.installRoot, 'bin', 'prisma', 'mysql', 'migrations', QUALIFIED_CONNECTED_ACCOUNTS_V4_ACTIVATION_MIGRATION),
-        join(params.installRoot, 'bin', 'prisma', 'migrations', QUALIFIED_CONNECTED_ACCOUNTS_V4_ACTIVATION_MIGRATION),
-        join(params.migrationsDir, QUALIFIED_CONNECTED_ACCOUNTS_V4_ACTIVATION_MIGRATION),
-    ].some((path) => existsSync(path));
-    if (candidateContainsBoundaryMigration) {
-        const candidateEnv = parseEnvText(await readFile(params.configEnvPath, 'utf8'));
-        await assertQualifiedConnectedAccountsV4RollbackAllowed({
-            platform: params.platform,
-            installRoot: params.installRoot,
-            env: candidateEnv,
-            runCommand: params.runMigrationAppliedCheckCommand,
-        });
+        }), { runCommands: params.runServiceCommands });
+        throw new Error('[relay-runtime] interrupted Personal Home update cannot authenticate the exact candidate; the service remains quarantined for forward recovery');
     }
 
-    await restoreRelayRuntimeInstallState({
-        platform: params.platform,
-        payloadDir: params.installRoot,
-        shimPath: join(params.binDir, params.serverBinaryName),
-        migrationsDir: params.migrationsDir,
-        envPath: params.configEnvPath,
-        statePath: params.statePath,
-        payloadBackupDir: references.payloadBackupDir,
-        migrationsBackupDir: references.migrationsBackupDir,
-        previousEnvText: params.record.runtimeBackup.previousEnvText,
-        previousStateText: params.record.runtimeBackup.previousStateText,
-    });
-
-    const interruptedRestoreRecovery = await restorePoint.recover();
-    if (interruptedRestoreRecovery.outcome !== 'rolled_back') {
-        throw new Error(`[relay-runtime] interrupted Personal Home restore recovery did not complete${interruptedRestoreRecovery.error ? `: ${interruptedRestoreRecovery.error}` : ''}`);
-    }
-    const restoreResult = await restorePoint.restore(params.restoreHooks);
-    if (restoreResult.outcome !== 'restored') {
-        throw new Error(`[relay-runtime] interrupted Personal Home update restore did not complete (${restoreResult.outcome})${restoreResult.error ? `: ${restoreResult.error}` : ''}`);
-    }
-
-    const previousSpec = buildRelayRuntimeServiceSpec({
-        serviceName: params.serviceName,
-        installRoot: params.installRoot,
-        serverBinaryPath: join(params.installRoot, 'bin', params.serverBinaryName),
-        env: parseEnvText(params.record.runtimeBackup.previousEnvText ?? ''),
-        stdoutPath: params.stdoutPath,
-        stderrPath: params.stderrPath,
-    });
-    const previousDefinition = buildServiceDefinition({ backend: params.backend, homeDir: params.homeDir, spec: previousSpec });
-    if (params.record.previousServiceDefinitionExisted && params.record.runtimeBackup.hasRestorableServerBinary) {
-        const restorePlan = planServiceAction({
-            backend: params.backend,
-            action: 'install',
-            label: previousSpec.label,
-            definitionPath: previousDefinition.path,
-            definitionContents: previousDefinition.contents,
-            persistent: true,
-        });
-        await applyServicePlan(restorePlan, { runCommands: params.runServiceCommands && params.record.priorRunning });
-        if (params.runServiceCommands && params.record.priorRunning && !params.skipHealthCheck) {
-            const rollbackBaseUrl = resolveConfiguredSelfHostBaseUrl({
-                fallbackBaseUrl: params.fallbackBaseUrl,
-                envText: params.record.runtimeBackup.previousEnvText ?? '',
-            });
-            const rollbackUrl = new URL(rollbackBaseUrl);
-            const health = await checkRelayRuntimeHealth({
-                host: rollbackUrl.hostname,
-                port: Number.parseInt(rollbackUrl.port, 10),
-                timeoutMs: resolveRelayRuntimeInstallHealthcheckTimeoutMs(),
-                probePortOpen: async ({ host, port, timeoutMs }) => await probePortOpen({ host, port, timeoutMs }),
-                fetchJson: async ({ url, timeoutMs }) => await fetchJson({ url, timeoutMs }),
-            });
-            if (!health.reachable) throw new Error(`[relay-runtime] previous relay runtime did not become healthy after interrupted-update recovery (${health.url})`);
-        }
-    } else if (params.runServiceCommands) {
-        const uninstallPlan = planServiceAction({
-            backend: params.backend,
-            action: 'uninstall',
-            label: previousSpec.label,
-            definitionPath: previousDefinition.path,
-            persistent: true,
-        });
-        await applyServicePlan(uninstallPlan, { runCommands: true });
-        await rm(previousDefinition.path, { force: true }).catch(() => undefined);
-    }
-
-    const finalization = await restorePoint.finalize();
-    if (finalization.outcome !== 'finalized' && finalization.outcome !== 'none') {
-        throw new Error(`[relay-runtime] interrupted Personal Home update finalization did not complete (${finalization.outcome})${finalization.error ? `: ${finalization.error}` : ''}`);
-    }
-    await writePersonalHomeUpdateRecoveryRecord(params.layout, Object.freeze({ ...params.record, phase: 'committed' }));
-    await restorePoint.dispose();
-    await rm(references.runtimeBackupRoot, { recursive: true, force: true });
-    await removePersonalHomeUpdateRecoveryRecord(params.layout);
 }
 
 function removeLegacyPersonalHomePublicOrigin(envText: string, canonicalServerUrl: string): string {
@@ -1249,7 +1167,7 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
     const migrationsDir = join(defaults.dataDir, 'migrations', 'sqlite');
     const stdoutPath = join(defaults.logDir, 'server.out.log');
     const stderrPath = join(defaults.logDir, 'server.err.log');
-    const startupReceiptPath = join(defaults.dataDir, 'startup-receipt.json');
+    let startupReceiptPath = join(defaults.dataDir, 'startup-receipt.json');
     const startupReceiptNonce = randomUUID();
     const backend: ServiceBackend = resolveServiceBackend({
         platform,
@@ -1277,31 +1195,17 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
         ? await readPersonalHomeUpdateRecoveryRecord(personalHomeUpdateLayout)
         : null;
     if (interruptedUpdate && personalHomeUpdateLayout) {
-        if (!params.openPersonalHomeRestorePoint || !params.assertPersonalHomeStopped) {
-            throw new Error('[relay-runtime] interrupted Personal Home update requires the canonical restore-point and stopped-Home owners');
-        }
         await reconcileInterruptedPersonalHomeUpdate({
             layout: personalHomeUpdateLayout,
             record: interruptedUpdate,
-            platform,
             homeDir,
             backend,
             serviceName,
             serverBinaryName,
             installRoot: defaults.installRoot,
-            binDir: defaults.binDir,
-            configEnvPath,
-            statePath,
-            migrationsDir,
             stdoutPath,
             stderrPath,
-            fallbackBaseUrl: `http://${defaults.serverHost}:${defaults.serverPort}`,
             runServiceCommands: params.runServiceCommands !== false,
-            skipHealthCheck: params.skipHealthCheck === true,
-            assertStopped: params.assertPersonalHomeStopped,
-            openRestorePoint: params.openPersonalHomeRestorePoint,
-            restoreHooks: params.personalHomeRestoreHooks ?? {},
-            runMigrationAppliedCheckCommand: params.runMigrationAppliedCheckCommand,
         });
     }
 
@@ -1436,6 +1340,8 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
                 personalHomeUpdateRecoveryRecord = Object.freeze({
                     version: 1,
                     phase: 'prepared',
+                    expectedStartupNonce: startupReceiptNonce,
+                    activation: null,
                     priorRunning: personalHomeWasRunning,
                     previousServiceDefinitionExisted,
                     runtimeBackup: Object.freeze({
@@ -1524,6 +1430,7 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
             ? String(existingEnv.HAPPIER_SERVER_LIGHT_DB_DIR ?? existingEnv.HAPPY_SERVER_LIGHT_DB_DIR ?? '').trim()
                 || join(renderedDataDir, 'pglite')
             : dbDir;
+        startupReceiptPath = join(renderedDataDir, 'startup-receipt.json');
         const baseEnvText = renderSelfHostServerEnvText({
             port: resolvedPort,
             host: defaults.serverHost,
@@ -1572,7 +1479,12 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
         });
         await writeFile(configEnvPath, envText, 'utf8');
         const env = parseEnvText(envText);
-        candidateEnv = env;
+        const migrationEnv = {
+            ...env,
+            [PERSONAL_HOME_UPDATER_FORWARD_RECOVERY_CAPABILITY_ENV]: PERSONAL_HOME_UPDATER_FORWARD_RECOVERY_CAPABILITY,
+            ...(personalHomeUpdateRecoveryRecord ? { [SERVER_STARTUP_RECEIPT_NONCE_ENV]: startupReceiptNonce } : {}),
+        };
+        candidateEnv = migrationEnv;
         const provider = String(env.HAPPIER_DB_PROVIDER ?? env.HAPPY_DB_PROVIDER ?? 'sqlite').trim().toLowerCase();
         const candidateBoundaryMigrationPath = provider === 'mysql'
             ? join(defaults.installRoot, 'bin', 'prisma', 'mysql', 'migrations', QUALIFIED_CONNECTED_ACCOUNTS_V4_ACTIVATION_MIGRATION)
@@ -1590,12 +1502,12 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
                 await params.runMigrationCommand({
                     ...migrationPlan,
                     cwd: defaults.installRoot,
-                    env,
+                    env: migrationEnv,
                 });
             } else {
                 const completion = spawnSync(migrationPlan.command, [...migrationPlan.args], {
                     cwd: defaults.installRoot,
-                    env: { ...process.env, ...env },
+                    env: { ...process.env, ...migrationEnv },
                     stdio: 'inherit',
                 });
                 if (completion.error) {
@@ -1614,6 +1526,7 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
             serverBinaryPath: installServerBinaryPath,
             env: {
                 ...env,
+                [PERSONAL_HOME_UPDATER_FORWARD_RECOVERY_CAPABILITY_ENV]: PERSONAL_HOME_UPDATER_FORWARD_RECOVERY_CAPABILITY,
                 [SERVER_STARTUP_RECEIPT_PATH_ENV]: startupReceiptPath,
                 [SERVER_STARTUP_RECEIPT_NONCE_ENV]: startupReceiptNonce,
             },
@@ -1677,6 +1590,24 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
                 ) {
                     throw new Error('[relay-runtime] Personal Home startup listener does not match its stable loopback origin');
                 }
+                if (personalHomeUpdateRecoveryRecord && personalHomeUpdateLayout) {
+                    if (!startupReceipt.readiness
+                        || startupReceipt.readiness.homeServerIdentityId !== personalHomeUpdateRecoveryRecord.restorePoint.homeServerIdentityId) {
+                        throw new Error('[relay-runtime] Personal Home update startup receipt did not authenticate the expected Home identity');
+                    }
+                    personalHomeUpdateRecoveryRecord = Object.freeze({
+                        ...personalHomeUpdateRecoveryRecord,
+                        phase: 'activated',
+                        activation: {
+                            nonce: startupReceipt.nonce,
+                            pid: startupReceipt.pid,
+                            host: startupReceipt.host,
+                            port: startupReceipt.port,
+                            readiness: startupReceipt.readiness,
+                        },
+                    });
+                    await writePersonalHomeUpdateRecoveryRecord(personalHomeUpdateLayout, personalHomeUpdateRecoveryRecord);
+                }
             }
         }
 
@@ -1709,9 +1640,13 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
         };
     } catch (error) {
         if (candidateStateCommitted) throw error;
-        await rm(startupReceiptPath, { force: true }).catch(() => undefined);
+        const candidateMayHaveAcceptedWrites = personalHomeUpdateRecoveryRecord?.phase === 'activated';
+        const candidateActivationAmbiguous = personalHomeUpdateRecoveryRecord?.phase === 'prepared';
+        if (!candidateMayHaveAcceptedWrites && !candidateActivationAmbiguous) {
+            await rm(startupReceiptPath, { force: true }).catch(() => undefined);
+        }
         const rollbackFailures: RelayRuntimeInstallRollbackFailure[] = [];
-        let rollbackCanProceed = true;
+        let rollbackCanProceed = !candidateMayHaveAcceptedWrites && !candidateActivationAmbiguous;
 
         if (candidateServiceActivationAttempted) {
             try {
@@ -1730,7 +1665,7 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
                 });
                 const candidateStopPlan = planServiceAction({
                     backend,
-                    action: 'stop',
+                    action: candidateMayHaveAcceptedWrites || candidateActivationAmbiguous ? 'quarantine' : 'stop',
                     label: candidateStopSpec.label,
                     definitionPath: candidateStopDefinition.path,
                     persistent: true,
@@ -1741,6 +1676,11 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
                 rollbackFailures.push({ phase: 'candidate_stop', error: rollbackError });
                 rollbackCanProceed = false;
             }
+        }
+
+        if (candidateMayHaveAcceptedWrites || candidateActivationAmbiguous) {
+            preserveRecoveryArtifacts = true;
+            throw error;
         }
 
         if (rollbackCanProceed && candidateCanApplyIrreversibleBoundary && candidateEnv) {
@@ -1837,11 +1777,28 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
             try {
                 if (previousServiceDefinitionExisted && previousInstallState.hasRestorableServerBinary) {
                     const restoreEnv = parseEnvText(previousInstallState.previousEnvText ?? '');
+                    const rollbackReceiptNonce = randomUUID();
+                    const rollbackDataDir = String(
+                        restoreEnv.HAPPIER_SERVER_LIGHT_DATA_DIR
+                        ?? restoreEnv.HAPPY_SERVER_LIGHT_DATA_DIR
+                        ?? defaults.dataDir,
+                    ).trim();
+                    const rollbackReceiptPath = join(rollbackDataDir, 'startup-receipt.json');
+                    const restoreServiceEnv = params.purpose?.kind === 'personal-home'
+                        ? {
+                            ...restoreEnv,
+                            [SERVER_STARTUP_RECEIPT_PATH_ENV]: rollbackReceiptPath,
+                            [SERVER_STARTUP_RECEIPT_NONCE_ENV]: rollbackReceiptNonce,
+                        }
+                        : restoreEnv;
+                    if (params.purpose?.kind === 'personal-home') {
+                        await rm(rollbackReceiptPath, { force: true });
+                    }
                     const restoreSpec = buildRelayRuntimeServiceSpec({
                         serviceName,
                         installRoot: restoreInstallRoot,
                         serverBinaryPath: join(restoreInstallRoot, 'bin', serverBinaryName),
-                        env: restoreEnv,
+                        env: restoreServiceEnv,
                         stdoutPath,
                         stderrPath,
                     });
@@ -1879,6 +1836,21 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
                         });
                         if (!rollbackHealth.reachable) {
                             throw new Error(`[relay-runtime] previous relay runtime did not become healthy after rollback (${rollbackHealth.url})`);
+                        }
+                        if (params.purpose?.kind === 'personal-home') {
+                            const rollbackReceipt = await waitForRelayRuntimeStartupReceipt({
+                                path: rollbackReceiptPath,
+                                nonce: rollbackReceiptNonce,
+                            });
+                            if (rollbackReceipt.host !== rollbackBaseUrlObject.hostname
+                                || rollbackReceipt.host !== '127.0.0.1'
+                                || rollbackReceipt.port !== Number.parseInt(rollbackBaseUrlObject.port, 10)
+                                || !rollbackReceipt.readiness
+                                || (personalHomeRestorePoint
+                                    && rollbackReceipt.readiness.homeServerIdentityId
+                                        !== personalHomeRestorePoint.backup.manifest.homeServerIdentityId)) {
+                                throw new Error('[relay-runtime] previous Personal Home did not produce a fresh matching rollback receipt');
+                            }
                         }
                     }
                 } else if (params.runServiceCommands !== false) {

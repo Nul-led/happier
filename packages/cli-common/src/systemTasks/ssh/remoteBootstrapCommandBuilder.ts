@@ -11,12 +11,18 @@ function quoteRemotePathWithHomeExpansion(path: string): string {
   return safeBashSingleQuote(path);
 }
 
+function buildRemoteRelayHostCliInvocation(params: Readonly<{
+  happier: string;
+  mode: 'user' | 'system';
+}>): string {
+  return params.mode === 'system' ? `sudo -n ${params.happier}` : params.happier;
+}
+
 export type RemoteBootstrapCommandLabel =
   | 'preflight.platform'
   | 'server.configure'
   | 'auth.status'
-  | 'auth.request'
-  | 'auth.wait'
+  | 'daemon.status'
   | 'daemon.service.list'
   | 'daemon.service.install'
   | 'daemon.service.uninstallAll'
@@ -102,12 +108,6 @@ export function buildRemoteBootstrapCommand(params: Readonly<{
 
   const useCloudId = shouldUseCloudProfileId(params);
   const relayArgs = buildRelayArgs(params);
-  const authRelayArgs = buildRelayArgs({
-    ...params,
-    includeLocalServerUrl: false,
-  });
-  const authRelaySelectionArgs = useCloudId ? '--server cloud' : authRelayArgs;
-
   if (params.label === 'preflight.platform') {
     return "printf '{\"platform\":\"%s\"}\\n' \"$(uname -s | tr '[:upper:]' '[:lower:]')\"";
   }
@@ -120,12 +120,8 @@ export function buildRemoteBootstrapCommand(params: Readonly<{
   if (params.label === 'auth.status') {
     return `${happier} auth status --json`;
   }
-  if (params.label === 'auth.request') {
-    return `${happier} auth request --json --persist ${authRelaySelectionArgs}`;
-  }
-  if (params.label === 'auth.wait') {
-    const publicKey = safeBashSingleQuote(String(params.data?.publicKey ?? '').trim());
-    return `${happier} auth wait --public-key ${publicKey} --json --persist ${authRelaySelectionArgs}`;
+  if (params.label === 'daemon.status') {
+    return `${happier} daemon status --json`;
   }
   if (params.label === 'daemon.service.list') {
     return `${happier} service list --json`;
@@ -161,8 +157,9 @@ export function buildRemoteBootstrapCommand(params: Readonly<{
   }
   if (params.label === 'relay.host.uninstall') {
     const relayRuntimeMode = params.data?.relayRuntimeMode === 'system' ? 'system' : 'user';
+    const cliInvocation = buildRemoteRelayHostCliInvocation({ happier, mode: relayRuntimeMode });
     return [
-      `${happier} relay host uninstall`,
+      `${cliInvocation} relay host uninstall`,
       `--channel ${safeBashSingleQuote(params.channel ?? 'stable')}`,
       `--mode ${relayRuntimeMode}`,
       '--yes',
@@ -172,6 +169,7 @@ export function buildRemoteBootstrapCommand(params: Readonly<{
   if (params.label === 'relay.runtime.install') {
     const data = params.data ?? {};
     const relayRuntimeMode = data.relayRuntimeMode === 'system' ? 'system' : 'user';
+    const cliInvocation = buildRemoteRelayHostCliInvocation({ happier, mode: relayRuntimeMode });
     const relayRuntimeEnv = data.relayRuntimeEnv && typeof data.relayRuntimeEnv === 'object' && !Array.isArray(data.relayRuntimeEnv)
       ? data.relayRuntimeEnv as Record<string, unknown>
       : {};
@@ -186,7 +184,7 @@ export function buildRemoteBootstrapCommand(params: Readonly<{
       return [`--env ${safeBashSingleQuote(`${normalizedKey}=${String(value ?? '')}`)}`];
     });
     return [
-      `${happier} relay host install`,
+      `${cliInvocation} relay host install`,
       `--channel ${safeBashSingleQuote(params.channel ?? 'stable')}`,
       `--mode ${relayRuntimeMode}`,
       ...envArgs,

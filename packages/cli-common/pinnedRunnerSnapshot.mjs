@@ -6,7 +6,7 @@ import { findUnservableBundledPluginPackageResources } from './bundledPluginReso
 import { CLI_RUNTIME_SIDECAR_ENTRIES } from './cliRuntimeSidecars.mjs';
 import cliDistBuildManifest from './cliDistBuildManifest.cjs';
 
-export const PINNED_RUNNER_LAYOUT_VERSION = 'package-dist-v5';
+export const PINNED_RUNNER_LAYOUT_VERSION = 'package-dist-v6';
 export const PINNED_RUNNER_MANAGED_PROVIDER_RUNTIME_RELATIVE_PATH = Object.freeze([
   'tools',
   'unpacked',
@@ -21,6 +21,7 @@ const SNAPSHOT_IDENTITY_PATTERN = new RegExp(
   'u',
 );
 const PINNED_RUNNER_REQUIRED_ASSET_RELATIVE_PATHS = [
+  ['package.json'],
   ...CLI_RUNTIME_SIDECAR_ENTRIES.map((relativePath) => ['scripts', ...relativePath]),
   ['tools', 'unpacked'],
 ];

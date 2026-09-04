@@ -44,6 +44,9 @@ export type PersonalHomeRelocationDestinationFacts = Readonly<{
   /** The destination-side transfer upload reservation could not be removed
    * after stage or abort. Destination authority remains valid. */
   transferCleanupNeedsAttention?: true;
+  /** The activated Home is authoritative, but restore rollback artifacts could
+   * not yet be finalized and require a later cleanup retry. */
+  cleanupNeedsAttention?: true;
 }>;
 
 /** A destination holding no operation state. Abort also returns this shape when
@@ -156,6 +159,10 @@ export type PersonalHomeRelocationDestinationReceivedCandidate =
 
 export type PersonalHomeRelocationDestinationDeps = Readonly<{
   dataDir: string;
+  /** Verifies that an unreserved destination has no unrelated Home bytes.
+   * Runs while the destination operation lock is held, before `absent` is
+   * reported to the source as safe to reserve. */
+  preflightDestination?(): Promise<void>;
   quarantine(): Promise<void>;
   readServiceStatus(): Promise<Readonly<{ running: boolean; quarantined: boolean }>>;
   /** Existing restore/verification owner. It must be retry-safe for this operation id. */
@@ -165,6 +172,7 @@ export type PersonalHomeRelocationDestinationDeps = Readonly<{
   inspectReceivedCandidate(input: PersonalHomeRelocationDestinationStageInput): Promise<PersonalHomeRelocationDestinationReceivedCandidate>;
   activate(): Promise<void>;
   attestActive(): Promise<PersonalHomeAuthenticatedReadiness>;
+  finalizeCandidate?(): Promise<void>;
   abortCandidate(operationId: string): Promise<void>;
   /** Whether the exact operation still reserves destination-side temporary
    * transfer material. Defaults to the shared relocation transfer owner. */
@@ -210,7 +218,7 @@ function parseMarker(raw: string): Marker {
   const parsed = JSON.parse(raw) as unknown;
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid marker');
   const value = parsed as Record<string, unknown>;
-  const allowed = new Set(['version', 'operationId', 'status', 'bundleSha256', 'expectedHomeServerIdentityId', 'expectedCanonicalServerUrl', 'sourceDescriptorRevision', 'homeServerIdentityId', 'canonicalServerUrl', 'minimumOuterRevisionExclusive', 'endpoint', 'authenticated', 'accountCount', 'sessionCount', 'failureCode', 'transferCleanupNeedsAttention']);
+  const allowed = new Set(['version', 'operationId', 'status', 'bundleSha256', 'expectedHomeServerIdentityId', 'expectedCanonicalServerUrl', 'sourceDescriptorRevision', 'homeServerIdentityId', 'canonicalServerUrl', 'minimumOuterRevisionExclusive', 'endpoint', 'authenticated', 'accountCount', 'sessionCount', 'failureCode', 'transferCleanupNeedsAttention', 'cleanupNeedsAttention']);
   if (Object.keys(value).some((key) => !allowed.has(key))
     || value.version !== 1
     || typeof value.operationId !== 'string' || !OPERATION_ID.test(value.operationId)
@@ -226,7 +234,8 @@ function parseMarker(raw: string): Marker {
     || (value.accountCount !== undefined && (typeof value.accountCount !== 'number' || !Number.isSafeInteger(value.accountCount) || value.accountCount < 1))
     || (value.sessionCount !== undefined && (typeof value.sessionCount !== 'number' || !Number.isSafeInteger(value.sessionCount) || value.sessionCount < 0))
     || (value.failureCode !== undefined && (typeof value.failureCode !== 'string' || !value.failureCode))
-    || (value.transferCleanupNeedsAttention !== undefined && value.transferCleanupNeedsAttention !== true)) {
+    || (value.transferCleanupNeedsAttention !== undefined && value.transferCleanupNeedsAttention !== true)
+    || (value.cleanupNeedsAttention !== undefined && value.cleanupNeedsAttention !== true)) {
     throw new Error('invalid marker');
   }
   if ((value.status === 'quarantined' || value.status === 'activating' || value.status === 'active')
@@ -252,6 +261,7 @@ function parseMarker(raw: string): Marker {
     ...(typeof value.sessionCount === 'number' ? { sessionCount: value.sessionCount } : {}),
     ...(value.failureCode === undefined ? {} : { failureCode: value.failureCode as string }),
     ...(value.transferCleanupNeedsAttention === true ? { transferCleanupNeedsAttention: true as const } : {}),
+    ...(value.cleanupNeedsAttention === true ? { cleanupNeedsAttention: true as const } : {}),
   };
 }
 
@@ -273,6 +283,43 @@ export class PersonalHomeRelocationDestinationActivationBlockedError extends Err
   constructor(message: string) {
     super(message);
     this.name = 'PersonalHomeRelocationDestinationActivationBlockedError';
+  }
+}
+
+export type PersonalHomeRelocationDestinationMaintenanceAdmission = Readonly<{
+  operationId: string;
+  action: 'attest' | 'materialize_endpoint';
+}>;
+
+/**
+ * Exact operation-scoped admission for the two stopped server-light probes used
+ * while the destination owner is building or recovering its candidate. This is
+ * deliberately narrower than activation: callers cannot choose a bypass, and a
+ * different operation id or a post-stage marker is rejected.
+ */
+export async function assertPersonalHomeRelocationDestinationAllowsMaintenance(
+  dataDir: string,
+  admission: PersonalHomeRelocationDestinationMaintenanceAdmission,
+): Promise<void> {
+  const operationId = admission.operationId.trim();
+  if (!operationId) {
+    throw new PersonalHomeRelocationDestinationActivationBlockedError(
+      'Personal Home relocation maintenance requires an exact operation identity.',
+    );
+  }
+  let marker: Marker | null;
+  try {
+    marker = await readMarker(dataDir);
+  } catch (error) {
+    throw new PersonalHomeRelocationDestinationActivationBlockedError(
+      error instanceof Error ? error.message : 'Personal Home relocation destination state is unreadable.',
+    );
+  }
+  if (!marker || marker.operationId !== operationId
+    || (marker.status !== 'receiving' && marker.status !== 'recovery_required')) {
+    throw new PersonalHomeRelocationDestinationActivationBlockedError(
+      'Stopped Personal Home maintenance is not admitted for this relocation operation.',
+    );
   }
 }
 
@@ -377,7 +424,10 @@ export function createPersonalHomeRelocationDestinationOwner(deps: PersonalHomeR
   const statusWithLease = async (operationId: string): Promise<PersonalHomeRelocationDestinationFacts | PersonalHomeRelocationDestinationAbsence> => {
     assertOperationId(operationId);
     const marker = await readMarker(deps.dataDir);
-    if (!marker) return { operationId, status: 'absent' };
+    if (!marker) {
+      await deps.preflightDestination?.();
+      return { operationId, status: 'absent' };
+    }
     assertSameOperation(marker, operationId);
     return publicFacts(marker);
   };
@@ -436,6 +486,7 @@ export function createPersonalHomeRelocationDestinationOwner(deps: PersonalHomeR
         // own facts rather than re-restored over a possibly non-empty destination.
         const resuming = existing?.status === 'receiving';
         if (!resuming) {
+          if (!existing) await deps.preflightDestination?.();
           if (await sha256File(input.archivePath) !== input.bundleSha256) {
             throw new PersonalHomeRelocationDestinationError('relocation_bundle_mismatch', 'Transferred Personal Home bundle digest does not match the source receipt.');
           }
@@ -498,7 +549,19 @@ export function createPersonalHomeRelocationDestinationOwner(deps: PersonalHomeR
         if (!personalHomeRelocationDescriptorMatchesDestination(publishedDescriptor, marker)) {
           throw new PersonalHomeRelocationDestinationError('invalid_relocation_operation', 'Published destination descriptor does not match the staged Home endpoint facts or advance its revision.');
         }
-        if (marker.status === 'active') return publicFacts(marker);
+        if (marker.status === 'active') {
+          if (marker.cleanupNeedsAttention === true && deps.finalizeCandidate) {
+            try {
+              await deps.finalizeCandidate();
+              const { cleanupNeedsAttention: _attention, ...cleaned } = marker;
+              await writeMarker(deps.dataDir, cleaned);
+              return publicFacts(cleaned);
+            } catch {
+              return publicFacts(marker);
+            }
+          }
+          return publicFacts(marker);
+        }
         if ((marker.status !== 'quarantined' && marker.status !== 'activating' && marker.status !== 'recovery_required') || !marker.homeServerIdentityId) {
           throw new PersonalHomeRelocationDestinationError('relocation_destination_not_staged', 'Relocation destination is not verified and quarantined.');
         }
@@ -508,11 +571,26 @@ export function createPersonalHomeRelocationDestinationOwner(deps: PersonalHomeR
           await writeMarker(deps.dataDir, activating);
           await deps.activate();
           const attestation = await deps.attestActive();
-          if (!attestation.authenticated || attestation.homeServerIdentityId !== marker.homeServerIdentityId) {
-            throw new PersonalHomeRelocationDestinationError('relocation_destination_recovery_required', 'Activated relocation destination failed authenticated Home attestation.');
+          if (!attestation.authenticated
+            || attestation.homeServerIdentityId !== marker.homeServerIdentityId
+            || attestation.accountCount !== marker.accountCount
+            || attestation.sessionCount !== marker.sessionCount) {
+            throw new PersonalHomeRelocationDestinationError(
+              'relocation_destination_recovery_required',
+              'Activated relocation destination identity or data counts do not match the staged Home.',
+            );
           }
           const active: Marker = { ...activating, status: 'active' };
           await writeMarker(deps.dataDir, active);
+          if (deps.finalizeCandidate) {
+            try {
+              await deps.finalizeCandidate();
+            } catch {
+              const attention: Marker = { ...active, cleanupNeedsAttention: true };
+              await writeMarker(deps.dataDir, attention);
+              return publicFacts(attention);
+            }
+          }
           return publicFacts(active);
         } catch (error) {
           await deps.quarantine().catch(() => undefined);

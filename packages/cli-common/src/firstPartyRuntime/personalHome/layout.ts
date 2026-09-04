@@ -28,6 +28,20 @@ export type PersonalHomeRuntimeLayout = Readonly<{
   platform: NodeJS.Platform;
 }>;
 
+/** Exact runtime-owned files which may be left alongside the durable Home data.
+ * Keep this list at the layout owner so lifecycle writers and destructive
+ * operations cannot drift into similar-but-different paths. */
+export type PersonalHomeRuntimeArtifactPaths = Readonly<{
+  startupReceiptPath: string;
+  irohEndpointDescriptorPath: string;
+  homeConnectionDescriptorPath: string;
+  updateRecoveryPath: string;
+  restoreJournalPath: string;
+  relocationSourcePath: string;
+  relocationDestinationPath: string;
+  operationLockPath: string;
+}>;
+
 export function resolvePersonalHomeRuntimeLayout(params: Readonly<{
   env?: NodeJS.ProcessEnv;
   homeDir?: string;
@@ -62,6 +76,23 @@ export function resolvePersonalHomeRuntimeLayout(params: Readonly<{
     masterSecretPath: api.resolve(api.join(dataDir, 'handy-master-secret.txt')),
     backupsDir: api.resolve(api.join(dataDir, 'backups')), derivedDataDir: api.resolve(api.join(dataDir, 'derived')), logsDir,
     irohEndpointKeyPath: api.resolve(api.join(dataDir, 'runtime', 'iroh', 'endpoint.key')), mode, platform });
+}
+
+export function resolvePersonalHomeRuntimeArtifactPaths(layout: PersonalHomeRuntimeLayout): PersonalHomeRuntimeArtifactPaths {
+  const api = layout.platform === 'win32' ? win32 : posix;
+  const dataDir = api.resolve(layout.dataDir);
+  const runtimeDir = api.resolve(dataDir, 'runtime');
+  const operationsDir = api.resolve(dataDir, '.operations');
+  return Object.freeze({
+    startupReceiptPath: api.resolve(dataDir, 'startup-receipt.json'),
+    irohEndpointDescriptorPath: api.resolve(api.dirname(layout.irohEndpointKeyPath), 'home.descriptor.json'),
+    homeConnectionDescriptorPath: api.resolve(runtimeDir, 'home.descriptor.json'),
+    updateRecoveryPath: api.resolve(operationsDir, 'runtime-update-recovery.v1.json'),
+    restoreJournalPath: api.resolve(operationsDir, 'restore-journal.json'),
+    relocationSourcePath: api.resolve(operationsDir, 'relocation-source.json'),
+    relocationDestinationPath: api.resolve(operationsDir, 'relocation-destination.json'),
+    operationLockPath: api.resolve(operationsDir, 'lock'),
+  });
 }
 
 export function assertLayoutPath(layout: PersonalHomeRuntimeLayout, path: string): string {

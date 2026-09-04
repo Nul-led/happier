@@ -1,4 +1,4 @@
-import { lstat, open, readdir, rename, rm } from 'node:fs/promises';
+import { link, lstat, open, readdir, rename, rm, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 // Capability-style failures are tolerated because some supported runtimes cannot
@@ -70,4 +70,13 @@ export async function replacePersonalHomeFileDurably(temporaryPath: string, targ
   await syncOpenPath(temporaryPath);
   await rename(temporaryPath, targetPath);
   await syncPersonalHomeParentDirectory(targetPath);
+}
+
+/** Publishes a completed sibling temporary file without ever replacing caller-owned bytes. */
+export async function publishPersonalHomeFileNoClobberDurably(temporaryPath: string, targetPath: string): Promise<void> {
+  await syncOpenPath(temporaryPath);
+  await link(temporaryPath, targetPath);
+  await syncPersonalHomeParentDirectory(targetPath);
+  await unlink(temporaryPath);
+  await syncPersonalHomeParentDirectory(temporaryPath);
 }

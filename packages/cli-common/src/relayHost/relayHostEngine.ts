@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { rm, readFile } from 'node:fs/promises';
@@ -28,6 +28,7 @@ import {
   installOrUpdateRelayRuntimeLocal,
   shouldMigrateLegacyUnsuffixedRelayRuntimeInstallRoot,
   uninstallRelayRuntimePayloadLocal,
+  waitForRelayRuntimeStartupReceipt,
 } from '../firstPartyRuntime/relayRuntimeInstall.js';
 import {
   isLocalRelayPortBindable,
@@ -2341,21 +2342,48 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
             channel,
             defaults,
           });
+          const requiresFreshPersonalHomeReceipt = personalHomeLayout !== null
+            && (parsed.action === 'start' || parsed.action === 'restart');
+          const lifecycleEnvPath = personalHomeLayout
+            ? join(personalHomeLayout.configDir, 'server.env')
+            : join(defaults.configDir, 'server.env');
+          const lifecycleEnvText = await readOptionalMutationAuthorityText(lifecycleEnvPath);
+          const lifecycleEnv = parseEnvText(lifecycleEnvText);
+          const lifecycleReceiptPath = personalHomeLayout
+            ? join(personalHomeLayout.dataDir, 'startup-receipt.json')
+            : '';
+          const lifecycleReceiptNonce = requiresFreshPersonalHomeReceipt ? randomUUID() : '';
+          const expectedPersonalHomeIdentity = requiresFreshPersonalHomeReceipt && personalHomeLayout
+            ? (await readCanonicalPersonalHomeIdentity(personalHomeLayout)).homeServerIdentityId
+            : '';
+          if (requiresFreshPersonalHomeReceipt) await rm(lifecycleReceiptPath, { force: true });
           const ensureLocalRelayHealthy = async (): Promise<void> => {
             if (parsed.action !== 'start' && parsed.action !== 'restart' && parsed.action !== 'activate') {
               return;
             }
-            const envPath = join(defaults.configDir, 'server.env');
-            const envText = await readOptionalMutationAuthorityText(envPath);
             const baseUrl = resolveConfiguredSelfHostBaseUrl({
               fallbackBaseUrl: `http://${defaults.serverHost}:${defaults.serverPort}`,
-              envText,
+              envText: lifecycleEnvText,
             });
             await assertLocalRelayRuntimeHealthy({
               relayUrl: baseUrl,
               healthPath: defaults.healthPath,
               stderrPath: join(defaults.logDir, 'server.err.log'),
             });
+            if (requiresFreshPersonalHomeReceipt) {
+              const baseUrlObject = new URL(baseUrl);
+              const receipt = await waitForRelayRuntimeStartupReceipt({
+                path: lifecycleReceiptPath,
+                nonce: lifecycleReceiptNonce,
+              });
+              if (receipt.host !== '127.0.0.1'
+                || receipt.host !== baseUrlObject.hostname
+                || receipt.port !== Number.parseInt(baseUrlObject.port, 10)
+                || !receipt.readiness
+                || receipt.readiness.homeServerIdentityId !== expectedPersonalHomeIdentity) {
+                throw new Error('Personal Home lifecycle start did not produce a fresh matching startup receipt');
+              }
+            }
           };
 
           const serverBinaryName = process.platform === 'win32' ? 'happier-server.exe' : 'happier-server';
@@ -2366,7 +2394,11 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
               label: serviceName,
               installRoot: defaults.installRoot,
               serverBinaryPath: join(defaults.installRoot, 'bin', serverBinaryName),
-              env: {},
+              env: requiresFreshPersonalHomeReceipt ? {
+                ...lifecycleEnv,
+                HAPPIER_SERVER_STARTUP_RECEIPT_PATH: lifecycleReceiptPath,
+                HAPPIER_SERVER_STARTUP_RECEIPT_NONCE: lifecycleReceiptNonce,
+              } : {},
               stdoutPath: join(defaults.logDir, 'server.out.log'),
               stderrPath: join(defaults.logDir, 'server.err.log'),
             }),
@@ -2376,6 +2408,7 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
             action: parsed.action,
             label: serviceName,
             definitionPath: definition.path,
+            ...(requiresFreshPersonalHomeReceipt ? { definitionContents: definition.contents } : {}),
             taskName: `Happier\\${serviceName}`,
             persistent: parsed.action === 'activate' || parsed.action === 'quarantine',
           });

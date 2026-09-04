@@ -75,6 +75,37 @@ describe('Personal Home direct-start admission', () => {
     });
   });
 
+  it('admits only the exact update candidate startup nonce while the forward record is prepared', async () => {
+    const layout = await fixture();
+    await writeOperationMarker(layout.dataDir, 'runtime-update-recovery.v1.json', {
+      version: 1,
+      phase: 'prepared',
+      expectedStartupNonce: 'candidate-nonce',
+      activation: null,
+      priorRunning: true,
+      previousServiceDefinitionExisted: true,
+      runtimeBackup: {
+        directoryName: '.relay-runtime-backup-test',
+        hasPayload: true,
+        hasRestorableServerBinary: true,
+        hasMigrations: false,
+        previousEnvText: null,
+        previousStateText: null,
+      },
+      restorePoint: {
+        fileName: 'pre-upgrade-test.tar',
+        homeServerIdentityId: 'srv_home_1',
+        schemaVersion: 'schema-v1',
+      },
+    });
+
+    await expect(assertPersonalHomeBootAdmission(layout)).rejects.toMatchObject({ reason: 'runtime_update_blocked' });
+    await expect(assertPersonalHomeBootAdmission(layout, {
+      kind: 'ordinary',
+      startupNonce: 'candidate-nonce',
+    })).resolves.toBeUndefined();
+  });
+
   it.each(['activating', 'completed'] as const)(
     'admits the canonical restore %s state needed to activate or finalize the verified Home',
     async (phase) => {

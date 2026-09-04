@@ -8,6 +8,8 @@ import type {
 } from '../kinds/remoteSshBootstrapMachineKind.js';
 
 import { createRemoteSshBootstrapHappierJsonExecutor } from './remoteSshBootstrapHappierJsonExecutor.js';
+import { createSetupMachineRecipeExecutorFromHappierJsonExecutor } from './setupMachineRecipeExecutor.js';
+import type { HappierJsonExecutor } from './happierJsonExecutor.js';
 
 type RemoteCommandResult = Awaited<ReturnType<RemoteSshBootstrapHappierJsonExecutor['runHappierJson']>>;
 
@@ -16,14 +18,6 @@ function requireOk(result: RemoteCommandResult, label: string): Record<string, u
     throw new SystemTaskExecutionError('remote_command_failed', `Remote bootstrap step failed: ${label}`);
   }
   return result.data;
-}
-
-function ensureNonEmptyString(value: unknown, field: string): string {
-  const text = typeof value === 'string' ? value.trim() : '';
-  if (!text) {
-    throw new SystemTaskExecutionError('invalid_params', `Missing ${field}.`);
-  }
-  return text;
 }
 
 export function createSetupMachineRecipeExecutorFromRemoteCommandRunner(params: Readonly<{
@@ -35,14 +29,28 @@ export function createSetupMachineRecipeExecutorFromRemoteCommandRunner(params: 
   installRemoteCli: RemoteSshBootstrapMachineDeps['installRemoteCli'];
   runRemoteCommand: RemoteSshBootstrapMachineDeps['runRemoteCommand'];
   createHappierJsonExecutor?: RemoteSshBootstrapMachineDeps['createHappierJsonExecutor'];
+  signal?: AbortSignal;
 }>): SetupMachineRecipeExecutor {
   const remoteExecutor = createRemoteSetupMachineRecipeHappierExecutor(params);
   const shouldManageService = params.serviceMode !== 'none';
+  const remoteJsonAdapter: HappierJsonExecutor = {
+    runHappierJson: async (args) => requireOk(
+      await remoteExecutor.runHappierJson({ args }),
+      args.join('.'),
+    ),
+    runHappierText: async () => {
+      throw new SystemTaskExecutionError('unsupported_remote_command', 'Text execution is not available in this recipe.');
+    },
+  };
+  const canonicalReadiness = createSetupMachineRecipeExecutorFromHappierJsonExecutor({
+    executor: remoteJsonAdapter,
+  });
 
   return {
     configureRelay: async () => {
+      let configured: Record<string, unknown>;
       try {
-        requireOk(
+        configured = requireOk(
           await remoteExecutor.runHappierJson({ args: ['server', 'set', '--json'] }),
           'server.configure',
         );
@@ -51,12 +59,18 @@ export function createSetupMachineRecipeExecutorFromRemoteCommandRunner(params: 
           parsed: params.parsed,
           auth: params.auth,
           knownHostsMode: params.knownHostsMode,
+          signal: params.signal,
         });
-        requireOk(
+        configured = requireOk(
           await remoteExecutor.runHappierJson({ args: ['server', 'set', '--json'] }),
           'server.configure',
         );
       }
+      const active = configured.active;
+      return active && typeof active === 'object' && !Array.isArray(active)
+        && typeof (active as { id?: unknown }).id === 'string'
+        ? String((active as { id: string }).id).trim() || undefined
+        : undefined;
     },
 
     readAuthStatus: async () => {
@@ -70,27 +84,6 @@ export function createSetupMachineRecipeExecutorFromRemoteCommandRunner(params: 
         machineRegistered: authStatus.machineRegistered === true,
         machineRegistrationState: readMachineRegistrationState(authStatus.machineRegistrationState),
         machineId: typeof authStatus.machineId === 'string' ? authStatus.machineId : null,
-      };
-    },
-
-    requestAuthPairing: async () => {
-      const authRequest = requireOk(
-        await remoteExecutor.runHappierJson({ args: ['auth', 'request', '--json'] }),
-        'auth.request',
-      );
-      return {
-        ...authRequest,
-        publicKey: ensureNonEmptyString(authRequest.publicKey, 'auth.request.publicKey'),
-      };
-    },
-
-    waitForAuthPairing: async (publicKey) => {
-      const authWait = requireOk(
-        await remoteExecutor.runHappierJson({ args: ['auth', 'wait', '--public-key', publicKey, '--json'] }),
-        'auth.wait',
-      );
-      return {
-        machineId: typeof authWait.machineId === 'string' ? authWait.machineId : null,
       };
     },
 
@@ -111,6 +104,8 @@ export function createSetupMachineRecipeExecutorFromRemoteCommandRunner(params: 
             'daemon.service.start',
           );
         },
+
+    waitForReadyDaemon: !shouldManageService ? undefined : canonicalReadiness.waitForReadyDaemon,
   };
 }
 
@@ -133,17 +128,20 @@ export function createRemoteSetupMachineRecipeHappierExecutor(params: Readonly<{
   localServerUrl?: string;
   runRemoteCommand: RemoteSshBootstrapMachineDeps['runRemoteCommand'];
   createHappierJsonExecutor?: RemoteSshBootstrapMachineDeps['createHappierJsonExecutor'];
+  signal?: AbortSignal;
 }>): RemoteSshBootstrapHappierJsonExecutor {
   return params.createHappierJsonExecutor?.({
     parsed: params.parsed,
     auth: params.auth,
     knownHostsMode: params.knownHostsMode,
     ...(params.localServerUrl ? { localServerUrl: params.localServerUrl } : {}),
+    signal: params.signal,
   }) ?? createRemoteSshBootstrapHappierJsonExecutor({
     parsed: params.parsed,
     auth: params.auth,
     knownHostsMode: params.knownHostsMode,
     ...(params.localServerUrl ? { localServerUrl: params.localServerUrl } : {}),
     runRemoteCommand: params.runRemoteCommand,
+    signal: params.signal,
   });
 }

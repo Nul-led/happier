@@ -117,6 +117,11 @@
       "import": "./dist/firstPartyRuntime/personalHome/bootstrap.js",
       "default": "./dist/firstPartyRuntime/personalHome/bootstrap.js"
     },
+    "./firstPartyRuntime/personalHome/bootstrapSystemTasks": {
+      "types": "./dist/firstPartyRuntime/personalHome/bootstrapSystemTasks.d.ts",
+      "import": "./dist/firstPartyRuntime/personalHome/bootstrapSystemTasks.js",
+      "default": "./dist/firstPartyRuntime/personalHome/bootstrapSystemTasks.js"
+    },
     "./firstPartyRuntime/personalHome/runtimeSpec": {
       "types": "./dist/firstPartyRuntime/personalHome/personalHomeRuntimeSpec.d.ts",
       "import": "./dist/firstPartyRuntime/personalHome/personalHomeRuntimeSpec.js",
@@ -187,10 +192,30 @@
       "import": "./dist/happierRuntime/index.js",
       "default": "./dist/happierRuntime/index.js"
     },
+    "./homeTarget": {
+      "types": "./dist/homeTarget/index.d.ts",
+      "import": "./dist/homeTarget/index.js",
+      "default": "./dist/homeTarget/index.js"
+    },
+    "./accountService": {
+      "types": "./dist/accountService/index.d.ts",
+      "import": "./dist/accountService/index.js",
+      "default": "./dist/accountService/index.js"
+    },
+    "./homeEnrollment": {
+      "types": "./dist/homeEnrollment/index.d.ts",
+      "import": "./dist/homeEnrollment/index.js",
+      "default": "./dist/homeEnrollment/index.js"
+    },
     "./relayHost": {
       "types": "./dist/relayHost/index.d.ts",
       "import": "./dist/relayHost/index.js",
       "default": "./dist/relayHost/index.js"
+    },
+    "./relayHost/runtimeStatus": {
+      "types": "./dist/relayHost/relayRuntimeStatus.d.ts",
+      "import": "./dist/relayHost/relayRuntimeStatus.js",
+      "default": "./dist/relayHost/relayRuntimeStatus.js"
     },
     "./relayAccess": {
       "types": "./dist/relayAccess/index.d.ts",

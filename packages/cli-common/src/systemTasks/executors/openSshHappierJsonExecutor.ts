@@ -1,4 +1,6 @@
 import { resolvePublicReleaseRingLabelForId, type PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
+import type { OpenSshAuth as CanonicalOpenSshAuth } from '../../ssh/openSshTransport.js';
+export type { OpenSshAuth } from '../../ssh/openSshTransport.js';
 import {
   SystemTaskJsonValueSchema,
   type SystemTaskJsonObject,
@@ -41,19 +43,17 @@ export function parseStrictPersonalHomeTaskFinalResult(text: string): Readonly<{
   return { ok: true, data: parsedData.data };
 }
 
-export type OpenSshAuth =
-  | Readonly<{ mode: 'agent' }>
-  | Readonly<{ mode: 'keyFile'; privateKeyPath: string }>
-  | Readonly<{ mode: 'password'; password: string }>;
-
 export type OpenSshRunRemoteText = (params: Readonly<{
   ssh: SystemTaskSshConnectionConfig;
-  auth: OpenSshAuth;
+  auth: CanonicalOpenSshAuth;
   knownHostsMode: 'app' | 'system';
   remoteCommand: string;
   label?: string;
   signal?: AbortSignal;
   timeoutMs?: number;
+  onStdoutChunk?: (text: string) => void;
+  includeStdoutInError?: boolean;
+  input?: string;
 }>) => Promise<HappierTextResult>;
 
 function safeBashSingleQuote(value: string): string {
@@ -92,14 +92,15 @@ function buildRemoteCommandFromArgv(argv: readonly string[]): string {
 
 export function createOpenSshHappierJsonExecutor(params: Readonly<{
   ssh: SystemTaskSshConnectionConfig;
-  auth: OpenSshAuth;
+  auth: CanonicalOpenSshAuth;
   knownHostsMode: 'app' | 'system';
   channel?: PublicReleaseRingId;
+  happierCommand?: string;
   runRemoteText: OpenSshRunRemoteText;
 }>): HappierJsonExecutor {
   const channel = params.channel ?? 'stable';
   const scopedLabel = channel === 'stable' ? '' : resolvePublicReleaseRingLabelForId(channel);
-  const remoteHappier = resolveRemoteInstalledFirstPartyBinaryPath({
+  const remoteHappier = String(params.happierCommand ?? '').trim() || resolveRemoteInstalledFirstPartyBinaryPath({
     componentId: 'happier-cli',
     channel,
   });
@@ -118,6 +119,9 @@ export function createOpenSshHappierJsonExecutor(params: Readonly<{
         label: `happier ${args.slice(0, 2).join(' ') || '…'}`,
         signal: opts?.signal,
         timeoutMs: opts?.timeoutMs,
+        onStdoutChunk: opts?.onStdoutChunk,
+        includeStdoutInError: opts?.includeStdoutInError,
+        input: opts?.input,
       });
     },
 

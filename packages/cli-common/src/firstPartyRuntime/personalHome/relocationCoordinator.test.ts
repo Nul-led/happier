@@ -57,7 +57,11 @@ async function fixture() {
     stage: vi.fn(async (_input: PersonalHomeRelocationDestinationStageInput): Promise<PersonalHomeRelocationDestinationFacts> => (
       events.push('destination.stage'), destinationFacts
     )),
-    status: vi.fn(async (): Promise<PersonalHomeRelocationDestinationFacts | Readonly<{ operationId: string; status: 'absent' }>> => destinationFacts),
+    status: vi.fn(async (): Promise<PersonalHomeRelocationDestinationFacts | Readonly<{ operationId: string; status: 'absent' }>> => {
+      const sourceMarkerExists = await readFile(join(sourceDataDir, '.operations', 'relocation-source.json'), 'utf8')
+        .then(() => true, () => false);
+      return sourceMarkerExists ? destinationFacts : { operationId: destinationFacts.operationId, status: 'absent' };
+    }),
     commit: vi.fn(async () => (events.push('destination.commit'), { ...destinationFacts, status: 'active' as const })),
     abort: vi.fn(async (): Promise<PersonalHomeRelocationDestinationFacts | PersonalHomeRelocationDestinationAbsence> => (
       events.push('destination.abort'), { ...destinationFacts, status: 'aborted' as const }
@@ -104,6 +108,12 @@ async function fixture() {
 describe('Personal Home source relocation coordinator', () => {
   it('moves writable authority source → neither → destination through the destination-local owner', async () => {
     const { params, events, destination } = await fixture();
+    const stopSource = params.stopSource.getMockImplementation()!;
+    params.stopSource.mockImplementationOnce(async () => {
+      const marker = JSON.parse(await readFile(join(params.sourceDataDir, '.operations', 'relocation-source.json'), 'utf8')) as { phase?: unknown };
+      expect(marker.phase).toBe('preparing_source');
+      return await stopSource();
+    });
 
     await expect(coordinatePersonalHomeRelocation(params)).resolves.toMatchObject({
       operationId: destinationFacts.operationId,
@@ -127,6 +137,7 @@ describe('Personal Home source relocation coordinator', () => {
       archivePath: '/source/relocation.tar',
       sourceDescriptorRevision: 4,
     }));
+    expect(destination.status.mock.invocationCallOrder[0]).toBeLessThan(params.stopSource.mock.invocationCallOrder[0]!);
   });
 
   it('keeps both copies stopped when publication is not authoritatively readable', async () => {
@@ -196,6 +207,7 @@ describe('Personal Home source relocation coordinator', () => {
       new Error('scp connection closed'),
     ));
     destination.status.mockResolvedValueOnce({ operationId: destinationFacts.operationId, status: 'absent' });
+    destination.status.mockResolvedValueOnce({ operationId: destinationFacts.operationId, status: 'absent' });
 
     await expect(coordinatePersonalHomeRelocation(params)).rejects.toMatchObject({
       message: expect.stringContaining('scp connection closed'),
@@ -251,6 +263,7 @@ describe('Personal Home source relocation coordinator', () => {
     const { params, destination } = await fixture();
     destination.stage.mockRejectedValueOnce(new Error('remote restore failed'));
     destination.status.mockResolvedValueOnce({ operationId: destinationFacts.operationId, status: 'absent' });
+    destination.status.mockResolvedValueOnce({ operationId: destinationFacts.operationId, status: 'absent' });
 
     await expect(coordinatePersonalHomeRelocation(params)).rejects.toThrow('remote restore failed');
     expect(params.activateSource).toHaveBeenCalledTimes(1);
@@ -289,6 +302,7 @@ describe('Personal Home source relocation coordinator', () => {
   it('leaves the source stopped when the destination outcome after a failed stage is unknown', async () => {
     const { params, destination } = await fixture();
     destination.stage.mockRejectedValueOnce(new Error('transport closed'));
+    destination.status.mockResolvedValueOnce({ operationId: destinationFacts.operationId, status: 'absent' });
     destination.status.mockRejectedValueOnce(new Error('destination unreachable'));
 
     await expect(coordinatePersonalHomeRelocation(params)).rejects.toThrow('transport closed');
@@ -314,6 +328,7 @@ describe('Personal Home source relocation coordinator', () => {
   it('returns authority to the original Home from a reservation the destination never staged', async () => {
     const { params, destination } = await fixture();
     destination.stage.mockRejectedValueOnce(new Error('transport closed'));
+    destination.status.mockResolvedValueOnce({ operationId: destinationFacts.operationId, status: 'absent' });
     destination.status.mockRejectedValueOnce(new Error('destination unreachable'));
     await expect(coordinatePersonalHomeRelocation(params)).rejects.toThrow('transport closed');
 
@@ -330,15 +345,66 @@ describe('Personal Home source relocation coordinator', () => {
     expect(destination.stage).toHaveBeenCalledTimes(1);
   });
 
+  it('preserves destination abort cleanup attention when returning authority to the source', async () => {
+    const { params, destination } = await fixture();
+    params.publishDestination.mockRejectedValueOnce(new Error('publication unavailable'));
+    params.readPublishedDescriptor.mockResolvedValueOnce(null);
+    await expect(coordinatePersonalHomeRelocation(params)).resolves.toMatchObject({ status: 'pending' });
+
+    destination.abort.mockResolvedValueOnce({
+      ...destinationFacts,
+      status: 'aborted' as const,
+      transferCleanupNeedsAttention: true,
+    });
+    params.readPublishedDescriptor.mockResolvedValueOnce(sourceDescriptor);
+
+    await expect(coordinatePersonalHomeRelocation({
+      ...params,
+      recoveryAction: 'return_to_source',
+    })).resolves.toMatchObject({
+      status: 'returned',
+      destinationTransferCleanupNeedsAttention: true,
+    });
+    const marker = JSON.parse(await readFile(join(params.sourceDataDir, '.operations', 'relocation-source.json'), 'utf8')) as Record<string, unknown>;
+    expect(marker).toMatchObject({
+      phase: 'returned_to_source',
+      destinationTransferCleanupNeedsAttention: true,
+    });
+    await expect(inspectPersonalHomeRelocationSourceRecovery(params.sourceDataDir)).resolves.toMatchObject({
+      status: 'recovery_available',
+      primaryAction: 'finish_move',
+    });
+  });
+
+  it('preserves destination abort errors before reactivating the source', async () => {
+    const { params, destination } = await fixture();
+    params.publishDestination.mockRejectedValueOnce(new Error('publication unavailable'));
+    params.readPublishedDescriptor.mockResolvedValueOnce(null);
+    await expect(coordinatePersonalHomeRelocation(params)).resolves.toMatchObject({ status: 'pending' });
+
+    destination.abort.mockRejectedValueOnce(new Error('destination abort unavailable'));
+    params.readPublishedDescriptor.mockResolvedValueOnce(sourceDescriptor);
+
+    await expect(coordinatePersonalHomeRelocation({
+      ...params,
+      recoveryAction: 'return_to_source',
+    })).rejects.toThrow('destination abort unavailable');
+    expect(params.activateSource).not.toHaveBeenCalled();
+    const marker = JSON.parse(await readFile(join(params.sourceDataDir, '.operations', 'relocation-source.json'), 'utf8')) as Record<string, unknown>;
+    expect(marker).toMatchObject({ phase: 'pending' });
+  });
+
   it('permits a later relocation after a different operation returned authority to the source', async () => {
     const { params, destination } = await fixture();
     destination.stage.mockRejectedValueOnce(new Error('transport closed'));
+    destination.status.mockResolvedValueOnce({ operationId: destinationFacts.operationId, status: 'absent' });
     destination.status.mockResolvedValueOnce({ operationId: destinationFacts.operationId, status: 'absent' });
     await expect(coordinatePersonalHomeRelocation(params)).rejects.toThrow('transport closed');
 
     const nextOperationId = 'system-task:relocation-2';
     params.readPublishedDescriptor.mockResolvedValueOnce(sourceDescriptor);
     destination.stage.mockResolvedValueOnce({ ...destinationFacts, operationId: nextOperationId });
+    destination.status.mockResolvedValueOnce({ operationId: nextOperationId, status: 'absent' });
 
     await expect(coordinatePersonalHomeRelocation({
       ...params,
@@ -432,6 +498,7 @@ describe('Personal Home source relocation coordinator', () => {
   it('keeps both Homes intact when the destination cannot prove it owns the relocation candidate', async () => {
     const { params, destination } = await fixture();
     destination.stage.mockRejectedValueOnce(new Error('Destination Personal Home contains data'));
+    destination.status.mockResolvedValueOnce({ operationId: destinationFacts.operationId, status: 'absent' });
     destination.status.mockResolvedValue({
       operationId: destinationFacts.operationId,
       status: 'recovery_required' as const,

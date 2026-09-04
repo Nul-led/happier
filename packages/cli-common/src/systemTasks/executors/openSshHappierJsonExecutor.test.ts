@@ -19,6 +19,25 @@ describe('parseStrictPersonalHomeTaskFinalResult', () => {
 });
 
 describe('createOpenSshHappierJsonExecutor', () => {
+  it('carries bounded ephemeral stdin separately from the remote command string', async () => {
+    const observed = vi.fn();
+    const executor = createOpenSshHappierJsonExecutor({
+      ssh: { target: 'dev@example.test', auth: 'agent' },
+      auth: { mode: 'agent' },
+      knownHostsMode: 'system',
+      runRemoteText: async (params) => {
+        observed(params);
+        return { status: 0, stdout: '{}\n', stderr: '' };
+      },
+    });
+    const input = '{"v":1,"confirmed":true}\n';
+
+    await executor.runHappierText(['home', 'erase', '--approval-stdin'], { input });
+
+    expect(observed).toHaveBeenCalledWith(expect.objectContaining({ input }));
+    expect(String(observed.mock.calls[0]?.[0]?.remoteCommand)).not.toContain('confirmed');
+  });
+
   it('prefixes remote commands with release-ring env scoping for dev lane', async () => {
     const runRemoteText = vi.fn<(params: any) => Promise<void>>(async () => {});
 
