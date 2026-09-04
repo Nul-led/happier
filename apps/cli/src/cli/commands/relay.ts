@@ -32,7 +32,9 @@ export async function handleRelayCommand(args: string[]): Promise<void> {
       return;
     }
 
-    const handled = await runRelaySubcommand(subcommand, args);
+    const handled = await runRelaySubcommand(subcommand, args, {
+      selectionMutationMode: 'standalone',
+    });
     if (handled) {
       return;
     }

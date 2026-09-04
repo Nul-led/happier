@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import type { McpCommandDeps } from './deps';
 import { runMcpServeCommand } from './serve';
@@ -10,6 +10,8 @@ import { withCliApiToken } from '@/auth/cliApiToken';
 import { reloadConfiguration, configuration } from '@/configuration';
 import { readStoredCredentials } from '@/persistence';
 import { withTempDir } from '@/testkit/fs/tempDir';
+import { addServerProfile, adoptServerProfileHomeConnectionDescriptor } from '@/server/serverProfiles';
+import { applyEphemeralServerSelectionFromPrefixArgs } from '@/server/serverSelection';
 
 const env = process.env;
 
@@ -237,6 +239,205 @@ describe('happier mcp serve (env hardening)', () => {
     expect(readStoredCredentials).toHaveBeenCalledTimes(1);
   });
 
+  it('pins one trusted saved Home snapshot while rejecting ambient and post-start redirection', async () => {
+    await withTempDir('happier-cli-mcp-home-target-', async (homeDir) => {
+      process.env.HAPPIER_HOME_DIR = homeDir;
+      delete process.env.HAPPIER_SERVER_URL;
+      delete process.env.HAPPIER_LOCAL_SERVER_URL;
+      delete process.env.HAPPIER_PUBLIC_SERVER_URL;
+      delete process.env.HAPPIER_WEBAPP_URL;
+      delete process.env.HAPPIER_ACTIVE_SERVER_ID;
+      reloadConfiguration();
+
+      await mkdir(dirname(configuration.privateKeyFile), { recursive: true });
+      await writeFile(configuration.privateKeyFile, JSON.stringify({ token: 'active-home-token' }), 'utf8');
+      const profile = await addServerProfile({
+        name: 'selected-home',
+        serverUrl: 'https://selected-home.example.test',
+        webappUrl: 'https://app.selected-home.example.test',
+        use: false,
+      });
+      await adoptServerProfileHomeConnectionDescriptor({
+        descriptor: {
+          v: 1,
+          homeServerIdentityId: 'srv_selected_home',
+          canonicalServerUrl: 'https://selected-home.example.test',
+          revision: 1,
+          endpoints: [{ kind: 'https', url: 'https://selected-home.example.test' }],
+        },
+        expectedProfileId: profile.id,
+        observation: 'exact',
+      });
+      await mkdir(join(homeDir, 'servers', profile.id), { recursive: true });
+      await writeFile(
+        join(homeDir, 'servers', profile.id, 'access.key'),
+        JSON.stringify({ token: 'selected-home-token' }),
+        'utf8',
+      );
+
+      const resolution = await applyEphemeralServerSelectionFromPrefixArgs(['--server', profile.id, 'mcp', 'serve']);
+      expect(resolution.selection?.application).toEqual({ kind: 'ephemeralEnv' });
+      if (!resolution.selection || resolution.selection.application.kind !== 'ephemeralEnv') {
+        throw new Error('Expected an ephemeral saved Home selection');
+      }
+      const selection = resolution.selection;
+
+      process.env.HAPPIER_SERVER_URL = 'https://ambient-attacker.example.test';
+      process.env.HAPPIER_ACTIVE_SERVER_ID = 'ambient-attacker';
+      reloadConfiguration();
+
+      const constructedSnapshots: Array<Readonly<{
+        activeServerId: string;
+        serverUrl: string;
+        token: string;
+        toolIds: readonly string[];
+      }>> = [];
+      const connectedSnapshots: typeof constructedSnapshots = [];
+      const deps: McpCommandDeps = {
+        readStoredCredentials,
+        ensureMachineIdForCredentials: async () => ({ machineId: 'machine_1' }),
+        bootstrapAccountSettingsContext: async ({ credentials }) => {
+          expect(credentials.token).toBe(
+            configuration.activeServerId === profile.id ? 'selected-home-token' : 'active-home-token',
+          );
+          return { settings: { actionsSettingsV1: null } } as any;
+        },
+        readDaemonPluginCatalog: async () => ({
+          kind: 'available',
+          plugins: [],
+          tools: [{
+            toolId: `${configuration.activeServerId}/tool`,
+            actionId: `${configuration.activeServerId}/action`,
+            name: `${configuration.activeServerId}_tool`,
+            title: 'Profile-scoped tool',
+            description: 'Profile-scoped tool',
+            inputSchema: { type: 'object' },
+            surfaces: ['mcp'],
+          }],
+        }),
+        resolveLiveDaemonControlTargetForServer: async () => ({
+          pid: process.pid,
+          httpPort: 1,
+          controlToken: 'selected-daemon-control-token',
+        }),
+        createExternalMcpServer: ({ credentials, pluginToolCatalog }) => {
+          const snapshot = Object.freeze({
+            activeServerId: configuration.activeServerId,
+            serverUrl: configuration.serverUrl,
+            token: credentials.token,
+            toolIds: Object.freeze((pluginToolCatalog ?? []).map((tool) => tool.toolId)),
+          });
+          constructedSnapshots.push(snapshot);
+          process.env.HAPPIER_SERVER_URL = 'https://post-start-attacker.example.test';
+          process.env.HAPPIER_ACTIVE_SERVER_ID = 'post-start-attacker';
+          reloadConfiguration();
+          return { mcp: { snapshot } as any, toolNames: [] };
+        },
+        connectMcpStdio: async (mcp) => {
+          connectedSnapshots.push((mcp as unknown as { snapshot: typeof constructedSnapshots[number] }).snapshot);
+        },
+        updateAccountSettingsV2WithRetry: async () => ({} as any),
+        detectProviderMcpServers: async () => ({} as any),
+        probeMcpStdioServerTools: async () => [],
+        randomUUID: () => 'uuid',
+        nowMs: () => 0,
+      };
+
+      try {
+        await runMcpServeCommand(['serve'], deps, selection);
+        await runMcpServeCommand(['serve'], deps);
+
+        expect(constructedSnapshots).toEqual([
+          {
+            activeServerId: profile.id,
+            serverUrl: 'https://selected-home.example.test',
+            token: 'selected-home-token',
+            toolIds: [`${profile.id}/tool`],
+          },
+          {
+            activeServerId: 'cloud',
+            serverUrl: 'https://api.happier.dev',
+            token: 'active-home-token',
+            toolIds: ['cloud/tool'],
+          },
+        ]);
+        expect(connectedSnapshots).toEqual(constructedSnapshots);
+        const persisted = JSON.parse(await readFile(join(homeDir, 'settings.json'), 'utf8'));
+        expect(persisted.activeServerId).toBe('cloud');
+      } finally {
+        disableMcpStdioConsolePatch();
+        delete process.env.HAPPIER_SERVER_URL;
+        delete process.env.HAPPIER_ACTIVE_SERVER_ID;
+        reloadConfiguration();
+      }
+    });
+  });
+
+  it('preserves an explicit manual Home URL without persisting or accepting ambient redirection', async () => {
+    await withTempDir('happier-cli-mcp-manual-home-target-', async (homeDir) => {
+      process.env.HAPPIER_HOME_DIR = homeDir;
+      delete process.env.HAPPIER_SERVER_URL;
+      delete process.env.HAPPIER_LOCAL_SERVER_URL;
+      delete process.env.HAPPIER_PUBLIC_SERVER_URL;
+      delete process.env.HAPPIER_WEBAPP_URL;
+      delete process.env.HAPPIER_ACTIVE_SERVER_ID;
+      reloadConfiguration();
+
+      const resolution = await applyEphemeralServerSelectionFromPrefixArgs([
+        '--server-url',
+        'https://manual-home.example.test',
+        'mcp',
+        'serve',
+      ]);
+      expect(resolution.selection?.application).toEqual({ kind: 'ephemeralEnv' });
+      if (!resolution.selection || resolution.selection.application.kind !== 'ephemeralEnv') {
+        throw new Error('Expected an ephemeral manual Home selection');
+      }
+      const selection = resolution.selection;
+
+      await mkdir(join(homeDir, 'servers', selection.activeServerId), { recursive: true });
+      await writeFile(
+        join(homeDir, 'servers', selection.activeServerId, 'access.key'),
+        JSON.stringify({ token: 'manual-home-token' }),
+        'utf8',
+      );
+      process.env.HAPPIER_SERVER_URL = 'https://ambient-attacker.example.test';
+      process.env.HAPPIER_ACTIVE_SERVER_ID = 'ambient-attacker';
+      reloadConfiguration();
+
+      const createExternalMcpServer = vi.fn(() => ({
+        mcp: { connect: async () => {} } as any,
+        toolNames: [],
+      }));
+      try {
+        await runMcpServeCommand(['serve'], {
+          readStoredCredentials,
+          ensureMachineIdForCredentials: async () => ({ machineId: 'machine_1' }),
+          bootstrapAccountSettingsContext: async () => ({ settings: { actionsSettingsV1: null } }) as any,
+          createExternalMcpServer,
+          connectMcpStdio: async () => {},
+          updateAccountSettingsV2WithRetry: async () => ({} as any),
+          detectProviderMcpServers: async () => ({} as any),
+          probeMcpStdioServerTools: async () => [],
+          randomUUID: () => 'uuid',
+          nowMs: () => 0,
+        }, selection);
+
+        expect(configuration.activeServerId).toBe(selection.activeServerId);
+        expect(configuration.serverUrl).toBe('https://manual-home.example.test');
+        expect(createExternalMcpServer).toHaveBeenCalledWith(expect.objectContaining({
+          credentials: expect.objectContaining({ token: 'manual-home-token' }),
+        }));
+        await expect(readFile(join(homeDir, 'settings.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+      } finally {
+        disableMcpStdioConsolePatch();
+        delete process.env.HAPPIER_SERVER_URL;
+        delete process.env.HAPPIER_ACTIVE_SERVER_ID;
+        reloadConfiguration();
+      }
+    });
+  });
+
   it('starts the plain Settings-backed MCP server with token-only credentials', async () => {
     const credentials = { token: 'plain-token', encryption: null } as const;
     const ensureMachineIdForCredentials = vi.fn(async () => ({ machineId: 'machine_1' }));
@@ -321,7 +522,7 @@ describe('happier mcp serve (env hardening)', () => {
         }));
 
         expect(createExternalMcpServer).toHaveBeenCalledWith({
-          credentials: { token, encryption: null },
+          credentials: { token, encryption: null, credentialProvenance: 'api_token' },
           defaultSessionId: null,
           pluginToolCatalog: [],
         });

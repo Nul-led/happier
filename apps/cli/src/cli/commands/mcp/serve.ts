@@ -1,6 +1,10 @@
 import { readFlagValue } from '@/cli/commands/shared/argvFlags';
 import { reloadConfiguration } from '@/configuration';
 import { enableMcpStdioConsolePatch } from '@/mcp/server/mcpStdioConsolePatch';
+import {
+  applyResolvedServerSelection,
+  type EphemeralResolvedServerSelection,
+} from '@/server/serverSelection';
 
 import type { McpCommandDeps } from './deps';
 
@@ -15,11 +19,15 @@ function clearServerSelectionEnvOverrides(): void {
 export async function runMcpServeCommand(
   argv: readonly string[],
   deps: McpCommandDeps,
+  explicitServerSelection?: EphemeralResolvedServerSelection,
 ): Promise<void> {
   enableMcpStdioConsolePatch();
 
   clearServerSelectionEnvOverrides();
   reloadConfiguration();
+  if (explicitServerSelection) {
+    await applyResolvedServerSelection(explicitServerSelection);
+  }
 
   const defaultSessionId = readFlagValue(argv, '--session');
   const credentials = await deps.readStoredCredentials();
@@ -45,16 +53,26 @@ export async function runMcpServeCommand(
     delete process.env.HAPPIER_ACTIONS_SETTINGS_V1;
   }
 
-  const daemonCatalog = await deps.readDaemonPluginCatalog?.().catch(() => ({
-    kind: 'unavailable' as const,
-    code: 'daemon_unavailable',
-  }));
+  const daemonControlTarget = explicitServerSelection
+    ? await deps.resolveLiveDaemonControlTargetForServer?.(
+        explicitServerSelection.activeServerId,
+      ).catch(() => null) ?? null
+    : undefined;
+  const daemonCatalog = explicitServerSelection && !daemonControlTarget
+    ? { kind: 'unavailable' as const, code: 'daemon_unavailable' }
+    : await deps.readDaemonPluginCatalog?.(
+        daemonControlTarget ? { target: daemonControlTarget } : undefined,
+      ).catch(() => ({
+        kind: 'unavailable' as const,
+        code: 'daemon_unavailable',
+      }));
   const { mcp } = deps.createExternalMcpServer({
     credentials,
     defaultSessionId,
     pluginToolCatalog: daemonCatalog?.kind === 'available'
       ? daemonCatalog.tools
       : Object.freeze([]),
+    ...(explicitServerSelection ? { daemonControlTarget } : {}),
   });
 
   await deps.connectMcpStdio(mcp);

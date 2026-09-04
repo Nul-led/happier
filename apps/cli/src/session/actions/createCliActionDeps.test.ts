@@ -2826,13 +2826,14 @@ describe('createCliActionDeps hook dispatch', () => {
       sessionId: 'sess-1',
       decision: 'allow',
       requestId: 'perm-1',
+      turnId: 'turn-perm-1',
     })).resolves.toEqual({ ok: true });
 
     expect(callSessionRpc).toHaveBeenCalledWith(expect.objectContaining({
       token: 'token',
       sessionId: 'sess-1',
       method: 'sess-1:session.permission.respond',
-      request: { id: 'perm-1', approved: true },
+      request: { id: 'perm-1', turnId: 'turn-perm-1', approved: true },
     }));
     expect(executeExecutionRunAction).not.toHaveBeenCalled();
   });
@@ -4599,9 +4600,6 @@ describe('createCliActionDeps session lifecycle bindings', () => {
       targetPath: '/target/repo',
       targetSessionStorageMode: 'direct',
       workspaceAction,
-      workspaceSyncSourceWorkspaceRefId: 'source-ref',
-      workspaceSyncTargetWorkspaceRefId: 'target-ref',
-      workspaceSyncSettingsVersion: 8,
       signal,
     })).resolves.toEqual({ handoffId: 'handoff-1' });
 
@@ -4619,9 +4617,6 @@ describe('createCliActionDeps session lifecycle bindings', () => {
         targetSessionStorageMode: 'direct',
         preferredTransportStrategies: ['direct_peer', 'server_routed_stream'],
         workspaceAction,
-        workspaceSyncSourceWorkspaceRefId: 'source-ref',
-        workspaceSyncTargetWorkspaceRefId: 'target-ref',
-        workspaceSyncSettingsVersion: 8,
       },
     });
     expect(deps.sessionHandoffPrepareTarget).toBeUndefined();

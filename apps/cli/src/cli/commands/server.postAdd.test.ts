@@ -62,6 +62,7 @@ describe('happier server add', () => {
                 '--webapp-url',
                 'https://company.example.test',
                 '--use',
+                '--yes',
             ]);
 
             const out = output.logs.join('\n');
@@ -98,6 +99,7 @@ describe('happier server add', () => {
                 'https://company.example.test',
                 '--webapp-url',
                 'https://company.example.test',
+                '--yes',
             ]);
 
             const out = output.logs.join('\n');
@@ -141,6 +143,7 @@ describe('happier server add', () => {
                 '--webapp-url',
                 'https://company.example.test',
                 '--use',
+                '--yes',
             ]);
 
             const out = output.logs.join('\n');

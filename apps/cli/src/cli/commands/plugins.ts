@@ -14,6 +14,7 @@ import {
   hasFlagValue,
   readCommandPositionals,
   readFlagValue,
+  readFlagValueUnlessFlagToken,
   readRepeatedFlagValues,
 } from '@/cli/commands/shared/argvFlags';
 import { wantsJson, printJsonEnvelope, writeJsonStdout } from '@/cli/output/jsonEnvelope';
@@ -207,8 +208,8 @@ function usage(): string {
       { label: `${pluginCommand} marketplace sources disable <sourceRef> [--json]`, description: 'Disable a persisted marketplace source' },
       { label: `${pluginCommand} marketplace sources remove <sourceRef> [--json]`, description: 'Remove a persisted marketplace source' },
       { label: `${pluginCommand} marketplace list [<sourceRef>] [--json]`, description: 'List marketplace entries from the preferred persisted source' },
-      { label: `${pluginCommand} marketplace show [<sourceRef>] <pluginId> [--json]`, description: 'Show one marketplace entry' },
-      { label: `${pluginCommand} marketplace install [<sourceRef>] <pluginId> [--json]`, description: 'Install and trust one exact curated or community npm listing through the active daemon' }
+      { label: `${pluginCommand} marketplace show [<sourceRef>] <pluginId> [--package <npmPackage>] [--json]`, description: 'Show one marketplace entry; Community npm requires its package coordinate' },
+      { label: `${pluginCommand} marketplace install [<sourceRef>] <pluginId> [--package <npmPackage>] [--json]`, description: 'Install and trust one exact listing; Community npm requires the package shown by marketplace list' }
     ],
     notes: [
       'Plugins are machine-local, descriptor-backed plugins.',
@@ -217,6 +218,7 @@ function usage(): string {
       'Packed real-host testing uses a disposable authenticated daemon home and does not read or copy user credentials or installed-plugin state.',
       'Direct npm installation is staged behind the install-and-trust flow; private registry profiles are managed with the registry commands.',
       'Marketplace Install and trust rechecks exact version, integrity, manifest, source, and review facts; community code remains unreviewed until its staged Install & Trust decision.',
+      `Use ${cmd('community-npm')} as the short source reference for the built-in Community npm catalog; it resolves to the single synthesized source and is never persisted.`,
       `Use ${cmd(`${invoker} agents list`)} to see plugin-provided agent CLI surfaces after install.`,
     ],
   });
@@ -306,7 +308,7 @@ function readMarketplaceSelection(args: readonly string[], startIndex: number): 
   sourceRef: string | null;
   pluginId: string | null;
 }> {
-  const positional = readCommandPositionals(args, { startIndex });
+  const positional = readCommandPositionals(args, { startIndex, valueFlags: ['--package'] });
   if (positional.length === 1) {
     return { sourceRef: null, pluginId: positional[0] ?? null };
   }
@@ -351,6 +353,8 @@ function describeMarketplaceSource(source: MarketplaceSourceV1): string {
   return `${source.title} ${dim(source.sourceUrl)} ${dim(`(${status})`)}`;
 }
 
+const COMMUNITY_NPM_MARKETPLACE_SOURCE_CLI_ALIAS = 'community-npm';
+
 async function resolveMarketplaceSourceForCommand(store: Readonly<{
   resolveSourceReference: (reference: string) => Promise<MarketplaceSourceV1 | null>;
   resolvePreferredSource: () => Promise<MarketplaceSourceV1 | null>;
@@ -359,7 +363,8 @@ async function resolveMarketplaceSourceForCommand(store: Readonly<{
 }>) | null> {
   if (sourceRef) {
     if (
-      sourceRef === COMMUNITY_NPM_MARKETPLACE_SOURCE.id
+      sourceRef === COMMUNITY_NPM_MARKETPLACE_SOURCE_CLI_ALIAS
+      || sourceRef === COMMUNITY_NPM_MARKETPLACE_SOURCE.id
       || sourceRef === COMMUNITY_NPM_MARKETPLACE_SOURCE.sourceUrl
     ) {
       return COMMUNITY_NPM_MARKETPLACE_SOURCE;
@@ -540,6 +545,7 @@ function printHumanMarketplaceList(params: Readonly<{
   for (const entry of params.entries) {
     const installable = marketplaceInstallUnavailableReason(entry) === null ? ok('installable') : neutral('descriptor-only');
     out.line(`${entry.display.title} ${dim(entry.pluginId)} ${dim(`(${entry.source.kind})`)} ${installable}`);
+    out.line(`  ${dim('Package:')} ${entry.distribution.packageName}`);
     out.line(`  ${dim('Version:')} ${entry.distribution.version}`);
     out.line(`  ${dim('Contributions:')} ${formatMarketplaceContributionSummary(entry)}`);
   }
@@ -560,6 +566,7 @@ function printHumanMarketplaceShow(params: Readonly<{
   out.line(`${dim('Marketplace:')} ${params.title}`);
   out.line(`${dim('Source:')} ${params.sourceUrl}`);
   out.line(`${dim('Plugin ID:')} ${params.entry.pluginId}`);
+  out.line(`${dim('Package:')} ${params.entry.distribution.packageName}`);
   out.line(`${dim('Version:')} ${params.entry.distribution.version}`);
   out.line(`${dim('Installable:')} ${marketplaceInstallUnavailableReason(params.entry) === null ? 'yes' : 'no'}`);
   out.line(`${dim('Entry Source:')} ${params.entry.source.kind} ${params.entry.source.sourceUrl}`);
@@ -2735,12 +2742,29 @@ async function runPluginsMarketplaceShowCommand(
     return;
   }
 
+  const packageName = readFlagValueUnlessFlagToken(args, '--package');
+  if (source.origin === 'community-npm' && !packageName) {
+    const message = 'Community npm lookup requires --package <npmPackage> from marketplace list.';
+    if (wantsJson(args)) {
+      await printJsonEnvelope({
+        ok: false,
+        kind: 'plugins_marketplace_show',
+        error: { code: 'package_required', message },
+      }, { exitCode: 1 });
+      return;
+    }
+    console.error(errorFrame('Error:', [message]));
+    process.exitCode = 1;
+    return;
+  }
+
   // Showing one listing targets that source for that plugin. Walking every
   // discovery page to find it would refetch the whole source to answer a
   // single-item question.
   const exact = await (deps.marketplaceIndexService ?? createMarketplaceIndexService()).queryExactListing({
     sourceId: source.id,
     pluginId,
+    ...(packageName ? { packageName } : {}),
   });
   const result = exact.ok ? exact.result : null;
   const indexEntry = result?.items.find((entry) => entry.pluginId === pluginId) ?? null;
@@ -2830,10 +2854,20 @@ async function runPluginsMarketplaceInstallCommand(args: readonly string[], _dep
     return;
   }
 
+  const packageName = readFlagValueUnlessFlagToken(args, '--package');
+  if (source.origin === 'community-npm' && !packageName) {
+    await reportMarketplaceInstallUnavailable(
+      args,
+      'Community npm installation requires --package <npmPackage> from the selected marketplace listing.',
+    );
+    return;
+  }
+
   const exactInstall = await requestExactMarketplaceInstall({
     happyHomeDir: configuration.happyHomeDir,
     sourceId: source.id,
     pluginId,
+    ...(packageName ? { packageName } : {}),
     approval: resolveUserPluginChangeApproval({
       interactive: (_deps.isInteractiveTerminal ?? isInteractiveTerminal)(),
       json: wantsJson(args),

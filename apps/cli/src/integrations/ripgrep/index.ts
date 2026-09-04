@@ -12,11 +12,16 @@ export interface RipgrepResult {
     exitCode: number
     stdout: string
     stderr: string
+    stdoutTruncated?: boolean
+    stderrTruncated?: boolean
 }
 
 export interface RipgrepOptions {
     cwd?: string
     signal?: AbortSignal
+    maxStdoutBytes?: number
+    maxStderrBytes?: number
+    terminateOnStdoutLimit?: boolean
 }
 
 function createRipgrepAbortError(): Error {
@@ -83,22 +88,57 @@ export function run(args: string[], options?: RipgrepOptions): Promise<RipgrepRe
             });
             child = spawned;
 
-            let stdout = '';
-            let stderr = '';
+            const stdoutChunks: Buffer[] = [];
+            const stderrChunks: Buffer[] = [];
+            let stdoutBytes = 0;
+            let stderrBytes = 0;
+            let stdoutTruncated = false;
+            let stderrTruncated = false;
+            let outputLimitTerminationStarted = false;
+
+            const appendBounded = (
+                chunks: Buffer[],
+                chunk: Buffer,
+                currentBytes: number,
+                maxBytes: number | undefined,
+            ): Readonly<{ bytes: number; truncated: boolean }> => {
+                if (maxBytes === undefined) {
+                    chunks.push(chunk);
+                    return { bytes: currentBytes + chunk.byteLength, truncated: false };
+                }
+                const remaining = Math.max(0, maxBytes - currentBytes);
+                if (remaining > 0) chunks.push(chunk.subarray(0, remaining));
+                return {
+                    bytes: currentBytes + Math.min(remaining, chunk.byteLength),
+                    truncated: chunk.byteLength > remaining,
+                };
+            };
 
             spawned.stdout.on('data', (data) => {
-                stdout += data.toString();
+                const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data);
+                const appended = appendBounded(stdoutChunks, chunk, stdoutBytes, options?.maxStdoutBytes);
+                stdoutBytes = appended.bytes;
+                stdoutTruncated ||= appended.truncated;
+                if (stdoutTruncated && options?.terminateOnStdoutLimit && !outputLimitTerminationStarted) {
+                    outputLimitTerminationStarted = true;
+                    void killProcessTree(spawned).catch(() => {});
+                }
             });
 
             spawned.stderr.on('data', (data) => {
-                stderr += data.toString();
+                const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data);
+                const appended = appendBounded(stderrChunks, chunk, stderrBytes, options?.maxStderrBytes);
+                stderrBytes = appended.bytes;
+                stderrTruncated ||= appended.truncated;
             });
 
             spawned.on('close', (code) => {
                 resolveOnce({
-                    exitCode: code || 0,
-                    stdout,
-                    stderr
+                    exitCode: typeof code === 'number' ? code : 1,
+                    stdout: Buffer.concat(stdoutChunks, stdoutBytes).toString('utf8'),
+                    stderr: Buffer.concat(stderrChunks, stderrBytes).toString('utf8'),
+                    ...(stdoutTruncated ? { stdoutTruncated: true } : {}),
+                    ...(stderrTruncated ? { stderrTruncated: true } : {}),
                 });
             });
 

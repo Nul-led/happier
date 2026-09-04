@@ -7,7 +7,9 @@ import { describeBackgroundServiceTargetMode } from '@happier-dev/cli-common/hap
 import { resolveManagedCliReleaseChannelSync } from '@happier-dev/cli-common/firstPartyRuntime';
 import { getLiveSystemTasksRunnerAdapter } from '@/capabilities/systemTasks/liveSystemTasksRunner';
 import { configuration } from '@/configuration';
-import { applyServerSelectionFromArgs } from '@/server/serverSelection';
+import { resolveCliHomeTarget, resolveCurrentCliHomeTarget } from '@/server/homeTarget';
+import type { ResolvedHomeTarget } from '@happier-dev/cli-common/homeTarget';
+import { parseCliHomeTargetArgs } from '@/server/homeTargetCliArgs';
 import { isLoopbackServerHost } from '@/server/serverUrlClassification';
 import { isInteractiveTerminal, promptInput } from '@/terminal/prompts/promptInput';
 import { promptSecret } from '@/terminal/prompts/promptSecret';
@@ -25,13 +27,14 @@ import { showMachineHelp } from './machine/help';
 import { type CliSystemTasksRunnerAdapter, runSystemTaskToCompletion } from './systemTaskCliRunner';
 
 export type MachineCommandDeps = Readonly<{
-  applyServerSelectionFromArgs: typeof applyServerSelectionFromArgs;
   createRunner: () => CliSystemTasksRunnerAdapter;
   readRelaySelection: () => Readonly<{
     relayUrl: string;
     webappUrl: string;
     publicRelayUrl?: string;
   }>;
+  resolveHomeTarget: () => Promise<ResolvedHomeTarget>;
+  parseHomeTargetArgs: typeof parseCliHomeTargetArgs;
   promptInput: (prompt: string) => Promise<string>;
   promptSecret: (prompt: string) => Promise<string>;
   isInteractiveTerminal: () => boolean;
@@ -39,7 +42,6 @@ export type MachineCommandDeps = Readonly<{
 }>;
 
 const DEFAULT_DEPS: MachineCommandDeps = {
-  applyServerSelectionFromArgs,
   createRunner: () => {
     const runner = getLiveSystemTasksRunnerAdapter();
     return {
@@ -62,6 +64,8 @@ const DEFAULT_DEPS: MachineCommandDeps = {
       ? { publicRelayUrl: configuration.publicServerUrl }
       : {}),
   }),
+  resolveHomeTarget: resolveCurrentCliHomeTarget,
+  parseHomeTargetArgs: parseCliHomeTargetArgs,
   promptInput,
   promptSecret,
   isInteractiveTerminal,
@@ -135,6 +139,7 @@ function normalizeTaskChannel(args: readonly string[]): 'stable' | 'preview' | '
 
 function buildMachineSetupSpec(params: Readonly<{
   args: string[];
+  homeTarget: ResolvedHomeTarget;
   relaySelection: Readonly<{
     relayUrl: string;
     webappUrl: string;
@@ -250,10 +255,13 @@ function buildMachineSetupSpec(params: Readonly<{
         ...(normalizedTrustedHostKey ? { trustedHostKey: normalizedTrustedHostKey } : {}),
       },
       relay: {
-        relayUrl: params.relaySelection.relayUrl,
-        webappUrl: params.relaySelection.webappUrl,
+        relayUrl: params.homeTarget.applicationUrl,
+        webappUrl: params.homeTarget.homeServerIdentityId
+          ? params.homeTarget.webappUrl
+          : params.relaySelection.webappUrl,
         ...(params.relaySelection.publicRelayUrl ? { publicRelayUrl: params.relaySelection.publicRelayUrl } : {}),
       },
+      homeTarget: params.homeTarget,
       ...(requireLocalApproval.present ? { requireLocalApproval: true } : {}),
       channel: normalizeTaskChannel([
         ...(preview.present ? ['--preview'] : []),
@@ -379,12 +387,17 @@ function printHumanEvent(event: SystemTaskEvent): void {
 }
 
 async function runSetupSubcommand(argsRaw: string[], deps: MachineCommandDeps): Promise<void> {
-  let args = await deps.applyServerSelectionFromArgs(argsRaw);
+  const parsedTargetArgs = await deps.parseHomeTargetArgs(argsRaw);
+  let args = parsedTargetArgs.rest;
   const yes = takeFlag(args, '--yes');
   args = yes.rest;
   const json = wantsJson(args);
+  const homeTarget = parsedTargetArgs.target
+    ? await resolveCliHomeTarget(parsedTargetArgs.target)
+    : await deps.resolveHomeTarget();
   const spec = buildMachineSetupSpec({
     args,
+    homeTarget,
     relaySelection: deps.readRelaySelection(),
   });
   const runner = deps.createRunner();
@@ -464,9 +477,20 @@ async function runSetupSubcommand(argsRaw: string[], deps: MachineCommandDeps): 
 }
 
 export async function handleMachineCommand(args: string[], deps: Partial<MachineCommandDeps> = {}): Promise<void> {
+  const testRelaySelection = deps.readRelaySelection?.();
   const effectiveDeps: MachineCommandDeps = {
     ...DEFAULT_DEPS,
     ...deps,
+    ...(deps.resolveHomeTarget
+      ? { resolveHomeTarget: deps.resolveHomeTarget }
+      : testRelaySelection
+        ? {
+            resolveHomeTarget: async () => await resolveCliHomeTarget({
+              kind: 'https_url',
+              url: testRelaySelection.relayUrl,
+            }),
+          }
+        : {}),
   };
   const json = wantsJson(args);
   const subcommand = args[0];

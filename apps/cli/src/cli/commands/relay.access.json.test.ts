@@ -321,7 +321,7 @@ describe('happier relay access --json', () => {
         }
     });
 
-    it('adopts a configured local share URL in the active relay profile', async () => {
+    it('keeps provider share URLs out of canonical Home profile authority', async () => {
         await addServerProfile({
             name: 'selfhost',
             serverUrl: 'https://old-relay.example.test',
@@ -341,7 +341,7 @@ describe('happier relay access --json', () => {
             });
 
             const active = await getActiveServerProfile();
-            expect(active.serverUrl).toBe('https://relay.lan.example.test');
+            expect(active.serverUrl).toBe('https://old-relay.example.test');
             expect(active.localServerUrl).toBe('http://127.0.0.1:3005');
 
             await commandRegistry.relay({
@@ -350,8 +350,8 @@ describe('happier relay access --json', () => {
                 terminalRuntime: null,
             });
             const afterDisable = await getActiveServerProfile();
-            expect(afterDisable.serverUrl).toBe('http://127.0.0.1:3005');
-            expect(afterDisable.localServerUrl).toBeUndefined();
+            expect(afterDisable.serverUrl).toBe('https://old-relay.example.test');
+            expect(afterDisable.localServerUrl).toBe('http://127.0.0.1:3005');
         } finally {
             output.restore();
             process.exitCode = prevExitCode;

@@ -1,4 +1,5 @@
 import {
+  buildTrustedHostSessionInputAdmissionV1,
   PluginContributionLocalIdSchema,
   PluginIdSchema,
   PluginSessionInputSourceV1Schema,
@@ -142,39 +143,6 @@ export function buildAutomationSessionInputAdmissionV1(params: Readonly<{
   });
 }
 
-export function buildHostSessionInputAdmissionV1(
-  surface: keyof ActionSurfaces | null | undefined,
-): Readonly<{
-  provenance: SessionMessageProvenanceV1;
-  request: SessionInputRequestV1;
-}> {
-  const producer = surface === 'ui'
-    ? 'happierApp' as const
-    : surface === 'cli'
-      ? 'cli' as const
-      : surface === 'voice'
-        ? 'voiceInput' as const
-        : surface === 'mcp'
-          ? 'happierMcp' as const
-          : 'sessionAction' as const;
-  const provenance = surface === 'cli'
-    ? { v: 1 as const, kind: 'cli' as const }
-    : surface === 'voice'
-      ? { v: 1 as const, kind: 'voice' as const }
-      : { v: 1 as const, kind: 'host' as const, producer };
-  return Object.freeze({
-    // The Action context cannot prove an Account relationship. Keep this as
-    // host-stamped modality; the server receipt owns owner/collaborator truth.
-    provenance: SessionMessageProvenanceV1Schema.parse(provenance),
-    request: SessionInputRequestV1Schema.parse({
-      v: 1,
-      producer,
-      caller: { kind: 'host' },
-      permission: {},
-    }),
-  });
-}
-
 /** Builds protected cross-Session input from a host-stamped active turn. */
 export function buildCausalSessionInputAdmissionV1(params: Readonly<{
   sourceSessionId: string;
@@ -285,7 +253,7 @@ export function buildSessionSpawnInitialInputAdmissionForLocalIdV1(params: Reado
     });
   }
 
-  const inputAdmission = buildHostSessionInputAdmissionV1(params.callerSurface);
+  const inputAdmission = buildTrustedHostSessionInputAdmissionV1(params.callerSurface);
   return Object.freeze({
     localId,
     inputAdmission,

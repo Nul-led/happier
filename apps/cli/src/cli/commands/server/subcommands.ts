@@ -33,9 +33,20 @@ import {
   isLoopbackHttpServerUrl,
 } from '@/server/serverUrlClassification';
 import { createServerUrlComparableKey } from '@happier-dev/protocol';
-import { runServerSelectionBackgroundServiceFollowUp } from '../backgroundServiceFollowUp.js';
+import {
+  completeServerSelectionMutation,
+  type ServerSelectionMutationMode,
+} from '../backgroundServiceFollowUp.js';
 
-export async function runServerSubcommand(subcommand: string, args: string[]): Promise<boolean> {
+export type ServerSubcommandOptions = Readonly<{
+  selectionMutationMode?: ServerSelectionMutationMode;
+}>;
+
+export async function runServerSubcommand(
+  subcommand: string,
+  args: string[],
+  options: ServerSubcommandOptions = {},
+): Promise<boolean> {
   switch (subcommand) {
     case 'list':
       await cmdList(args.slice(1));
@@ -44,10 +55,10 @@ export async function runServerSubcommand(subcommand: string, args: string[]): P
       await cmdCurrent(args.slice(1));
       return true;
     case 'add':
-      await cmdAdd(args.slice(1));
+      await cmdAdd(args.slice(1), options);
       return true;
     case 'use':
-      await cmdUse(args.slice(1));
+      await cmdUse(args.slice(1), options);
       return true;
     case 'remove':
       await cmdRemove(args.slice(1));
@@ -56,7 +67,7 @@ export async function runServerSubcommand(subcommand: string, args: string[]): P
       await cmdTest(args.slice(1));
       return true;
     case 'set':
-      await cmdSet(args.slice(1));
+      await cmdSet(args.slice(1), options);
       return true;
     default:
       return false;
@@ -232,7 +243,7 @@ async function cmdCurrent(args: string[]): Promise<void> {
   console.log(`${chalk.gray('webapp:')} ${active.webappUrl}`);
 }
 
-async function cmdAdd(args: string[]): Promise<void> {
+async function cmdAdd(args: string[], options: ServerSubcommandOptions): Promise<void> {
   assertNoUnknownServerFlags({
     args,
     commandName: 'add',
@@ -408,14 +419,15 @@ async function cmdAdd(args: string[]): Promise<void> {
     await runCliAction(['--server', created.id, 'daemon', 'start']);
   }
   if (shouldUse && !installService && !startDaemon) {
-    await runServerSelectionBackgroundServiceFollowUp({
+    await completeServerSelectionMutation({
+      mode: options.selectionMutationMode ?? 'standalone',
       interactive: isInteractiveTerminal(),
       targetServerUrl: created.serverUrl,
     });
   }
 }
 
-async function cmdUse(args: string[]): Promise<void> {
+async function cmdUse(args: string[], options: ServerSubcommandOptions): Promise<void> {
   const json = wantsJson(args);
   const identifier = String(args[0] ?? '').trim();
   if (!identifier) throw new Error('Missing relay profile id/name');
@@ -428,7 +440,8 @@ async function cmdUse(args: string[]): Promise<void> {
   console.log(chalk.green(`✓ Active relay: ${active.name} (${active.id})`));
   console.log(chalk.gray(`  ${active.serverUrl}`));
 
-  await runServerSelectionBackgroundServiceFollowUp({
+  await completeServerSelectionMutation({
+    mode: options.selectionMutationMode ?? 'standalone',
     interactive: isInteractiveTerminal(),
     targetServerUrl: active.serverUrl,
   });
@@ -482,7 +495,7 @@ async function cmdTest(args: string[]): Promise<void> {
   if (result.version) console.log(chalk.gray(`  version: ${result.version}`));
 }
 
-async function cmdSet(args: string[]): Promise<void> {
+async function cmdSet(args: string[], options: ServerSubcommandOptions): Promise<void> {
   assertNoUnknownServerFlags({
     args,
     commandName: 'set',
@@ -570,7 +583,8 @@ async function cmdSet(args: string[]): Promise<void> {
   console.log(chalk.green(`✓ Active relay: ${created.name} (${created.id})`));
   console.log(chalk.gray(`  ${created.serverUrl}`));
 
-  await runServerSelectionBackgroundServiceFollowUp({
+  await completeServerSelectionMutation({
+    mode: options.selectionMutationMode ?? 'standalone',
     interactive: isInteractiveTerminal(),
     targetServerUrl: created.serverUrl,
   });

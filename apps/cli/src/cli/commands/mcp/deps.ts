@@ -10,6 +10,7 @@ import { ensureMachineIdForCredentials } from '@/ui/auth';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { readDaemonPluginCatalog } from '@/daemon/controlClient';
+import { resolveLiveDaemonControlTargetForServer } from '@/daemon/multiDaemon';
 
 export type McpCommandDeps = Readonly<{
   env?: NodeJS.ProcessEnv;
@@ -23,6 +24,7 @@ export type McpCommandDeps = Readonly<{
   nowMs: () => number;
   createExternalMcpServer: typeof createExternalMcpServer;
   readDaemonPluginCatalog?: typeof readDaemonPluginCatalog;
+  resolveLiveDaemonControlTargetForServer?: typeof resolveLiveDaemonControlTargetForServer;
   connectMcpStdio: (server: Pick<McpServer, 'connect'>) => Promise<void>;
 }>;
 
@@ -39,6 +41,8 @@ export function resolveMcpCommandDeps(overrides?: Partial<McpCommandDeps>): McpC
     nowMs: overrides?.nowMs ?? (() => Date.now()),
     createExternalMcpServer: overrides?.createExternalMcpServer ?? createExternalMcpServer,
     readDaemonPluginCatalog: overrides?.readDaemonPluginCatalog ?? readDaemonPluginCatalog,
+    resolveLiveDaemonControlTargetForServer:
+      overrides?.resolveLiveDaemonControlTargetForServer ?? resolveLiveDaemonControlTargetForServer,
     connectMcpStdio: overrides?.connectMcpStdio ?? (async (server) => {
       const transport = new StdioServerTransport();
       await server.connect(transport);

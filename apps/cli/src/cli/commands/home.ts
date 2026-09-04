@@ -4,31 +4,68 @@ import { mapUnknownErrorToControlError } from '@/cli/control/controlErrorMapping
 import { printJsonEnvelope, wantsJson, writeJsonStdout } from '@/cli/output/jsonEnvelope';
 import { resolveAbsolutePathFromWorkingDirectory } from '@/utils/path/expandHomeDirPath';
 import { isInteractiveTerminal, promptInput } from '@/terminal/prompts/promptInput';
+import { configuration } from '@/configuration';
 import { errorFrame } from '@happier-dev/cli-common/output';
 import {
   PERSONAL_HOME_SYSTEM_TASK_KINDS,
+  parseRemotePersonalHomeApprovalInput,
 } from '@happier-dev/cli-common/systemTasks';
 import {
   cleanupPersonalHomeRelocationUpload,
   consumePersonalHomeRelocationUpload,
-  createPersonalHomeEraseConfirmationToken,
   PersonalHomeRelocationTransferCleanupError,
   preparePersonalHomeRelocationUpload,
 } from '@happier-dev/cli-common/firstPartyRuntime';
 import {
   SYSTEM_TASK_PROTOCOL_VERSION,
+  HomeConnectionDescriptorV1Schema,
   SystemTaskJsonValueSchema,
   type SystemTaskEvent,
   type SystemTaskJsonObject,
   type SystemTaskJsonValue,
   type SystemTaskSpec,
+  type HomeConnectionDescriptorV1,
 } from '@happier-dev/protocol';
 
 import { type CliSystemTasksRunnerAdapter, runSystemTaskToCompletion } from './systemTaskCliRunner';
+import { createLocalPersonalHome, reconcileCreatedPersonalHome } from './home/createLocalPersonalHome';
+import {
+  encodeCliDirectHomeQrTaskStreamEvent,
+  runCliDirectHomeQr,
+  type CliDirectHomeQrResult,
+} from '@/auth/directHomeQr/runCliDirectHomeQr';
+import { linkCliHomeToAccountService } from '@/auth/accountService/linkCliHomeToAccountService';
 
 type PersonalHomePurpose = Readonly<{
   kind: 'personal-home';
   canonicalServerUrl: string;
+}>;
+
+export type PersonalHomeCreateResult = Readonly<{
+  status: 'complete';
+  profileId?: string;
+  homeServerIdentityId: string;
+  canonicalServerUrl: string;
+  accountCreated: boolean;
+  channel: 'stable' | 'preview' | 'dev';
+  mode: 'user' | 'system';
+  descriptor?: HomeConnectionDescriptorV1;
+  accountServiceLink: HomePostCreateLinkResult;
+  invokingClientEnrollment?: Readonly<{ kind: 'enrolled' | 'failed' | 'not_requested' }>;
+  pairing?: HomePairDeviceResult;
+}>;
+
+export type HomePairDeviceResult = CliDirectHomeQrResult;
+type RemoteHomePairingResult = HomePairDeviceResult | Readonly<{ kind: 'not_requested' }>;
+
+export type HomeLinkAccountResult =
+  | Readonly<{ kind: 'linked'; homeServerIdentityId: string }>
+  | Readonly<{ kind: 'relink_required'; homeServerIdentityId: string }>
+  | Readonly<{ kind: 'unavailable'; reason: 'home_profile_unavailable' | 'home_credentials_unavailable' | 'account_service_credentials_unavailable' | 'home_transport_unavailable' }>
+  | Readonly<{ kind: 'cancelled' | 'failed' }>;
+
+export type HomePostCreateLinkResult = HomeLinkAccountResult | Readonly<{
+  kind: 'not_requested' | 'unable_to_attempt';
 }>;
 
 export type HomeCommandDeps = Readonly<{
@@ -40,9 +77,29 @@ export type HomeCommandDeps = Readonly<{
   isInteractiveTerminal: () => boolean;
   promptInput: (prompt: string) => Promise<string>;
   sleep: (ms: number) => Promise<void>;
+  resolveDefaultChannel: () => 'stable' | 'preview' | 'dev';
+  readApprovalInput?: () => Promise<string>;
   prepareRelocationUpload?: typeof preparePersonalHomeRelocationUpload;
   consumeRelocationUpload?: typeof consumePersonalHomeRelocationUpload;
   cleanupRelocationUpload?: typeof cleanupPersonalHomeRelocationUpload;
+  createPersonalHome?: (runtime: Readonly<{
+    channel: 'stable' | 'preview' | 'dev';
+    mode: 'user' | 'system';
+  }>) => Promise<Readonly<{
+    profileId: string;
+    homeServerIdentityId: string;
+    canonicalServerUrl: string;
+    accountCreated: boolean;
+    descriptor?: HomeConnectionDescriptorV1;
+  }>>;
+  reconcileCreatedHome?: (profileId: string, options?: Readonly<{ quiet: boolean }>) => Promise<void>;
+  pairDevice?: (input: Readonly<{
+    profileRef?: string;
+    copyLink: boolean;
+    signal?: AbortSignal;
+    onInvite?: (input: Readonly<{ link: string }>) => void;
+  }>) => Promise<HomePairDeviceResult>;
+  linkAccount?: (input: Readonly<{ homeServerIdentityId?: string; relink: boolean; signal?: AbortSignal }>) => Promise<HomeLinkAccountResult>;
 }>;
 
 const DEFAULT_DEPS: HomeCommandDeps = {
@@ -58,9 +115,22 @@ const DEFAULT_DEPS: HomeCommandDeps = {
   isInteractiveTerminal,
   promptInput,
   sleep: async (ms) => await new Promise((resolve) => setTimeout(resolve, ms)),
+  resolveDefaultChannel: () => configuration.publicReleaseRing === 'publicdev'
+    ? 'dev'
+    : configuration.publicReleaseRing,
+  readApprovalInput: async () => {
+    process.stdin.setEncoding('utf8');
+    let input = '';
+    for await (const chunk of process.stdin) input += String(chunk);
+    return input;
+  },
   prepareRelocationUpload: preparePersonalHomeRelocationUpload,
   consumeRelocationUpload: consumePersonalHomeRelocationUpload,
   cleanupRelocationUpload: cleanupPersonalHomeRelocationUpload,
+  createPersonalHome: createLocalPersonalHome,
+  reconcileCreatedHome: reconcileCreatedPersonalHome,
+  pairDevice: runCliDirectHomeQr,
+  linkAccount: linkCliHomeToAccountService,
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -102,21 +172,30 @@ function requirePath(value: string | undefined, label: string, deps: HomeCommand
 function showHomeHelp(): void {
   console.log([
     'Usage:',
-    '  happier home status',
-    '  happier home backup [--output PATH]',
-    '  happier home verify-backup PATH',
-    '  happier home restore PATH [--yes]',
-    '  happier home recover-restore [--yes]',
-    '  happier home erase [--yes]',
+    '  happier home create [--ssh user@host] [--channel stable|preview|dev] [--mode user|system] [--link-account auto|never] [--yes] [--json]',
+    '  happier home pair-device [--home PROFILE] [--copy-link]',
+    '  happier home link-account [--home PROFILE] [--relink]',
+    '  happier home status [--ssh user@host]',
+    '  happier home backup [--output PATH] [--ssh user@host]',
+    '  happier home verify-backup PATH [--ssh user@host]',
+    '  happier home restore PATH [--ssh user@host] [--yes]',
+    '  happier home recover-restore [--ssh user@host] [--yes]',
+    '  happier home erase [--ssh user@host] [--yes]',
     '',
     'Runtime targeting options:',
     '  --channel stable|preview|dev',
     '  --mode user|system',
+    '',
+    'Home creation:',
+    '  create installs or reuses the managed runtime and atomically creates a Personal Home.',
+    '  Use --ssh user@host to create it on a trusted remote host; public ingress is not required for Iroh reachability.',
+    '  pair-device starts a new short-lived QR/link session. link-account publishes the Home for Account Service discovery.',
+    '  status, backup, verify-backup, restore, recover-restore, and erase accept --ssh for the same managed Home on a remote host.',
   ].join('\n'));
 }
 
-function parseRuntimeChannel(value: string | null): 'stable' | 'preview' | 'dev' {
-  if (value === null) return 'stable';
+function parseRuntimeChannel(value: string | null, defaultChannel: 'stable' | 'preview' | 'dev'): 'stable' | 'preview' | 'dev' {
+  if (value === null) return defaultChannel;
   if (value === 'stable' || value === 'preview' || value === 'dev') return value;
   throw Object.assign(new Error(`Unsupported Personal Home runtime channel: ${value}`), { code: 'invalid_runtime_target' });
 }
@@ -127,6 +206,50 @@ function parseRuntimeMode(value: string | null): 'user' | 'system' {
   throw Object.assign(new Error(`Unsupported Personal Home runtime mode: ${value}`), { code: 'invalid_runtime_target' });
 }
 
+function parseLinkAccountMode(value: string | null): 'auto' | 'never' {
+  if (value === null || value === 'auto') return 'auto';
+  if (value === 'never') return 'never';
+  throw Object.assign(new Error(`Unsupported Account Service linking mode: ${value}`), { code: 'invalid_params' });
+}
+
+async function resolvePostCreateHomeLink(params: Readonly<{
+  mode: 'auto' | 'never';
+  canAttempt: boolean;
+  homeServerIdentityId: string;
+  linkAccount?: HomeCommandDeps['linkAccount'];
+  signal?: AbortSignal;
+}>): Promise<HomePostCreateLinkResult> {
+  if (params.mode === 'never' || !params.canAttempt || !params.linkAccount) {
+    return { kind: params.mode === 'never' ? 'not_requested' : 'unable_to_attempt' };
+  }
+  try {
+    return await params.linkAccount({
+      homeServerIdentityId: params.homeServerIdentityId,
+      relink: false,
+      signal: params.signal,
+    });
+  } catch {
+    return { kind: 'failed' };
+  }
+}
+
+function renderPostCreateHomeLink(
+  result: HomePostCreateLinkResult,
+  homeServerIdentityId: string,
+  reentryCommand = `happier home link-account --home ${homeServerIdentityId}`,
+): void {
+  if (result.kind === 'linked' || result.kind === 'not_requested') return;
+  if (result.kind === 'unavailable' && result.reason === 'account_service_credentials_unavailable') {
+    console.log(`Account Service is not signed in. Link this Home later with \`happier home link-account --home ${homeServerIdentityId}\`.`);
+    return;
+  }
+  if (result.kind === 'relink_required') {
+    console.log(`This Home is linked to different Account Service trust facts. Review and rerun \`happier home link-account --home ${homeServerIdentityId} --relink\`.`);
+    return;
+  }
+  console.log(`The Home is ready, but Account Service linking did not complete. Retry with \`${reentryCommand}\`.`);
+}
+
 async function runTask(params: Readonly<{
   runner: CliSystemTasksRunnerAdapter;
   spec: SystemTaskSpec;
@@ -135,8 +258,9 @@ async function runTask(params: Readonly<{
   signal?: AbortSignal;
   sleep: (ms: number) => Promise<void>;
   onPrompt?: (prompt: Readonly<{ kind: string; data: SystemTaskJsonObject }>, message: string) => Promise<unknown>;
+  projectData?: (data: SystemTaskJsonValue) => SystemTaskJsonValue;
 }>): Promise<SystemTaskJsonValue> {
-  const result = await runSystemTaskToCompletion({
+  const rawResult = await runSystemTaskToCompletion({
     runner: params.runner,
     spec: params.spec,
     signal: params.signal,
@@ -149,6 +273,9 @@ async function runTask(params: Readonly<{
         }
       : undefined,
   });
+  const result = rawResult.ok && params.projectData
+    ? { ...rawResult, data: params.projectData(rawResult.data ?? null) }
+    : rawResult;
   if (params.visible && params.json) await writeJsonStdout({
     kind: 'personal_home_task_result',
     protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
@@ -300,17 +427,349 @@ export async function handleHomeCommand(
   }
   const jsonFlag = takeFlag(argsRaw.slice(1), '--json');
   const yesFlag = takeFlag(jsonFlag.rest, '--yes');
-  const confirmationTokenFlag = takeFlagValue(yesFlag.rest, '--confirmation-token');
-  const channelFlag = takeFlagValue(confirmationTokenFlag.rest, '--channel');
+  const approvalStdinFlag = takeFlag(yesFlag.rest, '--approval-stdin');
+  const channelFlag = takeFlagValue(approvalStdinFlag.rest, '--channel');
   const modeFlag = takeFlagValue(channelFlag.rest, '--mode');
+  const linkAccountModeFlag = takeFlagValue(modeFlag.rest, '--link-account');
+  const sshFlag = takeFlagValue(linkAccountModeFlag.rest, '--ssh');
   const runtime = {
-    channel: parseRuntimeChannel(channelFlag.value),
+    channel: parseRuntimeChannel(channelFlag.value, deps.resolveDefaultChannel()),
     mode: parseRuntimeMode(modeFlag.value),
   } as const;
-  const runner = deps.createRunner(runtime);
-  let args = modeFlag.rest;
+  let args = sshFlag.rest;
   const json = jsonFlag.present;
   const interactive = deps.isInteractiveTerminal() && !json;
+  if (approvalStdinFlag.present && yesFlag.present) {
+    throw Object.assign(new Error('Do not combine --approval-stdin with --yes.'), { code: 'invalid_params' });
+  }
+  if (subcommand === 'create') {
+    const aliasFlag = takeFlag(args, '--this-computer');
+    args = aliasFlag.rest;
+    if (args.length > 0) throw new Error(`Unknown home create arguments: ${args.join(' ')}`);
+    if (aliasFlag.present && sshFlag.value) {
+      throw Object.assign(new Error('Do not combine --this-computer with --ssh.'), { code: 'invalid_params' });
+    }
+    const linkAccountMode = parseLinkAccountMode(linkAccountModeFlag.value);
+    if (!yesFlag.present && !interactive) {
+      throw Object.assign(
+        new Error('Personal Home creation requires an interactive terminal or explicit --yes.'),
+        { code: 'interactive_required' },
+      );
+    }
+    if (!yesFlag.present) {
+      const answer = await deps.promptInput([
+        sshFlag.value
+          ? `Create a Personal Home on remote SSH host ${sshFlag.value} with the fixed managed preset?`
+          : 'Create a Personal Home on this computer with the fixed managed preset?',
+        `Mode: ${runtime.mode}`,
+        `Channel: ${runtime.channel}`,
+        sshFlag.value
+          ? `Storage: plaintext at rest on ${sshFlag.value}; continue only if you trust that remote host.`
+          : 'Storage: plaintext on this computer; use only a machine you trust.',
+        'This installs or reuses the managed server, creates the initial account, closes signup, and configures the local service.',
+        '[y/N]: ',
+      ].join('\n'));
+      if (!/^y(?:es)?$/iu.test(answer.trim())) {
+        throw Object.assign(
+          new Error('Personal Home creation was cancelled before any changes were made.'),
+          { code: 'confirmation_declined' },
+        );
+      }
+    }
+    if (sshFlag.value) {
+      const remoteData = await runTask({
+        runner: deps.createRunner(runtime),
+        spec: {
+          protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
+          kind: 'remote.ssh.manageHost.v1',
+          params: {
+            action: 'personalHome.create',
+            channel: runtime.channel,
+            relayRuntime: runtime,
+            pairDevice: interactive,
+            enrollInvokingClient: linkAccountMode === 'auto',
+            ssh: { target: sshFlag.value, auth: 'agent' },
+          },
+        },
+        json,
+        visible: false,
+        signal,
+        sleep: deps.sleep,
+        onPrompt: async (prompt, message) => {
+          if (prompt.kind !== 'ssh.trustHost' && prompt.kind !== 'ssh.replaceHostKey') {
+            throw Object.assign(new Error(`Remote Personal Home creation requires unsupported input: ${prompt.kind}`), { code: 'prompt_required' });
+          }
+          if (yesFlag.present) return { trusted: true };
+          const answer = await deps.promptInput(`${message || 'Trust this SSH host key?'}\nTrust this host key? [y/N]: `);
+          return { trusted: /^y(?:es)?$/iu.test(answer.trim()) };
+        },
+      });
+      const created = parseRemotePersonalHomeCreateTaskData(remoteData);
+      const { pairing, invokingClientEnrollment, ...createdFacts } = created;
+      const accountServiceLink = await resolvePostCreateHomeLink({
+        mode: linkAccountMode,
+        canAttempt: invokingClientEnrollment.kind === 'enrolled',
+        homeServerIdentityId: created.homeServerIdentityId,
+        linkAccount: deps.linkAccount,
+        signal,
+      });
+      const result: PersonalHomeCreateResult = {
+        ...createdFacts,
+        channel: runtime.channel,
+        mode: runtime.mode,
+        accountServiceLink,
+        invokingClientEnrollment,
+        ...(pairing.kind === 'not_requested' ? {} : { pairing }),
+      };
+      if (json) {
+        await printJsonEnvelope({ ok: true, kind: 'personal_home_create', data: result }, { exitCode: 0 });
+      } else {
+        console.log(`Remote Personal Home ready at ${created.canonicalServerUrl}`);
+        const pairingReentry = invokingClientEnrollment.kind === 'enrolled'
+          ? `happier home pair-device --home ${created.homeServerIdentityId}`
+          : `happier home create --ssh ${sshFlag.value} --link-account ${linkAccountMode}`;
+        if (pairing.kind === 'cancelled' || pairing.kind === 'expired') {
+          console.log(`Device pairing did not complete. Retry with \`${pairingReentry}\`.`);
+        } else if (pairing.kind !== 'completed' && pairing.kind !== 'not_requested') {
+          console.log(`The Home was created, but device pairing is incomplete. Retry with \`${pairingReentry}\`.`);
+        }
+        if (linkAccountMode === 'auto') {
+          renderPostCreateHomeLink(
+            accountServiceLink,
+            created.homeServerIdentityId,
+            invokingClientEnrollment.kind === 'enrolled'
+              ? undefined
+              : `happier home create --ssh ${sshFlag.value} --link-account auto`,
+          );
+        }
+      }
+      return;
+    }
+    if (!deps.createPersonalHome || !deps.reconcileCreatedHome) {
+      throw Object.assign(new Error('Local Personal Home creation is unavailable in this build.'), { code: 'personal_home_create_unavailable' });
+    }
+    const created = await deps.createPersonalHome(runtime);
+    await deps.reconcileCreatedHome(created.profileId, { quiet: json });
+    if (interactive && deps.pairDevice) {
+      const paired = await deps.pairDevice({ profileRef: created.profileId, copyLink: false, signal });
+      if (paired.kind === 'update_required') {
+        console.log('This Home requires an update before another device can be paired. Retry with `happier home pair-device`.');
+      } else if (paired.kind !== 'completed' && paired.kind !== 'cancelled' && paired.kind !== 'expired') {
+        console.log('Device pairing did not complete. Retry with `happier home pair-device`.');
+      }
+    }
+    const accountServiceLink = await resolvePostCreateHomeLink({
+      mode: linkAccountMode,
+      canAttempt: true,
+      homeServerIdentityId: created.homeServerIdentityId,
+      linkAccount: deps.linkAccount,
+      signal,
+    });
+    const result: PersonalHomeCreateResult = {
+      status: 'complete',
+      profileId: created.profileId,
+      homeServerIdentityId: created.homeServerIdentityId,
+      canonicalServerUrl: created.canonicalServerUrl,
+      accountCreated: created.accountCreated,
+      channel: runtime.channel,
+      mode: runtime.mode,
+      ...(created.descriptor ? { descriptor: created.descriptor } : {}),
+      accountServiceLink,
+    };
+    if (json) {
+      await printJsonEnvelope({ ok: true, kind: 'personal_home_create', data: result }, { exitCode: 0 });
+    } else {
+      console.log(`Personal Home ready at ${created.canonicalServerUrl}`);
+      renderPostCreateHomeLink(accountServiceLink, created.homeServerIdentityId);
+    }
+    return;
+  }
+  if (approvalStdinFlag.present && subcommand !== 'restore' && subcommand !== 'recover-restore' && subcommand !== 'erase') {
+    throw Object.assign(new Error('--approval-stdin is reserved for remote destructive Home execution.'), { code: 'invalid_params' });
+  }
+  if (linkAccountModeFlag.value !== null) {
+    throw Object.assign(new Error('--link-account is supported only by `happier home create`.'), { code: 'invalid_params' });
+  }
+  if (subcommand === 'pair-device') {
+    if (sshFlag.value) throw Object.assign(new Error('--ssh is not supported by home pair-device.'), { code: 'invalid_params' });
+    const homeFlag = takeFlagValue(args, '--home');
+    const copyLinkFlag = takeFlag(homeFlag.rest, '--copy-link');
+    const taskStreamFlag = takeFlag(copyLinkFlag.rest, '--system-task-stream');
+    if (taskStreamFlag.rest.length > 0) throw new Error(`Unknown home pair-device arguments: ${taskStreamFlag.rest.join(' ')}`);
+    if (taskStreamFlag.present) {
+      if (json || copyLinkFlag.present) {
+        throw Object.assign(new Error('System-task pairing stream cannot be combined with public output flags.'), { code: 'invalid_params' });
+      }
+      if (!deps.pairDevice) throw Object.assign(new Error('Direct Home device pairing is unavailable in this build.'), { code: 'pair_device_unavailable' });
+      const outcome = await deps.pairDevice({
+        ...(homeFlag.value ? { profileRef: homeFlag.value } : {}),
+        copyLink: false,
+        signal,
+        onInvite: ({ link }) => console.log(encodeCliDirectHomeQrTaskStreamEvent({ v: 1, kind: 'home_pair_device.invite', link })),
+      });
+      console.log(encodeCliDirectHomeQrTaskStreamEvent({ v: 1, kind: 'home_pair_device.result', result: outcome }));
+      return;
+    }
+    if (json) throw Object.assign(new Error('Device pairing QR and enrollment links are not available in JSON output.'), { code: 'interactive_required' });
+    if (!deps.pairDevice) throw Object.assign(new Error('Direct Home device pairing is unavailable in this build.'), { code: 'pair_device_unavailable' });
+    if (!deps.isInteractiveTerminal() && !copyLinkFlag.present) {
+      throw Object.assign(new Error('A terminal is required to render the QR code; use --copy-link for the explicit link-only flow.'), { code: 'interactive_required' });
+    }
+    const outcome = await deps.pairDevice({
+      ...(homeFlag.value ? { profileRef: homeFlag.value } : {}),
+      copyLink: copyLinkFlag.present,
+      signal,
+    });
+    if (outcome.kind === 'completed') {
+      console.log(`Device paired${outcome.requestedDeviceLabel ? `: ${outcome.requestedDeviceLabel}` : '.'}`);
+      return;
+    }
+    if (outcome.kind === 'cancelled') throw Object.assign(new Error('Device pairing was cancelled.'), { code: 'cancelled' });
+    if (outcome.kind === 'expired') throw Object.assign(new Error('The pairing session expired. Run `happier home pair-device` to start a new session.'), { code: 'pairing_expired' });
+    if (outcome.kind === 'update_required') throw Object.assign(new Error('This Home does not advertise the required bound-qr-v2 capability. Update the Home and retry.'), { code: 'update_required' });
+    if (outcome.kind === 'invalid_request') throw Object.assign(new Error('The joining device request did not match this Home QR session.'), { code: 'invalid_pairing_request' });
+    if (outcome.kind === 'failed') throw Object.assign(new Error(`Device pairing failed (${outcome.status}).`), { code: 'pairing_failed' });
+    throw Object.assign(new Error('Device pairing did not reach a terminal state.'), { code: 'pairing_failed' });
+  }
+  if (subcommand === 'link-account') {
+    if (sshFlag.value) throw Object.assign(new Error('--ssh is not supported by home link-account.'), { code: 'invalid_params' });
+    const homeFlag = takeFlagValue(args, '--home');
+    const relinkFlag = takeFlag(homeFlag.rest, '--relink');
+    if (relinkFlag.rest.length > 0) throw new Error(`Unknown home link-account arguments: ${relinkFlag.rest.join(' ')}`);
+    if (!deps.linkAccount) throw Object.assign(new Error('Account Service Home linking is unavailable in this build.'), { code: 'link_account_unavailable' });
+    const outcome = await deps.linkAccount({
+      ...(homeFlag.value ? { homeServerIdentityId: homeFlag.value } : {}),
+      relink: relinkFlag.present,
+      signal,
+    });
+    if (outcome.kind === 'linked') {
+      console.log('Home linked to Account Service.');
+      return;
+    }
+    if (outcome.kind === 'relink_required' && !relinkFlag.present) {
+      throw Object.assign(new Error('This Home is already linked to different Account Service trust facts. Rerun with --relink only after reviewing that replacement.'), { code: 'relink_required' });
+    }
+    if (outcome.kind === 'unavailable') throw Object.assign(new Error(`Home linking is unavailable: ${outcome.reason}.`), { code: outcome.reason });
+    if (outcome.kind === 'cancelled') throw Object.assign(new Error('Home linking was cancelled.'), { code: 'cancelled' });
+    if (outcome.kind === 'relink_required') throw Object.assign(new Error('Account Service relink was not accepted.'), { code: 'relink_required' });
+    throw Object.assign(new Error('Account Service Home linking failed.'), { code: 'link_account_failed' });
+  }
+  if (sshFlag.value) {
+    const actionByCommand = {
+      status: 'personalHome.status',
+      backup: 'personalHome.backup',
+      'verify-backup': 'personalHome.verifyBackup',
+      restore: 'personalHome.restore',
+      'recover-restore': 'personalHome.recoverRestore',
+      erase: 'personalHome.erase',
+    } as const;
+    const action = actionByCommand[subcommand as keyof typeof actionByCommand];
+    if (!action) throw Object.assign(new Error(`--ssh is not supported by home ${subcommand}.`), { code: 'invalid_params' });
+    let personalHomeOperation: SystemTaskJsonObject | undefined;
+    if (subcommand === 'status' || subcommand === 'recover-restore' || subcommand === 'erase') {
+      if (args.length > 0) throw Object.assign(new Error(`Unknown home ${subcommand} arguments: ${args.join(' ')}`), { code: 'invalid_params' });
+    } else if (subcommand === 'backup') {
+      const output = takeFlagValue(args, '--output');
+      if (output.rest.length > 0) throw Object.assign(new Error(`Unknown home backup arguments: ${output.rest.join(' ')}`), { code: 'invalid_params' });
+      if (output.value !== null) personalHomeOperation = { outputPath: requirePath(output.value, 'backup output path', deps) };
+    } else {
+      if (args.length !== 1) throw Object.assign(new Error(`Usage: happier home ${subcommand} --ssh user@host PATH${subcommand === 'restore' ? ' [--yes]' : ''}`), { code: 'invalid_params' });
+      personalHomeOperation = { archivePath: requirePath(args[0], 'backup archive path', deps) };
+    }
+    const remoteData = await runTask({
+      runner: deps.createRunner(runtime),
+      spec: {
+        protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
+        kind: 'remote.ssh.manageHost.v1',
+        params: {
+          action,
+          channel: runtime.channel,
+          relayRuntime: runtime,
+          ssh: { target: sshFlag.value, auth: 'agent' },
+          ...(personalHomeOperation ? { personalHomeOperation } : {}),
+        },
+      },
+      json: false,
+      visible: false,
+      signal,
+      sleep: deps.sleep,
+      onPrompt: async (prompt, message) => {
+        if (prompt.kind === 'ssh.trustHost' || prompt.kind === 'ssh.replaceHostKey') {
+          if (yesFlag.present) return { trusted: true };
+          if (!interactive) return { trusted: false };
+          const answer = await deps.promptInput(`${message || 'Trust this SSH host key?'}\nTrust this host key? [y/N]: `);
+          return { trusted: /^y(?:es)?$/iu.test(answer.trim()) };
+        }
+        if (prompt.kind.startsWith('personal_home.confirm_remote_')) {
+          const data = prompt.data;
+          const paths = Array.isArray(data.paths) ? data.paths.filter((path): path is string => typeof path === 'string') : [];
+          if (data.sshHost !== sshFlag.value
+            || typeof data.homeServerIdentityId !== 'string' || !data.homeServerIdentityId.trim()
+            || typeof data.canonicalServerUrl !== 'string' || !data.canonicalServerUrl.trim()
+            || !Array.isArray(data.paths) || paths.length !== data.paths.length || paths.length === 0
+            || (data.estimatedBytes !== null && (typeof data.estimatedBytes !== 'number' || !Number.isSafeInteger(data.estimatedBytes) || data.estimatedBytes < 0))) {
+            return { confirmed: false };
+          }
+          if (yesFlag.present) return { confirmed: true };
+          if (!interactive) return { confirmed: false };
+          const answer = await deps.promptInput([
+            `Confirm ${subcommand} on remote SSH host ${sshFlag.value}?`,
+            `Home: ${data.canonicalServerUrl}`,
+            `Home identity: ${data.homeServerIdentityId}`,
+            ...paths.map((path) => `- ${path}`),
+            `Estimated owned bytes: ${data.estimatedBytes === null ? 'unknown' : String(data.estimatedBytes)}`,
+            '[y/N]: ',
+          ].join('\n'));
+          return { confirmed: /^y(?:es)?$/iu.test(answer.trim()) };
+        }
+        throw Object.assign(new Error(`Remote Personal Home operation requires unsupported input: ${prompt.kind}`), { code: 'prompt_required' });
+      },
+    });
+    if (!isRecord(remoteData) || remoteData.action !== action || !isRecord(remoteData.personalHome)) {
+      throw Object.assign(new Error('Remote Personal Home operation returned an invalid result.'), { code: 'invalid_cli_response' });
+    }
+    if (json) {
+      await printJsonEnvelope({ ok: true, kind: 'personal_home_remote_operation', data: remoteData }, { exitCode: 0 });
+    } else {
+      printSafeFacts(remoteData.personalHome,
+        subcommand === 'backup' ? 'Backup' : subcommand === 'restore' ? 'Restore' : subcommand === 'erase' ? 'Erase' : undefined);
+    }
+    if ((subcommand === 'restore' || subcommand === 'recover-restore')
+      && (remoteData.personalHome.outcome === 'rolled_back' || remoteData.personalHome.outcome === 'recovery_required')) {
+      throw Object.assign(new Error(`Remote Personal Home ${subcommand} did not complete.`), { code: 'personal_home_restore_incomplete' });
+    }
+    if (subcommand === 'erase' && remoteData.personalHome.outcome === 'partial') {
+      throw Object.assign(new Error('Remote Personal Home erase was only partially completed.'), { code: 'personal_home_erase_incomplete' });
+    }
+    return;
+  }
+  const runner = deps.createRunner(runtime);
+  let remoteApproval: ReturnType<typeof parseRemotePersonalHomeApprovalInput> | null | undefined;
+  const readRemoteApproval = async () => {
+    if (remoteApproval !== undefined) return remoteApproval;
+    try {
+      remoteApproval = parseRemotePersonalHomeApprovalInput(await (deps.readApprovalInput?.() ?? Promise.reject(new Error('Approval input is unavailable.'))));
+    } catch {
+      remoteApproval = null;
+    }
+    return remoteApproval;
+  };
+  const approvalMatches = async (params: Readonly<{
+    operation: 'restore' | 'recover-restore' | 'erase';
+    canonicalServerUrl: string;
+    homeServerIdentityId: string;
+    paths: readonly string[];
+    estimatedBytes: number | null;
+  }>): Promise<boolean> => {
+    const approval = await readRemoteApproval();
+    return approval !== null
+      && approval.operation === params.operation
+      && approval.canonicalServerUrl === params.canonicalServerUrl
+      && approval.homeServerIdentityId === params.homeServerIdentityId
+      && approval.estimatedBytes === params.estimatedBytes
+      && approval.paths.length === params.paths.length
+      && approval.paths.every((path, index) => path === params.paths[index]);
+  };
   const onPrompt = async (prompt: Readonly<{ kind: string; data: SystemTaskJsonObject }>): Promise<unknown> => {
     if (prompt.kind !== 'personal_home.confirm_erase.v1') {
       throw Object.assign(new Error(`Unsupported Personal Home task prompt: ${prompt.kind}`), { code: 'prompt_required' });
@@ -333,9 +792,10 @@ export async function handleHomeCommand(
       || (estimatedBytes !== null && (typeof estimatedBytes !== 'number' || !Number.isFinite(estimatedBytes) || estimatedBytes < 0))) {
       return { confirmed: false };
     }
-    if (confirmationTokenFlag.value !== null) {
-      const expected = createPersonalHomeEraseConfirmationToken({ canonicalServerUrl, homeServerIdentityId, paths, estimatedBytes });
-      return { confirmed: confirmationTokenFlag.value === expected };
+    if (approvalStdinFlag.present) {
+      return { confirmed: typeof homeServerIdentityId === 'string' && await approvalMatches({
+        operation: 'erase', canonicalServerUrl, homeServerIdentityId, paths, estimatedBytes,
+      }) };
     }
     if (yesFlag.present) return { confirmed: true };
     if (!interactive) return { confirmed: false };
@@ -354,8 +814,9 @@ export async function handleHomeCommand(
     spec: SystemTaskSpec,
     visible = true,
     operation?: PersonalHomeOperationLabel,
+    projectData?: (data: SystemTaskJsonValue) => SystemTaskJsonValue,
   ): Promise<SystemTaskJsonValue> => {
-    const data = await runTask({ runner, spec, json, visible, signal, sleep: deps.sleep, onPrompt });
+    const data = await runTask({ runner, spec, json, visible, signal, sleep: deps.sleep, onPrompt, projectData });
     if (visible && !json) printSafeFacts(data, operation);
     return data;
   };
@@ -395,7 +856,7 @@ export async function handleHomeCommand(
             protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
             taskId: `relocation-upload:${operationId}`,
             ok: true,
-            data: prepared,
+            data: { operationId: prepared.operationId, uploadLocator: prepared.uploadLocator },
           },
         });
         return;
@@ -499,7 +960,9 @@ export async function handleHomeCommand(
 
   if (subcommand === 'status') {
     if (args.length > 0) throw new Error(`Unknown home status arguments: ${args.join(' ')}`);
-    await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.inspect, purpose, runtime));
+    await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.inspect, purpose, runtime), true, undefined, (data) => (
+      isRecord(data) ? { ...data, purpose } : data
+    ));
     return;
   }
 
@@ -544,13 +1007,34 @@ export async function handleHomeCommand(
       throw Object.assign(new Error('Backup schema is unsupported; restore was not started.'), { code: 'unsupported_backup_schema' });
     }
     if (destinationNonEmpty) {
-      await confirmDestructive({
-        yes: yesFlag.present,
-        interactive: deps.isInteractiveTerminal() && !json,
-        prompt: 'Restore this verified backup and overwrite the current Personal Home data?',
-        nonInteractiveMessage: 'Non-interactive restore into a non-empty Personal Home requires --yes after successful backup verification.',
-        deps,
-      });
+      const identity = isRecord(inspection.identity) && typeof inspection.identity.homeServerIdentityId === 'string'
+        ? inspection.identity.homeServerIdentityId
+        : '';
+      const paths = isRecord(inspection.storage) && Array.isArray(inspection.storage.ownedErasePaths)
+        ? inspection.storage.ownedErasePaths.filter((path): path is string => typeof path === 'string' && path.trim().length > 0)
+        : [];
+      const estimatedBytes = isRecord(inspection.storage)
+        && (inspection.storage.estimatedOwnedBytes === null || typeof inspection.storage.estimatedOwnedBytes === 'number')
+        ? inspection.storage.estimatedOwnedBytes
+        : null;
+      const remotelyApproved = approvalStdinFlag.present && identity && paths.length > 0
+        ? await approvalMatches({
+            operation: 'restore', canonicalServerUrl: purpose.canonicalServerUrl,
+            homeServerIdentityId: identity, paths, estimatedBytes,
+          })
+        : false;
+      if (approvalStdinFlag.present && !remotelyApproved) {
+        throw Object.assign(new Error('Remote restore approval no longer matches the current Personal Home.'), { code: 'confirmation_required' });
+      }
+      if (!remotelyApproved) {
+        await confirmDestructive({
+          yes: yesFlag.present,
+          interactive: deps.isInteractiveTerminal() && !json,
+          prompt: 'Restore this verified backup and overwrite the current Personal Home data?',
+          nonInteractiveMessage: 'Non-interactive restore into a non-empty Personal Home requires --yes after successful backup verification.',
+          deps,
+        });
+      }
     }
     const expectedHomeServerIdentityId = typeof verification.manifest.homeServerIdentityId === 'string'
       ? verification.manifest.homeServerIdentityId
@@ -587,13 +1071,32 @@ export async function handleHomeCommand(
       throw Object.assign(new Error('Personal Home inspection returned an invalid restore recovery state.'), { code: 'personal_home_inspection_incomplete' });
     }
     if (!json) console.log(['Restore rollback is available for:', ...affectedTargets.map((target) => `- ${target}`)].join('\n'));
-    await confirmDestructive({
-      yes: yesFlag.present,
-      interactive,
-      prompt: 'Roll back the interrupted restore using the retained recovery material?',
-      nonInteractiveMessage: 'Non-interactive restore recovery requires --yes.',
-      deps,
-    });
+    const inspectionRecord = isRecord(inspection) ? inspection : null;
+    const recoveryIdentity = isRecord(inspectionRecord?.identity) && typeof inspectionRecord.identity.homeServerIdentityId === 'string'
+      ? inspectionRecord.identity.homeServerIdentityId
+      : '';
+    const recoveryBytes = isRecord(inspectionRecord?.storage)
+      && (inspectionRecord.storage.estimatedOwnedBytes === null || typeof inspectionRecord.storage.estimatedOwnedBytes === 'number')
+      ? inspectionRecord.storage.estimatedOwnedBytes
+      : null;
+    const remotelyApproved = approvalStdinFlag.present && recoveryIdentity
+      ? await approvalMatches({
+          operation: 'recover-restore', canonicalServerUrl: purpose.canonicalServerUrl,
+          homeServerIdentityId: recoveryIdentity, paths: affectedTargets, estimatedBytes: recoveryBytes,
+        })
+      : false;
+    if (approvalStdinFlag.present && !remotelyApproved) {
+      throw Object.assign(new Error('Remote restore-recovery approval no longer matches the current Personal Home.'), { code: 'confirmation_required' });
+    }
+    if (!remotelyApproved) {
+      await confirmDestructive({
+        yes: yesFlag.present,
+        interactive,
+        prompt: 'Roll back the interrupted restore using the retained recovery material?',
+        nonInteractiveMessage: 'Non-interactive restore recovery requires --yes.',
+        deps,
+      });
+    }
     await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.restore, purpose, runtime, { action: 'recover' }));
     return;
   }
@@ -617,6 +1120,72 @@ export async function handleHomeCommand(
   throw new Error(`Unknown home subcommand: ${subcommand}`);
 }
 
+function parseRemotePersonalHomeCreateTaskData(
+  value: SystemTaskJsonValue,
+): Omit<PersonalHomeCreateResult, 'channel' | 'mode' | 'accountServiceLink' | 'invokingClientEnrollment' | 'pairing'> & Readonly<{
+  pairing: RemoteHomePairingResult;
+  invokingClientEnrollment: Readonly<{ kind: 'enrolled' | 'failed' | 'not_requested' }>;
+}> {
+  if (!isRecord(value) || value.action !== 'personalHome.create' || !isRecord(value.personalHome)) {
+    throw Object.assign(new Error('Remote Personal Home task returned an invalid result.'), { code: 'invalid_cli_response' });
+  }
+  const data = value.personalHome;
+  const descriptor = HomeConnectionDescriptorV1Schema.safeParse(data.descriptor);
+  const pairing = parseRemoteHomePairingResult(data.pairing);
+  const invokingClientEnrollment = parseRemoteInvokingClientEnrollmentResult(data.invokingClientEnrollment);
+  if (data.status !== 'complete'
+    || typeof data.homeServerIdentityId !== 'string'
+    || typeof data.canonicalServerUrl !== 'string'
+    || typeof data.accountCreated !== 'boolean'
+    || !descriptor.success
+    || !pairing
+    || !invokingClientEnrollment
+    || descriptor.data.homeServerIdentityId !== data.homeServerIdentityId
+    || descriptor.data.canonicalServerUrl !== data.canonicalServerUrl) {
+    throw Object.assign(new Error('Remote Personal Home task returned invalid identity or descriptor facts.'), { code: 'invalid_cli_response' });
+  }
+  return {
+    status: 'complete',
+    homeServerIdentityId: data.homeServerIdentityId,
+    canonicalServerUrl: data.canonicalServerUrl,
+    accountCreated: data.accountCreated,
+    descriptor: descriptor.data,
+    pairing,
+    invokingClientEnrollment,
+  };
+}
+
+function parseRemoteHomePairingResult(value: unknown): RemoteHomePairingResult | null {
+  if (!isRecord(value) || typeof value.kind !== 'string') return null;
+  if ((value.kind === 'not_requested' || value.kind === 'cancelled' || value.kind === 'expired'
+    || value.kind === 'invalid_request' || value.kind === 'update_required')
+    && Object.keys(value).length === 1) {
+    return { kind: value.kind };
+  }
+  if (value.kind === 'completed'
+    && Object.keys(value).length === 2
+    && Object.hasOwn(value, 'requestedDeviceLabel')
+    && (value.requestedDeviceLabel === null || typeof value.requestedDeviceLabel === 'string')) {
+    return { kind: 'completed', requestedDeviceLabel: value.requestedDeviceLabel };
+  }
+  if (value.kind === 'failed'
+    && Object.keys(value).length === 2
+    && Number.isInteger(value.status)
+    && Number(value.status) >= 0) {
+    return { kind: 'failed', status: Number(value.status) };
+  }
+  return null;
+}
+
+function parseRemoteInvokingClientEnrollmentResult(
+  value: unknown,
+): Readonly<{ kind: 'enrolled' | 'failed' | 'not_requested' }> | null {
+  if (!isRecord(value) || Object.keys(value).length !== 1) return null;
+  return value.kind === 'enrolled' || value.kind === 'failed' || value.kind === 'not_requested'
+    ? { kind: value.kind }
+    : null;
+}
+
 export async function handleHomeCliCommand(context: CommandContext): Promise<void> {
   const json = wantsJson(context.args);
   try {
@@ -630,6 +1199,7 @@ export async function handleHomeCliCommand(context: CommandContext): Promise<voi
       'personal_home_status_incomplete',
       'confirmation_required',
       'confirmation_declined',
+      'interactive_required',
       'identity_mismatch',
       'unsupported_backup_schema',
       'invalid_backup_manifest',
@@ -637,8 +1207,22 @@ export async function handleHomeCliCommand(context: CommandContext): Promise<voi
       'personal_home_inspection_incomplete',
       'personal_home_restore_incomplete',
       'personal_home_erase_incomplete',
+      'home_create_reconciliation_failed',
       'restore_recovery_ambiguous',
       'invalid_runtime_target',
+      'invalid_params',
+      'pair_device_unavailable',
+      'link_account_unavailable',
+      'pairing_expired',
+      'update_required',
+      'invalid_pairing_request',
+      'pairing_failed',
+      'relink_required',
+      'home_profile_unavailable',
+      'home_credentials_unavailable',
+      'account_service_credentials_unavailable',
+      'home_transport_unavailable',
+      'link_account_failed',
     ]);
     const mapped = rawCode && (errorRecord?.personalHomeTaskFailure === true || expectedHomeCodes.has(rawCode))
       ? { code: rawCode, unexpected: false, ...(error instanceof Error && error.message ? { message: error.message } : {}) }

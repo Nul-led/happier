@@ -20,6 +20,7 @@ import {
   type HandoffTargetReplacementPreflightResultV1,
   type HandoffTargetReplacementPreflightV1,
   type WorkspaceSyncConflictListV1,
+  type WorkspaceContentPolicyV1,
   type WorkspaceSyncStatusV1,
   type WorkspaceSyncLegacyStateInspectionV1,
   type WorkspaceSyncTargetBootstrapPrepareResultV1,
@@ -75,7 +76,8 @@ export type MachineWorkspaceSyncRpcService = Readonly<{
   prepareSourceSeedExport?(request: Readonly<{
     operationId: string;
     sourceWorkspaceRefId: string;
-    contentSelection: 'git_worktree' | 'all_files';
+    targetMachineId: string;
+    contentPolicy: WorkspaceContentPolicyV1;
   }>): Promise<Readonly<{ payloadSource: TransferPayloadSource; onDemandScope: DirectPeerOnDemandTransferScope }>>;
   inspectRetiredState(signal?: AbortSignal): Promise<WorkspaceSyncLegacyStateInspectionV1>;
 }>;

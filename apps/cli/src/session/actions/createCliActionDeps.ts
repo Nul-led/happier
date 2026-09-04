@@ -1954,22 +1954,71 @@ export function createCliActionDeps(params: Readonly<{
       }
       : {}),
 
-    daemonMemorySearch: async ({ machineId, query }) => {
+    daemonMemorySearch: async ({ machineId, query, signal }) => {
       if (!params.credentials) return notSupported();
-      return MemorySearchResultV1Schema.parse(await callMachineRpc({
+      const result = MemorySearchResultV1Schema.parse(await callMachineRpc({
         credentials: params.credentials,
         machineId,
         method: RPC_METHODS.DAEMON_MEMORY_SEARCH,
         request: query,
+        ...(signal ? { signal } : {}),
       }));
+      if (!result.ok) return result;
+
+      const visibleThroughSeqBySessionId = new Map<string, number>();
+      await Promise.all([...new Set(result.hits.map((hit) => hit.sessionId))].map(async (sessionId) => {
+        try {
+          const session = await fetchSessionById({
+            token: params.credentials!.token,
+            sessionId,
+            ...(signal ? { signal } : {}),
+          });
+          if (session && Number.isSafeInteger(session.seq) && session.seq >= 0) {
+            visibleThroughSeqBySessionId.set(sessionId, session.seq);
+          }
+        } catch {
+          signal?.throwIfAborted();
+          // The daemon index is derived state. An unreadable Session cannot be
+          // returned as Action data, even when its retained summary still exists.
+        }
+      }));
+      signal?.throwIfAborted();
+      return {
+        ...result,
+        hits: result.hits.filter((hit) => {
+          const visibleThroughSeq = visibleThroughSeqBySessionId.get(hit.sessionId);
+          return visibleThroughSeq !== undefined
+            && hit.seqFrom <= visibleThroughSeq
+            && hit.seqTo <= visibleThroughSeq;
+        }),
+      };
     },
-    daemonMemoryGetWindow: async ({ machineId, sessionId, seqFrom, seqTo }) => {
+    daemonMemoryGetWindow: async ({ machineId, sessionId, seqFrom, seqTo, signal }) => {
       if (!params.credentials) return notSupported();
+      const session = await fetchSessionById({
+        token: params.credentials.token,
+        sessionId,
+        ...(signal ? { signal } : {}),
+      });
+      const visibleThroughSeq = session?.seq;
+      if (
+        typeof visibleThroughSeq !== 'number'
+        || !Number.isSafeInteger(visibleThroughSeq)
+        || visibleThroughSeq < 0
+        || seqFrom > visibleThroughSeq
+        || seqTo > visibleThroughSeq
+      ) {
+        throw Object.assign(
+          new Error('Memory window is outside the current Session projection.'),
+          { code: 'not_authenticated' as const },
+        );
+      }
       return MemoryWindowV1Schema.parse(await callMachineRpc({
         credentials: params.credentials,
         machineId,
         method: RPC_METHODS.DAEMON_MEMORY_GET_WINDOW,
         request: { v: 1, sessionId, seqFrom, seqTo },
+        ...(signal ? { signal } : {}),
       }));
     },
     daemonMemoryEnsureUpToDate: async ({ machineId, sessionId }) => {
@@ -2234,9 +2283,6 @@ export function createCliActionDeps(params: Readonly<{
       targetPath,
       targetSessionStorageMode,
       workspaceAction,
-      workspaceSyncSourceWorkspaceRefId,
-      workspaceSyncTargetWorkspaceRefId,
-      workspaceSyncSettingsVersion,
       serverId,
       actionRequestId,
       handoffTargetReplacementApproval,
@@ -2273,9 +2319,6 @@ export function createCliActionDeps(params: Readonly<{
           preferredTransportStrategies: ['direct_peer', 'server_routed_stream'],
           ...(workspaceAction ? { workspaceAction } : {}),
           ...(serverId ? { accountServerId: serverId } : {}),
-          ...(workspaceSyncSourceWorkspaceRefId ? { workspaceSyncSourceWorkspaceRefId } : {}),
-          ...(workspaceSyncTargetWorkspaceRefId ? { workspaceSyncTargetWorkspaceRefId } : {}),
-          ...(workspaceSyncSettingsVersion === undefined ? {} : { workspaceSyncSettingsVersion }),
           ...(actionRequestId ? { actionRequestId } : {}),
           ...(handoffTargetReplacementApproval ? { handoffTargetReplacementApproval } : {}),
         },
@@ -3592,6 +3635,7 @@ export function createCliActionDeps(params: Readonly<{
       sessionId,
       decision,
       requestId,
+      turnId,
       allowedTools,
       updatedPermissions,
       execPolicyAmendment,
@@ -3630,6 +3674,7 @@ export function createCliActionDeps(params: Readonly<{
           method: `${transport.sessionId}:session.permission.respond`,
           request: {
             id: reqId,
+            ...(typeof turnId === 'string' && turnId.trim().length > 0 ? { turnId: turnId.trim() } : {}),
             approved,
             ...(legacyDecision ? { decision: legacyDecision } : {}),
             ...(Array.isArray(allowedTools) ? { allowedTools } : {}),

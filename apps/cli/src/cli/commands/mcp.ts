@@ -3,6 +3,7 @@ import chalk from 'chalk';
 import type { CommandContext } from '@/cli/commandRegistry';
 import { mapUnknownErrorToControlError } from '@/cli/control/controlErrorMapping';
 import { wantsJson, printJsonEnvelope } from '@/cli/output/jsonEnvelope';
+import type { EphemeralResolvedServerSelection } from '@/server/serverSelection';
 
 import { resolveMcpCommandDeps, type McpCommandDeps } from './mcp/deps';
 import { runMcpServeCommand } from './mcp/serve';
@@ -15,6 +16,7 @@ function isHelpToken(value: string): boolean {
 
 function printMcpUsage(): void {
   console.log('happier mcp serve [--session <session-id>]');
+  console.log('happier --server <saved-home> mcp serve [--session <session-id>]  # pin one Home for this process');
   console.log('happier mcp servers list [--dir <path>] [--json]');
   console.log('happier mcp servers add --name <name> --transport stdio --command <cmd> [--arg <arg>] [--json]');
   console.log('happier mcp servers bind --mcp-server <name|id> --all-machines [--json]');
@@ -48,7 +50,11 @@ function resolveCommandKind(args: readonly string[]): string {
   return `mcp_servers_${sub}`;
 }
 
-export async function handleMcpCommand(args: string[], deps?: Partial<McpCommandDeps>): Promise<void> {
+export async function handleMcpCommand(
+  args: string[],
+  deps?: Partial<McpCommandDeps>,
+  explicitServerSelection?: EphemeralResolvedServerSelection,
+): Promise<void> {
   const json = wantsJson(args);
   const group = String(args[0] ?? '').trim();
   const subcommand = String(args[1] ?? '').trim();
@@ -65,9 +71,10 @@ export async function handleMcpCommand(args: string[], deps?: Partial<McpCommand
     if (group === 'serve' || group === 'start') {
       if (isHelpToken(subcommand)) {
         console.log('happier mcp serve [--session <session-id>]');
+        console.log('happier --server <saved-home> mcp serve [--session <session-id>]  # pin one Home for this process');
         return;
       }
-      await runMcpServeCommand(args, resolvedDeps);
+      await runMcpServeCommand(args, resolvedDeps, explicitServerSelection);
       return;
     }
 
@@ -104,7 +111,7 @@ export async function handleMcpCliCommand(context: CommandContext): Promise<void
   const kind = resolveCommandKind(args);
 
   try {
-    await handleMcpCommand(args);
+    await handleMcpCommand(args, undefined, context.explicitServerSelection);
   } catch (error) {
     if (json) {
       const mapped = mapUnknownErrorToControlError(error);

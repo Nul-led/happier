@@ -9,6 +9,10 @@ import type { SessionTranscriptActionItem } from '@/api/session/sessionTranscrip
 import { createAccountServerActionDeps } from '@/api/accountServerActionDeps';
 import { resolveCurrentAccountMachineTarget } from '@/api/machine/resolveCurrentAccountMachineTarget';
 import { configuration } from '@/configuration';
+import {
+  normalizeServerHttpBaseUrl,
+  runWithServerHttpBaseUrl,
+} from '@/api/client/serverHttpBaseUrl';
 import { requestDaemonSignedRootActionExecution } from '@/daemon/controlClient';
 import { resolveLiveDaemonExternalActionEndpoint } from '@/daemon/multiDaemon';
 import {
@@ -147,8 +151,8 @@ async function resolveConfiguredMachineTarget(): Promise<ActionTarget | null> {
   return machineId ? { kind: 'machine', machineId } : null;
 }
 
-async function resolveDaemonLocalActionMachineId(): Promise<string | null> {
-  const endpoint = await resolveLiveDaemonExternalActionEndpoint(configuration.apiServerUrl);
+async function resolveDaemonLocalActionMachineId(serverApiUrl: string): Promise<string | null> {
+  const endpoint = await resolveLiveDaemonExternalActionEndpoint(serverApiUrl);
   return endpoint?.machineId ?? null;
 }
 
@@ -156,8 +160,9 @@ async function resolvePatMachineTarget(params: Readonly<{
   credentials: StoredCredentials;
   requestedMachineId?: string;
   signal?: AbortSignal;
+  serverApiUrl: string;
 }>): Promise<CliActionMachineTarget> {
-  const daemonLocalMachineId = await resolveDaemonLocalActionMachineId();
+  const daemonLocalMachineId = await resolveDaemonLocalActionMachineId(params.serverApiUrl);
   if (daemonLocalMachineId) {
     if (params.requestedMachineId !== undefined && params.requestedMachineId !== daemonLocalMachineId) {
       return { ok: false, code: 'target_unavailable' };
@@ -189,11 +194,12 @@ async function resolvePatSessionTarget(params: Readonly<{
   idOrPrefix: string;
   machineId?: string;
   signal?: AbortSignal;
+  serverApiUrl: string;
 }>): Promise<CliActionSessionTarget> {
   if (isFullSessionId(params.idOrPrefix)) {
     return { ok: true, sessionId: params.idOrPrefix };
   }
-  const daemonLocalMachineId = await resolveDaemonLocalActionMachineId();
+  const daemonLocalMachineId = await resolveDaemonLocalActionMachineId(params.serverApiUrl);
   if (daemonLocalMachineId && params.machineId !== undefined && params.machineId !== daemonLocalMachineId) {
     return { ok: false, code: 'target_unavailable' };
   }
@@ -203,6 +209,7 @@ async function resolvePatSessionTarget(params: Readonly<{
         credentials: params.credentials,
         ...(params.machineId !== undefined ? { requestedMachineId: params.machineId } : {}),
         ...(params.signal ? { signal: params.signal } : {}),
+        serverApiUrl: params.serverApiUrl,
       });
   if (machineTarget && !machineTarget.ok) return machineTarget;
   return await resolveSessionIdOrPrefixFromSessionList({
@@ -210,7 +217,7 @@ async function resolvePatSessionTarget(params: Readonly<{
     ...(params.signal ? { signal: params.signal } : {}),
     listPage: async ({ limit, cursor, archivedOnly }) => {
       const client = connect({
-        endpoint: configuration.apiServerUrl,
+        endpoint: params.serverApiUrl,
         token: params.credentials.token,
       });
       try {
@@ -250,6 +257,7 @@ async function resolvePatActionTransportPlan(params: Readonly<{
   context: ActionExecutorContext | undefined;
   machineId?: string;
   invocationSignal?: AbortSignal;
+  serverApiUrl: string;
 }>): Promise<PatActionTransportPlan> {
   const publicActionId = PublicActionIdSchema.safeParse(params.actionId);
   if (!publicActionId.success) {
@@ -257,7 +265,7 @@ async function resolvePatActionTransportPlan(params: Readonly<{
   }
 
   const spec = getActionSpec(publicActionId.data);
-  const daemonLocalMachineId = await resolveDaemonLocalActionMachineId();
+  const daemonLocalMachineId = await resolveDaemonLocalActionMachineId(params.serverApiUrl);
   if (daemonLocalMachineId && params.machineId !== undefined && params.machineId !== daemonLocalMachineId) {
     return { kind: 'settled', result: actionFailure('target_unavailable') };
   }
@@ -290,6 +298,7 @@ async function resolvePatActionTransportPlan(params: Readonly<{
       idOrPrefix: requestedSessionId,
       ...(params.machineId !== undefined ? { machineId: params.machineId } : {}),
       ...(signal ? { signal } : {}),
+      serverApiUrl: params.serverApiUrl,
     });
     if (!resolved.ok) {
       return {
@@ -326,6 +335,7 @@ async function resolvePatActionTransportPlan(params: Readonly<{
     credentials: params.credentials,
     ...(params.machineId !== undefined ? { requestedMachineId: params.machineId } : {}),
     ...(signal ? { signal } : {}),
+    serverApiUrl: params.serverApiUrl,
   });
   return target.ok
     ? { kind: 'ready', target: { kind: 'machine', machineId: target.machineId }, input: params.input }
@@ -348,9 +358,10 @@ async function executePatPublicActionPlan(params: Readonly<{
   plan: PatReadyActionTransportPlan;
   context: ActionExecutorContext | undefined;
   invocationSignal?: AbortSignal;
+  serverApiUrl: string;
 }>): Promise<ActionExecuteResult> {
   const publicActionId = PublicActionIdSchema.parse(params.actionId);
-  const client = connect({ endpoint: configuration.apiServerUrl, token: params.credentials.token });
+  const client = connect({ endpoint: params.serverApiUrl, token: params.credentials.token });
   const signal = combineInvocationSignals(params.invocationSignal, params.context?.signal);
   try {
     // `createCliActionExecutor` accepts unknown because it is the canonical
@@ -389,6 +400,7 @@ async function executePatPublicAction(params: Readonly<{
   context: ActionExecutorContext | undefined;
   machineId?: string;
   invocationSignal?: AbortSignal;
+  serverApiUrl: string;
 }>): Promise<ActionExecuteResult> {
   const plan = await resolvePatActionTransportPlan(params);
   if (plan.kind === 'settled') return plan.result;
@@ -398,6 +410,7 @@ async function executePatPublicAction(params: Readonly<{
     plan,
     context: params.context,
     ...(params.invocationSignal ? { invocationSignal: params.invocationSignal } : {}),
+    serverApiUrl: params.serverApiUrl,
   });
 }
 
@@ -410,6 +423,8 @@ function shouldUsePatPublicActionTransport(
 
 export function createCliActionExecutorFromCredentials(params: Readonly<{
   credentials: StoredCredentials;
+  /** Fixed resolved Home API endpoint for a long-lived executor; ordinary CLI callers remain late-bound. */
+  serverApiUrl?: string;
   /** Explicit CLI machine selector for public Action transport. */
   machineId?: string;
   readCredentials?: () => Promise<StoredCredentials | null>;
@@ -456,6 +471,28 @@ export function createCliActionExecutorFromCredentials(params: Readonly<{
   resolveSessionTarget(idOrPrefix: string): Promise<CliActionSessionTarget>;
   resolveMachineTarget(): Promise<CliActionMachineTarget>;
 }> {
+  const fixedServerApiUrl = params.serverApiUrl
+    ? normalizeServerHttpBaseUrl(params.serverApiUrl)
+    : null;
+  const resolveActionServerApiUrl = (): string => fixedServerApiUrl ?? configuration.apiServerUrl;
+  const runWithActionServer = <T>(run: () => T): T => fixedServerApiUrl
+    ? runWithServerHttpBaseUrl(fixedServerApiUrl, run)
+    : run();
+  const bindExecutorToActionServer = (source: CliActionExecutor): CliActionExecutor => ({
+    prepare: async (...args) => {
+      const prepared = await runWithActionServer(async () => await source.prepare(...args));
+      if (prepared.kind !== 'ready') return prepared;
+      const invocation = prepared.invocation;
+      return {
+        ...prepared,
+        invocation: {
+          ...invocation,
+          run: () => runWithActionServer(() => invocation.run()),
+        },
+      };
+    },
+    execute: async (...args) => await runWithActionServer(async () => await source.execute(...args)),
+  });
   const createFollowLeaseRegistry = (): SessionTranscriptFollowLeaseRegistry => (
     params.transcriptFollowLeaseRegistry
     ?? createSessionTranscriptFollowLeaseRegistry({
@@ -474,7 +511,10 @@ export function createCliActionExecutorFromCredentials(params: Readonly<{
 
     return createCliActionExecutor({
       ...cryptoContext,
-      accountServerActionDeps: createAccountServerActionDeps({ token: credentials.token }),
+      accountServerActionDeps: createAccountServerActionDeps({
+        token: credentials.token,
+        ...(fixedServerApiUrl ? { serverHttpBaseUrl: fixedServerApiUrl } : {}),
+      }),
       token: credentials.token,
       credentials,
       ...(params.pluginActionExecutionOwner
@@ -566,7 +606,7 @@ export function createCliActionExecutorFromCredentials(params: Readonly<{
       : shouldUsePatPublicActionTransport(params.credentials, undefined)
         ? null
         : createExecutor(params.credentials, transcriptFollowLeaseRegistry);
-    return {
+    return bindExecutorToActionServer({
       prepare: async (...args) => {
         const credentials = await readCurrentCredentials();
         if (!credentials) {
@@ -584,6 +624,7 @@ export function createCliActionExecutorFromCredentials(params: Readonly<{
             credentials,
             ...(params.machineId !== undefined ? { machineId: params.machineId } : {}),
             ...(invocationSignal ? { invocationSignal } : {}),
+            serverApiUrl: resolveActionServerApiUrl(),
           });
           if (plan.kind === 'settled') {
             return { kind: 'settled' as const, result: plan.result };
@@ -596,6 +637,7 @@ export function createCliActionExecutorFromCredentials(params: Readonly<{
               plan,
               context,
               ...(invocationSignal ? { invocationSignal } : {}),
+              serverApiUrl: resolveActionServerApiUrl(),
             })),
           };
         }
@@ -628,39 +670,42 @@ export function createCliActionExecutorFromCredentials(params: Readonly<{
             credentials,
             ...(params.machineId !== undefined ? { machineId: params.machineId } : {}),
             ...(invocationSignal ? { invocationSignal } : {}),
+            serverApiUrl: resolveActionServerApiUrl(),
           });
         }
         const executor = fixedExecutor ?? createExecutor(credentials, transcriptFollowLeaseRegistry);
         await ensureCliActionPolicySettings(credentials);
         return await executor.execute(...args);
       },
-    };
+    });
   };
 
   const executor = createCredentialRefreshingExecutor(createFollowLeaseRegistry());
-  const resolveSessionTarget = async (idOrPrefix: string): Promise<CliActionSessionTarget> => {
-    const credentials = params.readCredentials
-      ? await params.readCredentials().catch(() => null)
-      : params.credentials;
-    if (!credentials) {
-      return { ok: false, code: 'not_authenticated' };
-    }
-    if (shouldUsePatPublicActionTransport(credentials, { surface: 'cli' })) {
-      return await resolvePatSessionTarget({
-        credentials,
-        idOrPrefix,
-        ...(params.machineId !== undefined ? { machineId: params.machineId } : {}),
-      });
-    }
-    const resolved = await resolveSessionTransportContext({ credentials, idOrPrefix });
-    return resolved.ok
-      ? { ok: true, sessionId: resolved.sessionId }
-      : {
-          ok: false,
-          code: resolved.code,
-          ...(resolved.candidates ? { candidates: resolved.candidates } : {}),
-        };
-  };
+  const resolveSessionTarget = async (idOrPrefix: string): Promise<CliActionSessionTarget> =>
+    await runWithActionServer(async () => {
+      const credentials = params.readCredentials
+        ? await params.readCredentials().catch(() => null)
+        : params.credentials;
+      if (!credentials) {
+        return { ok: false, code: 'not_authenticated' };
+      }
+      if (shouldUsePatPublicActionTransport(credentials, { surface: 'cli' })) {
+        return await resolvePatSessionTarget({
+          credentials,
+          idOrPrefix,
+          ...(params.machineId !== undefined ? { machineId: params.machineId } : {}),
+          serverApiUrl: resolveActionServerApiUrl(),
+        });
+      }
+      const resolved = await resolveSessionTransportContext({ credentials, idOrPrefix });
+      return resolved.ok
+        ? { ok: true, sessionId: resolved.sessionId }
+        : {
+            ok: false,
+            code: resolved.code,
+            ...(resolved.candidates ? { candidates: resolved.candidates } : {}),
+          };
+    });
   return Object.freeze({
     ...executor,
     async listAccountMachines(signal?: AbortSignal) {
@@ -677,7 +722,7 @@ export function createCliActionExecutorFromCredentials(params: Readonly<{
         if (!result.ok) throw Object.assign(new Error(result.error), { code: result.errorCode });
         return readStoredSessionMachineList(result.result);
       }
-      const client = connect({ endpoint: configuration.apiServerUrl, token: credentials.token });
+      const client = connect({ endpoint: resolveActionServerApiUrl(), token: credentials.token });
       try {
         return await client.machines.list({ ...(signal ? { signal } : {}) });
       } finally {
@@ -686,13 +731,16 @@ export function createCliActionExecutorFromCredentials(params: Readonly<{
     },
     resolveSessionTarget,
     async resolveMachineTarget() {
-      const credentials = params.readCredentials
-        ? await params.readCredentials().catch(() => null)
-        : params.credentials;
-      if (!credentials) return { ok: false as const, code: 'not_authenticated' };
-      return await resolvePatMachineTarget({
-        credentials,
-        ...(params.machineId !== undefined ? { requestedMachineId: params.machineId } : {}),
+      return await runWithActionServer(async () => {
+        const credentials = params.readCredentials
+          ? await params.readCredentials().catch(() => null)
+          : params.credentials;
+        if (!credentials) return { ok: false as const, code: 'not_authenticated' };
+        return await resolvePatMachineTarget({
+          credentials,
+          ...(params.machineId !== undefined ? { requestedMachineId: params.machineId } : {}),
+          serverApiUrl: resolveActionServerApiUrl(),
+        });
       });
     },
     bindInvocation(signal: AbortSignal) {

@@ -4,6 +4,7 @@ import {
   buildQualifiedPluginContributionKey,
   SessionMcpSelectionV1Schema,
   convertBackendTargetRefV2ToV1,
+  isLegacyConfiguredAcpFlavorCarrier,
   readBackendTargetRefV2,
   type AccountProfile,
   type ActionExecutorDeps,
@@ -609,7 +610,10 @@ export function createCliActionInventoryDeps(params: Readonly<{
       const shouldUseSessionMetadataModels = Boolean(
         provider && (
           (normalizedAgentId && provider === normalizedAgentId)
-          || (usesConfiguredCompatBackend && (provider === 'customAcp' || provider.startsWith('acp:')))
+          || (usesConfiguredCompatBackend && (
+            provider === 'customAcp'
+            || isLegacyConfiguredAcpFlavorCarrier(provider)
+          ))
         ),
       );
       const metadataItems = shouldUseSessionMetadataModels

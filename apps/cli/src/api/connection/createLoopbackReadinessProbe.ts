@@ -4,7 +4,7 @@ import type { ReadinessProbeResult } from '@happier-dev/connection-supervisor';
 
 import { isAuthenticationStatus } from '@/api/client/httpStatusError';
 import { resolveLoopbackHttpUrl } from '@/api/client/loopbackUrl';
-import { FeaturesResponseSchema } from '@happier-dev/protocol';
+import { decodeServerFeaturesResponseBody } from '@/features/serverFeaturesParse';
 
 export function createLoopbackHomeIdentityProbe(params: Readonly<{
   serverUrl: string;
@@ -16,6 +16,7 @@ export function createLoopbackHomeIdentityProbe(params: Readonly<{
     try {
       const featuresResponse = await axios.get(`${serverUrl}/v1/features`, {
         timeout: 5_000,
+        responseType: 'stream',
         validateStatus: () => true,
       });
 
@@ -31,10 +32,13 @@ export function createLoopbackHomeIdentityProbe(params: Readonly<{
           errorMessage: `Home identity probe returned ${featuresResponse.status}`,
         };
       }
+      const parsed = await decodeServerFeaturesResponseBody(
+        featuresResponse.data,
+        featuresResponse.headers?.['content-length'],
+      );
       if (params.expectedServerIdentityId) {
-        const parsed = FeaturesResponseSchema.safeParse(featuresResponse.data);
-        const observedIdentity = parsed.success
-          ? parsed.data.capabilities.serverIdentity.serverIdentityId?.trim() ?? ''
+        const observedIdentity = parsed
+          ? parsed.capabilities.serverIdentity.serverIdentityId?.trim() ?? ''
           : '';
         if (observedIdentity !== params.expectedServerIdentityId) {
           return {

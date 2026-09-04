@@ -1,13 +1,36 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const post = vi.hoisted(() => vi.fn());
-vi.mock('axios', () => ({ default: { post } }));
+const { get, post } = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }));
+vi.mock('axios', () => ({ default: { get, post } }));
 vi.mock('@/session/transport/http/serverHttpBaseUrl', () => ({
   resolveServerHttpBaseUrl: () => 'https://api.example.test',
 }));
 
 describe('runAutomationNow', () => {
-  beforeEach(() => post.mockReset());
+  beforeEach(() => {
+    get.mockReset();
+    post.mockReset();
+  });
+
+  it('uses the authenticated V3 definition-list owner and validates its response', async () => {
+    get.mockResolvedValue({
+      status: 200,
+      data: { automations: [], nextCursor: null },
+    });
+    const { listAutomationDefinitions } = await import('./automations');
+
+    await expect(listAutomationDefinitions({ token: 'token-1' })).resolves.toEqual({
+      automations: [],
+      nextCursor: null,
+    });
+
+    expect(get).toHaveBeenCalledWith(
+      'https://api.example.test/v3/automations?limit=100',
+      expect.objectContaining({
+        headers: { Authorization: 'Bearer token-1' },
+      }),
+    );
+  });
 
   it('uses the V3 run-now owner and sends the caller occurrence identity', async () => {
     post.mockResolvedValue({

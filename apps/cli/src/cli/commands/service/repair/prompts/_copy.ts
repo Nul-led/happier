@@ -783,16 +783,16 @@ export function copyServerProfileMissing(_finding: ServerProfileMissing, invoker
     'Configure it before doctor repair can work for that server.',
     '',
     'Pick whichever applies:',
-    `  ${invoker} server add <url>             — saved server profile for an existing relay`,
-    `  ${invoker} relay use --local            — activate the local relay for the current channel`,
-    `  ${invoker} auth pair-remote --ssh ...   — pair a remote machine to this computer’s relay`,
+    `  ${invoker} setup                         — connect to the selected Account Service or saved Home`,
+    `  ${invoker} setup --home <saved>          — connect to a specific saved Home`,
+    `  ${invoker} setup --home-url <https-url>  — connect directly to a Home over HTTPS`,
   ];
 }
 
 export function copyAuthMissingForProfile(finding: AuthMissingForProfile, invoker: string = 'happier'): readonly string[] {
   return [
     'Sign in with:',
-    `  ${invoker} auth --server ${finding.serverId}`,
+    `  ${invoker} auth login --server ${finding.serverId}`,
   ];
 }
 

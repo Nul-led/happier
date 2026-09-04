@@ -201,9 +201,14 @@ describe('createCliActionExecutorFromCredentials API Token transport', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     patActionFetch = null;
+    if (patActionEndpoint) {
+      process.env.HAPPIER_SERVER_URL = patActionEndpoint;
+      reloadConfiguration();
+    }
   });
 
   it('composes Account-server-owned Actions into the executor used by the daemon ingress', async () => {
+    const selectedServerApiUrl = 'https://selected-home.example.test';
     const post = vi.spyOn(axios, 'post').mockResolvedValueOnce({
       status: 200,
       data: { tokens: [] },
@@ -217,7 +222,11 @@ describe('createCliActionExecutorFromCredentials API Token transport', () => {
         encryption: null,
         credentialProvenance: 'stored_session',
       },
+      serverApiUrl: selectedServerApiUrl,
     });
+
+    process.env.HAPPIER_SERVER_URL = 'https://post-construction-attacker.example.test';
+    reloadConfiguration();
 
     const accountApiTokensListAction = createCliActionExecutor.mock.calls.at(-1)?.[0]
       ?.accountServerActionDeps?.accountApiTokensListAction;
@@ -227,7 +236,7 @@ describe('createCliActionExecutorFromCredentials API Token transport', () => {
       context: { surface: 'api', authority: 'account_automation' },
     })).resolves.toEqual({ tokens: [] });
     expect(post).toHaveBeenCalledWith(
-      expect.stringMatching(new RegExp(`${ACCOUNT_API_TOKENS_LIST_HTTP_PATH_V1}$`)),
+      `${selectedServerApiUrl}${ACCOUNT_API_TOKENS_LIST_HTTP_PATH_V1}`,
       {},
       expect.objectContaining({
         headers: expect.objectContaining({

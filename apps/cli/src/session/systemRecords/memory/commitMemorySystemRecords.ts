@@ -28,6 +28,7 @@ export async function commitMemorySystemRecords(params: Readonly<{
   ctx?: SessionEncryptionContext;
   shard: Readonly<{ sessionId: string; payload: SessionSummaryShardV1 }>;
   synopsis: Readonly<{ sessionId: string; payload: SessionSynopsisV1 }> | null;
+  signal?: AbortSignal;
   deps?: Partial<CommitMemorySystemRecordsDeps>;
 }>): Promise<void> {
   const deps: CommitMemorySystemRecordsDeps = {
@@ -51,6 +52,7 @@ export async function commitMemorySystemRecords(params: Readonly<{
       kind: MEMORY_SYSTEM_RECORD_KINDS.summaryShard,
       payload: params.shard.payload,
     }),
+    ...(params.signal ? { signal: params.signal } : {}),
   });
 
   if (!params.synopsis) return;
@@ -68,5 +70,6 @@ export async function commitMemorySystemRecords(params: Readonly<{
       kind: MEMORY_SYSTEM_RECORD_KINDS.synopsis,
       payload: params.synopsis.payload,
     }),
+    ...(params.signal ? { signal: params.signal } : {}),
   });
 }

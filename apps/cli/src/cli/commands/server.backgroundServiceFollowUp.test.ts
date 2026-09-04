@@ -51,6 +51,7 @@ import {
     resolveInstalledDefaultFollowingDaemonServiceModes,
     runDefaultFollowingBackgroundServiceRestartFollowUp,
     runDefaultFollowingBackgroundServiceServerChangeFollowUp,
+    completeServerSelectionMutation,
     runServerSelectionBackgroundServiceFollowUp,
 } from './backgroundServiceFollowUp';
 
@@ -95,13 +96,11 @@ describe('server background service follow-up helpers', () => {
         axiosGetMock.mockReset();
         resolveInstalledDaemonServiceInventoryMock.mockReset();
         resolveInstalledDaemonServiceInventoryMock.mockResolvedValue([]);
-        delete process.env.HAPPIER_DEFER_SERVER_SELECTION_FOLLOW_UP;
     });
 
-    it('defers the child command follow-up while guided setup owns the larger sequence', async () => {
-        process.env.HAPPIER_DEFER_SERVER_SELECTION_FOLLOW_UP = '1';
-
-        await runServerSelectionBackgroundServiceFollowUp({
+    it('supports an explicit mutation-only mode while guided setup owns reconciliation', async () => {
+        await completeServerSelectionMutation({
+            mode: 'mutation-only',
             interactive: true,
             targetServerUrl: 'https://relay.example.test',
         });

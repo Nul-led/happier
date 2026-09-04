@@ -44,6 +44,7 @@ export async function fetchMemorySummaryShardSystemRecords(params: Readonly<{
   mode: SessionStoredContentEncryptionMode;
   ctx?: SessionEncryptionContext;
   limit?: number;
+  signal?: AbortSignal;
   fetchSessionSystemRecordsPage?: FetchMemorySummaryShardSystemRecordsDeps['fetchSessionSystemRecordsPage'];
 }>): Promise<SessionSummaryShardV1[]> {
   if (params.mode === 'e2ee' && !params.ctx) {
@@ -54,6 +55,7 @@ export async function fetchMemorySummaryShardSystemRecords(params: Readonly<{
   let cursor: string | undefined;
   const seenCursors = new Set<string>();
   while (true) {
+    params.signal?.throwIfAborted();
     const page: FetchSessionSystemRecordsPageResult = await fetchPage({
       token: params.token,
       sessionId: params.sessionId,
@@ -61,7 +63,9 @@ export async function fetchMemorySummaryShardSystemRecords(params: Readonly<{
       kind: MEMORY_SYSTEM_RECORD_KINDS.summaryShard,
       ...(cursor ? { cursor } : {}),
       limit: params.limit ?? 100,
+      ...(params.signal ? { signal: params.signal } : {}),
     });
+    params.signal?.throwIfAborted();
 
     for (const record of page.records) {
       const payload = openMemorySystemRecordPayload({
@@ -89,6 +93,7 @@ export async function fetchLatestMemorySynopsisSystemRecord(params: Readonly<{
   sessionId: string;
   mode: SessionStoredContentEncryptionMode;
   ctx?: SessionEncryptionContext;
+  signal?: AbortSignal;
   fetchLatestSessionSystemRecord?: FetchLatestMemorySynopsisSystemRecordDeps['fetchLatestSessionSystemRecord'];
 }>): Promise<SessionSynopsisV1 | null> {
   if (params.mode === 'e2ee' && !params.ctx) {
@@ -100,7 +105,9 @@ export async function fetchLatestMemorySynopsisSystemRecord(params: Readonly<{
     sessionId: params.sessionId,
     namespace: MEMORY_SYSTEM_RECORD_NAMESPACE,
     kind: MEMORY_SYSTEM_RECORD_KINDS.synopsis,
+    ...(params.signal ? { signal: params.signal } : {}),
   });
+  params.signal?.throwIfAborted();
   if (!record) return null;
   const payload = openMemorySystemRecordPayload({
     namespace: record.namespace,

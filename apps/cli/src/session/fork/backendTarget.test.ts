@@ -125,6 +125,23 @@ describe('resolveSessionForkBackendTarget', () => {
     });
   });
 
+  it('rejects the nested customAcp placeholder instead of resolving it as a configured backend', async () => {
+    const result = await resolveSessionForkBackendTarget({
+      credentials,
+      parentMetadata: {
+        flavor: 'acp:customAcp',
+      },
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      errorMessage: 'Session metadata missing agent flavor',
+    });
+    expect(resolveAgentIdFromSessionMetadataMock).not.toHaveBeenCalled();
+    expect(resolveAvailableAccountSettingsMock).not.toHaveBeenCalled();
+    expect(resolveConfiguredAcpBackendFromAccountSettingsMock).not.toHaveBeenCalled();
+  });
+
   it('recovers configured ACP fork targets from flavor-only metadata when the Account snapshot is unavailable', async () => {
     const resolvedBackend = { backendId: 'plugin-review-bot', title: 'Plugin Review Bot' };
 

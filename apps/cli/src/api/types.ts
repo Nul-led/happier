@@ -32,6 +32,7 @@ import {
   MachineReplacementReasonSchema,
   IrohEndpointDescriptorV1Schema,
   SessionOrganizationPlacementV1Schema,
+  WorkspaceSyncRuntimeEventV1Schema,
 } from '@happier-dev/protocol'
 import {
   DaemonPublicReleaseChannelLabelSchema,
@@ -472,6 +473,7 @@ export const DaemonStateSchema = z.object({
     ]).optional(),
   transfer: DaemonTransferRuntimeStateSchema.optional(),
   peerMediation: DaemonPeerMediationStateSchema.optional(),
+  workspaceSync: WorkspaceSyncRuntimeEventV1Schema.optional(),
 })
 
 export type DaemonState = z.infer<typeof DaemonStateSchema>

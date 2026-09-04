@@ -134,6 +134,76 @@ describe('dispatchCli API Token globals', () => {
     });
   });
 
+  it('threads only trusted explicit saved-Home provenance through API Token recursion', async () => {
+    await withTempDir('happier-cli-dispatch-home-target-', async (homeDir) => {
+      const observedSelections: unknown[] = [];
+      (commandRegistry as Record<string, CommandHandler>)[probeCommand] = async (context) => {
+        observedSelections.push(context.explicitServerSelection);
+      };
+      envScope.patch({
+        HAPPIER_HOME_DIR: homeDir,
+        HAPPIER_TOKEN: undefined,
+        HAPPIER_ACTIVE_SERVER_ID: undefined,
+        HAPPIER_SERVER_URL: undefined,
+        HAPPIER_LOCAL_SERVER_URL: undefined,
+        HAPPIER_PUBLIC_SERVER_URL: undefined,
+        HAPPIER_WEBAPP_URL: undefined,
+      });
+      reloadConfiguration();
+
+      const { addServerProfile, adoptServerProfileHomeConnectionDescriptor } = await import('@/server/serverProfiles');
+      const profile = await addServerProfile({
+        name: 'non-active',
+        serverUrl: 'https://non-active.example.test',
+        webappUrl: 'https://app.non-active.example.test',
+        use: false,
+      });
+      await adoptServerProfileHomeConnectionDescriptor({
+        descriptor: {
+          v: 1,
+          homeServerIdentityId: 'srv_non_active_home',
+          canonicalServerUrl: 'https://non-active.example.test',
+          revision: 1,
+          endpoints: [{ kind: 'https', url: 'https://non-active.example.test' }],
+        },
+        expectedProfileId: profile.id,
+        observation: 'exact',
+      });
+
+      const apiToken = 'hap_v1_22222222-2222-4222-a222-222222222222_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+      await dispatchCli({
+        args: ['--server', profile.id, '--api-token', apiToken, probeCommand],
+        rawArgv: ['happier', '--server', profile.id, '--api-token', apiToken, probeCommand],
+        terminalRuntime: null,
+      });
+
+      expect(observedSelections[0]).toMatchObject({
+        activeServerId: profile.id,
+        application: { kind: 'ephemeralEnv' },
+        homeTarget: {
+          profileId: profile.id,
+          homeServerIdentityId: 'srv_non_active_home',
+          authority: 'saved_profile',
+        },
+      });
+      expect(observedSelections[0]).not.toHaveProperty('credentials');
+      expect(JSON.stringify(observedSelections[0])).not.toContain(apiToken);
+
+      envScope.patch({
+        HAPPIER_ACTIVE_SERVER_ID: 'ambient-attacker',
+        HAPPIER_SERVER_URL: 'https://ambient-attacker.example.test',
+      });
+      reloadConfiguration();
+      await dispatchCli({
+        args: [probeCommand],
+        rawArgv: ['happier', probeCommand],
+        terminalRuntime: null,
+      });
+
+      expect(observedSelections[1]).toBeUndefined();
+    });
+  });
+
   it('does not leak an explicit API Token into a later invocation', async () => {
     await withTempDir('happier-cli-api-token-', async (homeDir) => {
       const observedCredentials: Array<Awaited<ReturnType<typeof readStoredCredentials>>> = [];

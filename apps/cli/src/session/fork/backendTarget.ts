@@ -6,19 +6,14 @@ import { resolveAvailableAccountSettings } from '@/settings/accountSettings/reso
 import type { BackendTargetRefV1, BackendTargetRefV2 } from '@happier-dev/protocol';
 import {
   readAcpConfiguredBackendV1FromMetadata,
+  isInvalidNestedLegacyCustomAcpPlaceholder,
+  readLegacyConfiguredAcpBackendId,
   resolveLinkedExternalSessionMetadataV1,
 } from '@happier-dev/protocol';
 import { resolveAgentIdFromSessionMetadata } from '@happier-dev/agents';
 import { resolveConfiguredAcpBackendFromAccountSettings } from '@/agent/acp/catalog/configured/resolveBackend';
 import { resolveConcreteCompatBackendTargetRefs } from '@/session/backendTargets/resolveConcreteBackendTargetRefs';
 import { isConcreteLegacyConfiguredBackendId } from '@/session/backendTargets/compat/legacyConfiguredBackend';
-
-function readConfiguredAcpBackendIdFromFlavor(metadata: Record<string, unknown>): string | null {
-  const raw = typeof metadata.flavor === 'string' ? metadata.flavor.trim() : '';
-  if (!raw.startsWith('acp:')) return null;
-  const backendId = raw.slice(4).trim();
-  return backendId || null;
-}
 
 export type SessionForkBackendTargetResolution =
   | Readonly<{
@@ -62,7 +57,7 @@ export async function resolveSessionForkBackendTarget(params: Readonly<{
   }
 
   const metadataConfiguredBackend = readAcpConfiguredBackendV1FromMetadata(params.parentMetadata);
-  const flavorConfiguredBackendId = readConfiguredAcpBackendIdFromFlavor(params.parentMetadata);
+  const flavorConfiguredBackendId = readLegacyConfiguredAcpBackendId(params.parentMetadata.flavor);
   const candidateConfiguredBackendId = metadataConfiguredBackend?.backendId ?? flavorConfiguredBackendId ?? null;
 
   if (candidateConfiguredBackendId) {
@@ -101,6 +96,16 @@ export async function resolveSessionForkBackendTarget(params: Readonly<{
         }),
       };
     }
+  }
+
+  if (
+    typeof params.parentMetadata.flavor === 'string'
+    && isInvalidNestedLegacyCustomAcpPlaceholder(params.parentMetadata.flavor)
+  ) {
+    return {
+      ok: false,
+      errorMessage: 'Session metadata missing agent flavor',
+    };
   }
 
   const agentRaw = resolveAgentIdFromSessionMetadata(params.parentMetadata);

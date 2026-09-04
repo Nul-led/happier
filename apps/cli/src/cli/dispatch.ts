@@ -25,6 +25,7 @@ import {
   validateCliApiTokenEnvironment,
   withCliApiToken,
 } from '@/auth/cliApiToken';
+import type { EphemeralResolvedServerSelection } from '@/server/serverSelection';
 
 function isTopLevelVersionRequest(args: readonly string[]): boolean {
   return args.length === 1 && (args[0] === '--version' || args[0] === '-v');
@@ -180,9 +181,11 @@ async function applyGlobalInvocationOptions(
 ): Promise<Readonly<{
   args: string[];
   apiToken: string | null;
+  explicitServerSelection: EphemeralResolvedServerSelection | null;
 }>> {
   let args = [...argsRaw];
   let apiToken: string | null = null;
+  let explicitServerSelection: EphemeralResolvedServerSelection | null = null;
 
   while (true) {
     const tokenFlag = takePrefixCliApiTokenFlag(args);
@@ -197,9 +200,10 @@ async function applyGlobalInvocationOptions(
 
     if (!hasEphemeralServerSelectionPrefixArgs(args)) break;
     const { applyEphemeralServerSelectionFromPrefixArgs } = await import('@/server/serverSelection');
-    const selectedArgs = await applyEphemeralServerSelectionFromPrefixArgs(args);
-    if (selectedArgs.length === args.length) break;
-    args = selectedArgs;
+    const resolved = await applyEphemeralServerSelectionFromPrefixArgs(args);
+    if (resolved.rest.length === args.length) break;
+    args = resolved.rest;
+    if (resolved.selection) explicitServerSelection = resolved.selection;
   }
 
   // Validate the env form at the same CLI boundary when it remains the selected
@@ -214,7 +218,7 @@ async function applyGlobalInvocationOptions(
     apiToken = validateCliApiTokenEnvironment(ambientApiToken);
   }
 
-  return { args, apiToken };
+  return { args, apiToken, explicitServerSelection };
 }
 
 async function launchCommandInTmux(
@@ -266,6 +270,8 @@ export async function dispatchCli(params: Readonly<{
   signal?: AbortSignal;
   /** @internal Root global options have been consumed for this dispatch. */
   globalOptionsApplied?: boolean;
+  /** @internal Trusted explicit selection retained across recursive global-option dispatch. */
+  explicitServerSelection?: EphemeralResolvedServerSelection;
 }>): Promise<void> {
   if (!params.globalOptionsApplied) {
     // Consume these process-wide input variables before any command can create
@@ -285,6 +291,9 @@ export async function dispatchCli(params: Readonly<{
       args: globalOptions.args,
       rawArgv: redactCliApiTokenArgv(params.rawArgv),
       globalOptionsApplied: true,
+      ...(globalOptions.explicitServerSelection
+        ? { explicitServerSelection: globalOptions.explicitServerSelection }
+        : {}),
     });
     if (globalOptions.apiToken !== null) {
       await withCliApiToken(globalOptions.apiToken, dispatchWithGlobalOptions);
@@ -304,6 +313,9 @@ export async function dispatchCli(params: Readonly<{
     rawArgv,
     terminalRuntime,
     ...(signal ? { signal } : {}),
+    ...(params.explicitServerSelection
+      ? { explicitServerSelection: params.explicitServerSelection }
+      : {}),
     ...(scopedEnvironment ? { scopedEnvironment } : {}),
   });
 

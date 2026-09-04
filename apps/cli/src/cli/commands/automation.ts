@@ -1,14 +1,25 @@
 import chalk from 'chalk';
 import { AutomationManualIdempotencyKeyV1Schema } from '@happier-dev/protocol';
 
-import { runAutomationNow, type AutomationRunSummary } from '@/api/automations';
+import {
+  listAutomationDefinitions,
+  runAutomationNow,
+  type AutomationRunSummary,
+} from '@/api/automations';
+import type { AutomationDefinitionListResponse } from '@happier-dev/protocol';
 import type { CommandContext } from '@/cli/commandRegistry';
+import { assertCommandArguments, readRawFlagValue } from '@/cli/commands/shared/argvFlags';
 import { mapUnknownErrorToControlError } from '@/cli/control/controlErrorMapping';
 import { printJsonEnvelope, wantsJson } from '@/cli/output/jsonEnvelope';
 import { readCredentials } from '@/persistence';
 
 type AutomationCommandDeps = Readonly<{
   readCredentialsFn: typeof readCredentials;
+  listAutomationDefinitionsFn: (params: Readonly<{
+    token: string;
+    limit?: number;
+    cursor?: string;
+  }>) => Promise<AutomationDefinitionListResponse>;
   runAutomationNowFn: (params: Readonly<{
     token: string;
     automationId: string;
@@ -18,6 +29,7 @@ type AutomationCommandDeps = Readonly<{
 
 const DEFAULT_DEPS: AutomationCommandDeps = {
   readCredentialsFn: readCredentials,
+  listAutomationDefinitionsFn: listAutomationDefinitions,
   runAutomationNowFn: runAutomationNow,
 };
 
@@ -26,15 +38,33 @@ function showAutomationHelp(): void {
 ${chalk.bold('happier automation')} - Manage automations
 
 ${chalk.bold('Usage:')}
+  happier automation list [--cursor <opaque>] [--json]
   happier automation run <automation-id> [--idempotency-key <key>] [--json]
 
 ${chalk.bold('Commands:')}
+  list   List automations with their stable IDs
   run    Queue an immediate run through the automation's existing assignments
 
 ${chalk.bold('Options:')}
+  --cursor <opaque>        Continue listing from an opaque cursor
   --idempotency-key <key>  Reuse the same run when a trigger occurrence is retried
   --json                   Print a machine-readable result
 `);
+}
+
+function parseListArgs(args: readonly string[]): Readonly<{ cursor: string | null }> {
+  const usage = 'Usage: happier automation list [--cursor <opaque>] [--json]';
+  assertCommandArguments(args, {
+    usage,
+    startIndex: 1,
+    booleanFlags: ['--json'],
+    valueFlags: ['--cursor'],
+    inlineValueFlags: [],
+    maxPositionals: 0,
+  });
+  const cursor = readRawFlagValue(args, '--cursor');
+  if (cursor !== null && cursor.trim().length === 0) throw new Error(usage);
+  return { cursor };
 }
 
 function parseRunArgs(args: readonly string[]): Readonly<{
@@ -83,7 +113,41 @@ export async function handleAutomationCommand(
     showAutomationHelp();
     return;
   }
-  if (subcommand !== 'run') throw new Error(`Unknown automation subcommand: ${subcommand}`);
+  if (subcommand !== 'list' && subcommand !== 'run') {
+    throw new Error(`Unknown automation subcommand: ${subcommand}`);
+  }
+
+  if (subcommand === 'list') {
+    const parsed = parseListArgs(args);
+    const credentials = await deps.readCredentialsFn();
+    if (!credentials) {
+      const error = new Error('Not authenticated. Run "happier auth login" first.');
+      (error as Error & { code?: string }).code = 'not_authenticated';
+      throw error;
+    }
+    const result = await deps.listAutomationDefinitionsFn({
+      token: credentials.token,
+      ...(parsed.cursor !== null ? { cursor: parsed.cursor } : {}),
+    });
+    if (wantsJson(args)) {
+      await printJsonEnvelope({ ok: true, kind: 'automation_list', data: result });
+      return;
+    }
+    if (result.automations.length === 0) {
+      console.log('No automations.');
+    } else {
+      for (const automation of result.automations) {
+        const state = automation.enabled ? chalk.green('active') : chalk.yellow('paused');
+        console.log(`${automation.id}\t${automation.name || '(unnamed)'}\t${state}`);
+      }
+    }
+    if (result.nextCursor) {
+      console.log(chalk.dim(
+        `More automations are available. Continue with: happier automation list --cursor ${result.nextCursor}`,
+      ));
+    }
+    return;
+  }
 
   const parsed = parseRunArgs(args);
   const credentials = await deps.readCredentialsFn();
@@ -113,7 +177,7 @@ export async function handleAutomationCliCommand(context: CommandContext): Promi
       const mapped = mapUnknownErrorToControlError(error);
       await printJsonEnvelope({
         ok: false,
-        kind: 'automation_run',
+        kind: args[0] === 'list' ? 'automation_list' : 'automation_run',
         error: { code: mapped.code, ...(mapped.message ? { message: mapped.message } : {}) },
       }, { exitCode: mapped.unexpected ? 2 : 1 });
       return;

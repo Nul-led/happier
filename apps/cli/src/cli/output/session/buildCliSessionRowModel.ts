@@ -8,6 +8,7 @@ import {
 import {
   isBackendTargetDisabledByAccountSettings,
   readAcpConfiguredBackendV1FromMetadata,
+  readLegacyConfiguredAcpBackendId,
   readRuntimeDescriptorV1FromMetadata,
   readSystemSessionMetadataFromMetadata,
   type AccountSettings,
@@ -72,16 +73,9 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>;
 }
 
-function readConfiguredAcpBackendIdFromFlavor(metadata: Record<string, unknown>): string | null {
-  const flavor = readOptionalNonEmptyString(metadata, 'flavor');
-  if (!flavor || !flavor.startsWith('acp:')) return null;
-  const backendId = flavor.slice(4).trim();
-  return backendId || null;
-}
-
 function resolveConfiguredAcpBackendId(metadata: Record<string, unknown>): string | null {
   return readAcpConfiguredBackendV1FromMetadata(metadata)?.backendId
-    ?? readConfiguredAcpBackendIdFromFlavor(metadata);
+    ?? readLegacyConfiguredAcpBackendId(metadata.flavor);
 }
 
 function normalizeVendorResumeSupportLevel(value: unknown): 'supported' | 'experimental' | 'unsupported' {

@@ -44,10 +44,11 @@ async function executeAccountServerAction<
   input: z.input<TInputSchema>;
   inputSchema: TInputSchema;
   outputSchema: TOutputSchema;
+  serverHttpBaseUrl?: string;
   signal?: AbortSignal;
 }>): Promise<z.output<TOutputSchema>> {
   const response = await axios.post<unknown>(
-    `${resolveServerHttpBaseUrl()}${params.path}`,
+    `${params.serverHttpBaseUrl ?? resolveServerHttpBaseUrl()}${params.path}`,
     params.inputSchema.parse(params.input),
     {
       headers: {
@@ -82,11 +83,14 @@ async function executeAccountServerAction<
  */
 export function createAccountServerActionDeps(input: Readonly<{
   token: string;
+  /** Optional process-lifetime endpoint binding for long-lived executors such as MCP. */
+  serverHttpBaseUrl?: string;
 }>): AccountServerActionDeps {
   return {
     accountSessionsSignOutEverywhereAction: async ({ input: actionInput, signal }) =>
       await executeAccountServerAction({
         token: input.token,
+        ...(input.serverHttpBaseUrl ? { serverHttpBaseUrl: input.serverHttpBaseUrl } : {}),
         path: ACCOUNT_SESSIONS_SIGN_OUT_EVERYWHERE_HTTP_PATH_V1,
         input: actionInput,
         inputSchema: AccountSessionsSignOutEverywhereActionInputV1Schema,
@@ -96,6 +100,7 @@ export function createAccountServerActionDeps(input: Readonly<{
     accountApiTokensCreateAction: async ({ input: actionInput, signal }) =>
       await executeAccountServerAction({
         token: input.token,
+        ...(input.serverHttpBaseUrl ? { serverHttpBaseUrl: input.serverHttpBaseUrl } : {}),
         path: ACCOUNT_API_TOKENS_CREATE_HTTP_PATH_V1,
         input: actionInput,
         inputSchema: AccountApiTokensCreateActionInputV1Schema,
@@ -105,6 +110,7 @@ export function createAccountServerActionDeps(input: Readonly<{
     accountApiTokensListAction: async ({ input: actionInput, signal }) =>
       await executeAccountServerAction({
         token: input.token,
+        ...(input.serverHttpBaseUrl ? { serverHttpBaseUrl: input.serverHttpBaseUrl } : {}),
         path: ACCOUNT_API_TOKENS_LIST_HTTP_PATH_V1,
         input: actionInput,
         inputSchema: AccountApiTokensListActionInputV1Schema,
@@ -114,6 +120,7 @@ export function createAccountServerActionDeps(input: Readonly<{
     accountApiTokensRevokeAction: async ({ input: actionInput, signal }) =>
       await executeAccountServerAction({
         token: input.token,
+        ...(input.serverHttpBaseUrl ? { serverHttpBaseUrl: input.serverHttpBaseUrl } : {}),
         path: ACCOUNT_API_TOKENS_REVOKE_HTTP_PATH_V1,
         input: actionInput,
         inputSchema: AccountApiTokensRevokeActionInputV1Schema,
@@ -123,6 +130,7 @@ export function createAccountServerActionDeps(input: Readonly<{
     accountApiTokensRevokeAllAction: async ({ input: actionInput, signal }) =>
       await executeAccountServerAction({
         token: input.token,
+        ...(input.serverHttpBaseUrl ? { serverHttpBaseUrl: input.serverHttpBaseUrl } : {}),
         path: ACCOUNT_API_TOKENS_REVOKE_ALL_HTTP_PATH_V1,
         input: actionInput,
         inputSchema: AccountApiTokensRevokeAllActionInputV1Schema,

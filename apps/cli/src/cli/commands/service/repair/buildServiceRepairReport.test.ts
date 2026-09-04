@@ -555,6 +555,7 @@ describe('buildServiceRepairReport', () => {
       'background_service_not_running',
     ]);
     expect(report.findings[0]).toEqual(expect.objectContaining({
+      title: 'Sign in to Home default.',
       actions: [
         {
           kind: 'run-auth-login',
@@ -589,6 +590,7 @@ describe('buildServiceRepairReport', () => {
     expect(report.findings).toEqual([
       expect.objectContaining({
         kind: 'machine_not_registered_for_profile',
+        title: 'Register this computer with Home default.',
         actions: [
           {
             kind: 'register-machine',
@@ -624,6 +626,7 @@ describe('buildServiceRepairReport', () => {
     expect(report.findings).toEqual([
       expect.objectContaining({
         kind: 'auth_expired_for_active_profile',
+        title: 'Refresh sign-in for Home default.',
         actions: [
           {
             kind: 'run-auth-login',
@@ -718,6 +721,7 @@ describe('buildServiceRepairReport', () => {
     expect(report.findings).toEqual([
       expect.objectContaining({
         kind: 'running_daemon_duplicate_profile',
+        title: 'Multiple running background services target Home default.',
         warningCode: null,
         recoveryStrategy: 'daemon-stop',
       }),

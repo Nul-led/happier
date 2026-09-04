@@ -16,12 +16,15 @@ import {
 } from '@/agent/runtime/registry/commandContracts';
 import { SESSION_HELP_LINES } from '@/cli/commands/session/shared/sessionCommandUsage';
 import { FIRST_CLASS_SESSION_COMMANDS } from '@/cli/firstClassSessionCommands';
+import type { EphemeralResolvedServerSelection } from '@/server/serverSelection';
 
 export type CommandContext = Readonly<{
   args: string[];
   rawArgv: string[];
   terminalRuntime: TerminalRuntimeFlags | null;
   signal?: AbortSignal;
+  /** Trusted explicit invocation provenance; contains neither credentials nor persistence authority. */
+  explicitServerSelection?: EphemeralResolvedServerSelection;
   /** In-memory only; carries launch-scoped values without argv or process.env. */
   scopedEnvironment?: Readonly<{
     env: Readonly<Record<string, string>>;
@@ -124,7 +127,7 @@ const firstClassSessionCommandRegistryEntries: Readonly<Record<string, CommandRe
 );
 
 const staticCommandRegistryEntries: Readonly<Record<string, CommandRegistryEntry>> = {
-  setup: { handler: handleSetupCliCommand, surface: { rootHelpLabel: 'happier setup', rootHelpDescription: 'Guided setup for this computer', allowTmux: false } },
+  setup: { handler: handleSetupCliCommand, surface: { rootHelpLabel: 'happier setup', rootHelpDescription: 'Connect this computer to an existing Home', allowTmux: false } },
   auth: { handler: handleAuthCliCommand, surface: { rootHelpLabel: 'happier auth', rootHelpDescription: 'Manage authentication', allowTmux: false } },
   automation: { handler: handleAutomationCliCommand, surface: { rootHelpLabel: 'happier automation', rootHelpDescription: 'Trigger and manage automations', allowTmux: false } },
   automations: { handler: handleAutomationCliCommand, surface: { allowTmux: false } },
@@ -148,11 +151,11 @@ const staticCommandRegistryEntries: Readonly<Record<string, CommandRegistryEntry
   status: { handler: handleStatusCliCommand, surface: { rootHelpLabel: 'happier status', rootHelpDescription: 'Show system status and recommended repairs', allowTmux: false } },
   service: { handler: handleServiceCliCommand, surface: { rootHelpLabel: 'happier service', rootHelpDescription: 'Manage the background service that allows', rootHelpDetail: 'to spawn new sessions away from your computer', allowTmux: false } },
   daemon: { handler: handleDaemonCliCommand, surface: { rootHelpLabel: 'happier daemon', rootHelpDescription: 'Manage daemon status and sessions', allowTmux: false } },
-  home: { handler: handleHomeCliCommand, surface: { rootHelpLabel: 'happier home', rootHelpDescription: 'Inspect, back up, restore, or erase your Personal Home', allowTmux: false } },
+  home: { handler: handleHomeCliCommand, surface: { rootHelpLabel: 'happier home', rootHelpDescription: 'Create, connect devices to, and manage a Personal Home', allowTmux: false } },
   machine: { handler: handleMachineCliCommand, surface: { rootHelpLabel: 'happier machine', rootHelpDescription: 'Set up remote machines over SSH', allowTmux: false } },
   machines: { handler: handleMachinesCliCommand, surface: { rootHelpLabel: 'happier machines', rootHelpDescription: 'Discover Account machines for API targeting', allowTmux: false } },
   actions: { handler: handleActionsCliCommand, surface: { rootHelpLabel: 'happier actions', rootHelpDescription: 'Discover and invoke built-in and contributed Actions', allowTmux: false } },
-  relay: { handler: handleRelayCliCommand, surface: { rootHelpLabel: 'happier relay', rootHelpDescription: 'Configure relay access and local runtimes', allowTmux: false } },
+  relay: { handler: handleRelayCliCommand, surface: { rootHelpLabel: 'happier relay', rootHelpDescription: 'Advanced runtime and public-ingress operations', allowTmux: false } },
   doctor: { handler: handleDoctorCliCommand, surface: { rootHelpLabel: 'happier doctor', rootHelpDescription: 'System diagnostics & troubleshooting', allowTmux: false } },
   uninstall: { handler: handleUninstallCliCommand, surface: { rootHelpLabel: 'happier uninstall', rootHelpDescription: 'Uninstall the current managed Happier CLI', allowTmux: false } },
   self: { handler: handleSelfCliCommand, surface: { rootHelpLabel: 'happier self', rootHelpDescription: 'Manage CLI updates and release channels', allowTmux: false } },

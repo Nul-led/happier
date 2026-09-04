@@ -85,7 +85,6 @@ describe('handleMachineCommand', () => {
         '--json',
       ],
       {
-        applyServerSelectionFromArgs: async (args) => args,
         createRunner: () => ({
           start,
           poll,
@@ -125,6 +124,17 @@ describe('handleMachineCommand', () => {
             webappUrl: 'https://app.example.test',
             publicRelayUrl: 'https://relay.example.test',
           },
+          homeTarget: {
+            profileId: null,
+            homeServerIdentityId: null,
+            descriptor: null,
+            canonicalAuthUrl: 'https://relay.example.test',
+            applicationUrl: 'https://relay.example.test',
+            webappUrl: 'https://relay.example.test',
+            credentialDestination: null,
+            preferredTransport: 'https',
+            authority: 'manual_url',
+          },
           channel: 'preview',
           serviceMode: 'none',
           knownHostsMode: 'app',
@@ -159,7 +169,6 @@ describe('handleMachineCommand', () => {
     await handleMachineCommand(
       ['setup', '--ssh', 'dev@example.test', '--require-local-approval', '--json'],
       {
-        applyServerSelectionFromArgs: async (args) => args,
         createRunner: () => ({
           start,
           poll,
@@ -190,6 +199,67 @@ describe('handleMachineCommand', () => {
     });
   });
 
+  it('passes an explicit Iroh-only descriptor target into the remote task without requiring a public URL', async () => {
+    const start = vi.fn(async () => ({ taskId: 'task-home-target' }));
+    const poll = vi.fn().mockResolvedValue({
+      events: [],
+      nextCursor: 1,
+      result: {
+        protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
+        taskId: 'task-home-target',
+        ok: true,
+        data: {},
+      } satisfies SystemTaskResult,
+      pendingPrompt: null,
+    });
+    const homeTarget = {
+      profileId: null,
+      homeServerIdentityId: 'srv_machine_home',
+      descriptor: {
+        v: 1 as const,
+        homeServerIdentityId: 'srv_machine_home',
+        canonicalServerUrl: 'http://127.0.0.1:3005',
+        revision: 1,
+        endpoints: [{ kind: 'iroh' as const, endpointId: 'a'.repeat(64) }],
+      },
+      canonicalAuthUrl: 'http://127.0.0.1:3005',
+      applicationUrl: 'http://127.0.0.1:3005',
+      webappUrl: 'http://127.0.0.1:3005',
+      credentialDestination: {
+        v: 1 as const,
+        homeServerIdentityId: 'srv_machine_home',
+        canonicalServerUrl: 'http://127.0.0.1:3005',
+        applicationEndpointUrls: [],
+        irohEndpointIds: ['a'.repeat(64)],
+      },
+      preferredTransport: 'iroh' as const,
+      authority: 'trusted_enrollment' as const,
+    };
+
+    await handleMachineCommand(['setup', '--home-descriptor-file', '-', '--ssh', 'dev@example.test', '--json'], {
+      parseHomeTargetArgs: async (args) => ({
+        target: { kind: 'descriptor', descriptor: homeTarget.descriptor, authority: 'trusted_enrollment' },
+        source: '--home-descriptor-file',
+        rest: args.filter((entry) => entry !== '--home-descriptor-file' && entry !== '-'),
+      }),
+      createRunner: () => ({ start, poll, respond: vi.fn(async () => undefined) }),
+      readRelaySelection: () => ({
+        relayUrl: 'https://unrelated-active-home.example.test',
+        webappUrl: 'https://app.example.test',
+      }),
+      promptInput: async () => '',
+      promptSecret: async () => '',
+      isInteractiveTerminal: () => false,
+      sleep: async () => undefined,
+    });
+
+    expect(start).toHaveBeenCalledWith({
+      spec: expect.objectContaining({
+        params: expect.objectContaining({ homeTarget }),
+      }),
+    });
+  });
+
   it('uses the current hdev invoker channel when setup omits explicit channel flags', async () => {
     const originalArgv = [...process.argv];
     const result: SystemTaskResult = {
@@ -211,7 +281,6 @@ describe('handleMachineCommand', () => {
       await handleMachineCommand(
         ['setup', '--ssh', 'dev@example.test', '--json'],
         {
-          applyServerSelectionFromArgs: async (args) => args,
           createRunner: () => ({
             start,
             poll,
@@ -275,7 +344,6 @@ describe('handleMachineCommand', () => {
     await handleMachineCommand(
       ['setup', '--ssh', 'dev@example.test', '--install-relay-runtime'],
       {
-        applyServerSelectionFromArgs: async (args) => args,
         createRunner: () => ({
           start: vi.fn(async () => ({ taskId: 'task-2' })),
           poll,
@@ -332,7 +400,6 @@ describe('handleMachineCommand', () => {
     await handleMachineCommand(
       ['setup', '--ssh', 'dev@example.test', '--install-relay-runtime'],
       {
-        applyServerSelectionFromArgs: async (args) => args,
         createRunner: () => ({
           start: vi.fn(async () => ({ taskId: 'task-loopback' })),
           poll,
@@ -398,7 +465,6 @@ describe('handleMachineCommand', () => {
         'password',
       ],
       {
-        applyServerSelectionFromArgs: async (args) => args,
         createRunner: () => ({
           start,
           poll,
@@ -478,7 +544,6 @@ describe('handleMachineCommand', () => {
         '--ssh-auth=password',
       ],
       {
-        applyServerSelectionFromArgs: async (args) => args,
         createRunner: () => ({
           start,
           poll,
@@ -561,7 +626,6 @@ describe('handleMachineCommand', () => {
         '--ssh-auth=password',
       ],
       {
-        applyServerSelectionFromArgs: async (args) => args,
         createRunner: () => ({
           start,
           poll,
@@ -602,7 +666,7 @@ describe('handleMachineCommand', () => {
     });
   });
 
-  it('accepts prefixed relay selection flags before remote machine setup and reuses the selected relay profile', async () => {
+  it('retains released URL target flags as a thin Home target for remote machine setup', async () => {
     const start = vi.fn(async () => ({ taskId: 'task-3' }));
     const poll = vi.fn().mockResolvedValue({
       events: [],
@@ -630,15 +694,6 @@ describe('handleMachineCommand', () => {
         '--json',
       ],
       {
-        applyServerSelectionFromArgs: async (args) => {
-          expect(args.slice(0, 4)).toEqual([
-            '--server-url',
-            'https://stack.example.test',
-            '--local-server-url',
-            'http://127.0.0.1:53545',
-          ]);
-          return ['--ssh', 'dev@example.test', '--json'];
-        },
         createRunner: () => ({
           start,
           poll,
@@ -666,10 +721,14 @@ describe('handleMachineCommand', () => {
         kind: 'remote.ssh.bootstrapMachine.v1',
         params: expect.objectContaining({
           relay: {
-            relayUrl: 'https://stack.example.test',
+            relayUrl: 'http://127.0.0.1:53545',
             webappUrl: 'https://app.example.test',
             publicRelayUrl: 'https://stack.example.test',
           },
+          homeTarget: expect.objectContaining({
+            authority: 'manual_url',
+            applicationUrl: 'http://127.0.0.1:53545',
+          }),
         }),
       },
     });
@@ -719,7 +778,6 @@ describe('handleMachineCommand', () => {
     await handleMachineCommand(
       ['setup', '--ssh', 'dev@example.test'],
       {
-        applyServerSelectionFromArgs: async (args) => args,
         createRunner: () => ({
           start: vi.fn(async () => ({ taskId: 'task-1' })),
           poll,
@@ -805,7 +863,6 @@ describe('handleMachineCommand', () => {
     await handleMachineCommand(
       ['setup', '--ssh', 'dev@example.test', '--yes', '--json'],
       {
-        applyServerSelectionFromArgs: async (args) => args,
         createRunner: () => ({
           start: vi.fn(async () => ({ taskId: 'task-1' })),
           poll,
@@ -843,7 +900,6 @@ describe('handleMachineCommand', () => {
     await handleMachineCommand(
       ['setup', '--ssh', 'dev@example.test'],
       {
-        applyServerSelectionFromArgs: async (args) => args,
         createRunner: () => ({
           start: vi.fn(async () => ({ taskId: 'task-1' })),
           poll: vi.fn(async () => ({
@@ -884,7 +940,6 @@ describe('handleMachineCommand', () => {
     await handleMachineCommand(
       ['setup', '--ssh', 'dev@example.test'],
       {
-        applyServerSelectionFromArgs: async (args) => args,
         createRunner: () => ({
           start: vi.fn(async () => ({ taskId: 'task-service-replace' })),
           poll: vi.fn()
@@ -944,7 +999,6 @@ describe('handleMachineCommand', () => {
     await handleMachineCommand(
       ['setup', '--ssh', 'dev@example.test', '--bogus', '--json'],
       {
-        applyServerSelectionFromArgs: async (args) => args,
         createRunner: () => ({
           start: vi.fn(async () => ({ taskId: 'task-1' })),
           poll: vi.fn(async () => ({
@@ -985,7 +1039,6 @@ describe('handleMachineCommand', () => {
         '--json',
       ],
       {
-        applyServerSelectionFromArgs: async (args) => args,
         createRunner: () => ({
           start: vi.fn(async () => ({ taskId: 'task-1' })),
           poll: vi.fn(async () => ({
@@ -1017,7 +1070,6 @@ describe('handleMachineCommand', () => {
     await handleMachineCommand(
       ['setup', '--ssh', 'dev@example.test:2222'],
       {
-        applyServerSelectionFromArgs: async (args) => args,
         createRunner: () => ({
           start: vi.fn(async () => ({ taskId: 'task-1' })),
           poll: vi.fn(async () => ({
@@ -1073,7 +1125,6 @@ describe('handleMachineCommand', () => {
     await handleMachineCommand(
       ['setup', '--ssh', 'dev@example.test', '--json'],
       {
-        applyServerSelectionFromArgs: async (args) => args,
         createRunner: () => ({
           start: vi.fn(async () => ({ taskId: 'task-1' })),
           poll,

@@ -23,6 +23,8 @@ export const TERMINAL_SPECIAL_KEY_RAW_SEQUENCES: Readonly<
   Partial<Record<TerminalSpecialKey, string>>
 > = Object.freeze({
   Tab: '\t',
+  ArrowUp: '\u001b[A',
+  ArrowDown: '\u001b[B',
   ShiftTab: TERMINAL_SHIFT_TAB_SEQUENCE,
   CtrlC: '\u0003',
   Backspace: '\u007f',

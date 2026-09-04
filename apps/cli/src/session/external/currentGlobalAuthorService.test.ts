@@ -412,19 +412,20 @@ describe('current-global External Sessions author binding', () => {
       direction: 'older',
     })).resolves.toMatchObject({ mode: 'page' });
 
-    // Control operations fail closed on read-only scopes, including the
-    // pre-check surfaces that must stay typed instead of throwing.
+    // Capabilities and follow are read operations, so the read-only caller
+    // observes the underlying service result rather than a scope denial.
     expect(await binding.capabilities()).toEqual({
-      list: { status: 'unavailable', code: 'plugin_session_scope_unavailable' },
-      attach: { status: 'unavailable', code: 'plugin_session_scope_unavailable' },
-      takeover: { status: 'unavailable', code: 'plugin_session_scope_unavailable' },
-      transcript: { status: 'unavailable', code: 'plugin_session_scope_unavailable' },
-      follow: { status: 'unavailable', code: 'plugin_session_scope_unavailable' },
+      list: unavailable,
+      attach: unavailable,
+      takeover: unavailable,
+      transcript: unavailable,
+      follow: unavailable,
     });
-    await expect(binding.followTranscript(externalSessionRef, {}, vi.fn())).resolves.toEqual({
-      status: 'unavailable',
-      code: 'plugin_session_scope_unavailable',
-    });
+    await expect(binding.followTranscript(externalSessionRef, {}, vi.fn())).resolves.toEqual(
+      unavailable,
+    );
+
+    // Control operations still fail closed on read-only scopes.
     await expect(binding.attach(externalSessionRef)).rejects.toMatchObject({
       code: 'plugin_session_scope_unavailable',
     });

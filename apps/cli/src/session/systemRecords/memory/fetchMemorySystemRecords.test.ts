@@ -1,9 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
+import { AccountEncryptionMaterialUnavailableError } from '@/api/client/encryptionKey';
+import {
+  fetchLatestMemorySynopsisSystemRecord,
+  fetchMemorySummaryShardSystemRecords,
+} from './fetchMemorySystemRecords';
 
 describe('fetchMemorySystemRecords', () => {
   it('reads summary shard pages through session system records and opens payloads', async () => {
-    const { fetchMemorySummaryShardSystemRecords } = await import('./fetchMemorySystemRecords');
-
     const payload = {
       v: 1,
       seqFrom: 10,
@@ -50,9 +53,25 @@ describe('fetchMemorySystemRecords', () => {
     expect(pagesRequested).toEqual([{ cursor: undefined }, { cursor: 'cursor-2' }]);
   });
 
-  it('reads the latest synopsis through session system records', async () => {
-    const { fetchLatestMemorySynopsisSystemRecord } = await import('./fetchMemorySystemRecords');
+  it('passes the caller signal through every summary-record page', async () => {
+    const controller = new AbortController();
+    const fetchSessionSystemRecordsPage = vi.fn()
+      .mockResolvedValueOnce({ records: [], nextCursor: 'next', hasNext: true })
+      .mockResolvedValueOnce({ records: [], nextCursor: null, hasNext: false });
 
+    await fetchMemorySummaryShardSystemRecords({
+      token: 'token-1', sessionId: 'sess-1', mode: 'plain',
+      signal: controller.signal,
+      fetchSessionSystemRecordsPage,
+    });
+
+    expect(fetchSessionSystemRecordsPage).toHaveBeenCalledTimes(2);
+    for (const [request] of fetchSessionSystemRecordsPage.mock.calls) {
+      expect(request.signal).toBe(controller.signal);
+    }
+  });
+
+  it('reads the latest synopsis through session system records', async () => {
     await expect(fetchLatestMemorySynopsisSystemRecord({
       token: 'token-1',
       sessionId: 'sess-1',
@@ -78,8 +97,6 @@ describe('fetchMemorySystemRecords', () => {
   });
 
   it('fails before fetching encrypted records when session key material is unavailable', async () => {
-    const { AccountEncryptionMaterialUnavailableError } = await import('@/api/client/encryptionKey');
-    const { fetchMemorySummaryShardSystemRecords } = await import('./fetchMemorySystemRecords');
     const fetchSessionSystemRecordsPage = vi.fn();
 
     await expect(fetchMemorySummaryShardSystemRecords({

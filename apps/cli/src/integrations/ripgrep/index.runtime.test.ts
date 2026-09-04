@@ -115,4 +115,39 @@ describe('ripgrep runtime resolution', () => {
     });
     expect(killProcessTreeMock).toHaveBeenCalledWith(child, undefined);
   });
+
+  it('bounds captured output and terminates the process tree when the stdout limit is exceeded', async () => {
+    const stdout = new EventEmitter();
+    const stderr = new EventEmitter();
+    const child = new EventEmitter() as EventEmitter & {
+      pid: number;
+      stdout: EventEmitter;
+      stderr: EventEmitter;
+    };
+    child.pid = 4243;
+    child.stdout = stdout;
+    child.stderr = stderr;
+    spawnMock.mockReturnValue(child);
+
+    const { run } = await import('./index');
+    const pending = run(['--files'], {
+      maxStdoutBytes: 4,
+      maxStderrBytes: 3,
+      terminateOnStdoutLimit: true,
+    });
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(1));
+
+    stdout.emit('data', Buffer.from('abcdef'));
+    stderr.emit('data', Buffer.from('warning'));
+    child.emit('close', 143);
+
+    await expect(pending).resolves.toEqual({
+      exitCode: 143,
+      stdout: 'abcd',
+      stderr: 'war',
+      stdoutTruncated: true,
+      stderrTruncated: true,
+    });
+    expect(killProcessTreeMock).toHaveBeenCalledWith(child, undefined);
+  });
 });

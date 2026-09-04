@@ -221,13 +221,14 @@ describe('createPluginSessionHandleCapabilitiesFactory', () => {
     });
 
     const capabilities = createCapabilities('session-1');
+    const acknowledgeDecisionApplication = vi.fn(async () => undefined);
 
     await expect(capabilities.permissions?.requestDecision({
       requestId: 'permission-1',
       toolName: 'shell',
       input: { command: 'pwd' },
       source: 'test',
-    })).resolves.toEqual({
+    }, { acknowledgeDecisionApplication })).resolves.toEqual({
       decision: 'approved',
       answers: {
         single: ['one'],
@@ -242,6 +243,7 @@ describe('createPluginSessionHandleCapabilitiesFactory', () => {
         owner: { kind: 'plugin', pluginId: 'acme.plugin', runtimeId: 'runtime-a' },
         source: 'test',
         signal: expect.any(AbortSignal),
+        acknowledgeDecisionApplication,
       }),
     );
     expect(capabilities.permissions?.getMode()).toBe('default');

@@ -210,6 +210,9 @@ export function createPluginSessionHandleCapabilitiesFactory(
             owner,
             ...(request.source?.trim() ? { source: request.source.trim() } : {}),
             signal: operationSignal(live, options?.signal),
+            ...(options?.acknowledgeDecisionApplication
+              ? { acknowledgeDecisionApplication: options.acknowledgeDecisionApplication }
+              : {}),
           },
         );
         if (!isSameLive(live) || !isLiveCurrent(live)) {

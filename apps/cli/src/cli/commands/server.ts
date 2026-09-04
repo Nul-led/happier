@@ -29,7 +29,9 @@ export async function handleServerCommand(args: string[]): Promise<void> {
       return;
     }
 
-    const handled = await runServerSubcommand(subcommand, args);
+    const handled = await runServerSubcommand(subcommand, args, {
+      selectionMutationMode: 'standalone',
+    });
     if (handled) {
       return;
     }

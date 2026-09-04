@@ -40,6 +40,7 @@ const daemonBoundary = vi.hoisted(() => ({
   ensureRunning: vi.fn(async () => undefined),
   requestChange: vi.fn(),
   decideChange: vi.fn(),
+  readChangeStatus: vi.fn(),
   readCatalog: vi.fn(),
 }));
 const promptBoundary = vi.hoisted(() => ({
@@ -54,6 +55,7 @@ vi.mock('@/daemon/controlClient', async (importOriginal) => ({
   ...await importOriginal<typeof import('@/daemon/controlClient')>(),
   requestDaemonPluginChange: daemonBoundary.requestChange,
   decideDaemonPluginChange: daemonBoundary.decideChange,
+  readDaemonPluginChangeStatus: daemonBoundary.readChangeStatus,
   readDaemonPluginCatalog: daemonBoundary.readCatalog,
 }));
 vi.mock('@/terminal/prompts/promptConfirmYesNo', () => ({
@@ -90,6 +92,14 @@ function createPluginChangeService(): DaemonPluginChangeService {
     reloadController,
     staleCandidateCleanup: 'disabled',
     connectedAccounts,
+    generationCustodyRetirement: {
+      readCredentials: async () => ({
+        token: 'plugins-command-test-token',
+        encryption: { type: 'legacy', secret: TEST_PLUGIN_SECRET_KEY },
+      }),
+      retireGeneration: async () => undefined,
+      readRunnerRetainedGenerationIds: async () => new Set(),
+    },
   }).changeService;
 }
 
@@ -322,21 +332,33 @@ function marketplaceIndexServiceForSnapshot(snapshot: MarketplaceIndexSourceSnap
     // The exact-listing method is the one owner every single-listing command
     // and the Install and Trust action reach; the double answers from the same
     // seeded source rather than a second fixture path.
-    queryExactListing: async (query: Readonly<{ sourceId: string; pluginId: string; packageName?: string }>) => ({
-      ok: true as const,
-      source: {
-        id: snapshot.source.id,
-        title: snapshot.source.title,
-        sourceUrl: snapshot.source.sourceUrl,
-        enabled: true,
-        origin: snapshot.source.kind,
-      },
-      result: await querySources({
-        text: '',
-        cursor: null,
-        limit: 1,
-        filters: { sourceIds: [query.sourceId], pluginIds: [query.pluginId], includeUnavailable: true },
-      }),
+    queryExactListing: vi.fn(async (query: Readonly<{ sourceId: string; pluginId: string; packageName?: string }>) => {
+      const exactSnapshot = snapshot.source.kind === 'community-npm'
+        ? {
+          ...snapshot,
+          entries: snapshot.entries.filter((entry) => entry.distribution.packageName === query.packageName),
+        }
+        : snapshot;
+      return {
+        ok: true as const,
+        source: {
+          id: snapshot.source.id,
+          title: snapshot.source.title,
+          sourceUrl: snapshot.source.sourceUrl,
+          enabled: true,
+          origin: snapshot.source.kind,
+        },
+        result: createMarketplaceIndex({
+          revision: 1,
+          sources: [exactSnapshot],
+          query: {
+            text: '',
+            cursor: null,
+            limit: 1,
+            filters: { sourceIds: [query.sourceId], pluginIds: [query.pluginId], includeUnavailable: true },
+          },
+        }),
+      };
     }),
   };
 }
@@ -568,6 +590,7 @@ describe('handlePluginsCommand', () => {
     daemonBoundary.ensureRunning.mockClear();
     daemonBoundary.requestChange.mockReset();
     daemonBoundary.decideChange.mockReset();
+    daemonBoundary.readChangeStatus.mockReset();
     daemonBoundary.readCatalog.mockReset();
     promptBoundary.confirm.mockReset();
     promptBoundary.confirm.mockResolvedValue(false);
@@ -582,6 +605,10 @@ describe('handlePluginsCommand', () => {
     daemonBoundary.decideChange.mockImplementation(async (decision) => {
       if (!activePluginChangeService) throw new Error('Plugin change decision arrived before its request');
       return await activePluginChangeService.decidePluginChange(decision);
+    });
+    daemonBoundary.readChangeStatus.mockImplementation(async (request) => {
+      if (!activePluginChangeService) throw new Error('Plugin change status arrived before its request');
+      return await activePluginChangeService.statusPluginChange(request);
     });
   });
 
@@ -619,6 +646,7 @@ describe('handlePluginsCommand', () => {
       expect(output.text()).toContain('happier plugins logs <pluginId> [--machine <id>] [--generation <id>] [--correlation <id>] [--cursor <byteOffset>] [--limit <1-500>] [--follow] [--json]');
       expect(output.text()).toContain('happier plugins marketplace sources list [--json]');
       expect(output.text()).toContain('happier plugins marketplace list [<sourceRef>] [--json]');
+      expect(output.text()).toContain('community-npm');
       expect(output.text()).not.toContain('happier plugins call');
       expect(output.text()).not.toContain('happier plugins trust');
       expect(output.text()).toContain('--sdk-registry <origin>');
@@ -3397,6 +3425,7 @@ describe('handlePluginsCommand', () => {
       try {
         await handlePluginsCommand(['marketplace', 'list'], { marketplaceIndexService });
         expect(listOutput.text()).toContain(`Contributions: ${contributions.join(', ')}`);
+        expect(listOutput.text()).toContain('Package: @acme/sample');
         expect(listOutput.text()).not.toContain('0 agents');
       } finally {
         listOutput.restore();
@@ -3406,6 +3435,7 @@ describe('handlePluginsCommand', () => {
       try {
         await handlePluginsCommand(['marketplace', 'show', SAMPLE_PLUGIN_ID], { marketplaceIndexService });
         expect(showOutput.text()).toContain(`Contributions: ${contributions.join(', ')}`);
+        expect(showOutput.text()).toContain('Package: @acme/sample');
         expect(showOutput.text()).not.toContain('0 Actions');
       } finally {
         showOutput.restore();
@@ -3524,6 +3554,177 @@ describe('handlePluginsCommand', () => {
     }
   });
 
+  it('requires the selected Community npm package name for exact install when it differs from the plugin id', async () => {
+    const home = await createTempDir('happier-plugin-marketplace-community-install-');
+    const sourceUrl = 'https://marketplace.invalid/community-source.json';
+    const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'PATH', 'HAPPIER_MARKETPLACE_CURATED_SOURCE_URL']);
+    envScope.patch({
+      HAPPIER_HOME_DIR: home,
+      PATH: process.env.PATH ?? '',
+      HAPPIER_MARKETPLACE_CURATED_SOURCE_URL: sourceUrl,
+    });
+    reloadConfiguration();
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    const packageName = '@acme/npm-name-different-from-plugin-id';
+    const seeded = await seedExactCuratedMarketplaceListing({
+      happyHomeDir: home,
+      sourceUrl,
+    });
+    const communitySnapshot: MarketplaceIndexSourceSnapshotV1 = {
+      ...seeded.snapshot,
+      source: {
+        id: 'marketplace:community-npm',
+        title: 'Community npm',
+        kind: 'community-npm',
+        sourceUrl: 'https://registry.npmjs.org/-/v1/search',
+      },
+      entries: seeded.snapshot.entries.map((entry) => ({
+        ...entry,
+        distribution: { ...entry.distribution, packageName },
+        review: { status: 'unreviewed', reviewedAt: null },
+        updatePolicy: 'reviewEveryUpdate',
+      })),
+    };
+    const marketplaceIndexService = marketplaceIndexServiceForSnapshot(communitySnapshot);
+    daemonBoundary.requestChange.mockResolvedValueOnce({
+      kind: 'committed',
+      pluginId: SAMPLE_PLUGIN_ID,
+      desiredGeneration: 'generation-community-1',
+      appliedGeneration: 'generation-community-1',
+      pendingSurfaces: [],
+    });
+
+    try {
+      const missingPackageOutput = captureConsoleJsonOutput();
+      try {
+        await handlePluginsCommand([
+          'marketplace',
+          'install',
+          'community-npm',
+          SAMPLE_PLUGIN_ID,
+          '--json',
+        ], { marketplaceIndexService });
+        expect(missingPackageOutput.json()).toMatchObject({
+          ok: false,
+          kind: 'plugins_marketplace_install',
+          error: { code: 'install_unavailable', message: expect.stringMatching(/--package/) },
+        });
+      } finally {
+        missingPackageOutput.restore();
+      }
+      expect(marketplaceIndexService.queryExactListing).not.toHaveBeenCalled();
+
+      process.exitCode = undefined;
+      const output = captureConsoleJsonOutput();
+      try {
+        await handlePluginsCommand([
+          'marketplace',
+          'install',
+          'community-npm',
+          SAMPLE_PLUGIN_ID,
+          '--package',
+          packageName,
+          '--json',
+        ], { marketplaceIndexService });
+        expect(output.json()).toMatchObject({
+          ok: true,
+          kind: 'plugins_marketplace_install',
+          data: { pluginId: SAMPLE_PLUGIN_ID },
+        });
+      } finally {
+        output.restore();
+      }
+
+      expect(marketplaceIndexService.queryExactListing).toHaveBeenCalledWith({
+        sourceId: 'marketplace:community-npm',
+        pluginId: SAMPLE_PLUGIN_ID,
+        packageName,
+      });
+      expect(daemonBoundary.requestChange).toHaveBeenCalledWith(expect.objectContaining({
+        kind: 'installNpm',
+        packageName,
+      }));
+    } finally {
+      process.exitCode = previousExitCode;
+      envScope.restore();
+      reloadConfiguration();
+      await removeTempDir(home);
+    }
+  });
+
+  it('maps the friendly Community npm source alias to the single synthesized source for list and show', async () => {
+    const packageName = '@acme/community-alias';
+    const home = await createTempDir('happier-plugin-marketplace-community-alias-');
+    const sourceUrl = 'https://marketplace.invalid/community-alias.json';
+    const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'PATH', 'HAPPIER_MARKETPLACE_CURATED_SOURCE_URL']);
+    envScope.patch({
+      HAPPIER_HOME_DIR: home,
+      PATH: process.env.PATH ?? '',
+      HAPPIER_MARKETPLACE_CURATED_SOURCE_URL: sourceUrl,
+    });
+    reloadConfiguration();
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    const seeded = await seedExactCuratedMarketplaceListing({
+      happyHomeDir: home,
+      sourceUrl,
+    });
+    const snapshot: MarketplaceIndexSourceSnapshotV1 = {
+      ...seeded.snapshot,
+      source: {
+        id: 'marketplace:community-npm',
+        title: 'Community npm',
+        kind: 'community-npm',
+        sourceUrl: 'https://registry.npmjs.org/-/v1/search',
+      },
+      entries: seeded.snapshot.entries.map((entry) => ({
+        ...entry,
+        distribution: { ...entry.distribution, packageName },
+        review: { status: 'unreviewed', reviewedAt: null },
+        updatePolicy: 'reviewEveryUpdate',
+      })),
+    };
+    try {
+      const marketplaceIndexService = marketplaceIndexServiceForSnapshot(snapshot);
+
+      const listOutput = captureConsoleJsonOutput();
+      try {
+        await handlePluginsCommand(['marketplace', 'list', 'community-npm', '--json'], { marketplaceIndexService });
+        expect(listOutput.json()).toMatchObject({
+          ok: true,
+          kind: 'plugins_marketplace_list',
+          data: { source: { id: 'marketplace:community-npm', origin: 'community-npm' } },
+        });
+      } finally {
+        listOutput.restore();
+      }
+
+      const showOutput = captureConsoleJsonOutput();
+      try {
+        await handlePluginsCommand(['marketplace', 'show', 'community-npm', SAMPLE_PLUGIN_ID, '--package', packageName, '--json'], { marketplaceIndexService });
+        expect(showOutput.json()).toMatchObject({
+          ok: true,
+          kind: 'plugins_marketplace_show',
+          data: { source: { id: 'marketplace:community-npm', origin: 'community-npm' } },
+        });
+      } finally {
+        showOutput.restore();
+      }
+
+      expect(marketplaceIndexService.queryExactListing).toHaveBeenCalledWith({
+        sourceId: 'marketplace:community-npm',
+        pluginId: SAMPLE_PLUGIN_ID,
+        packageName,
+      });
+    } finally {
+      process.exitCode = previousExitCode;
+      envScope.restore();
+      reloadConfiguration();
+      await removeTempDir(home);
+    }
+  });
+
   it.each([
     ['withdrawn review', { reviewStatus: 'withdrawn' as const }, /withdrawn|approved review/i],
     ['unverified registry profile', { registryProfileId: 'registry:private' }, /registry profile|artifact access/i],
@@ -3627,7 +3828,7 @@ describe('handlePluginsCommand', () => {
     }
   });
 
-  it('uninstalls a local-path plugin while reporting unauthenticated custody retirement as pending', async () => {
+  it('uninstalls a local-path plugin after authenticated generation-custody retirement', async () => {
     const home = await createTempDir('happier-plugin-uninstall-cli-');
     const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'PATH']);
     envScope.patch({ HAPPIER_HOME_DIR: home, PATH: '' });
@@ -3678,7 +3879,7 @@ describe('handlePluginsCommand', () => {
         expect(parsed.data).toMatchObject({
           desiredGeneration: null,
           appliedGeneration: null,
-          pendingSurfaces: ['reconciliation'],
+          pendingSurfaces: [],
         });
       } finally {
         output.restore();
@@ -3743,7 +3944,7 @@ describe('handlePluginsCommand', () => {
     }
   });
 
-  it('updates an installed plugin through the daemon update owner without reconstructing its channel client-side', async () => {
+  it('updates an installed plugin through one daemon-owned review without reconstructing its channel client-side', async () => {
     const home = await createTempDir('happier-plugin-update-cli-');
     const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'PATH']);
     envScope.patch({ HAPPIER_HOME_DIR: home, PATH: '' });
@@ -3757,30 +3958,52 @@ describe('handlePluginsCommand', () => {
       const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as Record<string, unknown>;
       await writeFile(manifestPath, JSON.stringify({ ...manifest, version: '2.0.0' }, null, 2), 'utf8');
 
+      let pendingChangeId = '';
       const output = captureConsoleJsonOutput();
       try {
         await handlePluginsCommand(['update', SAMPLE_PLUGIN_ID, '--json']);
-        expect(output.json<{
+        const result = output.json<{
           ok: boolean;
           kind: string;
-          data?: {
-            pluginId?: string;
-            plugin?: { version?: string };
-            desiredGeneration?: string | null;
-            appliedGeneration?: string | null;
+          error?: {
+            code?: string;
+            pendingChangeId?: string;
           };
-        }>()).toMatchObject({
-          ok: true,
+        }>();
+        expect(result).toMatchObject({
+          ok: false,
           kind: 'plugins_update',
+          error: {
+            code: 'review_required',
+            pendingChangeId: expect.any(String),
+          },
+        });
+        pendingChangeId = result.error?.pendingChangeId ?? '';
+      } finally {
+        output.restore();
+      }
+
+      process.exitCode = undefined;
+      const decisionOutput = captureConsoleJsonOutput();
+      try {
+        await handlePluginsCommand(['change', 'approve', pendingChangeId, '--json']);
+        expect(decisionOutput.json()).toMatchObject({
+          ok: true,
+          kind: 'plugins_change_decision',
           data: {
-            pluginId: SAMPLE_PLUGIN_ID,
-            plugin: { version: '2.0.0' },
-            desiredGeneration: expect.any(String),
-            appliedGeneration: expect.any(String),
+            outcome: 'applied',
+            pendingChangeId,
+            decision: 'approve',
+            result: {
+              kind: 'committed',
+              pluginId: SAMPLE_PLUGIN_ID,
+              desiredGeneration: expect.any(String),
+              appliedGeneration: expect.any(String),
+            },
           },
         });
       } finally {
-        output.restore();
+        decisionOutput.restore();
       }
 
       expect(daemonBoundary.requestChange).toHaveBeenLastCalledWith({ kind: 'update', pluginId: SAMPLE_PLUGIN_ID });

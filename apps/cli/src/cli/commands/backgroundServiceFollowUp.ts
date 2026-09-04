@@ -14,19 +14,9 @@ import { promptInput, runCliAction } from './server/commandUtilities';
 type BackgroundServiceFollowUpMode = 'user' | 'system';
 type ServerChangeCredentialState = 'authenticated' | 'authentication-required' | 'unknown';
 
+export type ServerSelectionMutationMode = 'standalone' | 'mutation-only';
+
 type BackgroundServiceInventoryEntry = HappierService | DaemonServiceListEntry;
-
-/**
- * Child relay-selection commands set this only while `happier setup` owns the
- * larger relay → auth → service sequence. Reconciliation still has one owner
- * here; the child merely defers it until setup reaches the service step.
- */
-export const DEFER_SERVER_SELECTION_FOLLOW_UP_ENV = 'HAPPIER_DEFER_SERVER_SELECTION_FOLLOW_UP';
-
-function shouldDeferServerSelectionFollowUp(): boolean {
-    const raw = String(process.env[DEFER_SERVER_SELECTION_FOLLOW_UP_ENV] ?? '').trim().toLowerCase();
-    return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
-}
 
 function isInstalledDefaultFollowingDaemonService(service: BackgroundServiceInventoryEntry): boolean {
     if ('serviceType' in service) {
@@ -379,10 +369,6 @@ export async function runServerSelectionBackgroundServiceFollowUp(params: Readon
     interactive: boolean;
     targetServerUrl: string;
 }>): Promise<void> {
-    if (shouldDeferServerSelectionFollowUp()) {
-        return;
-    }
-
     const runtime = resolveDaemonServiceCliRuntimeFromEnv({ processEnv: process.env });
     const services = await resolveInstalledDaemonServiceInventoryForCurrentRelay(runtime);
     if (resolveInstalledDefaultFollowingDaemonServiceModes(services).length === 0) {
@@ -398,5 +384,25 @@ export async function runServerSelectionBackgroundServiceFollowUp(params: Readon
         authState: credentials ? 'logged_in' : 'logged_out',
         log: console.log,
         services,
+    });
+}
+
+/**
+ * Completes a server-selection mutation according to the caller's explicit
+ * orchestration role. Standalone server/relay commands reconcile immediately;
+ * guided setup selects `mutation-only`, authenticates once itself, and then
+ * reaches the existing service setup owner once.
+ */
+export async function completeServerSelectionMutation(params: Readonly<{
+    mode: ServerSelectionMutationMode;
+    interactive: boolean;
+    targetServerUrl: string;
+}>): Promise<void> {
+    if (params.mode === 'mutation-only') {
+        return;
+    }
+    await runServerSelectionBackgroundServiceFollowUp({
+        interactive: params.interactive,
+        targetServerUrl: params.targetServerUrl,
     });
 }

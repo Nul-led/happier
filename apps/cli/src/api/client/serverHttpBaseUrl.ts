@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+
 import { configuration } from '@/configuration';
 
 import { resolveLoopbackHttpUrl } from './loopbackUrl';
@@ -8,13 +10,24 @@ type ServerHttpRuntimePublication = Readonly<{
 }>;
 
 let runtimePublication: ServerHttpRuntimePublication | null = null;
+const invocationServerHttpBaseUrl = new AsyncLocalStorage<string>();
 
 export function normalizeServerHttpBaseUrl(serverUrl: string): string {
   return resolveLoopbackHttpUrl(serverUrl).replace(/\/+$/, '');
 }
 
 export function resolveServerHttpBaseUrl(): string {
-  return runtimePublication?.origin ?? normalizeServerHttpBaseUrl(configuration.apiServerUrl);
+  return invocationServerHttpBaseUrl.getStore()
+    ?? runtimePublication?.origin
+    ?? normalizeServerHttpBaseUrl(configuration.apiServerUrl);
+}
+
+/**
+ * Runs one finite request/invocation against an immutable resolved Home endpoint.
+ * This does not change process configuration or publish a runtime carrier.
+ */
+export function runWithServerHttpBaseUrl<T>(serverUrl: string, run: () => T): T {
+  return invocationServerHttpBaseUrl.run(normalizeServerHttpBaseUrl(serverUrl), run);
 }
 
 /**

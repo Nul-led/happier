@@ -7,6 +7,25 @@ import {
 } from '@/session/transport/encryption/sessionEncryptionContext';
 
 describe('commitMemorySystemRecords', () => {
+  it('passes the caller signal through every system-record commit', async () => {
+    const { commitMemorySystemRecords } = await import('./commitMemorySystemRecords');
+    const controller = new AbortController();
+    const writes: unknown[] = [];
+    await commitMemorySystemRecords({
+      credentials: { token: 't', encryption: null },
+      sessionId: 'sess-signal', mode: 'plain', signal: controller.signal,
+      shard: { sessionId: 'sess-signal', payload: {
+        v: 1, seqFrom: 1, seqTo: 1, createdAtFromMs: 1, createdAtToMs: 1,
+        summary: 'signal', keywords: [], entities: [], decisions: [],
+      } },
+      synopsis: null,
+      deps: { upsertSessionSystemRecord: async (request) => {
+        writes.push(request);
+        return { ...request, id: 'record', createdAt: '', updatedAt: '' };
+      } },
+    });
+    expect(writes).toEqual([expect.objectContaining({ signal: controller.signal })]);
+  });
   it('upserts memory summary and synopsis records without transcript message commits', async () => {
     const { commitMemorySystemRecords } = await import('./commitMemorySystemRecords');
 

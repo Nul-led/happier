@@ -1,4 +1,5 @@
 import {
+  buildTrustedHostSessionInputAdmissionV1,
   beginSessionAgentTransitionEffects,
   buildSessionAgentTransitionDividerLocalId,
   isSessionStopConfirmed,
@@ -39,7 +40,6 @@ import type { StoredCredentials } from '@/persistence';
 import {
   resolveSessionSpawnConnectedServicesDefaultsPayload,
 } from '@/session/services/spawnConnectedServicesDefaults';
-import { buildHostSessionInputAdmissionV1 } from '@/session/services/sessionInputAdmissionIdentity';
 import { requestInactiveSessionResume } from '@/session/services/requestInactiveSessionResume';
 import { requestSessionStop } from '@/session/services/requestSessionStop';
 import { resolveSessionTransportContext } from '@/session/services/resolveSessionTransportContext';
@@ -449,7 +449,7 @@ async function admitExactInput(params: Readonly<{
     resumeInactiveSession: false,
     timeoutMs: params.timeoutMs,
     ...(params.request.input.meta ? { messageMeta: params.request.input.meta } : {}),
-    inputAdmission: buildHostSessionInputAdmissionV1('ui'),
+    inputAdmission: buildTrustedHostSessionInputAdmissionV1('ui'),
     ...(params.machineAdmissionTransport
       ? { machineAdmissionTransport: params.machineAdmissionTransport }
       : {}),

@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SYSTEM_TASK_PROTOCOL_VERSION, type SystemTaskJsonObject, type SystemTaskResult, type SystemTaskSpec } from '@happier-dev/protocol';
 import { PERSONAL_HOME_SYSTEM_TASK_KINDS } from '@happier-dev/cli-common/systemTasks';
 import { PersonalHomeRelocationTransferCleanupError } from '@happier-dev/cli-common/firstPartyRuntime';
+import { captureStdoutJsonOutput } from '@/testkit/logger/captureOutput';
 
 import { handleHomeCommand, type HomeCommandDeps } from './home';
 
@@ -38,6 +39,7 @@ function createDeps(results: readonly ScriptedTaskResult[], overrides: Partial<H
     isInteractiveTerminal: () => false,
     promptInput: async () => 'no',
     sleep: async () => undefined,
+    resolveDefaultChannel: () => 'stable',
     ...overrides,
   };
   return { deps, start, poll, respond };
@@ -119,6 +121,759 @@ afterEach(() => {
 });
 
 describe('handleHomeCommand', () => {
+  it('runs forward direct QR only after trusted Home creation and keeps automatic Account Service linking optional', async () => {
+    const order: string[] = [];
+    const pairDevice = vi.fn(async () => {
+      order.push('pair');
+      return { kind: 'completed' as const, requestedDeviceLabel: 'Phone' };
+    });
+    const linkAccount = vi.fn(async () => {
+      order.push('link');
+      return { kind: 'unavailable' as const, reason: 'account_service_credentials_unavailable' as const };
+    });
+    const { deps } = createDeps([], {
+      isInteractiveTerminal: () => true,
+      promptInput: async () => 'yes',
+      createPersonalHome: async () => {
+        order.push('create');
+        return {
+          profileId: 'personal-home',
+          homeServerIdentityId: 'srv_personal_home',
+          canonicalServerUrl: 'http://127.0.0.1:43123',
+          accountCreated: true,
+        };
+      },
+      reconcileCreatedHome: async () => { order.push('reconcile'); },
+      pairDevice,
+      linkAccount,
+    });
+
+    await handleHomeCommand(['create', '--link-account', 'auto'], deps);
+
+    expect(order).toEqual(['create', 'reconcile', 'pair', 'link']);
+    expect(pairDevice).toHaveBeenCalledWith({ profileRef: 'personal-home', copyLink: false, signal: undefined });
+    expect(linkAccount).toHaveBeenCalledWith({ homeServerIdentityId: 'srv_personal_home', relink: false, signal: undefined });
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('honors create --link-account never and does not emit QR material in JSON mode', async () => {
+    const pairDevice = vi.fn();
+    const linkAccount = vi.fn();
+    const { deps } = createDeps([], {
+      createPersonalHome: async () => ({
+        profileId: 'personal-home',
+        homeServerIdentityId: 'srv_personal_home',
+        canonicalServerUrl: 'http://127.0.0.1:43123',
+        accountCreated: false,
+      }),
+      reconcileCreatedHome: async () => undefined,
+      pairDevice,
+      linkAccount,
+    });
+    const output = captureStdoutJsonOutput<Record<string, unknown>>();
+    try {
+      await handleHomeCommand(['create', '--yes', '--json', '--link-account', 'never'], deps);
+      expect(JSON.stringify(output.json())).not.toMatch(/pair|secret|credential|approval|qr/i);
+      expect(output.json().data).toMatchObject({ accountServiceLink: { kind: 'not_requested' } });
+    } finally {
+      output.restore();
+    }
+    expect(pairDevice).not.toHaveBeenCalled();
+    expect(linkAccount).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['failed', async () => ({ kind: 'failed' as const }), { kind: 'failed' }],
+    ['cancelled', async () => ({ kind: 'cancelled' as const }), { kind: 'cancelled' }],
+    ['Account Service session unavailable', async () => ({ kind: 'unavailable' as const, reason: 'account_service_credentials_unavailable' as const }), { kind: 'unavailable', reason: 'account_service_credentials_unavailable' }],
+    ['home transport unavailable', async () => ({ kind: 'unavailable' as const, reason: 'home_transport_unavailable' as const }), { kind: 'unavailable', reason: 'home_transport_unavailable' }],
+    ['exception', async () => { throw new Error('link failed after create'); }, { kind: 'failed' }],
+  ])('keeps local Home creation durable and reports typed post-create link outcome when linking is %s', async (_label, linkAccount, expected) => {
+    const { deps } = createDeps([], {
+      createPersonalHome: async () => ({
+        profileId: 'personal-home',
+        homeServerIdentityId: 'srv_personal_home',
+        canonicalServerUrl: 'http://127.0.0.1:43123',
+        accountCreated: true,
+      }),
+      reconcileCreatedHome: async () => undefined,
+      linkAccount,
+    });
+    const output = captureStdoutJsonOutput<{ data?: { status?: string; accountServiceLink?: { kind?: string } } }>();
+    try {
+      await handleHomeCommand(['create', '--yes', '--json', '--link-account', 'auto'], deps);
+      expect(output.json().data).toMatchObject({
+        status: 'complete',
+        accountServiceLink: expected,
+      });
+    } finally {
+      output.restore();
+    }
+  });
+
+  it('keeps local creation successful and prints identity-specific reentry after an optional post-create link failure', async () => {
+    const { deps } = createDeps([], {
+      isInteractiveTerminal: () => true,
+      promptInput: async () => 'yes',
+      createPersonalHome: async () => ({
+        profileId: 'personal-home',
+        homeServerIdentityId: 'srv_personal_home',
+        canonicalServerUrl: 'http://127.0.0.1:43123',
+        accountCreated: true,
+      }),
+      reconcileCreatedHome: async () => undefined,
+      linkAccount: async () => ({ kind: 'failed' }),
+    });
+    const output = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await handleHomeCommand(['create', '--link-account', 'auto'], deps);
+
+    const text = output.mock.calls.flat().join('\n');
+    expect(text).toContain('Personal Home ready');
+    expect(text).toContain('happier home link-account --home srv_personal_home');
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('exposes direct QR reentry separately from terminal pairing', async () => {
+    const pairDevice = vi.fn(async () => ({ kind: 'completed' as const, requestedDeviceLabel: 'Browser' }));
+    const { deps } = createDeps([], { pairDevice });
+
+    await handleHomeCommand(['pair-device', '--home', 'studio', '--copy-link'], deps);
+
+    expect(pairDevice).toHaveBeenCalledWith({ profileRef: 'studio', copyLink: true, signal: undefined });
+  });
+
+  it('emits only the authorized invite and typed outcome for the internal remote pairing stream', async () => {
+    const link = 'happier:///pair?v=2&payload=short-lived-v2';
+    const pairDevice = vi.fn(async (input: Readonly<{ onInvite?: (value: Readonly<{ link: string }>) => void }>) => {
+      input.onInvite?.({ link });
+      return { kind: 'expired' as const };
+    });
+    const { deps } = createDeps([], { pairDevice, isInteractiveTerminal: () => false });
+    const output = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await handleHomeCommand(['pair-device', '--system-task-stream'], deps);
+
+    expect(output.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([
+      { v: 1, kind: 'home_pair_device.invite', link },
+      { v: 1, kind: 'home_pair_device.result', result: { kind: 'expired' } },
+    ]);
+    expect(output.mock.calls.flat().join('\n')).not.toMatch(/access\.key|bearer|claimSecret|masterSecret/i);
+  });
+
+  it('refuses pair-device JSON before starting and emits no enrollment material', async () => {
+    const pairDevice = vi.fn();
+    const { deps } = createDeps([], { pairDevice });
+    const output = captureStdoutJsonOutput();
+    try {
+      await expect(handleHomeCommand(['pair-device', '--json', '--copy-link'], deps))
+        .rejects.toMatchObject({ code: 'interactive_required' });
+      expect(output.chunks.join('')).toBe('');
+    } finally {
+      output.restore();
+    }
+    expect(pairDevice).not.toHaveBeenCalled();
+  });
+
+  it('surfaces bound QR update-required without starting another flow', async () => {
+    const pairDevice = vi.fn(async () => ({ kind: 'update_required' as const }));
+    const { deps } = createDeps([], { pairDevice, isInteractiveTerminal: () => true });
+
+    await expect(handleHomeCommand(['pair-device'], deps)).rejects.toMatchObject({ code: 'update_required' });
+    expect(pairDevice).toHaveBeenCalledOnce();
+  });
+
+  it('preserves explicit Account Service relink conflict semantics', async () => {
+    const linkAccount = vi.fn(async (input: Readonly<{ relink: boolean }>) => input.relink
+      ? ({ kind: 'linked' as const, homeServerIdentityId: 'srv_home' })
+      : ({ kind: 'relink_required' as const, homeServerIdentityId: 'srv_home' }));
+    const { deps } = createDeps([], { linkAccount });
+
+    await expect(handleHomeCommand(['link-account', '--home', 'srv_home'], deps)).rejects.toMatchObject({ code: 'relink_required' });
+    await handleHomeCommand(['link-account', '--home', 'srv_home', '--relink'], deps);
+
+    expect(linkAccount).toHaveBeenLastCalledWith({ homeServerIdentityId: 'srv_home', relink: true, signal: undefined });
+  });
+
+  it('admits the selected artifact before starting local Personal Home bootstrap, then reconciles the adopted Home', async () => {
+    const order: string[] = [];
+    const createPersonalHome = vi.fn(async (input: Readonly<{
+      channel: 'stable' | 'preview' | 'dev';
+      mode: 'user' | 'system';
+    }>) => {
+      order.push('create');
+      expect(input).toEqual({ channel: 'preview', mode: 'system' });
+      return {
+        profileId: 'personal-home',
+        homeServerIdentityId: 'srv_personal_home',
+        canonicalServerUrl: 'http://127.0.0.1:43123',
+        accountCreated: true,
+      };
+    });
+    const reconcileCreatedHome = vi.fn(async (profileId: string) => {
+      order.push(`reconcile:${profileId}`);
+    });
+    const promptInput = vi.fn(async () => {
+      order.push('confirm');
+      return 'yes';
+    });
+    const { deps, start } = createDeps([], {
+      createPersonalHome,
+      reconcileCreatedHome,
+      isInteractiveTerminal: () => true,
+      promptInput,
+    });
+
+    await handleHomeCommand(['create', '--channel', 'preview', '--mode', 'system'], deps);
+
+    expect(order).toEqual(['confirm', 'create', 'reconcile:personal-home']);
+    expect(promptInput).toHaveBeenCalledWith(expect.stringContaining('plaintext'));
+    expect(promptInput).toHaveBeenCalledWith(expect.stringContaining('Mode: system'));
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it('uses the current CLI release ring when --channel is omitted', async () => {
+    const createPersonalHome = vi.fn(async () => ({
+      profileId: 'personal-home',
+      homeServerIdentityId: 'srv_personal_home',
+      canonicalServerUrl: 'http://127.0.0.1:43123',
+      accountCreated: false,
+    }));
+    const { deps } = createDeps([], {
+      createPersonalHome,
+      reconcileCreatedHome: async () => undefined,
+      resolveDefaultChannel: () => 'dev',
+      isInteractiveTerminal: () => false,
+    });
+
+    await handleHomeCommand(['create', '--yes'], deps);
+
+    expect(createPersonalHome).toHaveBeenCalledWith({ channel: 'dev', mode: 'user' });
+  });
+
+  it('declines before artifact, runtime, profile, or bootstrap mutation', async () => {
+    const createPersonalHome = vi.fn();
+    const reconcileCreatedHome = vi.fn();
+    const { deps, start } = createDeps([], {
+      createPersonalHome,
+      reconcileCreatedHome,
+      isInteractiveTerminal: () => true,
+      promptInput: async () => 'no',
+    });
+
+    await expect(handleHomeCommand(['create'], deps)).rejects.toMatchObject({
+      code: 'confirmation_declined',
+    });
+
+    expect(createPersonalHome).not.toHaveBeenCalled();
+    expect(reconcileCreatedHome).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it('allows explicit --yes creation without a TTY and never prompts', async () => {
+    const createPersonalHome = vi.fn(async () => ({
+      profileId: 'personal-home',
+      homeServerIdentityId: 'srv_personal_home',
+      canonicalServerUrl: 'http://127.0.0.1:43123',
+      accountCreated: true,
+    }));
+    const promptInput = vi.fn();
+    const { deps } = createDeps([], {
+      createPersonalHome,
+      reconcileCreatedHome: async () => undefined,
+      isInteractiveTerminal: () => false,
+      promptInput,
+    });
+
+    await handleHomeCommand(['create', '--yes'], deps);
+
+    expect(createPersonalHome).toHaveBeenCalledOnce();
+    expect(promptInput).not.toHaveBeenCalled();
+  });
+
+  it('creates a remote Personal Home through the one SSH coordinator after explicit plaintext confirmation', async () => {
+    const descriptor = {
+      v: 1,
+      homeServerIdentityId: 'srv_remote_home',
+      canonicalServerUrl: 'http://127.0.0.1:43123',
+      revision: 2,
+      endpoints: [{ kind: 'iroh', endpointId: 'a'.repeat(64) }],
+    };
+    const remoteCreated = success('remote-create', {
+      action: 'personalHome.create',
+      personalHome: {
+        status: 'complete',
+        homeServerIdentityId: 'srv_remote_home',
+        canonicalServerUrl: 'http://127.0.0.1:43123',
+        accountCreated: true,
+        channel: 'stable',
+        mode: 'user',
+        descriptor,
+        pairing: { kind: 'completed', requestedDeviceLabel: null },
+        invokingClientEnrollment: { kind: 'enrolled' },
+      },
+    });
+    const createPersonalHome = vi.fn();
+    const reconcileCreatedHome = vi.fn();
+    const pairDevice = vi.fn();
+    const promptInput = vi.fn(async (_prompt: string) => 'yes');
+    const { deps, start } = createDeps([remoteCreated], {
+      createPersonalHome,
+      reconcileCreatedHome,
+      pairDevice,
+      promptInput,
+      isInteractiveTerminal: () => true,
+    });
+
+    await handleHomeCommand(['create', '--ssh', 'dev@example.test'], deps);
+
+    expect(promptInput).toHaveBeenCalledWith(expect.stringContaining('dev@example.test'));
+    expect(promptInput).toHaveBeenCalledWith(expect.stringContaining('plaintext'));
+    expect(start).toHaveBeenCalledWith({ spec: {
+      protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
+      kind: 'remote.ssh.manageHost.v1',
+      params: {
+        action: 'personalHome.create',
+        channel: 'stable',
+        relayRuntime: { channel: 'stable', mode: 'user' },
+        pairDevice: true,
+        enrollInvokingClient: true,
+        ssh: { target: 'dev@example.test', auth: 'agent' },
+      },
+    } });
+    expect(createPersonalHome).not.toHaveBeenCalled();
+    expect(reconcileCreatedHome).not.toHaveBeenCalled();
+    expect(pairDevice).not.toHaveBeenCalled();
+  });
+
+  it.each(['cancelled', 'expired'] as const)('keeps remote creation successful when optional pairing is %s', async (kind) => {
+    const remoteCreated = success(`remote-create-${kind}`, {
+      action: 'personalHome.create',
+      personalHome: {
+        status: 'complete',
+        homeServerIdentityId: 'srv_remote_home',
+        canonicalServerUrl: 'http://127.0.0.1:43123',
+        accountCreated: true,
+        channel: 'stable',
+        mode: 'user',
+        descriptor: { v: 1, homeServerIdentityId: 'srv_remote_home', canonicalServerUrl: 'http://127.0.0.1:43123', revision: 1, endpoints: [{ kind: 'iroh', endpointId: 'a'.repeat(64) }] },
+        pairing: { kind },
+        invokingClientEnrollment: { kind: 'not_requested' },
+      },
+    });
+    const { deps } = createDeps([remoteCreated], { isInteractiveTerminal: () => true, promptInput: async () => 'yes' });
+    const output = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await handleHomeCommand(['create', '--ssh', 'dev@example.test', '--link-account', 'never'], deps);
+
+    const text = output.mock.calls.flat().join('\n');
+    expect(text).toContain('Remote Personal Home ready');
+    expect(text).toContain('happier home create --ssh dev@example.test --link-account never');
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('reports an optional post-create pairing failure without failing or claiming Home rollback', async () => {
+    const remoteCreated = success('remote-create-pair-failed', {
+      action: 'personalHome.create',
+      personalHome: {
+        status: 'complete',
+        homeServerIdentityId: 'srv_remote_home',
+        canonicalServerUrl: 'http://127.0.0.1:43123',
+        accountCreated: true,
+        channel: 'stable',
+        mode: 'user',
+        descriptor: { v: 1, homeServerIdentityId: 'srv_remote_home', canonicalServerUrl: 'http://127.0.0.1:43123', revision: 1, endpoints: [{ kind: 'iroh', endpointId: 'a'.repeat(64) }] },
+        pairing: { kind: 'failed', status: 503 },
+        invokingClientEnrollment: { kind: 'not_requested' },
+      },
+    });
+    const { deps } = createDeps([remoteCreated], { isInteractiveTerminal: () => true, promptInput: async () => 'yes' });
+    const output = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await handleHomeCommand(['create', '--ssh', 'dev@example.test', '--link-account', 'never'], deps);
+
+    const text = output.mock.calls.flat().join('\n');
+    expect(text).toContain('Remote Personal Home ready');
+    expect(text).toContain('pairing is incomplete');
+    expect(text).not.toMatch(/rolled back|removed|creation failed/i);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('enrolls the invoking CLI before automatic Account Service linking for a remote Home', async () => {
+    const descriptor = {
+      v: 1 as const,
+      homeServerIdentityId: 'srv_remote_home',
+      canonicalServerUrl: 'http://127.0.0.1:43123',
+      revision: 2,
+      endpoints: [{ kind: 'iroh' as const, endpointId: 'a'.repeat(64) }],
+    };
+    const remoteCreated = success('remote-create-auto-link', {
+      action: 'personalHome.create',
+      personalHome: {
+        status: 'complete',
+        homeServerIdentityId: descriptor.homeServerIdentityId,
+        canonicalServerUrl: descriptor.canonicalServerUrl,
+        accountCreated: true,
+        channel: 'stable',
+        mode: 'user',
+        descriptor,
+        pairing: { kind: 'completed', requestedDeviceLabel: null },
+        invokingClientEnrollment: { kind: 'enrolled' },
+      },
+    });
+    const linkAccount = vi.fn(async () => ({ kind: 'linked' as const, homeServerIdentityId: descriptor.homeServerIdentityId }));
+    const { deps } = createDeps([remoteCreated], {
+      isInteractiveTerminal: () => true,
+      promptInput: async () => 'yes',
+      linkAccount,
+    });
+
+    await handleHomeCommand(['create', '--ssh', 'dev@example.test', '--link-account', 'auto'], deps);
+
+    expect(linkAccount).toHaveBeenCalledWith({
+      homeServerIdentityId: descriptor.homeServerIdentityId,
+      relink: false,
+      signal: undefined,
+    });
+  });
+
+  it('reports remote invoking-client enrollment failure as typed post-create incompleteness in JSON', async () => {
+    const remoteCreated = success('remote-create-enrollment-failed', {
+      action: 'personalHome.create',
+      personalHome: {
+        status: 'complete',
+        homeServerIdentityId: 'srv_remote_home',
+        canonicalServerUrl: 'http://127.0.0.1:43123',
+        accountCreated: true,
+        channel: 'stable',
+        mode: 'user',
+        descriptor: { v: 1, homeServerIdentityId: 'srv_remote_home', canonicalServerUrl: 'http://127.0.0.1:43123', revision: 1, endpoints: [{ kind: 'iroh', endpointId: 'a'.repeat(64) }] },
+        pairing: { kind: 'not_requested' },
+        invokingClientEnrollment: { kind: 'failed' },
+      },
+    });
+    const linkAccount = vi.fn();
+    const { deps } = createDeps([remoteCreated], { linkAccount });
+    const output = captureStdoutJsonOutput<{ data?: Record<string, unknown> }>();
+    try {
+      await handleHomeCommand(['create', '--ssh', 'dev@example.test', '--yes', '--json', '--link-account', 'auto'], deps);
+      expect(output.json().data).toMatchObject({
+        status: 'complete',
+        invokingClientEnrollment: { kind: 'failed' },
+        accountServiceLink: { kind: 'unable_to_attempt' },
+      });
+      expect(output.json().data).not.toHaveProperty('pairing');
+    } finally {
+      output.restore();
+    }
+    expect(linkAccount).not.toHaveBeenCalled();
+  });
+
+  it('reports remote enrollment failure without undoing the Home and prints exact create reentry', async () => {
+    const remoteCreated = success('remote-create-enrollment-failed-human', {
+      action: 'personalHome.create',
+      personalHome: {
+        status: 'complete',
+        homeServerIdentityId: 'srv_remote_home',
+        canonicalServerUrl: 'http://127.0.0.1:43123',
+        accountCreated: true,
+        channel: 'stable',
+        mode: 'user',
+        descriptor: { v: 1, homeServerIdentityId: 'srv_remote_home', canonicalServerUrl: 'http://127.0.0.1:43123', revision: 1, endpoints: [{ kind: 'iroh', endpointId: 'a'.repeat(64) }] },
+        pairing: { kind: 'not_requested' },
+        invokingClientEnrollment: { kind: 'failed' },
+      },
+    });
+    const { deps } = createDeps([remoteCreated], { isInteractiveTerminal: () => true, promptInput: async () => 'yes' });
+    const output = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await handleHomeCommand(['create', '--ssh', 'dev@example.test', '--link-account', 'auto'], deps);
+
+    const text = output.mock.calls.flat().join('\n');
+    expect(text).toContain('Remote Personal Home ready');
+    expect(text).toContain('happier home create --ssh dev@example.test --link-account auto');
+    expect(text).not.toMatch(/rolled back|removed|creation failed/i);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('does not attempt Account Service linking when remote Home creation fails', async () => {
+    const linkAccount = vi.fn();
+    const { deps } = createDeps([
+      failure('remote-create-failed', 'personal_home_create_failed', 'Remote bootstrap failed.'),
+    ], {
+      isInteractiveTerminal: () => true,
+      promptInput: async () => 'yes',
+      linkAccount,
+    });
+
+    await expect(handleHomeCommand([
+      'create',
+      '--ssh',
+      'dev@example.test',
+      '--link-account',
+      'auto',
+    ], deps)).rejects.toMatchObject({ code: 'personal_home_create_failed' });
+
+    expect(linkAccount).not.toHaveBeenCalled();
+  });
+
+  it('makes remote --link-account never skip invoking-client enrollment and Account Service publication', async () => {
+    const remoteCreated = success('remote-create-never-link', {
+      action: 'personalHome.create',
+      personalHome: {
+        status: 'complete',
+        homeServerIdentityId: 'srv_remote_home',
+        canonicalServerUrl: 'http://127.0.0.1:43123',
+        accountCreated: true,
+        channel: 'stable',
+        mode: 'user',
+        descriptor: { v: 1, homeServerIdentityId: 'srv_remote_home', canonicalServerUrl: 'http://127.0.0.1:43123', revision: 1, endpoints: [{ kind: 'iroh', endpointId: 'a'.repeat(64) }] },
+        pairing: { kind: 'completed', requestedDeviceLabel: null },
+        invokingClientEnrollment: { kind: 'not_requested' },
+      },
+    });
+    const linkAccount = vi.fn();
+    const { deps, start } = createDeps([remoteCreated], {
+      isInteractiveTerminal: () => true,
+      promptInput: async () => 'yes',
+      linkAccount,
+    });
+
+    await handleHomeCommand(['create', '--ssh', 'dev@example.test', '--link-account', 'never'], deps);
+
+    expect(linkAccount).not.toHaveBeenCalled();
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({ spec: expect.objectContaining({
+      params: expect.objectContaining({ enrollInvokingClient: false }),
+    }) }));
+  });
+
+  it('keeps a remote Home usable when Account Service is unavailable and prints the exact link reentry', async () => {
+    const remoteCreated = success('remote-create-no-account-service', {
+      action: 'personalHome.create',
+      personalHome: {
+        status: 'complete',
+        homeServerIdentityId: 'srv_remote_home',
+        canonicalServerUrl: 'http://127.0.0.1:43123',
+        accountCreated: true,
+        channel: 'stable',
+        mode: 'user',
+        descriptor: { v: 1, homeServerIdentityId: 'srv_remote_home', canonicalServerUrl: 'http://127.0.0.1:43123', revision: 1, endpoints: [{ kind: 'iroh', endpointId: 'a'.repeat(64) }] },
+        pairing: { kind: 'completed', requestedDeviceLabel: null },
+        invokingClientEnrollment: { kind: 'enrolled' },
+      },
+    });
+    const { deps } = createDeps([remoteCreated], {
+      isInteractiveTerminal: () => true,
+      promptInput: async () => 'yes',
+      linkAccount: async () => ({ kind: 'unavailable' as const, reason: 'account_service_credentials_unavailable' as const }),
+    });
+    const output = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await handleHomeCommand(['create', '--ssh', 'dev@example.test'], deps);
+
+    expect(output.mock.calls.flat().join('\n')).toContain('happier home link-account --home srv_remote_home');
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('reports an optional Account Service exception without failing or undoing the remote Home', async () => {
+    const remoteCreated = success('remote-create-link-error', {
+      action: 'personalHome.create',
+      personalHome: {
+        status: 'complete',
+        homeServerIdentityId: 'srv_remote_home',
+        canonicalServerUrl: 'http://127.0.0.1:43123',
+        accountCreated: true,
+        channel: 'stable',
+        mode: 'user',
+        descriptor: { v: 1, homeServerIdentityId: 'srv_remote_home', canonicalServerUrl: 'http://127.0.0.1:43123', revision: 1, endpoints: [{ kind: 'iroh', endpointId: 'a'.repeat(64) }] },
+        pairing: { kind: 'completed', requestedDeviceLabel: null },
+        invokingClientEnrollment: { kind: 'enrolled' },
+      },
+    });
+    const { deps } = createDeps([remoteCreated], {
+      isInteractiveTerminal: () => true,
+      promptInput: async () => 'yes',
+      linkAccount: async () => {
+        throw new Error('Account Service unavailable');
+      },
+    });
+    const output = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await handleHomeCommand(['create', '--ssh', 'dev@example.test'], deps);
+
+    const text = output.mock.calls.flat().join('\n');
+    expect(text).toContain('Remote Personal Home ready');
+    expect(text).toContain('happier home link-account --home srv_remote_home');
+    expect(text).not.toMatch(/rolled back|removed|creation failed/i);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('keeps remote create mutation-free without confirmation and makes JSON output secret-free', async () => {
+    const createPersonalHome = vi.fn();
+    const { deps, start } = createDeps([], { createPersonalHome, promptInput: async () => 'no', isInteractiveTerminal: () => true });
+    await expect(handleHomeCommand(['create', '--ssh', 'dev@example.test'], deps)).rejects.toMatchObject({ code: 'confirmation_declined' });
+    expect(start).not.toHaveBeenCalled();
+
+    const remoteCreated = success('remote-create-json', {
+      action: 'personalHome.create',
+      personalHome: {
+        status: 'complete', homeServerIdentityId: 'srv_remote_home', canonicalServerUrl: 'http://127.0.0.1:43123',
+        accountCreated: true, channel: 'stable', mode: 'user',
+        descriptor: { v: 1, homeServerIdentityId: 'srv_remote_home', canonicalServerUrl: 'http://127.0.0.1:43123', revision: 1, endpoints: [{ kind: 'iroh', endpointId: 'a'.repeat(64) }] },
+        pairing: { kind: 'not_requested' },
+        invokingClientEnrollment: { kind: 'enrolled' },
+      },
+    });
+    const linkAccount = vi.fn(async () => ({ kind: 'linked' as const, homeServerIdentityId: 'srv_remote_home' }));
+    const jsonHarness = createDeps([remoteCreated], { linkAccount });
+    const output = captureStdoutJsonOutput<Record<string, unknown>>();
+    try {
+      await handleHomeCommand(['create', '--ssh', 'dev@example.test', '--yes', '--json'], jsonHarness.deps);
+      const text = JSON.stringify(output.json());
+      expect(text).not.toMatch(/token|secret|credential|approval|qr|pairing.*link/i);
+    } finally {
+      output.restore();
+    }
+    expect(jsonHarness.start).toHaveBeenCalledWith(expect.objectContaining({ spec: expect.objectContaining({
+      kind: 'remote.ssh.manageHost.v1',
+      params: expect.objectContaining({ pairDevice: false, enrollInvokingClient: true }),
+    }) }));
+    expect(linkAccount).toHaveBeenCalledOnce();
+    expect(output.json().data).toMatchObject({ accountServiceLink: { kind: 'linked' } });
+  });
+
+  it('rejects ambiguous or invalid remote create options before starting the coordinator', async () => {
+    const { deps, start } = createDeps([]);
+    await expect(handleHomeCommand(['create', '--ssh', 'dev@example.test', '--this-computer', '--yes'], deps))
+      .rejects.toMatchObject({ code: 'invalid_params' });
+    await expect(handleHomeCommand(['create', '--ssh', 'dev@example.test', '--link-account', 'sometimes', '--yes'], deps))
+      .rejects.toMatchObject({ code: 'invalid_params' });
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['status', ['status', '--ssh', 'dev@example.test'], 'personalHome.status', undefined],
+    ['backup', ['backup', '--ssh', 'dev@example.test', '--output', './home.tar'], 'personalHome.backup', { outputPath: '/work/home.tar' }],
+    ['verify', ['verify-backup', '--ssh', 'dev@example.test', './home.tar'], 'personalHome.verifyBackup', { archivePath: '/work/home.tar' }],
+    ['restore', ['restore', '--ssh', 'dev@example.test', './home.tar', '--yes'], 'personalHome.restore', { archivePath: '/work/home.tar' }],
+    ['recovery', ['recover-restore', '--ssh', 'dev@example.test', '--yes'], 'personalHome.recoverRestore', undefined],
+  ] as const)('routes remote %s through the single SSH coordinator', async (_name, argv, action, personalHomeOperation) => {
+    const remote = success('remote-operation', { action, personalHome: { outcome: 'complete' } });
+    const { deps, start } = createDeps([remote]);
+
+    await handleHomeCommand([...argv], deps);
+
+    expect(start).toHaveBeenCalledWith({ spec: {
+      protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
+      kind: 'remote.ssh.manageHost.v1',
+      params: {
+        action,
+        channel: 'stable',
+        relayRuntime: { channel: 'stable', mode: 'user' },
+        ssh: { target: 'dev@example.test', auth: 'agent' },
+        ...(personalHomeOperation ? { personalHomeOperation } : {}),
+      },
+    } });
+  });
+
+  it('renders exact remote erase facts and keeps approval in the in-memory prompt response', async () => {
+    const remoteErase: ScriptedTaskResult = {
+      prompt: {
+        kind: 'personal_home.confirm_remote_erase.v1',
+        data: {
+          sshHost: 'dev@example.test', canonicalServerUrl: 'http://127.0.0.1:53288', homeServerIdentityId: 'home-1',
+          paths: ['/srv/home/db.sqlite', '/srv/home/files'], estimatedBytes: 4096,
+        },
+      },
+      result: success('remote-erase', { action: 'personalHome.erase', personalHome: { outcome: 'completed', removedPaths: ['/srv/home/db.sqlite', '/srv/home/files'] } }),
+    };
+    const promptInput = vi.fn(async (_prompt: string) => 'yes');
+    const { deps, start, respond } = createDeps([remoteErase], { promptInput, isInteractiveTerminal: () => true });
+
+    await handleHomeCommand(['erase', '--ssh', 'dev@example.test'], deps);
+
+    expect(promptInput.mock.calls[0]?.[0]).toContain('dev@example.test');
+    expect(promptInput.mock.calls[0]?.[0]).toContain('home-1');
+    expect(promptInput.mock.calls[0]?.[0]).toContain('/srv/home/db.sqlite');
+    expect(promptInput.mock.calls[0]?.[0]).toContain('4096');
+    expect(respond).toHaveBeenCalledWith({ taskId: 'task-1', answer: { confirmed: true } });
+    expect(JSON.stringify(start.mock.calls)).not.toMatch(/confirmation-token|approval-stdin/u);
+  });
+
+  it.each([[[]], [['--json']]])('keeps no-TTY creation without --yes mutation-free (%j)', async (flags: string[]) => {
+    const createPersonalHome = vi.fn();
+    const reconcileCreatedHome = vi.fn();
+    const { deps, start } = createDeps([], { createPersonalHome, reconcileCreatedHome });
+
+    await expect(handleHomeCommand(['create', ...flags], deps)).rejects.toMatchObject({ code: 'interactive_required' });
+    expect(createPersonalHome).not.toHaveBeenCalled();
+    expect(reconcileCreatedHome).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it('writes one strict non-secret JSON creation result with --json --yes', async () => {
+    const descriptor = {
+      v: 1 as const,
+      homeServerIdentityId: 'srv_personal_home',
+      canonicalServerUrl: 'http://127.0.0.1:43123',
+      revision: 1,
+      endpoints: [{ kind: 'iroh' as const, endpointId: 'a'.repeat(64) }],
+    };
+    const createPersonalHome = vi.fn(async () => ({
+      profileId: 'personal-home',
+      homeServerIdentityId: 'srv_personal_home',
+      canonicalServerUrl: 'http://127.0.0.1:43123',
+      accountCreated: true,
+      descriptor,
+    }));
+    const reconcileCreatedHome = vi.fn(async () => undefined);
+    const { deps } = createDeps([], { createPersonalHome, reconcileCreatedHome });
+    const output = captureStdoutJsonOutput<Record<string, unknown>>();
+    try {
+      await handleHomeCommand(['create', '--json', '--yes'], deps);
+      const parsed = output.json() as Record<string, any>;
+      expect(parsed).toEqual({
+        v: 1,
+        ok: true,
+        kind: 'personal_home_create',
+        data: {
+          status: 'complete',
+          profileId: 'personal-home',
+          homeServerIdentityId: 'srv_personal_home',
+          canonicalServerUrl: 'http://127.0.0.1:43123',
+          accountCreated: true,
+          channel: 'stable',
+          mode: 'user',
+          descriptor,
+          accountServiceLink: { kind: 'unable_to_attempt' },
+        },
+      });
+      expect(JSON.stringify(parsed)).not.toMatch(/token|secret|credential|approval|qr/i);
+      expect(reconcileCreatedHome).toHaveBeenCalledWith('personal-home', { quiet: true });
+    } finally {
+      output.restore();
+    }
+  });
+
+  it('keeps the compatibility --this-computer alias on the canonical create path', async () => {
+    const createPersonalHome = vi.fn(async () => ({
+      profileId: 'personal-home',
+      homeServerIdentityId: 'srv_personal_home',
+      canonicalServerUrl: 'http://127.0.0.1:43123',
+      accountCreated: false,
+    }));
+    const { deps } = createDeps([], {
+      createPersonalHome,
+      reconcileCreatedHome: async () => undefined,
+      isInteractiveTerminal: () => true,
+      promptInput: async () => 'yes',
+    });
+
+    await handleHomeCommand(['create', '--this-computer'], deps);
+
+    expect(createPersonalHome).toHaveBeenCalledTimes(1);
+  });
+
   it('invokes the installed destination-local relocation task contract without exposing a data directory', async () => {
     const staged = success('stage', { operationId: 'operation-1', status: 'quarantined' });
     const { deps, start } = createDeps([homeStatus, staged]);
@@ -143,6 +898,29 @@ describe('handleHomeCommand', () => {
     }) });
     const params = (start.mock.calls[1]?.[0] as { spec: SystemTaskSpec }).spec.params as Record<string, unknown>;
     expect(params).not.toHaveProperty('destinationDataDir');
+  });
+
+  it('projects only the non-secret upload locator from a destination transfer reservation', async () => {
+    const prepareRelocationUpload = vi.fn(async () => ({
+      operationId: 'remote-verify-1',
+      uploadLocator: '/tmp/happier-transfer/bundle.tar',
+      uploadReceipt: '11111111-1111-4111-8111-111111111111',
+    }));
+    const { deps } = createDeps([homeStatus], { prepareRelocationUpload });
+    const output = captureStdoutJsonOutput<Record<string, unknown>>();
+    try {
+      await handleHomeCommand([
+        'relocation-destination', 'stage', '--operation-id', 'remote-verify-1', '--prepare-upload', '--json',
+      ], deps);
+      expect(output.json()).toMatchObject({
+        kind: 'personal_home_task_result',
+        result: { data: { operationId: 'remote-verify-1', uploadLocator: '/tmp/happier-transfer/bundle.tar' } },
+      });
+      expect(JSON.stringify(output.json())).not.toContain('uploadReceipt');
+      expect(JSON.stringify(output.json())).not.toContain('11111111-1111-4111-8111-111111111111');
+    } finally {
+      output.restore();
+    }
   });
 
   it('cleans the exact destination-owned transfer reservation after a successful stage', async () => {
@@ -248,14 +1026,45 @@ describe('handleHomeCommand', () => {
     expect(createRunner).toHaveBeenCalledWith({ channel: 'preview', mode: 'system' });
   });
 
-  it('fails the final owner prompt closed when a remote erase confirmation token mismatches', async () => {
+  it('accepts ephemeral stdin approval only when the final owner prompt facts match exactly', async () => {
+    const approved = success('erase', { outcome: 'erased', removedPaths: ['/data/home/database/home.sqlite', '/data/home/files/public'] });
+    const approval = JSON.stringify({
+      v: 1,
+      operation: 'erase',
+      canonicalServerUrl: 'http://127.0.0.1:53288',
+      homeServerIdentityId: 'home-1',
+      paths: ['/data/home/database/home.sqlite', '/data/home/files/public'],
+      estimatedBytes: 4096,
+      confirmed: true,
+    });
+    const { deps, respond } = createDeps([homeStatus, erasePrompt(approved)], {
+      readApprovalInput: async () => approval,
+    });
+
+    await handleHomeCommand(['erase', '--approval-stdin'], deps);
+
+    expect(respond).toHaveBeenCalledWith(expect.objectContaining({ answer: { confirmed: true } }));
+  });
+
+  it.each([
+    ['operation mismatch', JSON.stringify({ v: 1, operation: 'restore', canonicalServerUrl: 'http://127.0.0.1:53288', homeServerIdentityId: 'home-1', paths: ['/data/home/database/home.sqlite', '/data/home/files/public'], estimatedBytes: 4096, confirmed: true })],
+    ['canonical URL mismatch', JSON.stringify({ v: 1, operation: 'erase', canonicalServerUrl: 'http://127.0.0.1:9999', homeServerIdentityId: 'home-1', paths: ['/data/home/database/home.sqlite', '/data/home/files/public'], estimatedBytes: 4096, confirmed: true })],
+    ['Home identity mismatch', JSON.stringify({ v: 1, operation: 'erase', canonicalServerUrl: 'http://127.0.0.1:53288', homeServerIdentityId: 'other-home', paths: ['/data/home/database/home.sqlite', '/data/home/files/public'], estimatedBytes: 4096, confirmed: true })],
+    ['path mismatch', JSON.stringify({ v: 1, operation: 'erase', canonicalServerUrl: 'http://127.0.0.1:53288', homeServerIdentityId: 'home-1', paths: ['/data/home/database/home.sqlite'], estimatedBytes: 4096, confirmed: true })],
+    ['byte estimate mismatch', JSON.stringify({ v: 1, operation: 'erase', canonicalServerUrl: 'http://127.0.0.1:53288', homeServerIdentityId: 'home-1', paths: ['/data/home/database/home.sqlite', '/data/home/files/public'], estimatedBytes: 4097, confirmed: true })],
+    ['extra field', JSON.stringify({ v: 1, operation: 'erase', canonicalServerUrl: 'http://127.0.0.1:53288', homeServerIdentityId: 'home-1', paths: ['/data/home/database/home.sqlite', '/data/home/files/public'], estimatedBytes: 4096, confirmed: true, token: 'not-accepted' })],
+    ['malformed JSON', '{'],
+    ['EOF', ''],
+  ])('fails the final owner prompt closed for %s in ephemeral stdin approval', async (_label, approvalInput) => {
     const declined = failure('erase', 'confirmation_required', 'not confirmed');
-    const { deps, respond } = createDeps([homeStatus, erasePrompt(declined)]);
-    await expect(handleHomeCommand(['erase', '--confirmation-token', '0'.repeat(64)], deps)).rejects.toMatchObject({ code: 'confirmation_required' });
+    const { deps, respond } = createDeps([homeStatus, erasePrompt(declined)], {
+      readApprovalInput: async () => approvalInput,
+    });
+    await expect(handleHomeCommand(['erase', '--approval-stdin'], deps)).rejects.toMatchObject({ code: 'confirmation_required' });
     expect(respond).toHaveBeenCalledWith(expect.objectContaining({ answer: { confirmed: false } }));
   });
 
-  it('fails a malformed final owner erase prompt closed without accepting its token', async () => {
+  it('fails a malformed final owner erase prompt closed without consuming stdin approval', async () => {
     const declined = failure('erase', 'confirmation_required', 'not confirmed');
     const malformedPrompt: ScriptedTaskResult = {
       prompt: {
@@ -269,10 +1078,12 @@ describe('handleHomeCommand', () => {
       },
       result: declined,
     };
-    const { deps, respond } = createDeps([homeStatus, malformedPrompt]);
+    const readApprovalInput = vi.fn(async () => '{}');
+    const { deps, respond } = createDeps([homeStatus, malformedPrompt], { readApprovalInput });
 
-    await expect(handleHomeCommand(['erase', '--confirmation-token', '0'.repeat(64)], deps)).rejects.toMatchObject({ code: 'confirmation_required' });
+    await expect(handleHomeCommand(['erase', '--approval-stdin'], deps)).rejects.toMatchObject({ code: 'confirmation_required' });
     expect(respond).toHaveBeenCalledWith(expect.objectContaining({ answer: { confirmed: false } }));
+    expect(readApprovalInput).not.toHaveBeenCalled();
   });
   it('inspects and explicitly confirms rollback recovery through the restore task kind', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {});

@@ -26,6 +26,7 @@ import { fetchAccountEncryptionCurrentness } from '@/api/client/connectedService
 import {
   ConnectedServiceBindingsV1Schema,
   readAcpConfiguredBackendV1FromMetadata,
+  readLegacyConfiguredAcpBackendId,
   serializeSessionModelSelectionV1,
 } from '@happier-dev/protocol';
 import {
@@ -99,22 +100,13 @@ async function defaultResolveResumeContributionRegistry(): Promise<ResumeContrib
   return await resolveMergedContributionRegistry({ happyHomeDir: configuration.happyHomeDir });
 }
 
-function readOptionalNonEmptyString(value: unknown): string | null {
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
 function resolveConfiguredAcpBackendIdFromMetadata(metadata: Record<string, unknown> | null): string | null {
   if (!metadata) return null;
   const configured = readAcpConfiguredBackendV1FromMetadata(metadata)?.backendId;
   if (configured && configured.trim().length > 0) {
     return configured.trim();
   }
-  const flavor = readOptionalNonEmptyString(metadata.flavor);
-  if (!flavor || !flavor.startsWith('acp:')) return null;
-  const backendId = flavor.slice(4).trim();
-  return backendId.length > 0 ? backendId : null;
+  return readLegacyConfiguredAcpBackendId(metadata.flavor);
 }
 
 function readConnectedServicesFromMetadata(metadata: Record<string, unknown> | null): ConnectedServiceBindingsV1 | null {

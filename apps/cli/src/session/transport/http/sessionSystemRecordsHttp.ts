@@ -252,6 +252,7 @@ export async function upsertSessionSystemRecord(params: Readonly<{
   kind: SessionSystemRecordKind;
   localId: string;
   content: SessionSystemRecordContent;
+  signal?: AbortSignal;
 }>): Promise<LegacyHostSessionSystemRecord> {
   const serverUrl = resolveServerHttpBaseUrl();
   const encodedSessionId = encodeSessionIdPathSegment(params.sessionId);
@@ -265,6 +266,7 @@ export async function upsertSessionSystemRecord(params: Readonly<{
     headers: buildHeaders(params.token),
     timeout: configuration.sessionControlHttpTimeoutMs,
     validateStatus: () => true,
+    ...(params.signal ? { signal: params.signal } : {}),
   });
 
   handleCommonStatus(response.status, route);
@@ -279,6 +281,7 @@ export async function fetchSessionSystemRecordsPage(params: Readonly<{
   localId?: string;
   cursor?: string;
   limit?: number;
+  signal?: AbortSignal;
 }>): Promise<FetchSessionSystemRecordsPageResult> {
   const serverUrl = resolveServerHttpBaseUrl();
   const encodedSessionId = encodeSessionIdPathSegment(params.sessionId);
@@ -294,6 +297,7 @@ export async function fetchSessionSystemRecordsPage(params: Readonly<{
     },
     timeout: configuration.sessionControlHttpTimeoutMs,
     validateStatus: () => true,
+    ...(params.signal ? { signal: params.signal } : {}),
   });
 
   handleCommonStatus(response.status, route);
@@ -314,6 +318,7 @@ export async function fetchLatestSessionSystemRecord(params: Readonly<{
   sessionId: string;
   namespace: SessionSystemRecordNamespace;
   kind: SessionSystemRecordKind;
+  signal?: AbortSignal;
 }>): Promise<LegacyHostSessionSystemRecord | null> {
   const serverUrl = resolveServerHttpBaseUrl();
   const encodedSessionId = encodeSessionIdPathSegment(params.sessionId);
@@ -323,6 +328,7 @@ export async function fetchLatestSessionSystemRecord(params: Readonly<{
     params: { namespace: params.namespace, kind: params.kind },
     timeout: configuration.sessionControlHttpTimeoutMs,
     validateStatus: () => true,
+    ...(params.signal ? { signal: params.signal } : {}),
   });
 
   handleCommonStatus(response.status, route);
