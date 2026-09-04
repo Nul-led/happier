@@ -456,7 +456,7 @@
   },
   "codexRemote.CODEX_SECTION.conditions.workspace.happier": {
     "dnt": [
-      "`happier relay host install`"
+      "`happier home create`"
     ]
   },
   "codexRemote.CODEX_SECTION.arguments.terminal.body": {
@@ -473,7 +473,7 @@
   },
   "comparison.RC_SECTION.cases.zdr.happier": {
     "dnt": [
-      "`happier relay host install`"
+      "`happier home create`"
     ]
   },
   "comparison.RC_STRENGTHS.connect.body": {
@@ -504,11 +504,18 @@
   },
   "faq.FAQ_ITEMS.code.a.2": {
     "dnt": [
-      "`happier relay host install`"
+      "`happier home create`",
+      "`--ssh user@host`"
+    ]
+  },
+  "faq.FAQ_ITEMS.server.a.0": {
+    "dnt": [
+      "`happier setup`"
     ]
   },
   "faq.FAQ_ITEMS.server.a.1": {
     "dnt": [
+      "`happier home create`",
       "`happier relay host install`"
     ]
   },
@@ -549,7 +556,7 @@
   },
   "faq.FAQ_ITEMS.workComputer.a.0": {
     "dnt": [
-      "`happier relay host install`"
+      "`happier home create`"
     ]
   },
   "features.PRIMARY_FEATURES.surfaces.code.2": {
@@ -560,11 +567,6 @@
   "features.PRIMARY_FEATURES.surfaces.code.4": {
     "dnt": [
       "happier session"
-    ]
-  },
-  "pageProse.GET_STARTED_STEPS.pair.description": {
-    "dnt": [
-      "happier auth"
     ]
   },
   "pageProse.PAGE_PROSE.agentsIndex.p6": {
