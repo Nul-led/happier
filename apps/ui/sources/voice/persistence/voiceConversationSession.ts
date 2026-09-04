@@ -24,6 +24,7 @@ import {
 
 import { resolvePreferredBackendTargetFromProjection } from '@/agents/backendCatalog/resolvePreferredBackendTargetFromProjection';
 import { resolveOperationalBackendTargetForAgentSelection } from '@/agents/backendCatalog/getResolvedBackendCatalogEntries';
+import { resolveAgentExecutionTargetForBackendTarget } from '@/agents/backendCatalog/resolveAgentExecutionTargetForBackendTarget';
 import { loadDaemonMergedProjectionInputs } from '@/agents/backendCatalog/loadDaemonMergedProjectionInputs';
 import { resolveBundledAgentIdFromContributionIdentity } from '@/agents/catalog/catalog';
 import { resolveVoiceConfiguredAgentTarget } from '@/voice/agent/resolveVoiceConfiguredAgentTarget';
@@ -33,12 +34,9 @@ import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { storage } from '@/sync/domains/state/storage';
 import type { Metadata } from '@/sync/domains/state/storageTypes';
 import {
-    completeMachineSpawnAttemptCustody,
     completePendingMachineSpawnAttemptCustodyForSession,
-    machineSpawnNewSession,
-    machineSpawnTrustedHiddenSystemSession,
 } from '@/sync/ops/machines';
-import { createUiSessionSpawnNonce } from '@/sync/domains/session/spawn/spawnSessionNonce';
+import { executeSessionSpawnNewAction } from '@/sync/ops/actions/sessionSpawnNewAction';
 import { resolveSpawnAttemptDirectoryIdentity } from '@/sync/domains/session/spawn/spawnAttemptKey';
 import { readMachineTargetForSession } from '@/sync/ops/sessionMachineTarget';
 import { resolveMachineForActiveServerFromState } from '@/sync/store/domains/machines/resolveMachinesForActiveServerFromState';
@@ -79,7 +77,6 @@ export {
 
 const VOICE_HOME_SPAWN_TARGET_WAIT_TIMEOUT_MS = 5_000;
 const VOICE_HOME_SPAWN_TARGET_WAIT_INTERVAL_MS = 100;
-const VOICE_HOME_STALE_CUSTODY_REPLAY_RETRY_LIMIT = 1;
 const VOICE_CONVERSATION_METADATA_COMMIT_FAILED =
     'VOICE_CONVERSATION_METADATA_COMMIT_FAILED';
 const VOICE_CONVERSATION_CUSTODY_COMPLETION_FAILED =
@@ -357,6 +354,27 @@ async function resolveVoiceConversationBackendTarget(state: any, machineId: stri
     };
 }
 
+async function resolveVoiceConversationAgentTarget(
+    machineId: string,
+    backendTarget: BackendTargetRefV2,
+) {
+    const projectionInputs = await loadDaemonMergedProjectionInputs({
+        machineId,
+        serverId: getActiveServerSnapshot().serverId,
+    });
+    const agentTarget = resolveAgentExecutionTargetForBackendTarget({
+        backendTarget,
+        daemonMergedProjectionInputs: projectionInputs,
+    });
+    if (!agentTarget) {
+        throw Object.assign(
+            new Error('The selected Voice Agent cannot be represented by the canonical Session creation contract.'),
+            { code: 'VOICE_AGENT_BACKEND_TARGET_UNAVAILABLE' },
+        );
+    }
+    return agentTarget;
+}
+
 function sameContributionIdentity(
     left: PluginContributionIdentityV1 | null | undefined,
     right: PluginContributionIdentityV1,
@@ -397,9 +415,13 @@ export async function resolveQualifiedAgentBackendTargetForMachine(input: Readon
                 }
 
                 const bundledAgentId = resolveBundledAgentIdFromContributionIdentity(input.agent);
-                return bundledAgentId === agentId
-                    ? { kind: 'backend', backendId: bundledAgentId }
-                    : null;
+                if (bundledAgentId === agentId) {
+                    return { kind: 'backend', backendId: bundledAgentId };
+                }
+                return {
+                    kind: 'backend',
+                    backendId: buildQualifiedPluginContributionKey(input.agent),
+                };
             }
             if (matchingAgents.length > 1) {
                 return null;
@@ -479,6 +501,60 @@ function toVoiceConversationSpawnError(spawned: unknown): Error {
                 : {}),
         },
     );
+}
+
+async function spawnVoiceConversationSession(params: Readonly<{
+    machineId: string;
+    serverId: string;
+    directory: string;
+    backendTarget: BackendTargetRefV2;
+    permissionMode: PermissionIntent;
+    creationKey: ReturnType<typeof buildVoiceSpawnUserAttemptId>;
+    connectedServices?: ConnectedServiceBindingsV1;
+    startupInstructions?: AgentSessionStartupInstructionsV1;
+}>): Promise<string> {
+    const agentTarget = await resolveVoiceConversationAgentTarget(
+        params.machineId,
+        params.backendTarget,
+    );
+    const action = await executeSessionSpawnNewAction({
+        creationKey: params.creationKey,
+        executionTarget: {
+            serverId: params.serverId,
+            machineId: params.machineId,
+        },
+        directory: params.directory,
+        agentTarget,
+        permissionMode: params.permissionMode,
+        transcriptStorage: 'persisted',
+        ...(params.connectedServices
+            ? { connectedServices: params.connectedServices }
+            : {}),
+        ...(params.startupInstructions
+            ? { agentSessionStartupInstructionsV1: params.startupInstructions }
+            : {}),
+    }, {
+        surface: 'voice',
+        actionRequestId: params.creationKey,
+    });
+    if (!action.ok) {
+        throw toVoiceConversationSpawnError({
+            errorCode: action.errorCode,
+            errorMessage: action.error,
+        });
+    }
+    if (action.result.type !== 'success') {
+        throw toVoiceConversationSpawnError(action.result.type === 'error'
+            ? {
+                errorCode: action.result.code,
+                errorMessage: action.result.code,
+            }
+            : {
+                errorCode: 'VOICE_CONVERSATION_SPAWN_PENDING',
+                errorMessage: 'voice_conversation_spawn_pending',
+            });
+    }
+    return action.result.sessionId;
 }
 
 function resolveTargetMachineForSpawn(state: any, machineId: string): any {
@@ -762,21 +838,6 @@ async function findExactVoiceHomeConversationSession(params: Readonly<{
     return null;
 }
 
-async function isReplayedVoiceHomeSpawnReusable(params: Readonly<{
-    sessionId: string;
-    requirements: ResolvedVoiceHomeConversationSessionRequirements | null;
-}>): Promise<boolean> {
-    const state = storage.getState();
-    const session = state?.sessions?.[params.sessionId];
-    if (!isReusableVoiceConversationRuntimeSession(session)) return false;
-    if (!params.requirements) return true;
-
-    return await params.requirements.isReusableSession({
-        sessionId: params.sessionId,
-        metadata: readVoiceSessionOwnerMetadataFromState(state, params.sessionId),
-    });
-}
-
 function projectionSupportsStartupInstructionsV1(params: Readonly<{
     projectionInputs: Awaited<ReturnType<typeof loadDaemonMergedProjectionInputs>>;
     backendTarget: BackendTargetRefV2;
@@ -868,19 +929,7 @@ async function ensureVoiceConversationSessionForVoiceHomeUnguarded(
     }
 
     const serverId = getActiveServerSnapshot().serverId;
-    const spawnOptionsWithoutNonce = {
-        machineId: target.machineId,
-        directory: target.directory,
-        transcriptStorage: 'persisted',
-        approvedNewDirectoryCreation: true,
-        backendTarget,
-        permissionMode: resolvedRequirements?.permissionIntent
-            ?? resolveVoiceConversationPermissionIntent(state),
-        ...(resolvedRequirements?.connectedServices
-            ? { connectedServices: resolvedRequirements.connectedServices }
-            : {}),
-        serverId,
-        userAttemptId: buildVoiceSpawnUserAttemptId({
+    const creationKey = buildVoiceSpawnUserAttemptId({
             surface: 'voice_home',
             serverId,
             machineId: target.machineId,
@@ -891,75 +940,31 @@ async function ensureVoiceConversationSessionForVoiceHomeUnguarded(
             ),
             backendTarget,
             requirements: resolvedRequirements,
-        }),
-    } as const;
-
-    let requestedSpawnNonce = createUiSessionSpawnNonce();
-    let staleCustodyReplayRetries = 0;
-    let spawned: Awaited<ReturnType<typeof machineSpawnNewSession>>;
-    while (true) {
-        const spawnOptions = {
-            ...spawnOptionsWithoutNonce,
-            spawnNonce: requestedSpawnNonce,
-        } as const;
-        spawned = startupInstructions
-            ? await machineSpawnTrustedHiddenSystemSession(
-                spawnOptions,
-                startupInstructions,
-            )
-            : await machineSpawnNewSession(spawnOptions);
-
-        if (!spawned || spawned.type !== 'success' || typeof spawned.sessionId !== 'string') {
-            throw toVoiceConversationSpawnError(spawned);
-        }
-
-        const custody = spawned.spawnAttemptCustody;
-        const isCustodyReplay = custody?.status === 'completed'
-            && custody.spawnNonce !== requestedSpawnNonce;
-        if (!isCustodyReplay) break;
-        if (await isReplayedVoiceHomeSpawnReusable({
-            sessionId: spawned.sessionId,
-            requirements: resolvedRequirements,
-        })) {
-            break;
-        }
-
-        const cleared = await completeMachineSpawnAttemptCustody(custody);
-        if (!cleared) {
-            await failVoiceConversationCustodyCompletion({
-                sessionId: spawned.sessionId,
-                message: 'Stale Voice home session custody could not be cleared',
-            });
-        }
-        if (staleCustodyReplayRetries >= VOICE_HOME_STALE_CUSTODY_REPLAY_RETRY_LIMIT) {
-            await failVoiceConversationCustodyCompletion({
-                sessionId: spawned.sessionId,
-                message: 'Voice home session custody replay remained unavailable',
-            });
-        }
-        staleCustodyReplayRetries += 1;
-        requestedSpawnNonce = createUiSessionSpawnNonce();
-    }
+        });
+    const spawnedSessionId = await spawnVoiceConversationSession({
+        machineId: target.machineId,
+        serverId,
+        directory: target.directory,
+        backendTarget,
+        permissionMode: resolvedRequirements?.permissionIntent
+            ?? resolveVoiceConversationPermissionIntent(state),
+        creationKey,
+        ...(resolvedRequirements?.connectedServices
+            ? { connectedServices: resolvedRequirements.connectedServices }
+            : {}),
+        ...(startupInstructions ? { startupInstructions } : {}),
+    });
 
     persistVoiceAutoTargetMachineId(target.machineId);
     await finalizeSpawnedVoiceConversationSession({
-        sessionId: spawned.sessionId,
+        sessionId: spawnedSessionId,
         scope: { kind: 'voice_home' },
         ...(startupInstructions
             ? { startupInstructionsMarker: GLOBAL_VOICE_AGENT_STARTUP_INSTRUCTIONS_MARKER }
             : {}),
     });
-    await applyVoiceConversationRetentionPolicy({ keepSessionId: spawned.sessionId }).catch(() => {});
-    if (spawned.spawnAttemptCustody?.status === 'completed') {
-        const completed = await completeMachineSpawnAttemptCustody(spawned.spawnAttemptCustody);
-        if (!completed) {
-            await failVoiceConversationCustodyCompletion({
-                sessionId: spawned.sessionId,
-                message: 'Voice home session custody could not be completed',
-            });
-        }
-    }
-    return spawned.sessionId;
+    await applyVoiceConversationRetentionPolicy({ keepSessionId: spawnedSessionId }).catch(() => {});
+    return spawnedSessionId;
 }
 
 export function ensureVoiceConversationSessionForVoiceHome(
@@ -1073,43 +1078,28 @@ export async function ensureVoiceConversationSessionForSessionRoot(params: Reado
 
     const backendTarget = await resolveVoiceConversationBackendTarget(state, machineId);
     const serverId = getActiveServerSnapshot().serverId;
-    const spawnNonce = createUiSessionSpawnNonce();
-    const spawned = await machineSpawnNewSession({
-        machineId,
-        directory,
-        transcriptStorage: 'persisted',
-        backendTarget,
-        permissionMode: resolveVoiceConversationPermissionIntent(state),
-        serverId,
-        spawnNonce,
-        userAttemptId: buildVoiceSpawnUserAttemptId({
+    const creationKey = buildVoiceSpawnUserAttemptId({
             surface: 'voice_session_root',
             serverId,
             machineId,
             directory: resolveRequiredVoiceSpawnDirectoryIdentity(state, machineId, directory),
             backendTarget,
             sessionId,
-        }),
+        });
+    const spawnedSessionId = await spawnVoiceConversationSession({
+        machineId,
+        serverId,
+        directory,
+        backendTarget,
+        permissionMode: resolveVoiceConversationPermissionIntent(state),
+        creationKey,
     });
-
-    if (!spawned || spawned.type !== 'success' || typeof spawned.sessionId !== 'string') {
-        throw toVoiceConversationSpawnError(spawned);
-    }
 
     await finalizeSpawnedVoiceConversationSession({
-        sessionId: spawned.sessionId,
+        sessionId: spawnedSessionId,
         scope: { kind: 'session_root', sessionRootId: sessionId },
     });
-    await applyVoiceConversationRetentionPolicy({ keepSessionId: spawned.sessionId }).catch(() => {});
-    if (spawned.spawnAttemptCustody?.status === 'completed') {
-        const completed = await completeMachineSpawnAttemptCustody(spawned.spawnAttemptCustody);
-        if (!completed) {
-            await failVoiceConversationCustodyCompletion({
-                sessionId: spawned.sessionId,
-                message: 'Voice conversation custody could not be completed',
-            });
-        }
-    }
+    await applyVoiceConversationRetentionPolicy({ keepSessionId: spawnedSessionId }).catch(() => {});
 
-    return spawned.sessionId;
+    return spawnedSessionId;
 }

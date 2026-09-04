@@ -27,6 +27,11 @@ function readRequestId(data: unknown): string {
     return '';
 }
 
+function readTurnId(data: unknown): string {
+    if (!isRecord(data)) return '';
+    return typeof data.turnId === 'string' ? data.turnId.trim() : '';
+}
+
 function readServerId(data: unknown): string | null {
     if (!isRecord(data)) return null;
     const serverId = typeof data.serverId === 'string' ? data.serverId.trim() : '';
@@ -99,6 +104,7 @@ export function parseActivityInteraction(params: Readonly<{
 
     const sessionId = readSessionId(params.data);
     const requestId = readRequestId(params.data);
+    const turnId = readTurnId(params.data);
     const route = activitySurfaceRoute ?? resolveRoute(params.data);
     const resolvedPermissionAction =
         permissionAction && sessionId && requestId
@@ -106,6 +112,7 @@ export function parseActivityInteraction(params: Readonly<{
                 action: permissionAction,
                 sessionId,
                 requestId,
+                ...(turnId ? { turnId } : {}),
             }
             : null;
 

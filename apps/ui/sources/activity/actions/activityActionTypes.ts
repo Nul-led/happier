@@ -2,6 +2,7 @@ export type ActivityPermissionAction = Readonly<{
     action: 'allow' | 'deny';
     sessionId: string;
     requestId: string;
+    turnId?: string;
 }>;
 
 export type ParsedActivityInteraction = Readonly<{

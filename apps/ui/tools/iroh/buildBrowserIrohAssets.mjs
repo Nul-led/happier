@@ -19,15 +19,17 @@
 // Usage:
 //   node apps/ui/tools/iroh/buildBrowserIrohAssets.mjs --output-dir <web output>
 //   node apps/ui/tools/iroh/buildBrowserIrohAssets.mjs --check --output-dir <web output>
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import esbuild from 'esbuild';
 
+import { generateIrohNativeReleaseEvidence } from '../../../../packages/iroh-native/scripts/generate-native-release-evidence.mjs';
 import { buildBrowserIrohWasm } from '../../../../packages/iroh-native/scripts/verify-browser-iroh-wasm.mjs';
 import {
+  BROWSER_IROH_NOTICES_ASSET,
   BROWSER_IROH_WORKER_ASSET,
   formatBrowserIrohAssetVerification,
   materializeBrowserIrohAssets,
@@ -91,10 +93,20 @@ export async function buildBrowserIrohAssets({ outputRoot }) {
   try {
     const workerBundlePath = join(stagingDir, BROWSER_IROH_WORKER_ASSET);
     await bundleBrowserIrohWorker({ outFile: workerBundlePath });
+
+    // The WASM this build just produced redistributes the same locked Cargo
+    // graph as the native carriers, so it carries the same licence and NOTICE
+    // obligations. They come from the one evidence owner rather than a
+    // browser-specific inventory of the same dependencies.
+    const noticesPath = join(stagingDir, BROWSER_IROH_NOTICES_ASSET);
+    const evidence = await generateIrohNativeReleaseEvidence({});
+    writeFileSync(noticesPath, evidence.notices, 'utf8');
+
     const packaged = materializeBrowserIrohAssets({
       outputRoot,
       generatedDir: built.outDir,
       workerBundlePath,
+      noticesPath,
     });
     return { ...packaged, measurements: built.measurements };
   } finally {
@@ -132,7 +144,7 @@ async function main() {
   }
   process.stdout.write(
     `${JSON.stringify(
-      { assetDir: packaged.assetDir, files: packaged.manifest.files, measurements: packaged.measurements },
+      { assetDir: packaged.assetDir, files: packaged.files, measurements: packaged.measurements },
       null,
       2,
     )}\n`,

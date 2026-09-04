@@ -64,6 +64,9 @@ export const automationTriggerSetTranslations = {
             removeBody: 'Новые события этого триггера больше не будут запускать автоматизацию. История запусков не изменится.',
         },
         exactTurn: {
+            eventSearchPlaceholder: 'Поиск событий',
+            refreshFailedTitle: 'Не удалось обновить автоматизации',
+            refreshFailedBody: 'Список автоматизаций сейчас не удалось прочитать. Повторите попытку, чтобы загрузить текущий список.',
             actionTitle: 'Когда завершится этот ход…',
             createNew: 'Создать новую автоматизацию',
             createNewSubtitle: 'Начните с уже выбранного текущего хода.',
@@ -102,6 +105,9 @@ export const automationTriggerSetTranslations = {
             removeBody: 'Przyszłe zdarzenia z tego wyzwalacza przestaną uruchamiać automatyzację. Historia uruchomień pozostanie bez zmian.',
         },
         exactTurn: {
+            eventSearchPlaceholder: 'Szukaj zdarzeń',
+            refreshFailedTitle: 'Nie udało się odświeżyć automatyzacji',
+            refreshFailedBody: 'Nie udało się teraz odczytać listy automatyzacji. Spróbuj ponownie, aby wczytać bieżącą listę.',
             actionTitle: 'Gdy zakończy się ten przebieg…', createNew: 'Utwórz nową automatyzację',
             createNewSubtitle: 'Zacznij z już wybranym dokładnie tym przebiegiem.', addToExistingSubtitle: 'Dodaj ten przebieg do istniejącej automatyzacji.',
             searchPlaceholder: 'Szukaj automatyzacji', eventListA11y: 'Wybierz zdarzenie cyklu życia sesji', destinationA11y: 'Wybierz, gdzie dodać wyzwalacz tego przebiegu', staleTitle: 'Przebieg się zmienił',
@@ -130,6 +136,9 @@ export const automationTriggerSetTranslations = {
             removeTitle: '¿Eliminar este activador?', removeBody: 'Las futuras coincidencias de este activador dejarán de iniciar la automatización. El historial de ejecuciones no cambiará.',
         },
         exactTurn: {
+            eventSearchPlaceholder: 'Buscar eventos',
+            refreshFailedTitle: 'No se pudieron actualizar las automatizaciones',
+            refreshFailedBody: 'Ahora mismo no se pudo leer la lista de automatizaciones. Inténtalo de nuevo para cargar la lista actual.',
             actionTitle: 'Cuando termine este turno…', createNew: 'Crear una automatización', createNewSubtitle: 'Empieza con este turno exacto ya seleccionado.',
             addToExistingSubtitle: 'Añade este turno exacto a una automatización existente.', searchPlaceholder: 'Buscar automatizaciones',
             eventListA11y: 'Elige el evento del ciclo de vida de la sesión',
@@ -159,6 +168,9 @@ export const automationTriggerSetTranslations = {
             removeTitle: 'Supprimer ce déclencheur ?', removeBody: 'Les prochains événements de ce déclencheur ne lanceront plus l’automatisation. L’historique des exécutions restera inchangé.',
         },
         exactTurn: {
+            eventSearchPlaceholder: 'Rechercher des événements',
+            refreshFailedTitle: 'Impossible d’actualiser les automatisations',
+            refreshFailedBody: 'La liste des automatisations n’a pas pu être lue pour le moment. Réessayez pour charger la liste actuelle.',
             actionTitle: 'À la fin de ce tour…', createNew: 'Créer une automatisation', createNewSubtitle: 'Commencez avec ce tour précis déjà sélectionné.',
             addToExistingSubtitle: 'Ajoutez ce tour précis à une automatisation existante.', searchPlaceholder: 'Rechercher des automatisations',
             eventListA11y: 'Choisir l’événement du cycle de vie de la session',
@@ -188,6 +200,9 @@ export const automationTriggerSetTranslations = {
             removeTitle: 'Rimuovere questo trigger?', removeBody: 'Le corrispondenze future di questo trigger non avvieranno più l’automazione. La cronologia delle esecuzioni resterà invariata.',
         },
         exactTurn: {
+            eventSearchPlaceholder: 'Cerca eventi',
+            refreshFailedTitle: 'Impossibile aggiornare le automazioni',
+            refreshFailedBody: 'Al momento non è stato possibile leggere l’elenco delle automazioni. Riprova per caricare l’elenco attuale.',
             actionTitle: 'Al termine di questo turno…', createNew: 'Crea una nuova automazione', createNewSubtitle: 'Inizia con questo turno preciso già selezionato.',
             addToExistingSubtitle: 'Aggiungi questo turno preciso a un’automazione esistente.', searchPlaceholder: 'Cerca automazioni',
             eventListA11y: 'Scegli l’evento del ciclo di vita della sessione',
@@ -217,6 +232,9 @@ export const automationTriggerSetTranslations = {
             removeTitle: 'Remover este acionador?', removeBody: 'As ocorrências futuras deste acionador deixarão de iniciar a automação. O histórico de execuções não será alterado.',
         },
         exactTurn: {
+            eventSearchPlaceholder: 'Pesquisar eventos',
+            refreshFailedTitle: 'Não foi possível atualizar as automações',
+            refreshFailedBody: 'Não foi possível ler a lista de automações agora. Tente novamente para carregar a lista atual.',
             actionTitle: 'Quando este turno terminar…', createNew: 'Criar uma nova automação', createNewSubtitle: 'Comece com este turno exato já selecionado.',
             addToExistingSubtitle: 'Adicione este turno exato a uma automação existente.', searchPlaceholder: 'Pesquisar automações',
             eventListA11y: 'Escolher o evento do ciclo de vida da sessão',
@@ -246,6 +264,9 @@ export const automationTriggerSetTranslations = {
             removeTitle: 'Vols eliminar aquest activador?', removeBody: 'Les coincidències futures d’aquest activador deixaran d’iniciar l’automatització. L’historial d’execucions no canviarà.',
         },
         exactTurn: {
+            eventSearchPlaceholder: 'Cerca esdeveniments',
+            refreshFailedTitle: 'No s’han pogut actualitzar les automatitzacions',
+            refreshFailedBody: 'Ara mateix no s’ha pogut llegir la llista d’automatitzacions. Torna-ho a provar per carregar la llista actual.',
             actionTitle: 'Quan acabi aquest torn…', createNew: 'Crea una automatització', createNewSubtitle: 'Comença amb aquest torn exacte ja seleccionat.',
             addToExistingSubtitle: 'Afegeix aquest torn exacte a una automatització existent.', searchPlaceholder: 'Cerca automatitzacions',
             eventListA11y: 'Tria l’esdeveniment del cicle de vida de la sessió',
@@ -275,6 +296,9 @@ export const automationTriggerSetTranslations = {
             removeTitle: 'Diesen Auslöser entfernen?', removeBody: 'Künftige Treffer dieses Auslösers starten die Automation nicht mehr. Der Run-Verlauf bleibt unverändert.',
         },
         exactTurn: {
+            eventSearchPlaceholder: 'Ereignisse suchen',
+            refreshFailedTitle: 'Automations konnten nicht aktualisiert werden',
+            refreshFailedBody: 'Die Liste der Automations konnte gerade nicht gelesen werden. Versuche es erneut, um die aktuelle Liste zu laden.',
             actionTitle: 'Wenn dieser Turn endet…', createNew: 'Neue Automation erstellen', createNewSubtitle: 'Beginne mit diesem bereits ausgewählten Turn.',
             addToExistingSubtitle: 'Füge diesen Turn einer vorhandenen Automation hinzu.', searchPlaceholder: 'Automationen durchsuchen',
             eventListA11y: 'Session-Lebenszyklusereignis auswählen',
@@ -301,6 +325,9 @@ export const automationTriggerSetTranslations = {
             eventEditorUnavailable: '当前机器无法设置事件。', removeTitle: '移除此触发器？', removeBody: '此触发器今后的事件将不再启动自动化。现有运行历史不会改变。',
         },
         exactTurn: {
+            eventSearchPlaceholder: '搜索事件',
+            refreshFailedTitle: '无法刷新自动化',
+            refreshFailedBody: '当前无法读取自动化列表。请重试以加载当前列表。',
             actionTitle: '当此轮次结束时…', createNew: '创建新自动化', createNewSubtitle: '以已选中的这个确切轮次开始。',
             addToExistingSubtitle: '将这个确切轮次添加到现有自动化。', searchPlaceholder: '搜索自动化', eventListA11y: '选择会话生命周期事件', destinationA11y: '选择要将此轮次触发器添加到何处',
             staleTitle: '此轮次已更改', staleBody: '所选轮次已不再是当前活动的父轮次。请刷新并明确选择当前轮次。',
@@ -325,6 +352,9 @@ export const automationTriggerSetTranslations = {
             eventEditorUnavailable: '目前機器無法設定事件。', removeTitle: '移除此觸發器？', removeBody: '此觸發器之後的事件將不再啟動自動化。現有執行記錄不會變更。',
         },
         exactTurn: {
+            eventSearchPlaceholder: '搜尋事件',
+            refreshFailedTitle: '無法重新整理自動化',
+            refreshFailedBody: '目前無法讀取自動化清單。請重試以載入目前的清單。',
             actionTitle: '當此輪次結束時…', createNew: '建立新自動化', createNewSubtitle: '以已選取的這個確切輪次開始。',
             addToExistingSubtitle: '將這個確切輪次加入現有自動化。', searchPlaceholder: '搜尋自動化', eventListA11y: '選擇工作階段生命週期事件', destinationA11y: '選擇要將此輪次觸發器加入何處',
             staleTitle: '此輪次已變更', staleBody: '所選輪次已不再是目前作用中的父輪次。請重新整理並明確選取目前輪次。',
@@ -352,6 +382,9 @@ export const automationTriggerSetTranslations = {
             removeTitle: 'このトリガーを削除しますか？', removeBody: '今後、このトリガーのイベントではオートメーションが開始されません。既存の実行履歴は変わりません。',
         },
         exactTurn: {
+            eventSearchPlaceholder: 'イベントを検索',
+            refreshFailedTitle: 'オートメーションを更新できませんでした',
+            refreshFailedBody: '現在オートメーションの一覧を読み取れませんでした。もう一度試して最新の一覧を読み込んでください。',
             actionTitle: 'このターンが終了したとき…', createNew: '新しいオートメーションを作成', createNewSubtitle: 'このターンを選択した状態で始めます。',
             addToExistingSubtitle: 'このターンを既存のオートメーションに追加します。', searchPlaceholder: 'オートメーションを検索',
             eventListA11y: 'セッションのライフサイクルイベントを選択',

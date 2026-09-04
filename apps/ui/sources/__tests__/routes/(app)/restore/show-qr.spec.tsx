@@ -9,10 +9,21 @@ type ReactActEnvironmentGlobal = typeof globalThis & {
 };
 (globalThis as ReactActEnvironmentGlobal).IS_REACT_ACT_ENVIRONMENT = true;
 
-installRestoreRouteCommonModuleMocks();
+const routeState = vi.hoisted(() => ({ params: {} as Record<string, string> }));
+
+installRestoreRouteCommonModuleMocks({
+    router: async () => {
+        const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+        return createExpoRouterMock({ params: () => routeState.params }).module;
+    },
+});
 
 vi.mock('@/components/account/restore/RestoreQrView', () => ({
-    RestoreQrView: () => React.createElement('RestoreQrView', { testID: 'restore-show-qr-view' }),
+    RestoreQrView: (props: { targetProfileId?: string; entryIntent?: string }) => React.createElement('RestoreQrView', {
+        testID: 'restore-show-qr-view',
+        targetProfileId: props.targetProfileId,
+        entryIntent: props.entryIntent,
+    }),
 }));
 
 vi.mock('@/components/onboarding', () => ({
@@ -47,12 +58,22 @@ vi.mock('@/components/onboarding/unauthShell', async () => {
 });
 
 afterEach(() => {
+    routeState.params = {};
     vi.restoreAllMocks();
     standardCleanup();
 });
 
 describe('/restore/show-qr', () => {
-    it('renders forced QR restore inside the unauthenticated split shell without mobile hero', async () => {
+    it('does not mount reverse QR without an explicit target profile', async () => {
+        vi.resetModules();
+        const { default: Screen } = await import('@/app/(app)/restore/show-qr');
+        const screen = await renderScreen(<Screen />);
+
+        expect(screen.findByTestId('restore-show-qr-view')).toBeNull();
+    });
+
+    it('renders reverse QR for the exact requested profile inside the unauthenticated split shell', async () => {
+        routeState.params = { serverId: 'home-b-profile', entryIntent: 'add_home' };
         vi.resetModules();
         const { default: Screen } = await import('@/app/(app)/restore/show-qr');
         const screen = await renderScreen(<Screen />);
@@ -63,6 +84,7 @@ describe('/restore/show-qr', () => {
         expect(shell?.props.isWelcomeStep).toBe(false);
         expect(shell?.props.allowMobileBrandHero).toBe(false);
         expect(shell?.props.hasBack).toBe(true);
-        expect(screen.findByTestId('restore-show-qr-view')).toBeTruthy();
+        expect(screen.findByTestId('restore-show-qr-view')?.props.targetProfileId).toBe('home-b-profile');
+        expect(screen.findByTestId('restore-show-qr-view')?.props.entryIntent).toBe('add_home');
     });
 });

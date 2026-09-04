@@ -326,6 +326,7 @@ export function resolveActivityInteractionCommand(params: Readonly<{
             payload: {
                 sessionId: parsed.permissionAction.sessionId,
                 requestId: parsed.permissionAction.requestId,
+                ...(parsed.permissionAction.turnId ? { turnId: parsed.permissionAction.turnId } : {}),
                 decision: parsed.permissionAction.action,
             },
             defaultSessionId: identity?.sessionId ?? parsed.permissionAction.sessionId,

@@ -29,6 +29,7 @@ vi.mock('@/sync/domains/pending/pendingTerminalConnect', () => ({
 
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
     getActiveServerUrl: () => 'https://api.happier.dev',
+    loadHomeViewState: () => null,
 }));
 
 vi.mock('@/sync/domains/server/activeServerSwitch', () => ({
@@ -98,6 +99,7 @@ describe('TerminalConnectScreen hash parsing', () => {
         getPendingTerminalConnectMock.mockReturnValue({
             publicKeyB64Url: 'abcdefghijklmnop',
             serverUrl: 'https://example.test',
+            serverIdentityId: 'srv_example_test',
         });
 
         globalWindow.window = {

@@ -22,6 +22,7 @@ import { clearPendingTerminalConnect, setPendingTerminalConnect } from '@/sync/d
 import { buildTerminalConnectAuthRedirectHref, parseTerminalConnectUrl } from '@/utils/path/terminalConnectUrl';
 import { canUseCurrentDeviceQrScanner } from '@/utils/platform/qrScannerSupport';
 import { decodeBase64 } from '@/encryption/base64';
+import { promptLegacyPairingUpdateRequired } from '@/auth/pairing/legacyPairingUpdateRequired';
 
 interface UseConnectTerminalOptions {
     onSuccess?: () => void;
@@ -40,7 +41,28 @@ async function resolveTerminalApprovalTarget(params: Readonly<{
     requestedEndpointUrl: string | null;
     focusedEndpointUrl: string;
     expectedServerIdentityId: string;
+    descriptor?: HomeConnectionDescriptorV1;
 }>): Promise<TerminalApprovalTarget> {
+    if (params.descriptor) {
+        if (params.descriptor.homeServerIdentityId !== params.expectedServerIdentityId) {
+            throw new Error('Terminal pairing descriptor identity does not match the link destination');
+        }
+        const matches = listServerProfiles().filter(
+            (profile) => profile.serverIdentityId?.trim() === params.expectedServerIdentityId,
+        );
+        if (matches.length !== 1) {
+            return { endpointUrl: params.descriptor.canonicalServerUrl, descriptor: params.descriptor, credentials: null };
+        }
+        const credentials = await TokenStorage.getCredentialsForServerUrl(matches[0]!.serverUrl, {
+            serverId: params.expectedServerIdentityId,
+        });
+        return {
+            endpointUrl: params.descriptor.canonicalServerUrl,
+            serverId: params.expectedServerIdentityId,
+            descriptor: params.descriptor,
+            credentials,
+        };
+    }
     const endpointUrl = params.requestedEndpointUrl || params.focusedEndpointUrl;
     if (!endpointUrl) throw new Error('Terminal pairing requires an explicit target server');
     const targetKey = createServerUrlComparableKey(endpointUrl);
@@ -71,6 +93,11 @@ export function useConnectTerminal(options?: UseConnectTerminalOptions) {
             await Modal.alertAsync(t('common.error'), t('modals.invalidAuthUrl'), [{ text: t('common.ok') }]);
             return false;
         }
+        if (parsed.compatibility?.admission === 'update_required') {
+            const action = await promptLegacyPairingUpdateRequired();
+            if (action === 'scan_new_qr') router.push('/scan/terminal');
+            return false;
+        }
         
         setIsLoading(true);
         try {
@@ -85,6 +112,7 @@ export function useConnectTerminal(options?: UseConnectTerminalOptions) {
                 requestedEndpointUrl: effectiveParsedServerUrl,
                 focusedEndpointUrl: currentServerUrl,
                 expectedServerIdentityId: parsed.serverIdentityId ?? '',
+                ...(parsed.homeConnectionDescriptor ? { descriptor: parsed.homeConnectionDescriptor } : {}),
             });
             const activeCredentials = target.credentials;
 
@@ -95,6 +123,9 @@ export function useConnectTerminal(options?: UseConnectTerminalOptions) {
                     serverIdentityId: parsed.serverIdentityId ?? '',
                     ...(parsed.pairing ? { pairing: parsed.pairing } : {}),
                     ...(parsed.supportsTokenOnly ? { supportsTokenOnly: true } : {}),
+                    ...(parsed.homeConnectionDescriptor
+                        ? { homeConnectionDescriptor: parsed.homeConnectionDescriptor }
+                        : {}),
                 });
                 await Modal.alertAsync(t('terminal.connectTerminal'), t('modals.pleaseSignInFirst'), [
                     { text: t('common.continue') },

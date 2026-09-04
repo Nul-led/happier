@@ -494,10 +494,6 @@ describe('realtime_codex normal web composed gate', () => {
               v: 1,
               channel: 'realtime_conversation',
               modality: 'voice',
-              source: {
-                pluginId: 'happier.agent.codex',
-                contributionId: 'realtime-codex',
-              },
             },
           }),
         }),
@@ -584,10 +580,6 @@ describe('realtime_codex normal web composed gate', () => {
               v: 1,
               channel: 'realtime_conversation',
               modality: 'voice',
-              source: {
-                pluginId: 'happier.agent.codex',
-                contributionId: 'realtime-codex',
-              },
             },
           }),
         }),

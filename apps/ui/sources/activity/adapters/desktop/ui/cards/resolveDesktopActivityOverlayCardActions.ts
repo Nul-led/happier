@@ -59,6 +59,7 @@ export function resolveDesktopActivityOverlayRequestCardActions(
             actionIdentifier: card.denyActionIdentifier,
             data: withServerScope({
                 requestId: card.requestId,
+                ...(card.kind === 'permission_request' && card.turnId ? { turnId: card.turnId } : {}),
                 sessionId: card.sessionId,
                 decision: 'deny',
             }, card.serverId),
@@ -70,6 +71,7 @@ export function resolveDesktopActivityOverlayRequestCardActions(
             actionIdentifier: card.allowActionIdentifier,
             data: withServerScope({
                 requestId: card.requestId,
+                ...(card.kind === 'permission_request' && card.turnId ? { turnId: card.turnId } : {}),
                 sessionId: card.sessionId,
                 decision: 'allow',
             }, card.serverId),

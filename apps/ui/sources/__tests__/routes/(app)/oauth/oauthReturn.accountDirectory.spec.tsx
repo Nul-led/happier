@@ -10,7 +10,7 @@ import {
     loginWithCredentialsSpy,
     modal,
     pendingAccountDirectoryAuthClearSpy,
-    pendingAccountDirectoryAuthGetSpy,
+    pendingAccountDirectoryAuthCustodyResolveSpy,
     replaceSpy,
     renderOAuthReturnScreen,
     resetOAuthHarness,
@@ -22,7 +22,7 @@ import {
 import { resetRuntimeFetch, setRuntimeFetch } from '@/utils/system/runtimeFetch';
 import { decodeBase64, encodeBase64 } from '@/encryption/base64';
 import { encryptBox } from '@/encryption/libsodium';
-import { AccountDirectoryStorageReadError, TokenStorage } from '@/auth/storage/tokenStorage';
+import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { renderScreen } from '@/dev/testkit';
 import type { PreferredDirectoryHomeEnrollmentResult } from '@/sync/ops/accountDirectory/enrollPreferredDirectoryHome';
 import { setAccountServiceEndpoint } from '@/sync/domains/server/serverProfiles';
@@ -45,7 +45,14 @@ const accountDirectoryComposition = vi.hoisted(() => ({
     enrollmentResult: null as unknown,
 }));
 const createAccountDirectorySessionSpy = vi.hoisted(() => vi.fn(
-    (..._args: unknown[]) => ({ snapshot: { status: 'idle' } }),
+    (...args: unknown[]) => {
+        const options = args[1] as { capability?: { homeEnrollment?: boolean } } | undefined;
+        return {
+            serviceKey: 'https://directory.example.test\u0000srv_directory_1',
+            supportsHomeEnrollment: options?.capability?.homeEnrollment === true,
+            snapshot: { status: 'idle' },
+        };
+    },
 ));
 const refreshAccountHomeDirectorySpy = vi.hoisted(() => vi.fn(
     async (..._args: unknown[]) => ({ status: 'ready' }),
@@ -172,7 +179,7 @@ describe('oauth/[provider] return (Account Directory)', () => {
             pending: 'directory-pending', mode: 'keyless',
         });
         setAccountServiceEndpoint({ url: endpoint, serverIdentityId: identity, source: 'user' });
-        pendingAccountDirectoryAuthGetSpy.mockResolvedValueOnce({
+        pendingAccountDirectoryAuthCustodyResolveSpy.mockResolvedValueOnce({ kind: 'matched', pending: {
             endpoint,
             serverIdentityId: identity,
             canonicalServerUrl: endpoint,
@@ -185,7 +192,7 @@ describe('oauth/[provider] return (Account Directory)', () => {
             expiresAt: now + 60_000,
             mode: 'keyless',
             proof: 'directory-proof',
-        } as unknown as import('@/auth/storage/tokenStorage').PendingAccountDirectoryAuth);
+        } as unknown as import('@/auth/storage/tokenStorage').PendingAccountDirectoryAuth });
         const fetchMock = vi.fn();
         setRuntimeFetch(fetchMock as unknown as typeof fetch);
 
@@ -1541,6 +1548,19 @@ describe('oauth/[provider] return (Account Directory)', () => {
                     signatureBase64Url: encodeBase64(new Uint8Array(64), 'base64url'),
                 }), { status: 200 });
             }
+            if (url.endsWith('/v1/features/authenticated')) {
+                return new Response(JSON.stringify({
+                    features: {},
+                    capabilities: { serverIdentity: { serverIdentityId: 'srv_home_b' } },
+                    homeConnectionDescriptor: {
+                        v: 1,
+                        homeServerIdentityId: 'srv_home_b',
+                        canonicalServerUrl: 'https://home-b.test',
+                        revision: 1,
+                        endpoints: [{ kind: 'https', url: 'https://home-b.test' }],
+                    },
+                }), { status: 200 });
+            }
             if (url.endsWith('/v1/auth/home-login')) {
                 if (!requestedBoxPublicKeyBase64) {
                     throw new Error('Home login was requested before the Directory assertion');
@@ -1755,6 +1775,19 @@ describe('oauth/[provider] return (Account Directory)', () => {
                     expiresAtMs: now + 2 * 60_000,
                     keyId: 'a'.repeat(64),
                     signatureBase64Url: encodeBase64(new Uint8Array(64), 'base64url'),
+                }), { status: 200 });
+            }
+            if (url.endsWith('/v1/features/authenticated')) {
+                return new Response(JSON.stringify({
+                    features: {},
+                    capabilities: { serverIdentity: { serverIdentityId: homeIdentity } },
+                    homeConnectionDescriptor: {
+                        v: 1,
+                        homeServerIdentityId: homeIdentity,
+                        canonicalServerUrl: homeUrl,
+                        revision: 1,
+                        endpoints: [{ kind: 'https', url: homeUrl }],
+                    },
                 }), { status: 200 });
             }
             if (url.endsWith('/v1/auth/home-login')) {
@@ -1986,7 +2019,7 @@ describe('oauth/[provider] return (Account Directory)', () => {
             await flushOAuthEffects(12);
             expect(fetchMock).not.toHaveBeenCalled();
             expect(accountDirectoryCredentialSetSpy).not.toHaveBeenCalled();
-            expect(pendingAccountDirectoryAuthClearSpy).toHaveBeenCalled();
+            expect(pendingAccountDirectoryAuthClearSpy).not.toHaveBeenCalled();
         });
     });
 
@@ -2028,7 +2061,7 @@ describe('oauth/[provider] return (Account Directory)', () => {
             await flushOAuthEffects(12);
             expect(fetchMock).not.toHaveBeenCalled();
             expect(accountDirectoryCredentialSetSpy).not.toHaveBeenCalled();
-            expect(pendingAccountDirectoryAuthClearSpy).toHaveBeenCalled();
+            expect(pendingAccountDirectoryAuthClearSpy).not.toHaveBeenCalled();
             expect(clearPendingExternalAuthMock).not.toHaveBeenCalled();
             expect(loginSpy).not.toHaveBeenCalled();
             expect(loginWithCredentialsSpy).not.toHaveBeenCalled();
@@ -2036,18 +2069,10 @@ describe('oauth/[provider] return (Account Directory)', () => {
         });
     });
 
-    it('resumes persisted Directory custody when callback purpose markers are stripped', async () => {
+    it('resumes persisted Directory custody when every Directory callback marker is stripped', async () => {
         const now = Date.now();
         const endpoint = 'https://directory.example.test';
         const identity = 'srv_directory_1';
-        localSearchParamsMock.mockReturnValue({
-            provider: 'github',
-            flow: 'auth',
-            endpointUrl: endpoint,
-            endpointServerIdentityId: identity,
-            pending: 'directory-pending',
-            mode: 'keyless',
-        });
         setAccountServiceEndpoint({ url: endpoint, serverIdentityId: identity, source: 'user' });
         setPendingAccountDirectoryAuthState({
             endpoint,
@@ -2061,6 +2086,12 @@ describe('oauth/[provider] return (Account Directory)', () => {
             expiresAt: now + 60_000,
             mode: 'keyless',
             proof: 'directory-proof',
+        });
+        localSearchParamsMock.mockReturnValue({
+            provider: 'github',
+            flow: 'auth',
+            pending: 'directory-pending',
+            mode: 'keyless',
         });
         const fetchMock = vi.fn(async () => new Response(
             JSON.stringify({ token: 'directory-token' }),
@@ -2097,8 +2128,18 @@ describe('oauth/[provider] return (Account Directory)', () => {
             features: { capabilities: { server: { canonicalServerUrl: endpoint }, accountDirectory: supportedCapability } },
         });
         const profiles = await import('@/sync/domains/server/serverProfiles');
-        const focused = profiles.upsertServerProfile({ serverUrl: 'https://home-a.test', name: 'Home A', source: 'manual' });
-        profiles.setServerProfileIdentityForUrl('https://home-a.test', 'srv_home_a');
+        const focused = await profiles.adoptHomeProfile({
+            descriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_home_a',
+                canonicalServerUrl: 'https://home-a.test',
+                revision: 1,
+                endpoints: [{ kind: 'https', url: 'https://home-a.test' }],
+            },
+            source: 'manual',
+            descriptorAuthority: 'current_connection_observation',
+            suggestedName: 'Home A',
+        });
         profiles.setActiveServerId(focused.id);
         profiles.saveHomeViewState({
             version: 1,
@@ -2271,8 +2312,18 @@ describe('oauth/[provider] return (Account Directory)', () => {
         });
         if (seedHome) {
             const profiles = await import('@/sync/domains/server/serverProfiles');
-            const focused = profiles.upsertServerProfile({ serverUrl: 'https://home-a.test', name: 'Home A', source: 'manual' });
-            profiles.setServerProfileIdentityForUrl('https://home-a.test', 'srv_home_a');
+            const focused = await profiles.adoptHomeProfile({
+                descriptor: {
+                    v: 1,
+                    homeServerIdentityId: 'srv_home_a',
+                    canonicalServerUrl: 'https://home-a.test',
+                    revision: 1,
+                    endpoints: [{ kind: 'https', url: 'https://home-a.test' }],
+                },
+                source: 'manual',
+                descriptorAuthority: 'current_connection_observation',
+                suggestedName: 'Home A',
+            });
             profiles.setActiveServerId(focused.id);
         }
 
@@ -2342,8 +2393,18 @@ describe('oauth/[provider] return (Account Directory)', () => {
             features: { capabilities: { server: { canonicalServerUrl: endpoint }, accountDirectory: supportedCapability } },
         });
         const profiles = await import('@/sync/domains/server/serverProfiles');
-        const focused = profiles.upsertServerProfile({ serverUrl: 'https://home-a.test', name: 'Home A', source: 'manual' });
-        profiles.setServerProfileIdentityForUrl('https://home-a.test', 'srv_home_a');
+        const focused = await profiles.adoptHomeProfile({
+            descriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_home_a',
+                canonicalServerUrl: 'https://home-a.test',
+                revision: 1,
+                endpoints: [{ kind: 'https', url: 'https://home-a.test' }],
+            },
+            source: 'manual',
+            descriptorAuthority: 'current_connection_observation',
+            suggestedName: 'Home A',
+        });
         profiles.setActiveServerId(focused.id);
         await expect(TokenStorage.setCredentialsForServerUrl(
             'https://home-a.test',
@@ -2432,9 +2493,7 @@ describe('oauth/[provider] return (Account Directory)', () => {
             serverIdentityId: 'srv_directory_1',
             source: 'user',
         });
-        pendingAccountDirectoryAuthGetSpy.mockRejectedValueOnce(
-            new AccountDirectoryStorageReadError('unavailable'),
-        );
+        pendingAccountDirectoryAuthCustodyResolveSpy.mockResolvedValueOnce({ kind: 'unavailable' });
 
         const tree = await renderOAuthReturnScreen();
         try {

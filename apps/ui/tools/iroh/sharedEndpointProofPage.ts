@@ -28,7 +28,6 @@ type ProofClient = Readonly<{
     acquireLease: (relayUrls: readonly string[]) => Promise<BrowserIrohWorkerReply>;
     releaseAll: () => Promise<BrowserIrohWorkerReply>;
     status: () => Promise<BrowserIrohWorkerReply>;
-    clearApplicationData: () => Promise<BrowserIrohWorkerReply>;
 }>;
 
 function connectSharedEndpointWorker(base: string): ProofClient {
@@ -59,7 +58,6 @@ function connectSharedEndpointWorker(base: string): ProofClient {
         acquireLease: (relayUrls) => send({ kind: 'acquireLease', relayUrls: [...relayUrls] }),
         releaseAll: () => send({ kind: 'releaseClient' }),
         status: () => send({ kind: 'status' }),
-        clearApplicationData: () => send({ kind: 'clearApplicationData' }),
     };
 }
 

@@ -24,6 +24,7 @@ function buildPermissionActions(
             actionIdentifier: request.denyActionIdentifier,
             data: withServerScope({
                 requestId: request.requestId,
+                ...(request.turnId ? { turnId: request.turnId } : {}),
                 sessionId: request.sessionId,
                 decision: 'deny',
             }, request.serverId),
@@ -55,6 +56,7 @@ function buildPermissionActions(
             actionIdentifier: request.allowActionIdentifier,
             data: withServerScope({
                 requestId: request.requestId,
+                ...(request.turnId ? { turnId: request.turnId } : {}),
                 sessionId: request.sessionId,
                 decision: 'allow',
             }, request.serverId),
@@ -65,6 +67,7 @@ function buildPermissionActions(
             actionIdentifier: request.allowActionIdentifier,
             data: withServerScope({
                 requestId: request.requestId,
+                ...(request.turnId ? { turnId: request.turnId } : {}),
                 sessionId: request.sessionId,
                 decision: 'allow',
                 persistence: 'always',
@@ -146,6 +149,7 @@ export function buildDesktopActivityOverlayExpandedCards(
             id: `permission:${request.requestId}`,
             kind: 'permission_request',
             requestId: request.requestId,
+            ...(request.turnId ? { turnId: request.turnId } : {}),
             sessionId: request.sessionId,
             serverId: request.serverId,
             title: request.title,

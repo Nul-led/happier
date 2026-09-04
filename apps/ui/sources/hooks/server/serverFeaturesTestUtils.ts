@@ -242,6 +242,7 @@ export function buildServerFeaturesResponse(overrides: FixtureOverrides = {}): F
                 },
                 pairing: {
                     desktopQrMobileScan: { enabled: overrides.pairingDesktopQrMobileScanEnabled ?? true },
+                    boundQrV2: { enabled: overrides.pairingDesktopQrMobileScanEnabled ?? true },
                 },
                 ui: {
                     recoveryKeyReminder: { enabled: true },

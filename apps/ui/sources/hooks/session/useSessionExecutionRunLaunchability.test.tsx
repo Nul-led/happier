@@ -188,13 +188,18 @@ describe('useSessionExecutionRunLaunchability', () => {
             id: 'session-1',
             active: false,
             serverId: 'server-explicit',
-            metadata: {
+            metadataLayoutVersion: 1,
+            metadata: {},
+            ownerMetadataView: {
+                path: '/tmp/project',
+                host: 'devbox',
                 machineId: 'machine-1',
                 runtimeDescriptorV1: {
                     v: 1,
                     agentId: 'acme-lifecycle',
                     agent: { providerSessionId: 'acme-session-1' },
                 },
+                nativeResumeIdentityV1: { v: 1, vendorResumeId: 'acme-session-1' },
             },
         } as any;
         resumeCapabilityOptionsSpy.mockReturnValue({

@@ -3,8 +3,10 @@ import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import tweetnacl from 'tweetnacl';
 import {
+    encodeTerminalConnectLinkV4Payload,
     openTerminalProvisioningV3Response,
     openTerminalProvisioningV3Payload,
+    type HomeConnectionDescriptorV1,
 } from '@happier-dev/protocol';
 import { renderScreen } from '@/dev/testkit';
 import { installSessionHooksCommonModuleMocks } from './sessionHooksTestHelpers';
@@ -13,6 +15,7 @@ import { installSessionHooksCommonModuleMocks } from './sessionHooksTestHelpers'
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 const routerReplaceSpy = vi.fn();
+const routerPushSpy = vi.fn();
 const setPendingTerminalConnectSpy = vi.fn((_pending: {
     publicKeyB64Url: string;
     serverUrl: string;
@@ -35,13 +38,22 @@ const fetchAccountEncryptionModeSpy = vi.fn(
     async (): Promise<{ mode: 'plain' | 'e2ee'; updatedAt: number }> => ({ mode: 'plain', updatedAt: 0 }),
 );
 const isRuntimeFeatureEnabledSpy = vi.fn(async (_params: { featureId: string }) => true);
+const promptLegacyPairingUpdateRequiredSpy = vi.fn(async () => 'cancel' as const);
 
 let authCredentials: any = null;
 let storedCredentials: any = undefined;
 let contentPrivateKey = new Uint8Array([7, 7, 7]);
 let contentPublicKey = new Uint8Array([9, 9, 9]);
 let activeServerUrl = 'https://api.happier.dev';
-let serverProfiles: Array<{ id: string; serverUrl: string; serverIdentityId?: string }> = [{
+type TestServerProfile = {
+    id: string;
+    serverUrl: string;
+    serverIdentityId?: string;
+    canonicalServerUrl?: string;
+    homeConnectionDescriptor?: HomeConnectionDescriptorV1;
+};
+
+let serverProfiles: TestServerProfile[] = [{
     id: 'current-profile',
     serverUrl: 'https://api.happier.dev',
     serverIdentityId: 'srv_home_current',
@@ -74,6 +86,7 @@ afterEach(() => {
         return target ? authCredentials : null;
     });
     routerReplaceSpy.mockClear();
+    routerPushSpy.mockClear();
     setPendingTerminalConnectSpy.mockClear();
     modalAlertSpy.mockClear();
     modalAlertAsyncSpy.mockClear();
@@ -85,6 +98,7 @@ afterEach(() => {
     fetchAccountEncryptionModeSpy.mockResolvedValue({ mode: 'plain', updatedAt: 0 });
     isRuntimeFeatureEnabledSpy.mockReset();
     isRuntimeFeatureEnabledSpy.mockResolvedValue(true);
+    promptLegacyPairingUpdateRequiredSpy.mockClear();
 });
 
 installSessionHooksCommonModuleMocks({
@@ -103,7 +117,7 @@ installSessionHooksCommonModuleMocks({
     router: async () => {
         const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
         const expoRouterMock = createExpoRouterMock({
-            router: { replace: routerReplaceSpy },
+            router: { replace: routerReplaceSpy, push: routerPushSpy },
         });
         return expoRouterMock.module;
     },
@@ -188,6 +202,10 @@ vi.mock('@/sync/domains/pending/pendingTerminalConnect', () => ({
     clearPendingTerminalConnect: vi.fn(),
 }));
 
+vi.mock('@/auth/pairing/legacyPairingUpdateRequired', () => ({
+    promptLegacyPairingUpdateRequired: promptLegacyPairingUpdateRequiredSpy,
+}));
+
 // `authApproveSpy` records calls to the resolved Home-transport v3 approval owner.
 vi.mock('@/auth/flows/approve', () => ({
     authApproveWithTransport: authApproveSpy,
@@ -225,18 +243,52 @@ function buildTerminalConnectUrl(params: Readonly<{
     serverIdentityId?: string;
 }>): string {
     const publicKeyB64Url = Buffer.from(params.terminalPublicKey).toString('base64url');
-    const server = encodeURIComponent(params.serverUrl ?? 'https://api.happier.dev');
-    const pairing = params.pairing
-        ? `&pairingSecret=${Buffer.from(params.pairing.secret).toString('base64url')}`
-            + `&createdAt=${params.pairing.createdAtMs}`
-            + `&expiresAt=${params.pairing.expiresAtMs}`
-            + (params.supportsTokenOnly ? '&supportsTokenOnly=1' : '')
-        : '';
-    const identityValue = params.serverIdentityId ?? (params.pairing ? 'srv_home_current' : undefined);
-    const identity = identityValue
-        ? `&serverIdentityId=${encodeURIComponent(identityValue)}`
-        : '';
-    return `happier://terminal?key=${publicKeyB64Url}&server=${server}${identity}${pairing}`;
+    const serverUrl = params.serverUrl ?? 'https://api.happier.dev';
+    if (!params.pairing) {
+        return `happier://terminal?key=${publicKeyB64Url}&server=${encodeURIComponent(serverUrl)}`;
+    }
+    const homeServerIdentityId = params.serverIdentityId ?? 'srv_home_current';
+    const descriptor: HomeConnectionDescriptorV1 = {
+        v: 1,
+        homeServerIdentityId,
+        canonicalServerUrl: serverUrl,
+        revision: 1,
+        endpoints: [{ kind: 'https', url: serverUrl }],
+    };
+    const payload = encodeTerminalConnectLinkV4Payload({
+        v: 4,
+        publicKeyB64Url,
+        pairing: {
+            v: 3,
+            secretB64Url: Buffer.from(params.pairing.secret).toString('base64url'),
+            createdAtMs: params.pairing.createdAtMs,
+            expiresAtMs: params.pairing.expiresAtMs,
+            homeServerIdentityId,
+            supportsTokenOnly: params.supportsTokenOnly === true,
+        },
+        homeConnectionDescriptor: descriptor,
+    });
+    return `happier://terminal?v4=${payload}`;
+}
+
+function buildIdentityBearingV3TerminalConnectUrl(params: Readonly<{
+    terminalPublicKey: Uint8Array;
+    serverUrl: string;
+    serverIdentityId: string;
+    pairing: Readonly<{
+        secret: Uint8Array;
+        createdAtMs: number;
+        expiresAtMs: number;
+    }>;
+    supportsTokenOnly?: boolean;
+}>): string {
+    return `happier://terminal?key=${Buffer.from(params.terminalPublicKey).toString('base64url')}`
+        + `&server=${encodeURIComponent(params.serverUrl)}`
+        + `&serverIdentityId=${encodeURIComponent(params.serverIdentityId)}`
+        + `&pairingSecret=${Buffer.from(params.pairing.secret).toString('base64url')}`
+        + `&createdAt=${params.pairing.createdAtMs}`
+        + `&expiresAt=${params.pairing.expiresAtMs}`
+        + (params.supportsTokenOnly ? '&supportsTokenOnly=1' : '');
 }
 
 function createDataKeyCredentials(params: Readonly<{ token: string; machineKeyByte: number; publicKeyByte?: number }>) {
@@ -265,6 +317,101 @@ function createTokenOnlyCredentials(params: Readonly<{ token: string }>) {
 }
 
 describe('useConnectTerminal unauthenticated flow', () => {
+    it.each([
+        ['https', '&server=https%3A%2F%2Fhome.example.test'],
+        ['http', '&server=http%3A%2F%2Flan.example.test'],
+        ['no-server', ''],
+    ])('returns typed update-required refusal for immutable preview.2 %s pairing without authority mutation', async (_case, server) => {
+        const tuple = 'key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+            + `${server}`
+            + '&pairingSecret=AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE'
+            + '&createdAt=1000&expiresAt=61000';
+        const { useConnectTerminal } = await import('./useConnectTerminal');
+        let hookApi: ReturnType<typeof useConnectTerminal> | null = null;
+        function Probe() {
+            hookApi = useConnectTerminal();
+            return null;
+        }
+        await renderScreen(React.createElement(Probe));
+
+        let result = true;
+        await act(async () => {
+            result = await hookApi!.processAuthUrl(`happier://terminal?${tuple}`);
+        });
+
+        expect(result).toBe(false);
+        expect(promptLegacyPairingUpdateRequiredSpy).toHaveBeenCalledOnce();
+        expect(modalAlertSpy).not.toHaveBeenCalled();
+        expect(setPendingTerminalConnectSpy).not.toHaveBeenCalled();
+        expect(routerReplaceSpy).not.toHaveBeenCalled();
+        expect(upsertActivateAndSwitchServerSpy).not.toHaveBeenCalled();
+        expect(authApproveSpy).not.toHaveBeenCalled();
+        expect(getCredentialsForServerUrlSpy).not.toHaveBeenCalled();
+        expect(activeServerUrl).toBe('https://api.happier.dev');
+    });
+
+    it('honors the canonical legacy-pairing scan-new-QR reentry action', async () => {
+        promptLegacyPairingUpdateRequiredSpy.mockResolvedValueOnce('scan_new_qr');
+        const { useConnectTerminal } = await import('./useConnectTerminal');
+        let hookApi: ReturnType<typeof useConnectTerminal> | null = null;
+        function Probe() {
+            hookApi = useConnectTerminal();
+            return null;
+        }
+        await renderScreen(React.createElement(Probe));
+
+        await act(async () => {
+            await hookApi!.processAuthUrl(
+                'happier://terminal?key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+                + '&pairingSecret=AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE'
+                + '&createdAt=1000&expiresAt=61000',
+            );
+        });
+
+        expect(routerPushSpy).toHaveBeenCalledWith('/scan/terminal');
+    });
+
+    it('preserves the strict V4 descriptor while redirecting to sign-in', async () => {
+        storedCredentials = null;
+        const descriptor = {
+            v: 1 as const,
+            homeServerIdentityId: 'srv_home_current',
+            canonicalServerUrl: 'https://api.happier.dev',
+            revision: 1,
+            endpoints: [{ kind: 'iroh' as const, endpointId: 'a'.repeat(64) }],
+        };
+        const payload = encodeTerminalConnectLinkV4Payload({
+            v: 4,
+            publicKeyB64Url: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+            pairing: {
+                v: 3,
+                secretB64Url: 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE',
+                createdAtMs: 1_000,
+                expiresAtMs: 61_000,
+                homeServerIdentityId: descriptor.homeServerIdentityId,
+                supportsTokenOnly: true,
+            },
+            homeConnectionDescriptor: descriptor,
+        });
+
+        const { useConnectTerminal } = await import('./useConnectTerminal');
+        let hookApi: ReturnType<typeof useConnectTerminal> | null = null;
+        function Probe() {
+            hookApi = useConnectTerminal();
+            return null;
+        }
+        await renderScreen(React.createElement(Probe));
+
+        await act(async () => {
+            await hookApi!.processAuthUrl(`happier://terminal?v4=${payload}`);
+        });
+
+        expect(setPendingTerminalConnectSpy).toHaveBeenCalledWith(expect.objectContaining({
+            serverIdentityId: descriptor.homeServerIdentityId,
+            homeConnectionDescriptor: descriptor,
+        }));
+    });
+
     it('stores pending connect intent and routes to sign-in', async () => {
         routerReplaceSpy.mockClear();
         setPendingTerminalConnectSpy.mockClear();
@@ -376,10 +523,10 @@ describe('useConnectTerminal unauthenticated flow', () => {
         authApproveSpy.mockClear();
         modalAlertSpy.mockClear();
 
-        activeServerUrl = 'http://happier-stack.localhost:3121';
+        activeServerUrl = 'https://happier-stack.localhost:3121';
         serverProfiles = [{
             id: 'current-profile',
-            serverUrl: 'http://localhost:3121',
+            serverUrl: 'https://localhost:3121',
             serverIdentityId: 'srv_home_current',
         }];
         authCredentials = createDataKeyCredentials({ token: 'token-1', machineKeyByte: 7 });
@@ -403,7 +550,7 @@ describe('useConnectTerminal unauthenticated flow', () => {
         await act(async () => {
             result = await hookApi!.processAuthUrl(buildTerminalConnectUrl({
                 terminalPublicKey,
-                serverUrl: 'http://localhost:3121',
+                serverUrl: 'https://localhost:3121',
                 pairing: { secret: pairingSecret, createdAtMs: 1_800_000_000_000, expiresAtMs: 1_800_060_000_000 },
                 supportsTokenOnly: true,
             }));
@@ -730,10 +877,19 @@ describe('useConnectTerminal unauthenticated flow', () => {
         const targetCredentials = createDataKeyCredentials({ token: 'token-new', machineKeyByte: 11 });
         authCredentials = focusedCredentials;
         contentPrivateKey = new Uint8Array(32).fill(7);
+        const verifiedDescriptor: HomeConnectionDescriptorV1 = {
+            v: 1,
+            homeServerIdentityId: 'srv_home_b',
+            canonicalServerUrl: 'https://stack.example.test',
+            revision: 1,
+            endpoints: [{ kind: 'https', url: 'https://stack.example.test' }],
+        };
         serverProfiles = [{
             id: 'home-b-profile',
             serverUrl: 'https://stack.example.test',
             serverIdentityId: 'srv_home_b',
+            canonicalServerUrl: verifiedDescriptor.canonicalServerUrl,
+            homeConnectionDescriptor: verifiedDescriptor,
         }];
         getCredentialsForServerUrlSpy.mockResolvedValue(targetCredentials);
 
@@ -756,7 +912,7 @@ describe('useConnectTerminal unauthenticated flow', () => {
 
         let result = false;
         await act(async () => {
-            result = await hookApi!.processAuthUrl(buildTerminalConnectUrl({
+            result = await hookApi!.processAuthUrl(buildIdentityBearingV3TerminalConnectUrl({
                 terminalPublicKey,
                 serverUrl: 'https://stack.example.test',
                 serverIdentityId: 'srv_home_b',
@@ -801,6 +957,14 @@ describe('useConnectTerminal unauthenticated flow', () => {
             id: 'focused-profile',
             serverUrl: 'https://shared.example.test',
             serverIdentityId: 'srv_focused',
+            canonicalServerUrl: 'https://shared.example.test',
+            homeConnectionDescriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_focused',
+                canonicalServerUrl: 'https://shared.example.test',
+                revision: 1,
+                endpoints: [{ kind: 'https', url: 'https://shared.example.test' }],
+            },
         }];
 
         const terminalSecretKey = new Uint8Array(32).fill(8);
@@ -815,7 +979,7 @@ describe('useConnectTerminal unauthenticated flow', () => {
 
         let result = true;
         await act(async () => {
-            result = await hookApi!.processAuthUrl(buildTerminalConnectUrl({
+            result = await hookApi!.processAuthUrl(buildIdentityBearingV3TerminalConnectUrl({
                 terminalPublicKey,
                 serverUrl: 'https://shared.example.test',
                 serverIdentityId: 'srv_expected_other',

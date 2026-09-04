@@ -31,6 +31,7 @@ function readPermissionDecisionPayload(value: unknown): Readonly<{
     action: 'allow' | 'deny';
     sessionId: string;
     requestId: string;
+    turnId?: string;
 }> | null {
     if (!isRecord(value) || typeof value.sessionId !== 'string' || typeof value.requestId !== 'string') {
         return null;
@@ -47,6 +48,9 @@ function readPermissionDecisionPayload(value: unknown): Readonly<{
         action,
         sessionId: value.sessionId,
         requestId: value.requestId,
+        ...(typeof value.turnId === 'string' && value.turnId.trim().length > 0
+            ? { turnId: value.turnId.trim() }
+            : {}),
     };
 }
 
@@ -113,11 +117,20 @@ export function useNotificationResponseRouting(params: Readonly<{
         const performPermissionAction = async (actionParams: {
             sessionId: string;
             requestId: string;
+            turnId?: string;
             action: 'allow' | 'deny';
         }): Promise<void> => {
             const { sessionAllow, sessionDeny } = await import('@/sync/ops');
             if (actionParams.action === 'allow') {
-                await sessionAllow(actionParams.sessionId, actionParams.requestId, undefined, undefined, 'approved');
+                await sessionAllow(
+                    actionParams.sessionId,
+                    actionParams.requestId,
+                    undefined,
+                    undefined,
+                    'approved',
+                    undefined,
+                    actionParams.turnId,
+                );
             } else {
                 await sessionDeny(
                     actionParams.sessionId,
@@ -126,6 +139,7 @@ export function useNotificationResponseRouting(params: Readonly<{
                     undefined,
                     'denied',
                     'Denied from notification',
+                    actionParams.turnId,
                 );
             }
         };
@@ -140,6 +154,7 @@ export function useNotificationResponseRouting(params: Readonly<{
                         await performPermissionAction({
                             sessionId: pendingAction.sessionId,
                             requestId: pendingAction.requestId,
+                            ...(pendingAction.turnId ? { turnId: pendingAction.turnId } : {}),
                             action: pendingAction.action,
                         });
                     } catch {
@@ -196,7 +211,7 @@ export function useNotificationResponseRouting(params: Readonly<{
                 ? readPermissionDecisionPayload(command.payload)
                 : null;
             if (command.kind === 'executeAction' && permissionDecisionPayload) {
-                const { action, sessionId: actionSessionId, requestId: actionRequestId } = permissionDecisionPayload;
+                const { action, sessionId: actionSessionId, requestId: actionRequestId, turnId } = permissionDecisionPayload;
                 if (!serverUrl) {
                     router.push(route);
                     return;
@@ -240,6 +255,7 @@ export function useNotificationResponseRouting(params: Readonly<{
                         serverUrl: saved.serverUrl,
                         sessionId: actionSessionId,
                         requestId: actionRequestId,
+                        ...(turnId ? { turnId } : {}),
                         action,
                     });
                     fireAndForget((async () => {
@@ -251,7 +267,7 @@ export function useNotificationResponseRouting(params: Readonly<{
                             });
                             clearPendingNotificationAction();
                             try {
-                                await performPermissionAction({ sessionId: actionSessionId, requestId: actionRequestId, action });
+                                await performPermissionAction({ sessionId: actionSessionId, requestId: actionRequestId, ...(turnId ? { turnId } : {}), action });
                             } catch {
                                 // best-effort
                             }
@@ -322,10 +338,10 @@ export function useNotificationResponseRouting(params: Readonly<{
                 ? readPermissionDecisionPayload(command.payload)
                 : null;
             if (command.kind === 'executeAction' && activeServerPermissionDecisionPayload) {
-                const { action, sessionId: actionSessionId, requestId: actionRequestId } = activeServerPermissionDecisionPayload;
+                const { action, sessionId: actionSessionId, requestId: actionRequestId, turnId } = activeServerPermissionDecisionPayload;
                 fireAndForget((async () => {
                     try {
-                        await performPermissionAction({ sessionId: actionSessionId, requestId: actionRequestId, action });
+                        await performPermissionAction({ sessionId: actionSessionId, requestId: actionRequestId, ...(turnId ? { turnId } : {}), action });
                     } catch {
                         // best-effort
                     }

@@ -13,7 +13,8 @@ type ReactActEnvironmentGlobal = typeof globalThis & {
 const routerBackSpy = vi.hoisted(() => vi.fn());
 const routerReplaceSpy = vi.hoisted(() => vi.fn());
 const routerDismissToSpy = vi.hoisted(() => vi.fn());
-const authLoginSpy = vi.hoisted(() => vi.fn(async () => {}));
+const authLoginSpy = vi.hoisted(() => vi.fn(async () => ({ kind: 'completed' as const })));
+const guardCredentialMutationSpy = vi.hoisted(() => vi.fn(async () => ({ kind: 'allowed' as const })));
 const normalizeSecretKeySpy = vi.hoisted(() => vi.fn((input: string) => input.trim()));
 
 vi.mock('@expo/vector-icons/Ionicons', () => ({
@@ -41,6 +42,14 @@ vi.mock('@/auth/flows/getToken', () => ({
 vi.mock('@/auth/recovery/secretKeyBackup', () => ({
     normalizeSecretKey: normalizeSecretKeySpy,
 }));
+
+vi.mock('@/sync/ops/account/accountEncryptionFirstKeyExternalAuth', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/sync/ops/account/accountEncryptionFirstKeyExternalAuth')>();
+    return {
+        ...actual,
+        guardAccountEncryptionFirstKeyCredentialMutation: guardCredentialMutationSpy,
+    };
+});
 
 vi.mock('@/encryption/base64', () => ({
     decodeBase64: vi.fn((_value: string, _encoding: string) => new Uint8Array(32)),
@@ -105,6 +114,7 @@ describe('/restore/manual', () => {
         });
 
         expect(authLoginSpy).toHaveBeenCalled();
+        expect(guardCredentialMutationSpy).toHaveBeenCalled();
         expect(normalizeSecretKeySpy).toHaveBeenCalled();
         expect(routerBackSpy).not.toHaveBeenCalled();
         expect(routerReplaceSpy).not.toHaveBeenCalled();

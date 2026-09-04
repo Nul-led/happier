@@ -11,6 +11,7 @@ export type ActivityLocalNotificationEvent =
         kind: 'agent-request';
         sessionId: string;
         requestId: string;
+        turnId?: string;
         requestKind: AgentRequestKind;
         toolName: string;
         toolArgs: unknown;
@@ -49,6 +50,7 @@ export function notifyActivityReady(sessionId: string, messages?: Message[]): vo
 export function notifyActivityAgentRequest(params: Readonly<{
     sessionId: string;
     requestId: string;
+    turnId?: string;
     requestKind: AgentRequestKind;
     toolName: string;
     toolArgs: unknown;
@@ -62,6 +64,9 @@ export function notifyActivityAgentRequest(params: Readonly<{
         kind: 'agent-request',
         sessionId,
         requestId,
+        ...(typeof params.turnId === 'string' && params.turnId.trim().length > 0
+            ? { turnId: params.turnId.trim() }
+            : {}),
         requestKind: params.requestKind,
         toolName,
         toolArgs: params.toolArgs,

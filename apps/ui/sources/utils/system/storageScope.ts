@@ -21,9 +21,18 @@ export function normalizeStorageScope(value: unknown): string | null {
 }
 
 export function readStorageScopeFromEnv(
-    env: Record<string, string | undefined> = process.env,
+    env?: Record<string, string | undefined>,
 ): string | null {
-    return normalizeStorageScope(env[EXPO_PUBLIC_STORAGE_SCOPE_ENV_VAR]);
+    // Expo only substitutes public environment variables when they are read
+    // through a statically named `process.env.EXPO_PUBLIC_*` member. Keep the
+    // injectable map for tests and non-bundled callers, but make the production
+    // default statically visible to Metro so browser/native bundles retain the
+    // configured persistence scope.
+    return normalizeStorageScope(
+        env === undefined
+            ? process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE
+            : env[EXPO_PUBLIC_STORAGE_SCOPE_ENV_VAR],
+    );
 }
 
 export function scopedStorageId(baseId: string, scope: string | null): string {

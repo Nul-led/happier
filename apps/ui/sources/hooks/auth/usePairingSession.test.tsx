@@ -75,9 +75,11 @@ vi.mock('@/sync/domains/server/serverRuntime', () => ({
 let cachedCanonicalServerUrl: string | null = null;
 let cachedServerIdentityId: string | null = null;
 let cachedSnapshotOnlyUnscoped = false;
+let boundQrV2Enabled = true;
+let profileReady = true;
 let descriptorOverride: import('@happier-dev/protocol').HomeConnectionDescriptorV1 | null = null;
 const serverProfileMocks = vi.hoisted(() => ({
-    getServerProfileById: vi.fn(() => ({ id: 'srv-a' })),
+    getServerProfileById: vi.fn(() => profileReady ? ({ id: 'srv-a' }) : null),
     buildHomeConnectionDescriptorForProfile: vi.fn(),
 }));
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
@@ -93,9 +95,25 @@ vi.mock('@/sync/api/capabilities/serverFeaturesClient', () => ({
             ? {
                 status: 'ready',
                 serverIdentityId: cachedServerIdentityId,
-                features: { capabilities: { server: { canonicalServerUrl: cachedCanonicalServerUrl } } },
+                features: {
+                    features: { auth: { pairing: { boundQrV2: { enabled: boundQrV2Enabled } } } },
+                    capabilities: { server: { canonicalServerUrl: cachedCanonicalServerUrl } },
+                },
             }
             : null,
+    getServerFeaturesSnapshot: async () => {
+        profileReady = true;
+        return cachedCanonicalServerUrl
+            ? {
+                status: 'ready',
+                serverIdentityId: cachedServerIdentityId,
+                features: {
+                    features: { auth: { pairing: { boundQrV2: { enabled: boundQrV2Enabled } } } },
+                    capabilities: { server: { canonicalServerUrl: cachedCanonicalServerUrl } },
+                },
+            }
+            : { status: 'error', reason: 'network' };
+    },
 }));
 
 vi.mock('@/auth/enrollment/homeEnrollmentTransport', async (importOriginal) => {
@@ -137,6 +155,8 @@ describe('usePairingSession (pairing deep link server URL)', () => {
         cachedCanonicalServerUrl = null;
         cachedServerIdentityId = null;
         cachedSnapshotOnlyUnscoped = false;
+        boundQrV2Enabled = true;
+        profileReady = true;
         activeServerUrl = 'http://localhost:53288';
         activeShareableServerUrl = null;
         activeShareableServerUrlValidatedAgainstServerUrl = null;
@@ -159,6 +179,13 @@ describe('usePairingSession (pairing deep link server URL)', () => {
                 endpoints: [{ kind: 'https', url: endpointUrl }],
             };
         });
+        serverProfileMocks.getServerProfileById.mockImplementation(() => {
+            if (!profileReady) return null;
+            return {
+                id: 'srv-a',
+                homeConnectionDescriptor: serverProfileMocks.buildHomeConnectionDescriptorForProfile(),
+            };
+        });
         appState.currentState = 'active';
     });
 
@@ -166,6 +193,29 @@ describe('usePairingSession (pairing deep link server URL)', () => {
         cachedCanonicalServerUrl = 'http://localhost:53288';
         cachedServerIdentityId = 'srv_home_a';
         cachedSnapshotOnlyUnscoped = true;
+        activeRuntimeOrigin = 'http://localhost:53288';
+
+        const { usePairingSession } = await import('./usePairingSession');
+        let hookApi: ReturnType<typeof usePairingSession> | null = null;
+        function Probe() { hookApi = usePairingSession({ enabled: true, isAuthenticated: true }); return null; }
+        const screen = await renderScreen(<Probe />);
+        try {
+            await act(async () => {
+                await expect(hookApi!.startPairing()).resolves.toEqual({ ok: true });
+            });
+            expect(pairingStartMock).toHaveBeenCalledOnce();
+            expect(hookApi!.presentation).toMatchObject({ phase: 'ready' });
+        } finally {
+            act(() => screen.tree.unmount());
+        }
+    });
+
+    it('waits for canonical feature refresh to reconcile the active Home profile before starting', async () => {
+        cachedCanonicalServerUrl = 'http://localhost:53288';
+        cachedServerIdentityId = 'srv_home_a';
+        cachedSnapshotOnlyUnscoped = true;
+        profileReady = false;
+        activeRuntimeOrigin = 'http://localhost:53288';
 
         const { usePairingSession } = await import('./usePairingSession');
         let hookApi: ReturnType<typeof usePairingSession> | null = null;
@@ -306,6 +356,7 @@ describe('usePairingSession (pairing deep link server URL)', () => {
             expect(pairingConsumeMock).toHaveBeenCalledWith(
                 { pairId: 'pair_123', intent: 'cancel' },
                 expect.objectContaining({ descriptor: descriptorOverride }),
+                expect.objectContaining({ signal: expect.any(AbortSignal) }),
             );
             expect(hookApi!.presentation).toEqual({ phase: 'invalid_request' });
             expect(hookApi!.deepLink).toBeNull();
@@ -416,6 +467,8 @@ describe('usePairingSession (pairing deep link server URL)', () => {
 
             expect(hookApi!.deepLink).toBeNull();
             expect(pairingStartMock).not.toHaveBeenCalled();
+            expect(hookApi!.isStarting).toBe(false);
+            expect(hookApi!.presentation).toEqual({ phase: 'invalid_request' });
 
             await act(async () => {
                 hookApi!.clearSession();
@@ -424,6 +477,31 @@ describe('usePairingSession (pairing deep link server URL)', () => {
             act(() => {
                 tree?.unmount();
             });
+        }
+    });
+
+    it('does not start or create a secret-bearing link when the Home lacks bound QR v2', async () => {
+        cachedCanonicalServerUrl = 'https://preview-home.example.test';
+        cachedServerIdentityId = 'srv_preview';
+        boundQrV2Enabled = false;
+        const { usePairingSession } = await import('./usePairingSession');
+        let hookApi: ReturnType<typeof usePairingSession> | null = null;
+        function Probe() {
+            hookApi = usePairingSession({ enabled: true, isAuthenticated: true });
+            return null;
+        }
+        const screen = await renderScreen(<Probe />);
+        try {
+            let result: unknown = null;
+            await act(async () => {
+                result = await hookApi!.startPairing();
+            });
+            expect(result).toEqual({ ok: false, status: 426, reason: 'update_required' });
+            expect(pairingStartMock).not.toHaveBeenCalled();
+            expect(hookApi!.deepLink).toBeNull();
+            expect(hookApi!.completionState).toBe('completion_failed');
+        } finally {
+            act(() => screen.tree.unmount());
         }
     });
 
@@ -1085,6 +1163,7 @@ describe('usePairingSession (pairing deep link server URL)', () => {
             expect(pairingConsumeMock).toHaveBeenCalledWith(
                 { pairId: 'pair_123', intent: 'cancel' },
                 expect.objectContaining({ descriptor: expect.objectContaining({ homeServerIdentityId: 'srv_home_a' }) }),
+                expect.objectContaining({ signal: expect.any(AbortSignal) }),
             );
             expect(endpointFetchMock).not.toHaveBeenCalled();
             expect(hookApi!.deepLink).toBeNull();

@@ -1,7 +1,13 @@
 import { isAcceptedHappierUrlProtocol, resolveAppUrlScheme } from '@/utils/url/appScheme';
-import { normalizeServerIdentityIdCapability } from '@happier-dev/protocol';
+import {
+    normalizeServerIdentityIdCapability,
+    encodeTerminalConnectLinkV4Payload,
+    parseTerminalConnectLinkV4Parameters,
+    type HomeConnectionDescriptorV1,
+} from '@happier-dev/protocol';
 
 export type ParsedTerminalConnectUrl = Readonly<{
+    wireVersion?: 4;
     publicKeyB64Url: string;
     serverUrl: string | null;
     serverIdentityId?: string;
@@ -11,12 +17,44 @@ export type ParsedTerminalConnectUrl = Readonly<{
         expiresAtMs: number;
     }>;
     supportsTokenOnly?: true;
+    homeConnectionDescriptor?: HomeConnectionDescriptorV1;
+    compatibility?: Readonly<{
+        provenance: 'cli-v0.2.11-preview.2-url-only-v3';
+        admission: 'update_required';
+    }>;
 }>;
 
 export type TerminalConnectRouteParams = Readonly<Record<string, string | string[] | undefined>>;
 
 const SAFE_SERVER_PROTOCOLS = new Set(['http:', 'https:']);
 const TERMINAL_CONNECT_WEB_PATH = '/terminal/connect';
+
+function parseTerminalConnectParameters(params: URLSearchParams): ParsedTerminalConnectUrl | null {
+    if (params.has('v4')) {
+        const envelope = parseTerminalConnectLinkV4Parameters(params);
+        if (!envelope) return null;
+        return {
+            wireVersion: 4,
+            publicKeyB64Url: envelope.publicKeyB64Url,
+            serverUrl: null,
+            serverIdentityId: envelope.homeConnectionDescriptor.homeServerIdentityId,
+            pairing: {
+                secretB64Url: envelope.pairing.secretB64Url,
+                createdAtMs: envelope.pairing.createdAtMs,
+                expiresAtMs: envelope.pairing.expiresAtMs,
+            },
+            ...(envelope.pairing.supportsTokenOnly ? { supportsTokenOnly: true } : {}),
+            homeConnectionDescriptor: envelope.homeConnectionDescriptor,
+        };
+    }
+
+    const key = (params.get('key') ?? '').trim();
+    if (!key) return null;
+    const serverUrl = normalizeServerUrl(params.get('server') ?? '');
+    const releasedCompatibility = parseReleasedUrlOnlyV3Compatibility({ publicKeyB64Url: key, serverUrl }, params);
+    if (releasedCompatibility) return releasedCompatibility;
+    return withPairingContext({ publicKeyB64Url: key, serverUrl }, params);
+}
 
 function normalizeServerUrl(raw: string): string | null {
     const value = String(raw ?? '').trim();
@@ -52,12 +90,7 @@ function parseTerminalConnectWebUrl(raw: string): ParsedTerminalConnectUrl | nul
         const source = hashTail || String(parsed.search ?? '').replace(/^\?/, '');
         if (!source) return null;
 
-        const params = new URLSearchParams(source);
-        const key = (params.get('key') ?? '').trim();
-        if (!key) return null;
-
-        const serverUrl = normalizeServerUrl(params.get('server') ?? '');
-        return withPairingContext({ publicKeyB64Url: key, serverUrl }, params);
+        return parseTerminalConnectParameters(new URLSearchParams(source));
     } catch {
         return null;
     }
@@ -77,6 +110,34 @@ function parsePairingContext(params: URLSearchParams): ParsedTerminalConnectUrl[
         return undefined;
     }
     return { secretB64Url, createdAtMs, expiresAtMs };
+}
+
+/**
+ * Read adapter pinned to cli-v0.2.11-preview.2's immutable URL-only V3 writer.
+ * It grants neither stable identity nor descriptor authority; those remain for
+ * the normal authenticated observation/adoption boundary.
+ */
+function parseReleasedUrlOnlyV3Compatibility(
+    base: Pick<ParsedTerminalConnectUrl, 'publicKeyB64Url' | 'serverUrl'>,
+    params: URLSearchParams,
+): ParsedTerminalConnectUrl | null {
+    const required = new Set(['key', 'pairingSecret', 'createdAt', 'expiresAt']);
+    const allowed = new Set([...required, 'server']);
+    const keys = [...params.keys()];
+    if (keys.length !== required.size + (params.has('server') ? 1 : 0) || keys.some((key) => !allowed.has(key))) return null;
+    if ([...required].some((key) => params.getAll(key).length !== 1)) return null;
+    if (params.has('server') && params.getAll('server').length !== 1) return null;
+    if (params.has('server') && !base.serverUrl) return null;
+    const pairing = parsePairingContext(params);
+    if (!pairing) return null;
+    return {
+        ...base,
+        pairing,
+        compatibility: {
+            provenance: 'cli-v0.2.11-preview.2-url-only-v3',
+            admission: 'update_required',
+        },
+    };
 }
 
 function withPairingContext(
@@ -114,15 +175,40 @@ function buildPairingQuerySuffix(
         + (supportsTokenOnly ? '&supportsTokenOnly=1' : '');
 }
 
+function buildTerminalConnectV4Payload(params: Readonly<{
+    publicKeyB64Url: string;
+    pairing?: ParsedTerminalConnectUrl['pairing'];
+    supportsTokenOnly?: boolean;
+    homeConnectionDescriptor: HomeConnectionDescriptorV1;
+}>): string {
+    if (!params.pairing) throw new Error('Terminal connect V4 requires authenticated pairing context');
+    return encodeTerminalConnectLinkV4Payload({
+        v: 4,
+        publicKeyB64Url: String(params.publicKeyB64Url ?? '').trim(),
+        pairing: {
+            v: 3,
+            ...params.pairing,
+            homeServerIdentityId: params.homeConnectionDescriptor.homeServerIdentityId,
+            supportsTokenOnly: params.supportsTokenOnly === true,
+        },
+        homeConnectionDescriptor: params.homeConnectionDescriptor,
+    });
+}
+
 export function buildTerminalConnectDeepLink(params: Readonly<{
     publicKeyB64Url: string;
     serverUrl: string | null | undefined;
     pairing?: ParsedTerminalConnectUrl['pairing'];
     supportsTokenOnly?: boolean;
     serverIdentityId?: string;
+    homeConnectionDescriptor?: HomeConnectionDescriptorV1;
 }>): string {
     const terminalPrefix = `${resolveAppUrlScheme()}://terminal?`;
     const publicKeyB64Url = String(params.publicKeyB64Url ?? '').trim();
+    if (params.homeConnectionDescriptor) {
+        const payload = buildTerminalConnectV4Payload({ ...params, homeConnectionDescriptor: params.homeConnectionDescriptor });
+        return `${terminalPrefix}v4=${payload}`;
+    }
     const safeServerUrl = normalizeServerUrl(params.serverUrl ?? '');
     const pairingSuffix = buildPairingQuerySuffix(params.pairing, params.supportsTokenOnly === true, params.serverIdentityId);
     if (!safeServerUrl && !pairingSuffix) {
@@ -138,8 +224,13 @@ export function buildTerminalConnectWebHref(params: Readonly<{
     pairing?: ParsedTerminalConnectUrl['pairing'];
     supportsTokenOnly?: boolean;
     serverIdentityId?: string;
+    homeConnectionDescriptor?: HomeConnectionDescriptorV1;
 }>): string {
     const publicKeyB64Url = String(params.publicKeyB64Url ?? '').trim();
+    if (params.homeConnectionDescriptor) {
+        const payload = buildTerminalConnectV4Payload({ ...params, homeConnectionDescriptor: params.homeConnectionDescriptor });
+        return `${TERMINAL_CONNECT_WEB_PATH}#v4=${payload}`;
+    }
     const safeServerUrl = normalizeServerUrl(params.serverUrl ?? '');
 
     const serverSuffix = safeServerUrl ? `&server=${encodeURIComponent(safeServerUrl)}` : '';
@@ -181,15 +272,11 @@ export function parseTerminalConnectUrl(url: string): ParsedTerminalConnectUrl |
         return { publicKeyB64Url: tail, serverUrl: null };
     }
 
-    const params = new URLSearchParams(tail);
-    const key = (params.get('key') ?? '').trim();
-    if (!key) return null;
-
-    const serverUrl = normalizeServerUrl(params.get('server') ?? '');
-    return withPairingContext({ publicKeyB64Url: key, serverUrl }, params);
+    return parseTerminalConnectParameters(new URLSearchParams(tail));
 }
 
 const TERMINAL_CONNECT_ROUTE_PARAM_NAMES = new Set([
+    'v4',
     'key',
     'server',
     'serverIdentityId',
@@ -220,7 +307,7 @@ export function parseTerminalConnectRouteParams(
         if (value) params.set(name, value);
     }
 
-    if (!params.get('key')?.trim()) {
+    if (!params.get('key')?.trim() && !params.get('v4')?.trim()) {
         const legacyKeys = Object.keys(searchParams)
             .filter((name) => !TERMINAL_CONNECT_ROUTE_PARAM_NAMES.has(name));
         if (legacyKeys.length !== 1) return null;

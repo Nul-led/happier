@@ -29,7 +29,7 @@ const REQUIRED_OBSERVATIONS = [
     'exactRelayToIngresslessHome',
     'authenticatedHttpThroughCarrier',
     'liveSocketIoEventThroughCarrier',
-    'reconnectAfterHomeRestartWithoutDuplicateEvent',
+    'reconnectAfterCarrierAcceptorRestartWithoutDuplicateEvent',
     'mismatchedEndpointIdSendsNoApplicationBytes',
     'browserReportsRelayOrUnknownOnly',
     'abortedHttpCancelsPromptlyAndNeverCompletesLate',

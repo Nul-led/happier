@@ -48,9 +48,14 @@ import {
     type MachineCarrierTransferFlow,
 } from '@/sync/domains/transfers/runtime/transferRuntime/plumbing/machineCarrierHttpLease';
 import { createSyncSocketTransport } from '@/sync/api/session/connection/createSyncSocketTransport';
+import { apiSocket } from '@/sync/api/session/apiSocket';
 import { createServerFetchAtEndpoint } from '@/sync/http/client';
 import type { BrowserIrohHomeCarrier } from '@/sync/runtime/browserIroh/homeCarrier/browserHomeCarrier';
 import { browserIrohHomeCarrierOwner } from '@/sync/runtime/browserIroh/homeCarrier/browserHomeCarrierRuntime';
+import { createBufferedTransferDestination } from '@/sync/domains/transfers/runtime/transferRuntime/carriers/createBufferedTransferDestination';
+import { downloadBulkPayloadViaDirectExportToDestination } from '@/sync/domains/transfers/runtime/transferRuntime/plumbing/directTransferExportDownload';
+import { uploadBulkPayloadFromFileWithCarrierFallbacks } from '@/sync/domains/transfers/runtime/transferRuntime/plumbing/uploadBulkPayloadFromFileWithCarrierFallbacks';
+import { uploadSessionAttachmentFromReaderWithCarrierFallbacks } from '@/sync/domains/transfers/runtime/transferRuntime/families/uploadSessionAttachmentFromReaderWithCarrierFallbacks';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -353,6 +358,7 @@ async function seedMachineTransferHome(input: Readonly<{
     homeEndpointId: string;
     homeRelayUrls: readonly string[];
     token: string;
+    accountId: string;
     machineId: string;
     machineEndpointId: string;
     machineRelayUrls: readonly string[];
@@ -377,6 +383,15 @@ async function seedMachineTransferHome(input: Readonly<{
         { serverId: profile.id },
         { token: input.token },
     );
+
+    // Production Sync activates the authenticated Home/account projection
+    // before publishing Machine state. The loaded journey must cross that same
+    // store owner so plaintext Machine RPC and active Machine projections are
+    // evaluated in the signed-in account scope.
+    storage.getState().activateProfileScope({
+        serverId: profile.id,
+        accountId: input.accountId,
+    });
 
     // The focused Home's connection lease, exactly as the production connection
     // owner establishes it: one browser Iroh Home carrier published through the
@@ -404,6 +419,36 @@ async function seedMachineTransferHome(input: Readonly<{
         machineRelayUrls: input.machineRelayUrls,
     });
 
+    // Production Sync initializes this account's canonical user-scoped socket
+    // after the focused Home transport is published. Direct-transfer control
+    // RPCs must cross that real socket owner; the journey only supplies the
+    // Home server on the other side.
+    apiSocket.initialize(
+        { endpoint: profile.serverUrl, token: input.token },
+        null,
+    );
+    const syncSocketConnected = await new Promise<boolean>((resolve) => {
+        let unsubscribe: (() => void) | null = null;
+        let finishedBeforeSubscriptionReturned = false;
+        const finish = (connected: boolean) => {
+            clearTimeout(timer);
+            if (unsubscribe) unsubscribe();
+            else finishedBeforeSubscriptionReturned = true;
+            resolve(connected);
+        };
+        const timer = setTimeout(() => finish(false), 20_000);
+        unsubscribe = apiSocket.onStatusChange((status) => {
+            if (status === 'connected') finish(true);
+        });
+        if (finishedBeforeSubscriptionReturned) unsubscribe();
+    });
+    if (!syncSocketConnected) {
+        throw new Error('the production user-scoped Sync socket did not connect through the Home carrier');
+    }
+
+    const activeServerAfterMachinePublish = getActiveServerSnapshot();
+    const activeMachineAfterPublish = storage.getState().machines[input.machineId] ?? null;
+
     return {
         serverId: profile.id,
         serverUrl: profile.serverUrl,
@@ -413,6 +458,9 @@ async function seedMachineTransferHome(input: Readonly<{
         homeCarrierEndpointId: carrier.endpointId,
         homeCarrierObservedPath: carrier.readObservedPath(),
         machineId: input.machineId,
+        activeServerIdAfterMachinePublish: activeServerAfterMachinePublish.serverId,
+        activeMachineStorageMode: activeMachineAfterPublish?.storageMode ?? null,
+        syncSocketConnected,
     };
 }
 
@@ -439,6 +487,7 @@ function publishMachineDescriptor(input: Readonly<{
         updatedAt: now,
         active: true,
         activeAt: now,
+        storageMode: 'plain',
         metadata: null,
         metadataVersion: 1,
         daemonState: {
@@ -621,6 +670,148 @@ async function machineRequest(input: Readonly<{
     return { requestId, ...readHttpOutcome(requestId) };
 }
 
+async function productionDirectImport(input: Readonly<{
+    machineId: string;
+    serverId: string;
+    workingDirectory: string;
+    transferKind?: 'file' | 'attachment';
+    path?: string;
+    messageLocalId?: string;
+    fileName?: string;
+    uploadLocation?: 'workspace' | 'os_temp';
+    workspaceRootPath?: string;
+    workspaceRelativeDir?: string;
+    vcsIgnoreStrategy?: 'git_info_exclude' | 'gitignore' | 'none';
+    vcsIgnoreWritesEnabled?: boolean;
+    payloadBase64: string;
+    declaredSizeBytes?: number;
+    cancelAfterReadCalls?: number;
+}>): Promise<JsonRecord> {
+    const payload = new Uint8Array(decodeBase64(input.payloadBase64));
+    const controller = new AbortController();
+    let readCalls = 0;
+    const relayCalls: string[] = [];
+    const fileReader = {
+        sizeBytes: payload.byteLength,
+        readBytes: async (offset: number, length: number) => {
+            readCalls += 1;
+            if (typeof input.cancelAfterReadCalls === 'number' && readCalls > input.cancelAfterReadCalls) {
+                controller.abort(new Error('cancelled by Chromium finite-transfer journey'));
+            }
+            return payload.subarray(offset, offset + length);
+        },
+        close: async () => undefined,
+    };
+    const result = input.transferKind === 'attachment'
+        ? await uploadSessionAttachmentFromReaderWithCarrierFallbacks({
+            machineId: input.machineId,
+            serverId: input.serverId,
+            fileReader,
+            request: {
+                t: 'session_attachment_upload_v1',
+                workingDirectory: input.workingDirectory,
+                messageLocalId: input.messageLocalId ?? 'browser-attachment',
+                fileName: input.fileName ?? 'attachment.bin',
+                sizeBytes: input.declaredSizeBytes ?? payload.byteLength,
+                uploadLocation: input.uploadLocation ?? 'workspace',
+                workspaceRootPath: input.workspaceRootPath,
+                workspaceRelativeDir: input.workspaceRelativeDir ?? '.happier/uploads',
+                vcsIgnoreStrategy: input.vcsIgnoreStrategy ?? 'none',
+                vcsIgnoreWritesEnabled: input.vcsIgnoreWritesEnabled ?? false,
+            },
+            signal: controller.signal,
+        })
+        : await uploadBulkPayloadFromFileWithCarrierFallbacks({
+            machineId: input.machineId,
+            serverId: input.serverId,
+            fileReader,
+            directImportRequest: {
+                t: 'session_file_upload_v1',
+                workingDirectory: input.workingDirectory,
+                path: input.path ?? 'payload.bin',
+                sizeBytes: input.declaredSizeBytes ?? payload.byteLength,
+                overwrite: true,
+            },
+            relay: {
+                init: async () => {
+                    relayCalls.push('init');
+                    return { success: false as const, error: 'forbidden fallback' };
+                },
+                sendChunk: async () => {
+                    relayCalls.push('chunk');
+                    return { success: false as const, error: 'forbidden fallback' };
+                },
+                finalize: async () => {
+                    relayCalls.push('finalize');
+                    return { success: false as const, error: 'forbidden fallback' };
+                },
+            },
+            signal: controller.signal,
+        });
+    return { result, relayCalls, readCalls };
+}
+
+async function productionDirectExport(input: Readonly<{
+    machineId: string;
+    serverId: string;
+    workingDirectory: string;
+    path: string;
+    maxBytes: number;
+    cancelAfterWrite?: boolean;
+    failDestinationWrite?: boolean;
+}>): Promise<JsonRecord> {
+    const buffered = createBufferedTransferDestination(input.maxBytes);
+    const controller = new AbortController();
+    let cleanupCalls = 0;
+    let writeCalls = 0;
+    const destination = {
+        writeBytes: async (bytes: Uint8Array) => {
+            writeCalls += 1;
+            if (input.failDestinationWrite) throw new Error('destination write failed by journey');
+            await buffered.destination.writeBytes(bytes);
+            if (input.cancelAfterWrite) controller.abort(new Error('cancelled by Chromium finite-transfer journey'));
+        },
+        close: buffered.destination.close,
+        cleanup: async () => {
+            cleanupCalls += 1;
+            await buffered.destination.cleanup();
+        },
+    };
+    const machineRouteState: { selected: MachineCarrierRoute | null } = { selected: null };
+    const result = await downloadBulkPayloadViaDirectExportToDestination({
+        machineId: input.machineId,
+        serverId: input.serverId,
+        request: {
+            t: 'workspace_file_download_v1',
+            workingDirectory: input.workingDirectory,
+            path: input.path,
+            asZip: false,
+        },
+        destination,
+        signal: controller.signal,
+        acquirePreparedCarrier: async ({ operationId, maxBytes }) => {
+            const route = machineRouteState.selected
+                ?? await resolveMachineCarrierRoute(input.machineId, input.serverId);
+            machineRouteState.selected = route;
+            return route.kind === 'iroh_peer'
+                ? await route.acquire({
+                    operationId,
+                    maxBytes,
+                    flow: 'file_transfer',
+                    signal: controller.signal,
+                })
+                : null;
+        },
+    });
+    return {
+        result,
+        destinationBase64: buffered.toBase64(),
+        cleanupCalls,
+        writeCalls,
+        selectedRoute: machineRouteState.selected?.kind ?? null,
+    };
+}
+
 const commands = {
     acquireCarrier: (input: Parameters<typeof acquireCarrier>[0]) => settle(async () => await acquireCarrier(input)),
     httpRequest: (input: Parameters<typeof httpRequest>[0]) => settle(async () => await httpRequest(input)),
@@ -650,6 +841,10 @@ const commands = {
         settle(async () => await acquireMachineCarrier(input)),
     machineRequest: (input: Parameters<typeof machineRequest>[0]) =>
         settle(async () => await machineRequest(input)),
+    productionDirectImport: (input: Parameters<typeof productionDirectImport>[0]) =>
+        settle(async () => await productionDirectImport(input)),
+    productionDirectExport: (input: Parameters<typeof productionDirectExport>[0]) =>
+        settle(async () => await productionDirectExport(input)),
     publishMachineDescriptor: (input: Parameters<typeof publishMachineDescriptor>[0]) =>
         settle(async () => publishMachineDescriptor(input)),
     // The released lease deliberately stays reachable: a later request on it

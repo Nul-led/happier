@@ -15,12 +15,24 @@ const featureDecisionState = vi.hoisted(() => ({
 }));
 const featureDecisionSpy = vi.hoisted(() => vi.fn());
 const settingsViewRenderSpy = vi.hoisted(() => vi.fn());
+const selectTargetSpy = vi.hoisted(() => vi.fn());
 const routeParams = vi.hoisted(() => ({
     machineId: undefined as string | string[] | undefined,
+    serverIdentityId: undefined as string | string[] | undefined,
+}));
+const administrationTargetState = vi.hoisted(() => ({
+    selectedTarget: {
+        serverIdentityId: 'srv_saved',
+        machineId: 'machine-shared',
+    } as { serverIdentityId: string; machineId: string } | null,
+    requestedAvailability: 'online' as 'online' | 'offline',
 }));
 
 const routerMock = createExpoRouterMock({
-    params: () => ({ machineId: routeParams.machineId }),
+    params: () => ({
+        machineId: routeParams.machineId,
+        serverIdentityId: routeParams.serverIdentityId,
+    }),
     // A deep link can be the first entry in its stack; the gate's exit has to
     // work there too.
     router: { canGoBack: () => false },
@@ -44,6 +56,31 @@ vi.mock('@/components/settings/externalSessions/ExternalSessionsSettingsView', (
     },
 }));
 
+vi.mock('@/sync/domains/machines/administration/useTargetSelection', () => ({
+    useMachineAdministrationTargetSelection: () => ({
+        selectedTarget: administrationTargetState.selectedTarget,
+        candidates: [
+            {
+                target: { serverIdentityId: 'srv_saved', machineId: 'machine-shared' },
+                displayName: 'Saved machine',
+                serverLabel: 'Saved server',
+                availability: 'online',
+                observation: 'live',
+                observedAt: 1,
+            },
+            {
+                target: { serverIdentityId: 'srv_requested', machineId: 'machine-shared' },
+                displayName: 'Requested machine',
+                serverLabel: 'Requested server',
+                availability: administrationTargetState.requestedAvailability,
+                observation: 'live',
+                observedAt: 1,
+            },
+        ],
+        selectTarget: selectTargetSpy,
+    }),
+}));
+
 vi.mock('@/components/ui/surfaces/SurfaceStateCard', () => ({
     SurfaceStateCard: (props: Readonly<Record<string, unknown>>) =>
         React.createElement('SurfaceStateCard', props),
@@ -54,7 +91,14 @@ describe('External Sessions settings route feature gate', () => {
         featureDecisionState.state = 'enabled';
         featureDecisionSpy.mockReset();
         settingsViewRenderSpy.mockReset();
+        selectTargetSpy.mockReset();
         routeParams.machineId = undefined;
+        routeParams.serverIdentityId = undefined;
+        administrationTargetState.selectedTarget = {
+            serverIdentityId: 'srv_saved',
+            machineId: 'machine-shared',
+        };
+        administrationTargetState.requestedAvailability = 'online';
     });
 
     afterEach(() => {
@@ -110,10 +154,10 @@ describe('External Sessions settings route feature gate', () => {
         expect(settingsView.props.integrationInventoryEnabled).toBe(true);
         expect(settingsViewRenderSpy).toHaveBeenCalledTimes(1);
         expect(featureDecisionSpy).toHaveBeenCalledWith('sessions.direct', undefined);
-        expect(tree.findByProps({ testID: 'external-sessions-browse-route-gate-unavailable' })).toBeUndefined();
+        expect(tree.findAllByProps({ testID: 'external-sessions-browse-route-gate-unavailable' })).toHaveLength(0);
     });
 
-    it('does not give a machine query execution authority over the Administration settings view', async () => {
+    it('fails closed for an incomplete target query instead of mounting a persisted different target', async () => {
         routeParams.machineId = [' machine-2 ', 'ignored-machine'];
         const { default: ExternalSessionsSettingsRoute } = await import(
             '@/app/(app)/settings/external-sessions'
@@ -123,7 +167,56 @@ describe('External Sessions settings route feature gate', () => {
             React.createElement(ExternalSessionsSettingsRoute),
         )).tree;
 
-        const settingsView = tree.findByType('ExternalSessionsSettingsView' as never);
-        expect(settingsView.props.initialMachineId).toBeUndefined();
+        const unavailable = tree.findByProps({ testID: 'external-sessions-settings-target-unavailable' });
+        expect(unavailable.props.kind).toBe('unavailable');
+        expect(unavailable.props.accessibilitySemantics).toBe('alert');
+        expect(settingsViewRenderSpy).not.toHaveBeenCalled();
+        expect(selectTargetSpy).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when an exact requested target is unavailable instead of mounting the persisted target', async () => {
+        routeParams.serverIdentityId = 'srv_requested';
+        routeParams.machineId = 'machine-shared';
+        administrationTargetState.requestedAvailability = 'offline';
+        const { default: ExternalSessionsSettingsRoute } = await import(
+            '@/app/(app)/settings/external-sessions'
+        );
+
+        const tree = (await renderScreen(
+            React.createElement(ExternalSessionsSettingsRoute),
+        )).tree;
+
+        const unavailable = tree.findByProps({ testID: 'external-sessions-settings-target-unavailable' });
+        expect(unavailable.props.kind).toBe('unavailable');
+        expect(unavailable.props.accessibilitySemantics).toBe('alert');
+        expect(settingsViewRenderSpy).not.toHaveBeenCalled();
+        expect(selectTargetSpy).not.toHaveBeenCalled();
+    });
+
+    it('admits the complete portable target before mounting inventory effects and preserves server identity for colliding machine ids', async () => {
+        routeParams.serverIdentityId = ' srv_requested ';
+        routeParams.machineId = ' machine-shared ';
+        const { default: ExternalSessionsSettingsRoute } = await import(
+            '@/app/(app)/settings/external-sessions'
+        );
+
+        const screen = await renderScreen(
+            React.createElement(ExternalSessionsSettingsRoute),
+        );
+
+        expect(selectTargetSpy).toHaveBeenCalledWith({
+            serverIdentityId: 'srv_requested',
+            machineId: 'machine-shared',
+        });
+        expect(settingsViewRenderSpy).not.toHaveBeenCalled();
+
+        administrationTargetState.selectedTarget = {
+            serverIdentityId: 'srv_requested',
+            machineId: 'machine-shared',
+        };
+        await screen.update(React.createElement(ExternalSessionsSettingsRoute, { key: 'admitted' }));
+
+        expect(screen.tree.findByType('ExternalSessionsSettingsView' as never).props)
+            .toMatchObject({ integrationInventoryEnabled: true });
     });
 });

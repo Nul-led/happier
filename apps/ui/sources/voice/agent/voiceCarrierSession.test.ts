@@ -14,6 +14,7 @@ type CompletePendingMachineSpawnAttemptCustodyForSessionFn =
 
 const spawnSession = vi.fn();
 const spawnTrustedHiddenSystemSession = vi.fn();
+const executeSessionSpawnNewAction = vi.fn();
 const completePendingMachineSpawnAttemptCustodyForSession =
   vi.fn<CompletePendingMachineSpawnAttemptCustodyForSessionFn>();
 const refreshSessions = vi.fn();
@@ -151,6 +152,10 @@ vi.mock('@/sync/ops/machines', () => ({
   ) => spawnTrustedHiddenSystemSession(opts, startupInstructions),
 }));
 
+vi.mock('@/sync/ops/actions/sessionSpawnNewAction', () => ({
+  executeSessionSpawnNewAction: (...args: unknown[]) => executeSessionSpawnNewAction(...args),
+}));
+
 vi.mock('@/agents/backendCatalog/loadDaemonMergedProjectionInputs', () => ({
   loadDaemonMergedProjectionInputs: (...args: unknown[]) =>
     loadDaemonMergedProjectionInputs(...args),
@@ -184,6 +189,7 @@ describe('voiceConversationSession', () => {
     vi.resetModules();
     spawnSession.mockReset();
     spawnTrustedHiddenSystemSession.mockReset();
+    executeSessionSpawnNewAction.mockReset();
     completePendingMachineSpawnAttemptCustodyForSession.mockReset();
     completePendingMachineSpawnAttemptCustodyForSession.mockResolvedValue(null);
     spawnTrustedHiddenSystemSession.mockImplementation(
@@ -192,6 +198,48 @@ describe('voiceConversationSession', () => {
         agentSessionStartupInstructionsV1: startupInstructions,
       }),
     );
+    executeSessionSpawnNewAction.mockImplementation(async (input: any) => {
+      const legacyOptions = {
+        machineId: input.executionTarget.machineId,
+        serverId: input.executionTarget.serverId,
+        directory: input.directory,
+        transcriptStorage: input.transcriptStorage,
+        permissionMode: input.permissionMode,
+        connectedServices: input.connectedServices,
+        userAttemptId: input.creationKey,
+        backendTarget: {
+          kind: 'backend',
+          backendId: input.agentTarget.identity.localId,
+        },
+      };
+      const spawned = input.agentSessionStartupInstructionsV1
+        ? await spawnTrustedHiddenSystemSession(
+            legacyOptions,
+            input.agentSessionStartupInstructionsV1,
+          )
+        : await spawnSession(legacyOptions);
+      if (spawned.type !== 'success') {
+        return {
+          ok: true,
+          result: {
+            type: 'error',
+            code: 'spawn_failed',
+            retryable: true,
+          },
+        };
+      }
+      return {
+        ok: true,
+        result: {
+          type: 'success',
+          disposition: 'created',
+          sessionId: spawned.sessionId,
+          executionTarget: input.executionTarget,
+          organizationPlacement: { folderId: null, tagIds: [] },
+          initialInput: { status: 'notRequested' },
+        },
+      };
+    });
     refreshSessions.mockReset();
     patchSessionMetadataWithRetry.mockReset();
     ensureSessionVisibleForMessageRoute.mockReset();
@@ -255,11 +303,23 @@ describe('voiceConversationSession', () => {
     });
 
     await expect(ensureVoiceConversationSessionId()).resolves.toBe('sys_voice');
+    expect(executeSessionSpawnNewAction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        creationKey: expect.stringMatching(/^voice-session-attempt:/),
+        executionTarget: { serverId: 'server-a', machineId: 'm1' },
+        directory: '/tmp/.happier/voice-agent',
+        agentTarget: expect.objectContaining({ kind: 'agent' }),
+        transcriptStorage: 'persisted',
+      }),
+      {
+        surface: 'voice',
+        actionRequestId: expect.stringMatching(/^voice-session-attempt:/),
+      },
+    );
     expect(spawnSession).toHaveBeenCalledWith(
       expect.objectContaining({
         machineId: 'm1',
         directory: '/tmp/.happier/voice-agent',
-        approvedNewDirectoryCreation: true,
         backendTarget: { kind: 'backend', backendId: 'claude' },
         serverId: 'server-a',
         transcriptStorage: 'persisted',
@@ -346,6 +406,22 @@ describe('voiceConversationSession', () => {
       coldResumeStartupInstructionsEffective: false,
       isReusableSession,
     });
+
+    expect(executeSessionSpawnNewAction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        creationKey: expect.stringMatching(/^voice-session-attempt:/),
+        executionTarget: { serverId: 'server-a', machineId: 'm1' },
+        agentSessionStartupInstructionsV1: expect.objectContaining({
+          v: 1,
+          id: GLOBAL_VOICE_AGENT_STARTUP_INSTRUCTIONS_ID,
+          revision: GLOBAL_VOICE_AGENT_STARTUP_INSTRUCTIONS_REVISION,
+        }),
+      }),
+      {
+        surface: 'voice',
+        actionRequestId: expect.stringMatching(/^voice-session-attempt:/),
+      },
+    );
 
     expect(isReusableSession).not.toHaveBeenCalled();
     const spawnInput = spawnSession.mock.calls[0]?.[0];
@@ -955,6 +1031,19 @@ describe('voiceConversationSession', () => {
     });
 
     await expect(ensureVoiceConversationSessionForSessionRoot({ sessionId: 's_user' })).resolves.toBe('sys_voice_repo');
+    expect(executeSessionSpawnNewAction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        creationKey: expect.stringMatching(/^voice-session-attempt:/),
+        executionTarget: { serverId: 'server-a', machineId: 'm1' },
+        directory: '/tmp/repo',
+        agentTarget: expect.objectContaining({ kind: 'agent' }),
+        transcriptStorage: 'persisted',
+      }),
+      {
+        surface: 'voice',
+        actionRequestId: expect.stringMatching(/^voice-session-attempt:/),
+      },
+    );
     expect(spawnSession).toHaveBeenCalledWith(expect.objectContaining({
       machineId: 'm1',
       directory: '/tmp/repo',
@@ -1113,7 +1202,7 @@ describe('voiceConversationSession', () => {
     });
 
     await expect(ensureVoiceConversationSessionForSessionRoot({ sessionId: 's_user' })).rejects.toMatchObject({
-      code: 'session_webhook_timeout',
+      code: 'spawn_failed',
     });
 
     expect(refreshSessions).toHaveBeenCalledOnce();
@@ -1203,7 +1292,7 @@ describe('voiceConversationSession', () => {
     expect(spawnSession).not.toHaveBeenCalled();
   });
 
-  it('surfaces the underlying spawn error when creating a hidden voice conversation session for a target root fails', async () => {
+  it('surfaces the canonical Action failure when creating a hidden voice conversation session for a target root fails', async () => {
     const { ensureVoiceConversationSessionForSessionRoot } = await import('@/voice/persistence/voiceConversationSession');
 
     state.sessions.s_user = {
@@ -1219,8 +1308,8 @@ describe('voiceConversationSession', () => {
     });
 
     await expect(ensureVoiceConversationSessionForSessionRoot({ sessionId: 's_user' })).rejects.toMatchObject({
-      message: 'Daemon RPC is not available (RPC method not available).',
-      code: 'daemon_rpc_unavailable',
+      message: 'spawn_failed',
+      code: 'spawn_failed',
     });
   });
 

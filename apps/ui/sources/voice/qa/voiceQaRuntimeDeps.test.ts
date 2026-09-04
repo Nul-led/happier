@@ -165,6 +165,7 @@ describe('createDefaultVoiceQaControllerDeps', () => {
             localId,
             deliveryMode: 'external_handoff',
             requestedAction: { v: 1, kind: 'send_now' },
+            hostAdmissionOrigin: 'voice',
         });
         expect(markPendingDeliveryHandled).toHaveBeenCalledExactlyOnceWith(
             'carrier-s1',

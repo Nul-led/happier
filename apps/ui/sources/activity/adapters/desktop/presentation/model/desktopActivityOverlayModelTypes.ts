@@ -72,6 +72,7 @@ export type DesktopActivityOverlayExpandedCard =
     | (DesktopActivityOverlayCardBase & Readonly<{
         kind: 'permission_request';
         requestId: string;
+        turnId?: string;
         sessionId: string;
         serverId: string | null;
         summary: string | null;

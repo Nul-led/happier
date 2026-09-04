@@ -14,6 +14,7 @@ export type DesktopActivityOverlaySessionSnapshot = Pick<
 export type DesktopActivityOverlayRequestSnapshot = Readonly<{
     kind: 'permission_request' | 'user_question';
     requestId: string;
+    turnId?: string;
     sessionId: string;
     serverId: string | null;
     title: string;

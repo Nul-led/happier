@@ -518,6 +518,11 @@ describe('canonical voice transcript projector', () => {
       role: 'user',
       content: { type: 'text', text: 'partial final' },
       meta: {
+        happierProvenanceV1: {
+          v: 1,
+          kind: 'host',
+          producer: 'executionRunVoice',
+        },
         happier: {
           kind: 'conversation_turn.v1',
           payload: { v: 1 },
@@ -629,6 +634,11 @@ describe('canonical voice transcript projector', () => {
       expect.objectContaining({
         localId: expect.stringMatching(/^voice-realtime:[^:]+:user:user-turn$/),
         meta: {
+          happierProvenanceV1: {
+            v: 1,
+            kind: 'host',
+            producer: 'executionRunVoice',
+          },
           happier: {
             kind: 'conversation_turn.v1',
             payload: { v: 1 },
@@ -636,7 +646,6 @@ describe('canonical voice transcript projector', () => {
               v: 1,
               channel: 'realtime_conversation',
               modality: 'voice',
-              source,
             },
           },
         },
@@ -840,8 +849,17 @@ describe('canonical voice transcript projector', () => {
       role: 'user',
     }))?.rawRecord).toMatchObject({
       meta: {
+        happierProvenanceV1: {
+          v: 1,
+          kind: 'host',
+          producer: 'executionRunVoice',
+        },
         happier: {
-          conversationTurnOriginV1: { source: sourceA },
+          conversationTurnOriginV1: {
+            v: 1,
+            channel: 'realtime_conversation',
+            modality: 'voice',
+          },
         },
       },
     });
@@ -935,8 +953,13 @@ describe('canonical voice transcript projector', () => {
         rawRecord: expect.objectContaining({
           content: { type: 'text', text: 'A persisted before correction' },
           meta: expect.objectContaining({
+            happierProvenanceV1: {
+              v: 1,
+              kind: 'host',
+              producer: 'executionRunVoice',
+            },
             happier: expect.objectContaining({
-              conversationTurnOriginV1: expect.objectContaining({ source: sourceA }),
+              conversationTurnOriginV1: expect.not.objectContaining({ source: expect.anything() }),
             }),
           }),
         }),
@@ -945,8 +968,13 @@ describe('canonical voice transcript projector', () => {
         rawRecord: expect.objectContaining({
           content: { type: 'text', text: 'A correction admitted before replacement' },
           meta: expect.objectContaining({
+            happierProvenanceV1: {
+              v: 1,
+              kind: 'host',
+              producer: 'executionRunVoice',
+            },
             happier: expect.objectContaining({
-              conversationTurnOriginV1: expect.objectContaining({ source: sourceA }),
+              conversationTurnOriginV1: expect.not.objectContaining({ source: expect.anything() }),
             }),
           }),
         }),
@@ -1018,8 +1046,13 @@ describe('canonical voice transcript projector', () => {
         rawRecord: expect.objectContaining({
           content: { type: 'text', text: 'provider final A' },
           meta: expect.objectContaining({
+            happierProvenanceV1: {
+              v: 1,
+              kind: 'host',
+              producer: 'executionRunVoice',
+            },
             happier: expect.objectContaining({
-              conversationTurnOriginV1: expect.objectContaining({ source }),
+              conversationTurnOriginV1: expect.not.objectContaining({ source: expect.anything() }),
             }),
           }),
         }),
@@ -1028,8 +1061,13 @@ describe('canonical voice transcript projector', () => {
         rawRecord: expect.objectContaining({
           content: { type: 'text', text: 'provider corrected B before acceptance' },
           meta: expect.objectContaining({
+            happierProvenanceV1: {
+              v: 1,
+              kind: 'host',
+              producer: 'executionRunVoice',
+            },
             happier: expect.objectContaining({
-              conversationTurnOriginV1: expect.objectContaining({ source }),
+              conversationTurnOriginV1: expect.not.objectContaining({ source: expect.anything() }),
             }),
           }),
         }),

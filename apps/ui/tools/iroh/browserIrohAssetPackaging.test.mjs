@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
 import {
-  BROWSER_IROH_ASSET_MANIFEST,
+  BROWSER_IROH_NOTICES_ASSET,
   BROWSER_IROH_PACKAGED_ASSETS,
+  BROWSER_IROH_STAGED_FILES,
   BROWSER_IROH_WASM_BINARY_ASSET,
   BROWSER_IROH_WASM_GLUE_ASSET,
   BROWSER_IROH_WORKER_ASSET,
@@ -26,7 +28,12 @@ function createProducedInputs(root, { glue = 'export default async () => {};\n',
 
   const workerBundlePath = join(root, BROWSER_IROH_WORKER_ASSET);
   writeFileSync(workerBundlePath, 'self.onconnect = () => {};\n');
-  return { generatedDir, workerBundlePath };
+
+  // The locked-Cargo evidence owner produces one notices file for every carrier
+  // built from the workspace; the browser carrier stages the same bytes.
+  const noticesPath = join(root, BROWSER_IROH_NOTICES_ASSET);
+  writeFileSync(noticesPath, 'Iroh native third-party notices\n\niroh 0.95.1\nLicense: MIT\n');
+  return { generatedDir, workerBundlePath, noticesPath };
 }
 
 /**
@@ -50,16 +57,80 @@ function withTargets(run) {
 test('packages every declared asset into the web output root it was given', () => {
   withTargets(({ root, outputRoot }) => {
     const inputs = createProducedInputs(root);
-    const { assetDir, manifest } = materializeBrowserIrohAssets({ outputRoot, ...inputs });
+    const { assetDir, files } = materializeBrowserIrohAssets({ outputRoot, ...inputs });
 
     // The output root is the directory served at the app's base URL, so the
     // packaged path is exactly the URL the runtime asset rule resolves.
     assert.equal(assetDir, join(outputRoot, 'vendor', 'iroh'));
-    assert.deepEqual(
-      manifest.files.map((file) => file.name),
-      BROWSER_IROH_PACKAGED_ASSETS,
-    );
+    assert.deepEqual(files.map((file) => file.name), BROWSER_IROH_STAGED_FILES);
+    assert.deepEqual(readdirSync(assetDir).sort(), [...BROWSER_IROH_STAGED_FILES].sort());
     assert.equal(verifyBrowserIrohAssets({ outputRoot }).status, 'ok');
+  });
+});
+
+test('ships the locked-Cargo licence and NOTICE evidence beside the WASM it covers', () => {
+  withTargets(({ root, outputRoot }) => {
+    const inputs = createProducedInputs(root);
+    const { assetDir } = materializeBrowserIrohAssets({ outputRoot, ...inputs });
+
+    // The browser carrier redistributes the same locked Rust graph as the
+    // native carriers, so the evidence travels with the bytes rather than
+    // living only next to a native artifact.
+    assert.deepEqual(BROWSER_IROH_STAGED_FILES, [
+      ...BROWSER_IROH_PACKAGED_ASSETS,
+      BROWSER_IROH_NOTICES_ASSET,
+    ]);
+    assert.match(
+      readFileSync(join(assetDir, BROWSER_IROH_NOTICES_ASSET), 'utf8'),
+      /Iroh native third-party notices/u,
+    );
+  });
+});
+
+test('a web output whose licence evidence was stripped is not a shippable browser carrier', () => {
+  withTargets(({ root, outputRoot }) => {
+    const inputs = createProducedInputs(root);
+    const { assetDir } = materializeBrowserIrohAssets({ outputRoot, ...inputs });
+    rmSync(join(assetDir, BROWSER_IROH_NOTICES_ASSET));
+
+    const verification = verifyBrowserIrohAssets({ outputRoot });
+    assert.equal(verification.status, 'stale');
+    assert.ok(verification.problems.some((problem) => problem.includes(BROWSER_IROH_NOTICES_ASSET)));
+  });
+});
+
+test('refuses to package a WASM carrier without its licence evidence', () => {
+  withTargets(({ root, outputRoot }) => {
+    const inputs = createProducedInputs(root);
+    rmSync(inputs.noticesPath);
+    assert.throws(
+      () => materializeBrowserIrohAssets({ outputRoot, ...inputs }),
+      /missing produced inputs[\s\S]*THIRD-PARTY-NOTICES\.txt/u,
+    );
+  });
+});
+
+test('stages runtime bytes only — generated declaration files stay build artifacts', () => {
+  withTargets(({ root, outputRoot }) => {
+    // The fixture's generated directory still contains the wasm-bindgen
+    // `.d.ts` outputs, exactly as the real build produces them: they remain
+    // build/typecheck artifacts there. Lane 06 amendment A9: they are not
+    // browser runtime assets, so packaging stages none of them and the web
+    // output carries runtime bytes plus the licence evidence only.
+    const inputs = createProducedInputs(root);
+    const { assetDir, files } = materializeBrowserIrohAssets({ outputRoot, ...inputs });
+
+    assert.equal(existsSync(join(assetDir, 'happier_iroh_wasm.d.ts')), false);
+    assert.equal(existsSync(join(assetDir, 'happier_iroh_wasm_bg.wasm.d.ts')), false);
+    assert.deepEqual(
+      files.map((file) => file.name),
+      [
+        BROWSER_IROH_WORKER_ASSET,
+        BROWSER_IROH_WASM_GLUE_ASSET,
+        BROWSER_IROH_WASM_BINARY_ASSET,
+        BROWSER_IROH_NOTICES_ASSET,
+      ],
+    );
   });
 });
 
@@ -98,8 +169,8 @@ test('two targets packaged back to back each keep their own exact bytes', () => 
     assert.equal(verifyBrowserIrohAssets({ outputRoot: first }).status, 'ok');
     assert.equal(verifyBrowserIrohAssets({ outputRoot: second }).status, 'ok');
     assert.notEqual(
-      firstPackaged.manifest.files.find((file) => file.name === BROWSER_IROH_WASM_GLUE_ASSET).sha256,
-      secondPackaged.manifest.files.find((file) => file.name === BROWSER_IROH_WASM_GLUE_ASSET).sha256,
+      firstPackaged.files.find((file) => file.name === BROWSER_IROH_WASM_GLUE_ASSET).sha256,
+      secondPackaged.files.find((file) => file.name === BROWSER_IROH_WASM_GLUE_ASSET).sha256,
     );
     assert.equal(
       readFileSync(join(first, 'vendor', 'iroh', BROWSER_IROH_WASM_GLUE_ASSET), 'utf8'),
@@ -108,29 +179,33 @@ test('two targets packaged back to back each keep their own exact bytes', () => 
   });
 });
 
-test('records the exact packaged bytes so a swapped asset is detectable', () => {
+test('reports the digests it packaged to the build instead of serving them', () => {
   withTargets(({ root, outputRoot }) => {
     const inputs = createProducedInputs(root);
-    materializeBrowserIrohAssets({ outputRoot, ...inputs });
+    const { assetDir, files } = materializeBrowserIrohAssets({ outputRoot, ...inputs });
 
-    const glueOnDisk = join(resolveBrowserIrohAssetDir(outputRoot), BROWSER_IROH_WASM_GLUE_ASSET);
-    writeFileSync(glueOnDisk, 'export default async () => { /* tampered */ };\n');
-
-    const verification = verifyBrowserIrohAssets({ outputRoot });
-    assert.equal(verification.status, 'stale');
-    assert.ok(
-      verification.problems.some((problem) => problem.includes(BROWSER_IROH_WASM_GLUE_ASSET)),
+    // Lane 06 amendment A10: the build learns exactly which bytes it staged,
+    // but no hash document is published next to the bytes it describes —
+    // anything able to replace an asset could replace its own record, so the
+    // served manifest asserted integrity it could never have.
+    assert.equal(existsSync(join(assetDir, 'manifest.json')), false);
+    assert.deepEqual(readdirSync(assetDir).sort(), [...BROWSER_IROH_STAGED_FILES].sort());
+    assert.equal(
+      files.find((file) => file.name === BROWSER_IROH_WASM_GLUE_ASSET).sha256,
+      createHash('sha256')
+        .update(readFileSync(join(inputs.generatedDir, BROWSER_IROH_WASM_GLUE_ASSET)))
+        .digest('hex'),
     );
   });
 });
 
-test('is deterministic: the same inputs produce the same manifest', () => {
+test('is deterministic: the same inputs stage the same bytes and digests', () => {
   withTargets(({ root, outputRoot }) => {
     const inputs = createProducedInputs(root);
     const first = materializeBrowserIrohAssets({ outputRoot, ...inputs });
     const second = materializeBrowserIrohAssets({ outputRoot, ...inputs });
 
-    assert.deepEqual(second.manifest, first.manifest);
+    assert.deepEqual(second.files, first.files);
   });
 });
 
@@ -182,17 +257,44 @@ test('refuses to package without an explicit output root', () => {
   });
 });
 
-test('rejects a manifest that does not describe the packaged asset set', () => {
+test('rejects an output that is one runtime asset short', () => {
+  withTargets(({ root, outputRoot }) => {
+    const inputs = createProducedInputs(root);
+    materializeBrowserIrohAssets({ outputRoot, ...inputs });
+    rmSync(join(resolveBrowserIrohAssetDir(outputRoot), BROWSER_IROH_WORKER_ASSET));
+
+    const verification = verifyBrowserIrohAssets({ outputRoot });
+    assert.equal(verification.status, 'stale');
+    assert.ok(verification.problems.some((problem) => problem.includes(BROWSER_IROH_WORKER_ASSET)));
+  });
+});
+
+test('rejects an empty runtime asset, which 404s nothing and fails inside the worker', () => {
+  withTargets(({ root, outputRoot }) => {
+    const inputs = createProducedInputs(root);
+    materializeBrowserIrohAssets({ outputRoot, ...inputs });
+    writeFileSync(join(resolveBrowserIrohAssetDir(outputRoot), BROWSER_IROH_WASM_BINARY_ASSET), '');
+
+    const verification = verifyBrowserIrohAssets({ outputRoot });
+    assert.equal(verification.status, 'stale');
+    assert.ok(verification.problems.some((problem) => problem.includes('empty')));
+  });
+});
+
+test('rejects a stale extra file served beside the produced set', () => {
   withTargets(({ root, outputRoot }) => {
     const inputs = createProducedInputs(root);
     materializeBrowserIrohAssets({ outputRoot, ...inputs });
 
-    const manifestPath = join(resolveBrowserIrohAssetDir(outputRoot), BROWSER_IROH_ASSET_MANIFEST);
-    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
-    manifest.files = manifest.files.filter((file) => file.name !== BROWSER_IROH_WORKER_ASSET);
-    writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+    const assetDir = resolveBrowserIrohAssetDir(outputRoot);
+    const staleName = 'happier_iroh_wasm_stale.js';
+    writeFileSync(
+      join(assetDir, staleName),
+      readFileSync(join(assetDir, BROWSER_IROH_WASM_GLUE_ASSET)),
+    );
 
-    const verification = verifyBrowserIrohAssets({ outputRoot });
-    assert.equal(verification.status, 'stale');
+    const staleExtra = verifyBrowserIrohAssets({ outputRoot });
+    assert.equal(staleExtra.status, 'stale');
+    assert.ok(staleExtra.problems.some((problem) => problem.includes(staleName)));
   });
 });

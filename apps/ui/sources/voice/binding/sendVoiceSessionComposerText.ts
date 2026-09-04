@@ -52,6 +52,7 @@ export const voiceTextTurnPendingPort: VoiceTextTurnPendingPort = {
             localId,
             deliveryMode: 'external_handoff',
             requestedAction: { v: 1, kind: 'send_now' },
+            hostAdmissionOrigin: 'voice',
         }),
     blockPendingDelivery: async ({ conversationSessionId, localId, reason }) =>
         await sync.blockPendingDelivery(conversationSessionId, localId, reason),

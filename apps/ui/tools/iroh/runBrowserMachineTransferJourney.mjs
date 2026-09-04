@@ -1,4 +1,4 @@
-// Lane 06 amendment A7.4 — the real browser Machine carrier/admission journey.
+// Lane 06 amendment A9 — the real browser finite Machine transfer journey.
 //
 // This is the Machine stage of the ONE Chromium proof harness. It reuses the
 // A7.3 page, the A7.3 native relay/acceptor fixture, and the A7.3 runner, and
@@ -12,7 +12,7 @@
 //         · relay-only `happier/machine/1` dial on the one SharedWorker endpoint
 //     → the real native `happier/machine/1` acceptor
 //     → the CANONICAL daemon admission owner
-//     → the machine's own loopback transfer application
+//     → canonical daemon import/export RPC and direct-transfer lifecycle owners
 //
 // Nothing about acceptance is invented here. The acceptor is the production
 // Rust one; the admission decision is `startPeerMediationLoopbackServer` with
@@ -30,12 +30,21 @@
 //
 // A verdict is PASS only when every observation in `REQUIRED_A74_OBSERVATIONS`
 // was actually recorded true. A stage that never ran cannot pass.
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
-import { resolve } from 'node:path';
+import { createServer as createNetServer } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { Server as SocketIoServer } from 'socket.io';
 import tweetnacl from 'tweetnacl';
+import {
+  ACCOUNT_STORED_CONTENT_PROFILE_PRESERVING_SETTINGS_WRITER_PROTOCOL_VERSION,
+  ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION_V2,
+} from '@happier-dev/protocol';
+import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 import {
   buildAndLoadBrowserIrohTestAddon,
@@ -48,19 +57,24 @@ import { ensureProductionCarrierSeamBundle } from './runProductionCarrierPageSea
 const repoRoot = resolve(fileURLToPath(import.meta.url), '..', '..', '..', '..', '..');
 
 /**
- * The A7.4 carrier/admission observations. Every one of
+ * The A7.4 finite-transfer observations. Every one of
  * them must be recorded true by a run before it may print PASS.
  */
 export const REQUIRED_A74_OBSERVATIONS = [
   'exactRelayToRealMachineAcceptor',
-  'signedGrantBindsInitiatorTargetOperationFlowAndMaxBytes',
-  'browserToMachineBytesWithIntegrity',
-  'machineToBrowserBytesWithIntegrity',
-  'abortedTransferCancelsPromptlyAndNeverCompletesLate',
+  'signedGrantBindsInitiatorTargetAndFiniteTransferPurpose',
+  'replacementWorkerMintsFreshEndpointAndLaterGrantBindsIt',
+  'productionImportPrepareEncryptedChunksFinalizeReceiptAndDestinationBytes',
+  'productionExportPrepareEncryptedChunksManifestResultAndDestinationBytes',
+  'productionImportCancellationAbortsOwnedSessionWithoutDestination',
+  'productionExportCancellationCleansDestination',
+  'attachmentGrantUsesFiniteTransferCarrierPurpose',
+  'productionAttachmentImportPrepareEncryptedChunksFinalizeReceiptAndDestinationBytes',
+  'productionAttachmentCancellationAndTerminalFailureDoNotFallback',
   'wrongPeerRoleEndpointOrGrantRejectedBeforeApplicationBytes',
-  'noUserSocketOrServerRelayFallbackAfterIrohSelection',
+  'terminalSelectedIrohFailureDoesNotFallbackForImportOrExport',
   'browserReportsRelayOnlyNeverDirect',
-  'releaseClosesMachineStreamsAndConnections',
+  'releaseClosesOwnedMachineStream',
 ];
 
 /** The production seam page commands this journey drives. */
@@ -69,8 +83,9 @@ export const REQUIRED_MACHINE_JOURNEY_PAGE_COMMANDS = [
   'publishMachineDescriptor',
   'resolveMachineRoute',
   'acquireMachineCarrier',
+  'productionDirectImport',
+  'productionDirectExport',
   'machineRequest',
-  'readHttpOutcome',
   'releaseMachineCarrier',
 ];
 
@@ -85,6 +100,12 @@ export const REQUIRED_MACHINE_FIXTURE_OPERATIONS = ['startMachine', 'machineAcce
 export const CANONICAL_DAEMON_OWNERS = {
   admissionModule: 'apps/cli/src/daemon/peer/mediation/loopback/server.ts',
   grantMintModule: 'apps/server/sources/app/machines/peer/mediation/mintDirectRouteGrantV1.ts',
+  rpcManagerModule: 'apps/cli/src/api/rpc/RpcHandlerManager.ts',
+  importRpcModule: 'apps/cli/src/api/machine/rpcHandlers.directTransferImports.ts',
+  exportRpcModule: 'apps/cli/src/api/machine/rpcHandlers.directTransferExports.ts',
+  lifecycleModule: 'apps/cli/src/machines/transfer/directTransferServerLifecycle.ts',
+  payloadSourceModule: 'apps/cli/src/machines/transfer/transferPayloadSource.ts',
+  workspaceSourceModule: 'apps/cli/src/transfers/targets/resolveWorkspaceFileDownloadSource.ts',
 };
 
 /** The Home this journey adopts. `.invalid` never resolves (RFC 2606). */
@@ -96,25 +117,16 @@ const MACHINE_ID = 'machine-a74-target';
 const IMPOSTOR_MACHINE_ID = 'machine-a74-impostor';
 const GRANT_SIGNING_KEY_ID = 'a74-route-grant-key';
 const TRANSFER_FLOW = 'file_transfer';
+const ATTACHMENT_TRANSFER_FLOW = 'attachment_transfer';
+const FINITE_TRANSFER_CARRIER_FLOW = 'finite_transfer';
 const TRANSFER_MAX_BYTES = 1_048_576;
 
-const UPLOAD_PATH = '/v1/machine/transfer/upload';
-const DOWNLOAD_PATH = '/v1/machine/transfer/download';
-/** Requests here are received by the machine in full and left unanswered. */
-const HOLD_PATH = '/v1/machine/transfer/hold';
-
-/** A transfer that must be cancelled is aborted this long after it starts. */
-const ABORT_AFTER_MS = 1_500;
-/** How long an aborted transfer may still be given to settle. */
-const CANCELLED_SETTLE_BUDGET_MS = 6_000;
 /** A request that must NOT reach the machine is given this long to prove it. */
 const MUST_NOT_COMPLETE_MS = 8_000;
 /** How long the journey waits for a machine-side or browser-side state change. */
 const OBSERVE_TIMEOUT_MS = 20_000;
 /** The bound on any one page command; see the A7.3 journey for why it exists. */
 const PAGE_COMMAND_TIMEOUT_MS = 60_000;
-/** Settling time after the machine releases a held response, before re-reading. */
-const LATE_COMPLETION_WATCH_MS = 2_500;
 
 function bail(message) {
   throw new Error(message);
@@ -152,25 +164,43 @@ function accountToken(accountId) {
  */
 async function loadCanonicalDaemonOwners() {
   const { register } = await import('tsx/esm/api');
-  const cli = register({
-    namespace: 'happier-a74-cli',
-    tsconfig: resolve(repoRoot, 'apps/cli/tsconfig.json'),
-  });
-  const server = register({
-    namespace: 'happier-a74-server',
-    tsconfig: resolve(repoRoot, 'apps/server/tsconfig.json'),
-  });
-  const [admission, mint] = await Promise.all([
-    cli.import(resolve(repoRoot, CANONICAL_DAEMON_OWNERS.admissionModule), import.meta.url),
-    server.import(resolve(repoRoot, CANONICAL_DAEMON_OWNERS.grantMintModule), import.meta.url),
-  ]);
+  const originalWorkingDirectory = process.cwd();
+  let admission;
+  let mint;
+  let rpcManager;
+  let importRpc;
+  let exportRpc;
+  let lifecycle;
+  let payloadSource;
+  let workspaceSource;
+  try {
+    // tsx resolves tsconfig `paths` from the active package working directory.
+    // Load each package completely before switching to the other package's `@/`
+    // owner; the namespaces keep the already-loaded graphs isolated.
+    process.chdir(resolve(repoRoot, 'apps/cli'));
+    const cli = register({ namespace: 'happier-a74-cli', tsconfig: 'tsconfig.json' });
+    [admission, rpcManager, importRpc, exportRpc, lifecycle, payloadSource, workspaceSource] = await Promise.all([
+      cli.import(resolve(repoRoot, CANONICAL_DAEMON_OWNERS.admissionModule), import.meta.url),
+      cli.import(resolve(repoRoot, CANONICAL_DAEMON_OWNERS.rpcManagerModule), import.meta.url),
+      cli.import(resolve(repoRoot, CANONICAL_DAEMON_OWNERS.importRpcModule), import.meta.url),
+      cli.import(resolve(repoRoot, CANONICAL_DAEMON_OWNERS.exportRpcModule), import.meta.url),
+      cli.import(resolve(repoRoot, CANONICAL_DAEMON_OWNERS.lifecycleModule), import.meta.url),
+      cli.import(resolve(repoRoot, CANONICAL_DAEMON_OWNERS.payloadSourceModule), import.meta.url),
+      cli.import(resolve(repoRoot, CANONICAL_DAEMON_OWNERS.workspaceSourceModule), import.meta.url),
+    ]);
+    process.chdir(resolve(repoRoot, 'apps/server'));
+    const server = register({ namespace: 'happier-a74-server', tsconfig: 'tsconfig.json' });
+    mint = await server.import(resolve(repoRoot, CANONICAL_DAEMON_OWNERS.grantMintModule), import.meta.url);
+  } finally {
+    process.chdir(originalWorkingDirectory);
+  }
   if (typeof admission.startPeerMediationLoopbackServer !== 'function') {
     bail('the canonical daemon admission owner does not export startPeerMediationLoopbackServer');
   }
   if (typeof mint.mintDirectRouteGrantV2 !== 'function') {
     bail('the canonical server grant owner does not export mintDirectRouteGrantV2');
   }
-  return { admission, mint };
+  return { admission, mint, rpcManager, importRpc, exportRpc, lifecycle, payloadSource, workspaceSource };
 }
 
 /** Runs one page command; a command that never settles is a named failure. */
@@ -212,7 +242,7 @@ async function requireCommand(page, name, argument) {
  * Only the HTTP shell is fixture; the grant itself is minted by the canonical
  * server owner with a key resolved by the canonical signing-config owner.
  */
-function startHomeApplication({ mint, signingKey }) {
+function startHomeApplication({ mint, signingKey, invokeMachineRpc }) {
   const state = {
     requests: [],
     /** Every grant exchange, so a refusal names itself instead of being inferred. */
@@ -222,6 +252,7 @@ function startHomeApplication({ mint, signingKey }) {
     /** Anything an ordinary server-relayed or user-socket transfer would touch. */
     fallbackTransferRequests: [],
     socketUpgrades: 0,
+    machineRpcInvocations: [],
   };
 
   const signing = mint.resolvePeerMediationGrantSigningConfig({
@@ -234,6 +265,10 @@ function startHomeApplication({ mint, signingKey }) {
 
   const features = {
     features: {
+      encryption: {
+        plaintextStorage: { enabled: true },
+        accountOptOut: { enabled: true },
+      },
       machines: {
         enabled: true,
         transfer: {
@@ -241,6 +276,22 @@ function startHomeApplication({ mint, signingKey }) {
           directPeer: { enabled: true },
           serverRouted: { enabled: false },
         },
+      },
+    },
+    capabilities: {
+      accountStoredContentCompatibility: {
+        v: 1,
+        minimumProtocolVersion: ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION_V2,
+        currentProtocolVersion:
+          ACCOUNT_STORED_CONTENT_PROFILE_PRESERVING_SETTINGS_WRITER_PROTOCOL_VERSION,
+        declarationTransport: 'http-header-and-socket-auth-v1',
+      },
+      encryption: {
+        storagePolicy: 'optional',
+        allowAccountOptOut: true,
+        defaultAccountMode: 'plain',
+        plainAccountSettingsAtRest: 'server_sealed',
+        plainAccountCredentialsAtRest: 'server_sealed',
       },
     },
   };
@@ -251,9 +302,14 @@ function startHomeApplication({ mint, signingKey }) {
     if (request.headers.upgrade) state.socketUpgrades += 1;
     // Any ordinary transfer path is a fallback this gate forbids after the
     // Iroh route was selected, so it is recorded rather than served.
-    if (/^\/v1\/(transfers|files|updates)/u.test(url)) {
+    if (/^\/v1\/(transfers|files)/u.test(url)) {
       state.fallbackTransferRequests.push({ method: request.method, url });
       response.writeHead(404).end();
+      return;
+    }
+    if (url === '/v1/auth/ping' && request.method === 'GET') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ ok: true }));
       return;
     }
     if (url === '/v1/features' || url === '/v1/features/authenticated') {
@@ -312,77 +368,55 @@ function startHomeApplication({ mint, signingKey }) {
   });
   server.httpAllowHalfOpen = true;
 
+  const io = new SocketIoServer(server, {
+    path: '/v1/updates/',
+    transports: ['websocket'],
+    cors: { origin: true, credentials: false },
+  });
+  io.on('connection', (socket) => {
+    socket.on('rpc-call', async (data, callback) => {
+      const method = typeof data?.method === 'string' ? data.method : '';
+      const prefix = `${MACHINE_ID}:`;
+      if (!method.startsWith(prefix)) {
+        callback?.({ ok: false, error: 'unexpected machine RPC target' });
+        return;
+      }
+      const daemonMethod = method.slice(prefix.length);
+      const directControlMethods = new Set([
+        RPC_METHODS.DAEMON_DIRECT_TRANSFER_IMPORT_PREPARE,
+        RPC_METHODS.DAEMON_DIRECT_TRANSFER_IMPORT_ABORT,
+        RPC_METHODS.DAEMON_DIRECT_TRANSFER_EXPORT_PREPARE,
+      ]);
+      if (!directControlMethods.has(daemonMethod)) {
+        state.fallbackTransferRequests.push({ method: 'RPC', url: daemonMethod });
+      }
+      try {
+        const result = await invokeMachineRpc(daemonMethod, data?.params);
+        state.machineRpcInvocations.push({ method: daemonMethod, payload: data?.params, result });
+        callback?.({ ok: true, result });
+      } catch (error) {
+        callback?.({ ok: false, error: error instanceof Error ? error.message : String(error) });
+      }
+    });
+  });
+
   state.server = server;
+  state.io = io;
   state.trustRoots = [{ keyId: signing.keyId, publicKey: signing.capability.publicKey }];
   return state;
 }
 
-/**
- * The machine's own loopback transfer application: the local owner the daemon's
- * admission response selects for an already-verified stream. It is the only
- * place application bytes can appear, which is what makes "no application byte
- * reached the machine" observable for every rejection case.
- */
-function startMachineApplication({ downloadPayload }) {
-  const state = {
-    requests: [],
-    uploads: [],
-    held: [],
-    openConnections: 0,
-    closedConnections: 0,
-  };
-
-  const server = createServer((request, response) => {
-    const url = String(request.url ?? '');
-    state.requests.push({ method: request.method, url });
-    if (url === UPLOAD_PATH && request.method === 'POST') {
-      const chunks = [];
-      request.on('data', (chunk) => chunks.push(chunk));
-      request.on('end', () => {
-        const received = Buffer.concat(chunks);
-        state.uploads.push({ byteLength: received.byteLength, sha256: sha256(received) });
-        response.writeHead(200, { 'content-type': 'application/json' });
-        response.end(JSON.stringify({ received: received.byteLength, sha256: sha256(received) }));
-      });
-      return;
-    }
-    if (url === DOWNLOAD_PATH) {
-      response.writeHead(200, {
-        'content-type': 'application/octet-stream',
-        'content-length': String(downloadPayload.byteLength),
-      });
-      response.end(downloadPayload);
-      return;
-    }
-    if (url === HOLD_PATH) {
-      // Received in full, deliberately unanswered: a genuinely pending transfer
-      // the machine is really holding, which is what a cancellation contract
-      // has to be proven against.
-      state.held.push(response);
-      return;
-    }
-    response.writeHead(404).end();
+async function reserveLoopbackPort() {
+  const probe = createNetServer();
+  await new Promise((resolveListen, rejectListen) => {
+    probe.once('error', rejectListen);
+    probe.listen(0, '127.0.0.1', resolveListen);
   });
-  server.httpAllowHalfOpen = true;
-  server.on('connection', (socket) => {
-    state.openConnections += 1;
-    socket.on('close', () => { state.closedConnections += 1; });
-  });
-
-  state.server = server;
-  state.releaseHeld = () => {
-    const held = state.held.splice(0);
-    for (const response of held) {
-      try {
-        response.writeHead(200, { 'content-type': 'text/plain' });
-        response.end('held-transfer-released');
-      } catch {
-        // The carrier cancelled and its loopback socket may already be gone.
-      }
-    }
-    return held.length;
-  };
-  return state;
+  const address = probe.address();
+  const port = address && typeof address !== 'string' ? address.port : null;
+  await new Promise((resolveClose) => probe.close(resolveClose));
+  if (!port) throw new Error('could not reserve a loopback direct-transfer port');
+  return port;
 }
 
 /**
@@ -403,16 +437,21 @@ export function evaluateBrowserMachineTransferJourney({ observations = {}, failu
 }
 
 /**
- * Runs the A7.4 carrier/admission journey. The finite-transfer certification
- * journey additionally owns prepare/chunks/finalize/receipt and destination
- * effects through the canonical direct import/export owners.
+ * Runs the A7.4 finite-transfer journey through prepare, encrypted chunks,
+ * finalize/receipt, destination effects, cancellation, and terminal no-fallback
+ * behavior in the canonical direct import/export owners.
  *
  * `openJourneyPage` is supplied by the harness and returns a real Chromium page
  * already at the Metro-built production seam page. Everything native, the Home,
  * the machine, the admission server and the relay are owned here and released
  * in `finally`.
  */
-export async function runBrowserMachineTransferJourney({ webOutputRoot, openJourneyPage, pageErrors }) {
+export async function runBrowserMachineTransferJourney({
+  webOutputRoot,
+  openJourneyPage,
+  replaceJourneyPage,
+  pageErrors,
+}) {
   const failures = [];
   const observations = {};
   const report = {};
@@ -428,7 +467,7 @@ export async function runBrowserMachineTransferJourney({ webOutputRoot, openJour
   report.pageBundle = built.report;
 
   // 2. The canonical daemon owners, from current source.
-  const { admission: admissionOwner, mint } = await loadCanonicalDaemonOwners();
+  const owners = await loadCanonicalDaemonOwners();
 
   // 3. The real native side: current-source addon, the one local test relay, a
   //    real Home acceptor and a real machine/1 acceptor.
@@ -436,14 +475,61 @@ export async function runBrowserMachineTransferJourney({ webOutputRoot, openJour
     extraOperations: ['startMachineAcceptor', 'stopMachineAcceptor', 'getMachineAcceptorStatus'],
   });
   const signingKey = tweetnacl.sign.keyPair();
-  const home = startHomeApplication({ mint, signingKey });
-  const downloadPayload = Buffer.from(
-    Array.from({ length: 64 * 1024 }, (_value, index) => (index * 37 + 11) % 251),
-  );
-  const machine = startMachineApplication({ downloadPayload });
   const uploadPayload = Buffer.from(
-    Array.from({ length: 48 * 1024 }, (_value, index) => (index * 53 + 7) % 241),
+    Array.from({ length: (512 * 1024) + 1 }, (_value, index) => (index * 53 + 7) % 241),
   );
+  const fixtureRoot = await mkdtemp(join(tmpdir(), 'happier-browser-machine-transfer-'));
+  const targetRoot = join(fixtureRoot, 'target');
+  await mkdir(targetRoot, { recursive: true });
+  const reservedDirectTransferPort = await reserveLoopbackPort();
+  const directTransferLifecycle = owners.lifecycle.createDirectTransferServerLifecycle({
+    bindPort: reservedDirectTransferPort,
+    bindHost: '127.0.0.1',
+    listenerClasses: ['loopback_http'],
+    advertisedHosts: ['127.0.0.1'],
+    idleStopMs: 120_000,
+  });
+  const directTransferPort = await directTransferLifecycle.ensureListening();
+  const rpcHandlerManager = new owners.rpcManager.RpcHandlerManager({ scopePrefix: 'machine', encryptionMode: 'plain' });
+  owners.importRpc.registerMachineDirectTransferImportRpcHandlers({
+    rpcHandlerManager,
+    prepareImportSession: directTransferLifecycle.prepareImportSession,
+    abortImportSession: directTransferLifecycle.abortImportSession,
+  });
+  owners.exportRpc.registerMachineDirectTransferExportRpcHandlers({
+    rpcHandlerManager,
+    prepareExportSession: async (input) => {
+      if (input.t !== 'workspace_file_download_v1') throw new Error('journey supports workspace file export only');
+      const resolved = await owners.workspaceSource.resolveWorkspaceFileDownloadSource({
+        workingDirectory: input.workingDirectory,
+        path: input.path,
+        asZip: input.asZip,
+        sessionRpcTransferMaxBytes: null,
+      });
+      if (!resolved.success) throw new Error(resolved.error);
+      const payloadSource = owners.payloadSource.createFileTransferPayloadSource({
+        filePath: resolved.source.filePath,
+        sizeBytes: resolved.source.sizeBytes,
+        name: resolved.source.name,
+      });
+      const published = await directTransferLifecycle.publishTransferWhenReady({
+        transferId: `browser-export:${randomUUID()}`,
+        payloadSource,
+      });
+      return {
+        transferId: published.transferId,
+        endpointCandidates: published.endpointCandidates,
+        expiresAt: published.expiresAt,
+        name: resolved.source.name,
+        sizeBytes: resolved.source.sizeBytes,
+      };
+    },
+  });
+  const home = startHomeApplication({
+    mint: owners.mint,
+    signingKey,
+    invokeMachineRpc: async (method, payload) => await rpcHandlerManager.invokeLocal(method, payload),
+  });
 
   let fixture = null;
   let admissionServer = null;
@@ -451,7 +537,6 @@ export async function runBrowserMachineTransferJourney({ webOutputRoot, openJour
 
   try {
     const homePort = await listen(home.server);
-    const machinePort = await listen(machine.server);
     fixture = await createBrowserIrohNativeHomeFixture({ addon });
     const homeEndpoint = await fixture.startHome({ label: 'a74-home', targetPort: homePort });
 
@@ -460,7 +545,7 @@ export async function runBrowserMachineTransferJourney({ webOutputRoot, openJour
     const machineTarget = await fixture.startMachine({
       label: 'a74-machine',
       resolveAdmissionPort: async (machineEndpointId) => {
-        admissionServer = await admissionOwner.startPeerMediationLoopbackServer({
+        admissionServer = await owners.admission.startPeerMediationLoopbackServer({
           nowMs: () => Date.now(),
           expected: {
             accountId: ACCOUNT_ID,
@@ -474,10 +559,10 @@ export async function runBrowserMachineTransferJourney({ webOutputRoot, openJour
           irohMachineAdmission: {
             localEndpointId: machineEndpointId,
             role: 'acceptor',
-            allowedFlows: [TRANSFER_FLOW],
+            allowedFlows: [FINITE_TRANSFER_CARRIER_FLOW],
             // The already-verified stream's local owner. The peer never names a
             // destination; this is the machine's own transfer application.
-            resolveApplicationTarget: () => ({ port: machinePort }),
+            resolveApplicationTarget: () => ({ port: directTransferPort }),
           },
         });
         return Number(new URL(admissionServer.url).port);
@@ -491,12 +576,12 @@ export async function runBrowserMachineTransferJourney({ webOutputRoot, openJour
       machineEndpointId: machineTarget.endpointId,
       admissionUrl: admissionServer?.url ?? null,
       homeApplicationPort: homePort,
-      machineApplicationPort: machinePort,
+      machineApplicationPort: directTransferPort,
       canonicalServerUrl: CANONICAL_HOME_URL,
       grantSigningKeyId: GRANT_SIGNING_KEY_ID,
     };
 
-    const page = await openJourneyPage();
+    let page = await openJourneyPage();
     const token = accountToken(ACCOUNT_ID);
 
     // 4. This browser is signed in to the ingress-less Home and knows the target
@@ -508,6 +593,7 @@ export async function runBrowserMachineTransferJourney({ webOutputRoot, openJour
       homeEndpointId: homeEndpoint.endpointId,
       homeRelayUrls: [fixture.relayUrl],
       token,
+      accountId: ACCOUNT_ID,
       machineId: MACHINE_ID,
       machineEndpointId: machineTarget.endpointId,
       machineRelayUrls: [fixture.relayUrl],
@@ -538,40 +624,60 @@ export async function runBrowserMachineTransferJourney({ webOutputRoot, openJour
       bail(`the production route did not select the browser machine carrier: ${JSON.stringify(route)}`);
     }
 
-    // 6. One admitted machine carrier: minted grant over the Home carrier, then
-    //    the relay-only machine/1 dial admitted by the canonical daemon owner.
-    const machineRequestsBeforeAcquire = machine.requests.length;
-    const operationId = 'a74-transfer-operation';
-    await requireCommand(page, 'acquireMachineCarrier', {
-      leaseKey: 'transfer',
+    // 6. Canonical direct import: prepare over the Home control plane, then
+    // encrypted multi-chunk upload and target-owned finalize/receipt.
+    const importedPath = 'payload.bin';
+    const importedAbsolutePath = join(targetRoot, importedPath);
+    const importReply = await requireCommand(page, 'productionDirectImport', {
       machineId: MACHINE_ID,
       serverId: seeded.serverId,
-      operationId,
-      flow: TRANSFER_FLOW,
-      maxBytes: TRANSFER_MAX_BYTES,
+      workingDirectory: targetRoot,
+      path: importedPath,
+      payloadBase64: uploadPayload.toString('base64'),
     });
-    acquiredLeaseKeys.push('transfer');
-    const acceptorAfterAcquire = await fixture.machineAcceptorStatus(machineTarget);
+    const importedBytes = await readFile(importedAbsolutePath).catch(() => null);
+    const acceptorAfterImport = await fixture.machineAcceptorStatus(machineTarget);
     observe(
       'exactRelayToRealMachineAcceptor',
-      acceptorAfterAcquire?.running === true
-        && acceptorAfterAcquire.streamsAccepted >= 1
-        && acceptorAfterAcquire.connectionsActive >= 1
-        && machine.requests.length === machineRequestsBeforeAcquire,
+      acceptorAfterImport?.running === true
+        && acceptorAfterImport.streamsAccepted >= 1
+        && acceptorAfterImport.lastPath?.observedPath === 'relay',
       {
         configuredRelayUrl: fixture.relayUrl,
-        acceptor: acceptorAfterAcquire,
-        machineApplicationRequestsBeforeAnyTransfer: machine.requests.length,
+        acceptor: acceptorAfterImport,
       },
     );
 
-    // 7. The grant the daemon actually verified binds every fact A7.4 names.
-    const grant = home.mintedGrants.at(-1) ?? null;
+    observe(
+      'productionImportPrepareEncryptedChunksFinalizeReceiptAndDestinationBytes',
+      importReply.result?.success === true
+        && importReply.result?.sizeBytes === uploadPayload.byteLength
+        && importReply.result?.sha256 === sha256(uploadPayload)
+        && importReply.relayCalls?.length === 0
+        && importedBytes !== null
+        && Buffer.compare(importedBytes, uploadPayload) === 0,
+      {
+        result: importReply.result,
+        readCalls: importReply.readCalls,
+        relayCalls: importReply.relayCalls,
+        destinationBytes: importedBytes?.byteLength ?? null,
+        destinationSha256: importedBytes ? sha256(importedBytes) : null,
+      },
+    );
+
+    // 7. The daemon-verified grant binds carrier authority; the prepared
+    //    transfer capability above remains the operation and byte authority.
+    const prepareImport = home.machineRpcInvocations.find(
+      (invocation) => invocation.method === RPC_METHODS.DAEMON_DIRECT_TRANSFER_IMPORT_PREPARE,
+    );
+    const preparedUploadId = prepareImport?.result?.uploadId ?? null;
+    const grant = home.mintedGrants.find(
+      (candidate) => candidate?.payload?.iroh?.operationKind === FINITE_TRANSFER_CARRIER_FLOW,
+    ) ?? null;
     const browserInitiatorEndpointId = grant?.payload?.iroh?.initiator?.endpointId ?? null;
     observe(
-      'signedGrantBindsInitiatorTargetOperationFlowAndMaxBytes',
-      home.mintedGrants.length === 1
-        && grant?.payload?.accountId === ACCOUNT_ID
+      'signedGrantBindsInitiatorTargetAndFiniteTransferPurpose',
+      grant?.payload?.accountId === ACCOUNT_ID
         && grant?.payload?.routeKind === 'iroh_peer'
         && grant?.payload?.flowKind === 'bounded_transfer'
         && grant?.payload?.machineId === MACHINE_ID
@@ -581,105 +687,248 @@ export async function runBrowserMachineTransferJourney({ webOutputRoot, openJour
         && browserInitiatorEndpointId.length > 0
         && browserInitiatorEndpointId !== machineTarget.endpointId
         && browserInitiatorEndpointId !== homeEndpoint.endpointId
+        && seeded.homeCarrierEndpointId === homeEndpoint.endpointId
         && grant?.payload?.iroh?.target?.machineId === MACHINE_ID
         && grant?.payload?.iroh?.target?.endpointId === machineTarget.endpointId
-        && grant?.payload?.iroh?.operationKind === TRANSFER_FLOW
+        && grant?.payload?.iroh?.operationKind === FINITE_TRANSFER_CARRIER_FLOW
         && grant?.payload?.scope?.kind === 'bounded_transfer'
-        && grant?.payload?.scope?.mode === 'single'
-        && grant?.payload?.scope?.transferId === operationId
-        && grant?.payload?.scope?.maxBytes === TRANSFER_MAX_BYTES
+        && grant?.payload?.scope?.mode === 'carrier'
+        && !('transferId' in grant.payload.scope)
+        && !('maxBytes' in grant.payload.scope)
         && grant?.signature?.keyId === GRANT_SIGNING_KEY_ID
-        && acceptorAfterAcquire?.lastPath?.remoteEndpointId === browserInitiatorEndpointId,
+        && acceptorAfterImport?.lastPath?.remoteEndpointId === browserInitiatorEndpointId,
       {
         mintedGrantCount: home.mintedGrants.length,
         payload: grant?.payload ?? null,
         signatureKeyId: grant?.signature?.keyId ?? null,
         browserInitiatorEndpointId,
-        acceptorProvedRemoteEndpointId: acceptorAfterAcquire?.lastPath?.remoteEndpointId ?? null,
+        preparedUploadId,
+        acceptorProvedRemoteEndpointId: acceptorAfterImport?.lastPath?.remoteEndpointId ?? null,
         machineEndpointId: machineTarget.endpointId,
       },
     );
 
-    // 8. Browser → machine bytes, over the admitted stream, byte-exact.
-    const uploadReply = await requireCommand(page, 'machineRequest', {
-      leaseKey: 'transfer',
-      method: 'POST',
-      path: UPLOAD_PATH,
-      bodyBase64: uploadPayload.toString('base64'),
+    // 8. Canonical direct export: prepare, encrypted chunks, manifest check,
+    // destination close/result, and exact read-back bytes.
+    const exportReply = await requireCommand(page, 'productionDirectExport', {
+      machineId: MACHINE_ID,
+      serverId: seeded.serverId,
+      workingDirectory: targetRoot,
+      path: importedPath,
+      maxBytes: uploadPayload.byteLength,
     });
-    const upload = machine.uploads.at(-1) ?? null;
+    const exportedBytes = Buffer.from(String(exportReply.destinationBase64 ?? ''), 'base64');
     observe(
-      'browserToMachineBytesWithIntegrity',
-      uploadReply.settled === 'resolved'
-        && uploadReply.status === 200
-        && machine.uploads.length === 1
-        && upload?.byteLength === uploadPayload.byteLength
-        && upload?.sha256 === sha256(uploadPayload),
+      'productionExportPrepareEncryptedChunksManifestResultAndDestinationBytes',
+      exportReply.result?.ok === true
+        && exportReply.result?.sizeBytes === uploadPayload.byteLength
+        && exportReply.selectedRoute === 'iroh_peer'
+        && Buffer.compare(exportedBytes, uploadPayload) === 0,
       {
-        status: uploadReply.status,
-        sentBytes: uploadPayload.byteLength,
-        sentSha256: sha256(uploadPayload),
-        machineReceived: upload,
+        result: exportReply.result,
+        writeCalls: exportReply.writeCalls,
+        receivedBytes: exportedBytes.byteLength,
+        receivedSha256: sha256(exportedBytes),
       },
     );
 
-    // 9. Machine → browser bytes, over the SAME admitted stream, byte-exact.
-    const downloadReply = await requireCommand(page, 'machineRequest', {
-      leaseKey: 'transfer',
-      method: 'GET',
-      path: DOWNLOAD_PATH,
+    // 9. Cancellation is owned at both canonical execution boundaries.
+    const cancelledImportPath = 'cancelled.bin';
+    const cancelledImport = await requireCommand(page, 'productionDirectImport', {
+      machineId: MACHINE_ID,
+      serverId: seeded.serverId,
+      workingDirectory: targetRoot,
+      path: cancelledImportPath,
+      payloadBase64: uploadPayload.toString('base64'),
+      cancelAfterReadCalls: 1,
     });
-    const downloadedBytes = typeof downloadReply.bodyBase64 === 'string'
-      ? Buffer.from(downloadReply.bodyBase64, 'base64')
+    const cancelAbort = home.machineRpcInvocations.findLast(
+      (invocation) => invocation.method === RPC_METHODS.DAEMON_DIRECT_TRANSFER_IMPORT_ABORT,
+    );
+    observe(
+      'productionImportCancellationAbortsOwnedSessionWithoutDestination',
+      cancelledImport.result?.success === false
+        && cancelledImport.relayCalls?.length === 0
+        && cancelAbort?.result?.success === true
+        && await stat(join(targetRoot, cancelledImportPath)).then(() => false, () => true),
+      {
+        result: cancelledImport.result,
+        readCalls: cancelledImport.readCalls,
+        abort: cancelAbort ?? null,
+        relayCalls: cancelledImport.relayCalls,
+      },
+    );
+
+    const cancelledExport = await requireCommand(page, 'productionDirectExport', {
+      machineId: MACHINE_ID,
+      serverId: seeded.serverId,
+      workingDirectory: targetRoot,
+      path: importedPath,
+      maxBytes: uploadPayload.byteLength,
+      cancelAfterWrite: true,
+    });
+    observe(
+      'productionExportCancellationCleansDestination',
+      cancelledExport.result?.ok === false
+        && cancelledExport.cleanupCalls >= 1
+        && cancelledExport.destinationBase64 === '',
+      {
+        result: cancelledExport.result,
+        cleanupCalls: cancelledExport.cleanupCalls,
+        writeCalls: cancelledExport.writeCalls,
+      },
+    );
+
+    // 10. Once Iroh is selected, direct-owner failures are terminal and no
+    // ordinary relay/user-socket payload transfer may begin.
+    const failedImport = await requireCommand(page, 'productionDirectImport', {
+      machineId: MACHINE_ID,
+      serverId: seeded.serverId,
+      workingDirectory: targetRoot,
+      path: 'declared-short.bin',
+      payloadBase64: uploadPayload.toString('base64'),
+      declaredSizeBytes: uploadPayload.byteLength - 1,
+    });
+    const failedExport = await requireCommand(page, 'productionDirectExport', {
+      machineId: MACHINE_ID,
+      serverId: seeded.serverId,
+      workingDirectory: targetRoot,
+      path: importedPath,
+      maxBytes: uploadPayload.byteLength,
+      failDestinationWrite: true,
+    });
+    observe(
+      'terminalSelectedIrohFailureDoesNotFallbackForImportOrExport',
+      failedImport.result?.errorCode === 'machine_carrier_transport_failed'
+        && failedImport.relayCalls?.length === 0
+        && failedExport.result?.errorCode === 'machine_carrier_transport_failed'
+        && home.fallbackTransferRequests.length === 0,
+      {
+        failedImport: failedImport.result,
+        importRelayCalls: failedImport.relayCalls,
+        failedExport: failedExport.result,
+        homeFallbackTransferRequests: home.fallbackTransferRequests,
+      },
+    );
+
+    // 11. The same Chromium, SharedWorker endpoint, Machine acceptor, grant
+    //     owner, and direct-transfer engine now exercise the attachment family.
+    //     The application request shape differs from the file case while both
+    //     share the one truthful finite-transfer carrier purpose.
+    const attachmentMessageLocalId = 'a74-browser-attachment';
+    const attachmentFileName = 'relay-attachment.bin';
+    const attachmentImport = await requireCommand(page, 'productionDirectImport', {
+      machineId: MACHINE_ID,
+      serverId: seeded.serverId,
+      transferKind: 'attachment',
+      workingDirectory: targetRoot,
+      messageLocalId: attachmentMessageLocalId,
+      fileName: attachmentFileName,
+      uploadLocation: 'workspace',
+      workspaceRootPath: targetRoot,
+      workspaceRelativeDir: '.happier/uploads',
+      vcsIgnoreStrategy: 'none',
+      vcsIgnoreWritesEnabled: false,
+      payloadBase64: uploadPayload.toString('base64'),
+    });
+    const attachmentPath = attachmentImport.result?.path ?? null;
+    const attachmentBytes = typeof attachmentPath === 'string'
+      ? await readFile(resolve(targetRoot, attachmentPath)).catch(() => null)
       : null;
+    const attachmentPrepare = home.machineRpcInvocations.findLast(
+      (invocation) => invocation.method === RPC_METHODS.DAEMON_DIRECT_TRANSFER_IMPORT_PREPARE,
+    );
+    const attachmentUploadId = attachmentPrepare?.result?.uploadId ?? null;
+    const attachmentGrant = home.mintedGrants.findLast(
+      (candidate) => candidate?.payload?.iroh?.operationKind === FINITE_TRANSFER_CARRIER_FLOW,
+    ) ?? null;
     observe(
-      'machineToBrowserBytesWithIntegrity',
-      downloadReply.settled === 'resolved'
-        && downloadReply.status === 200
-        && downloadedBytes !== null
-        && downloadedBytes.byteLength === downloadPayload.byteLength
-        && sha256(downloadedBytes) === sha256(downloadPayload),
+      'attachmentGrantUsesFiniteTransferCarrierPurpose',
+      typeof attachmentUploadId === 'string'
+        && attachmentGrant?.payload?.scope?.kind === 'bounded_transfer'
+        && attachmentGrant?.payload?.scope?.mode === 'carrier'
+        && !('transferId' in attachmentGrant.payload.scope)
+        && !('maxBytes' in attachmentGrant.payload.scope)
+        && attachmentGrant?.payload?.iroh?.operationKind === FINITE_TRANSFER_CARRIER_FLOW
+        && attachmentGrant?.payload?.iroh?.target?.machineId === MACHINE_ID
+        && attachmentGrant?.payload?.iroh?.target?.endpointId === machineTarget.endpointId,
       {
-        status: downloadReply.status,
-        expectedBytes: downloadPayload.byteLength,
-        expectedSha256: sha256(downloadPayload),
-        receivedBytes: downloadedBytes?.byteLength ?? null,
-        receivedSha256: downloadedBytes ? sha256(downloadedBytes) : null,
+        preparedUploadId: attachmentUploadId,
+        grantPayload: attachmentGrant?.payload ?? null,
+      },
+    );
+    observe(
+      'productionAttachmentImportPrepareEncryptedChunksFinalizeReceiptAndDestinationBytes',
+      attachmentImport.result?.success === true
+        && attachmentImport.result?.sizeBytes === uploadPayload.byteLength
+        && attachmentImport.result?.sha256 === sha256(uploadPayload)
+        && typeof attachmentPath === 'string'
+        && attachmentPath.includes(`/${attachmentMessageLocalId}/`)
+        && attachmentImport.readCalls > 1
+        && attachmentBytes !== null
+        && Buffer.compare(attachmentBytes, uploadPayload) === 0,
+      {
+        result: attachmentImport.result,
+        readCalls: attachmentImport.readCalls,
+        destinationBytes: attachmentBytes?.byteLength ?? null,
+        destinationSha256: attachmentBytes ? sha256(attachmentBytes) : null,
       },
     );
 
-    // 10. A transfer the machine really received and is really holding is
-    //     aborted: it must fail promptly, and releasing the response afterwards
-    //     must not complete it late.
-    const heldReply = await requireCommand(page, 'machineRequest', {
-      leaseKey: 'transfer',
-      method: 'GET',
-      path: HOLD_PATH,
-      abortAfterMs: ABORT_AFTER_MS,
-      giveUpAfterMs: ABORT_AFTER_MS + CANCELLED_SETTLE_BUDGET_MS,
+    const cancelledAttachmentMessageLocalId = 'a74-cancelled-attachment';
+    const cancelledAttachment = await requireCommand(page, 'productionDirectImport', {
+      machineId: MACHINE_ID,
+      serverId: seeded.serverId,
+      transferKind: 'attachment',
+      workingDirectory: targetRoot,
+      messageLocalId: cancelledAttachmentMessageLocalId,
+      fileName: 'cancelled-attachment.bin',
+      uploadLocation: 'workspace',
+      workspaceRootPath: targetRoot,
+      workspaceRelativeDir: '.happier/uploads',
+      vcsIgnoreStrategy: 'none',
+      vcsIgnoreWritesEnabled: false,
+      payloadBase64: uploadPayload.toString('base64'),
+      cancelAfterReadCalls: 1,
     });
-    const machineHeldTheTransfer = await waitFor(() => machine.held.length > 0, OBSERVE_TIMEOUT_MS);
-    const releasedHeld = machine.releaseHeld();
-    await sleep(LATE_COMPLETION_WATCH_MS);
-    const afterRelease = await requireCommand(page, 'readHttpOutcome', heldReply.requestId);
+    const failedAttachment = await requireCommand(page, 'productionDirectImport', {
+      machineId: MACHINE_ID,
+      serverId: seeded.serverId,
+      transferKind: 'attachment',
+      workingDirectory: targetRoot,
+      messageLocalId: 'a74-failed-attachment',
+      fileName: 'declared-short-attachment.bin',
+      uploadLocation: 'workspace',
+      workspaceRootPath: targetRoot,
+      workspaceRelativeDir: '.happier/uploads',
+      vcsIgnoreStrategy: 'none',
+      vcsIgnoreWritesEnabled: false,
+      payloadBase64: uploadPayload.toString('base64'),
+      declaredSizeBytes: uploadPayload.byteLength - 1,
+    });
+    const cancelledAttachmentDestination = join(
+      targetRoot,
+      '.happier',
+      'uploads',
+      'messages',
+      cancelledAttachmentMessageLocalId,
+    );
     observe(
-      'abortedTransferCancelsPromptlyAndNeverCompletesLate',
-      machineHeldTheTransfer === true
-        && releasedHeld >= 1
-        && heldReply.settled === 'rejected'
-        && heldReply.elapsedMs < ABORT_AFTER_MS + CANCELLED_SETTLE_BUDGET_MS
-        && afterRelease.settled === 'rejected'
-        && afterRelease.settledAtMs === heldReply.settledAtMs
-        && afterRelease.bodyBase64 === undefined,
+      'productionAttachmentCancellationAndTerminalFailureDoNotFallback',
+      cancelledAttachment.result?.success === false
+        && cancelledAttachment.readCalls > 1
+        && await stat(cancelledAttachmentDestination).then(() => false, () => true)
+        && failedAttachment.result?.errorCode === 'machine_carrier_transport_failed'
+        && home.fallbackTransferRequests.length === 0,
       {
-        machineHeldTheTransfer,
-        releasedHeldResponses: releasedHeld,
-        outcomeAtAbort: { settled: heldReply.settled, elapsedMs: heldReply.elapsedMs, error: heldReply.error },
-        outcomeAfterMachineReleasedIt: afterRelease,
+        cancelled: cancelledAttachment.result,
+        cancelledReadCalls: cancelledAttachment.readCalls,
+        failed: failedAttachment.result,
+        homeFallbackTransferRequests: home.fallbackTransferRequests,
       },
     );
 
-    // 11. The canonical admission owner rejects a handshake that does not bind
+    // 12. The canonical admission owner rejects a handshake that does not bind
     //     this machine's role/identity, and it rejects it BEFORE any
     //     application byte: the machine application must see nothing new.
     //
@@ -687,7 +936,7 @@ export async function runBrowserMachineTransferJourney({ webOutputRoot, openJour
     //     the acceptor does not own (rejected by admission, after a real dial),
     //     and a target endpoint that is not the machine's at all (rejected by
     //     the transport, before any admission).
-    const machineRequestsBeforeRejections = machine.requests.length;
+    const rpcRequestsBeforeRejections = home.machineRpcInvocations.length;
     const acceptorBeforeRejections = await fixture.machineAcceptorStatus(machineTarget);
     await requireCommand(page, 'publishMachineDescriptor', {
       serverId: seeded.serverId,
@@ -737,30 +986,14 @@ export async function runBrowserMachineTransferJourney({ webOutputRoot, openJour
         && wrongEndpointAttempt?.ok === false
         && acceptorAfterRejections === true
         && acceptorRejectionStatus?.streamsAccepted === acceptorBeforeRejections?.streamsAccepted
-        && machine.requests.length === machineRequestsBeforeRejections,
+        && home.machineRpcInvocations.length === rpcRequestsBeforeRejections,
       {
         impostorAttempt,
         wrongEndpointAttempt,
         acceptorBefore: acceptorBeforeRejections,
         acceptorAfter: acceptorRejectionStatus,
-        machineApplicationRequestsBefore: machineRequestsBeforeRejections,
-        machineApplicationRequestsAfter: machine.requests.length,
-      },
-    );
-
-    // 12. Nothing fell back. After Iroh was selected, no ordinary transfer path
-    //     and no user socket on the Home was ever used — not by the admitted
-    //     transfer, and not by either refused attempt.
-    observe(
-      'noUserSocketOrServerRelayFallbackAfterIrohSelection',
-      home.fallbackTransferRequests.length === 0
-        && home.socketUpgrades === 0
-        && machine.uploads.length === 1,
-      {
-        homeFallbackTransferRequests: home.fallbackTransferRequests,
-        homeSocketUpgrades: home.socketUpgrades,
-        homeRequestPaths: home.requests.map((request) => request.url),
-        machineUploads: machine.uploads.length,
+        machineRpcRequestsBefore: rpcRequestsBeforeRejections,
+        machineRpcRequestsAfter: home.machineRpcInvocations.length,
       },
     );
 
@@ -769,12 +1002,12 @@ export async function runBrowserMachineTransferJourney({ webOutputRoot, openJour
     //     appear as a direct peer.
     observe(
       'browserReportsRelayOnlyNeverDirect',
-      acceptorAfterAcquire?.lastPath?.observedPath === 'relay'
-        && acceptorAfterAcquire?.lastPath?.isRelay === true
+      acceptorAfterImport?.lastPath?.observedPath === 'relay'
+        && acceptorAfterImport?.lastPath?.isRelay === true
         && acceptorRejectionStatus?.lastPath?.observedPath !== 'direct'
         && seeded.homeCarrierObservedPath !== 'direct',
       {
-        acceptorPathAfterAcquire: acceptorAfterAcquire?.lastPath ?? null,
+        acceptorPathAfterAcquire: acceptorAfterImport?.lastPath ?? null,
         acceptorPathAfterRejections: acceptorRejectionStatus?.lastPath ?? null,
         homeCarrierObservedPath: seeded.homeCarrierObservedPath,
       },
@@ -794,31 +1027,25 @@ export async function runBrowserMachineTransferJourney({ webOutputRoot, openJour
       maxBytes: TRANSFER_MAX_BYTES,
     });
     acquiredLeaseKeys.push('release');
-    const releaseProbe = await requireCommand(page, 'machineRequest', {
-      leaseKey: 'release',
-      method: 'GET',
-      path: DOWNLOAD_PATH,
-    });
-    if (releaseProbe.status !== 200) {
-      failures.push(`release probe did not reach the machine: ${JSON.stringify(releaseProbe)}`);
-    }
-    await waitFor(
-      () => machine.openConnections - machine.closedConnections > 0,
-      OBSERVE_TIMEOUT_MS,
-    );
-    const machineConnectionsBeforeRelease = machine.openConnections - machine.closedConnections;
+    const acceptorBeforeRelease = await fixture.machineAcceptorStatus(machineTarget);
     await requireCommand(page, 'releaseMachineCarrier', 'release');
     acquiredLeaseKeys.splice(acquiredLeaseKeys.indexOf('release'), 1);
-    const machineSawStreamClosed = await waitFor(
-      () => machine.openConnections - machine.closedConnections < machineConnectionsBeforeRelease,
+    const releasedStreamClosed = await waitFor(
+      async () => {
+        const status = await fixture.machineAcceptorStatus(machineTarget);
+        return typeof status?.streamsActive === 'number'
+          && typeof acceptorBeforeRelease?.streamsActive === 'number'
+          && status.streamsActive < acceptorBeforeRelease.streamsActive;
+      },
       OBSERVE_TIMEOUT_MS,
     );
+    const acceptorAfterRelease = await fixture.machineAcceptorStatus(machineTarget);
     // The released lease is still reachable from the page on purpose: the
     // refusal must come from the production closed-connection owner.
     const requestAfterRelease = await command(page, 'machineRequest', {
       leaseKey: 'release',
       method: 'GET',
-      path: DOWNLOAD_PATH,
+      path: '/machine-transfers/direct/released-lease-must-not-send',
       giveUpAfterMs: MUST_NOT_COMPLETE_MS,
     });
     // The endpoint's own Iroh connection is NOT part of this observation: A7.2
@@ -827,19 +1054,82 @@ export async function runBrowserMachineTransferJourney({ webOutputRoot, openJour
     // asserted to reach zero — asserting that would gate on behavior the
     // amendment forbids.
     observe(
-      'releaseClosesMachineStreamsAndConnections',
-      machineConnectionsBeforeRelease > 0
-        && machineSawStreamClosed === true
+      'releaseClosesOwnedMachineStream',
+      acceptorBeforeRelease?.streamsAccepted > acceptorAfterImport?.streamsAccepted
+        && releasedStreamClosed === true
+        && typeof acceptorBeforeRelease?.streamsActive === 'number'
+        && acceptorAfterRelease?.streamsActive === acceptorBeforeRelease.streamsActive - 1
         && requestAfterRelease?.ok === true
         && requestAfterRelease?.settled === 'rejected'
         && requestAfterRelease?.status === undefined
         && requestAfterRelease?.bodyBase64 === undefined,
       {
-        machineConnectionsBeforeRelease,
-        machineOpenConnections: machine.openConnections,
-        machineClosedConnections: machine.closedConnections,
-        acceptorAfterRelease: await fixture.machineAcceptorStatus(machineTarget),
+        acceptorBeforeRelease,
+        acceptorAfterRelease,
         requestAfterRelease,
+      },
+    );
+
+    // 13. A SharedWorker owns its EndpointId only for that worker lifetime.
+    // Close the browser context that owns the first worker, create a replacement
+    // inside the same Chromium process, and drive a later production import so
+    // the canonical Home mint proves it used the replacement identity.
+    if (typeof replaceJourneyPage !== 'function') {
+      bail('the Machine journey did not provide a replacement-worker page owner');
+    }
+    page = await replaceJourneyPage(page);
+    const replacementSeed = await requireCommand(page, 'seedMachineTransferHome', {
+      homeServerIdentityId: HOME_IDENTITY,
+      canonicalServerUrl: CANONICAL_HOME_URL,
+      homeEndpointId: homeEndpoint.endpointId,
+      homeRelayUrls: [fixture.relayUrl],
+      token,
+      accountId: ACCOUNT_ID,
+      machineId: MACHINE_ID,
+      machineEndpointId: machineTarget.endpointId,
+      machineRelayUrls: [fixture.relayUrl],
+    });
+    const mintedGrantCountBeforeReplacement = home.mintedGrants.length;
+    const replacementPayload = Buffer.from('replacement-worker-grant-binding');
+    const replacementImport = await requireCommand(page, 'productionDirectImport', {
+      machineId: MACHINE_ID,
+      serverId: replacementSeed.serverId,
+      workingDirectory: targetRoot,
+      path: 'replacement-worker.bin',
+      payloadBase64: replacementPayload.toString('base64'),
+    });
+    const replacementPrepare = home.machineRpcInvocations.findLast(
+      (invocation) => invocation.method === RPC_METHODS.DAEMON_DIRECT_TRANSFER_IMPORT_PREPARE,
+    );
+    const replacementUploadId = replacementPrepare?.result?.uploadId ?? null;
+    const replacementGrant = home.mintedGrants.slice(mintedGrantCountBeforeReplacement).findLast(
+      (candidate) => candidate?.payload?.iroh?.operationKind === FINITE_TRANSFER_CARRIER_FLOW,
+    ) ?? null;
+    const replacementEndpointId = replacementGrant?.payload?.iroh?.initiator?.endpointId ?? null;
+    const acceptorAfterReplacement = await fixture.machineAcceptorStatus(machineTarget);
+    observe(
+      'replacementWorkerMintsFreshEndpointAndLaterGrantBindsIt',
+      replacementImport.result?.success === true
+        && typeof replacementEndpointId === 'string'
+        && replacementEndpointId.length > 0
+        && replacementEndpointId !== browserInitiatorEndpointId
+        && replacementGrant?.payload?.iroh?.initiator?.kind === 'account_client'
+        && replacementGrant?.payload?.iroh?.initiator?.endpointId === replacementEndpointId
+        && replacementGrant?.payload?.scope?.kind === 'bounded_transfer'
+        && replacementGrant?.payload?.scope?.mode === 'carrier'
+        && !('transferId' in replacementGrant.payload.scope)
+        && !('maxBytes' in replacementGrant.payload.scope)
+        && replacementGrant?.payload?.iroh?.target?.machineId === MACHINE_ID
+        && replacementGrant?.payload?.iroh?.target?.endpointId === machineTarget.endpointId
+        && replacementGrant?.payload?.iroh?.operationKind === FINITE_TRANSFER_CARRIER_FLOW
+        && replacementSeed.homeCarrierEndpointId === homeEndpoint.endpointId
+        && acceptorAfterReplacement?.lastPath?.remoteEndpointId === replacementEndpointId,
+      {
+        originalEndpointId: browserInitiatorEndpointId,
+        replacementEndpointId,
+        replacementUploadId,
+        replacementGrantPayload: replacementGrant?.payload ?? null,
+        acceptorRemoteEndpointId: acceptorAfterReplacement?.lastPath?.remoteEndpointId ?? null,
       },
     );
 
@@ -865,20 +1155,19 @@ export async function runBrowserMachineTransferJourney({ webOutputRoot, openJour
       mintRejections: home.mintRejections,
       socketUpgrades: home.socketUpgrades,
       fallbackTransferRequests: home.fallbackTransferRequests,
+      machineRpcInvocations: home.machineRpcInvocations,
     };
     report.machineApplication = {
-      requestPaths: machine.requests.map((request) => `${request.method} ${request.url}`),
-      uploads: machine.uploads,
-      openConnections: machine.openConnections,
-      closedConnections: machine.closedConnections,
+      lifecycleState: directTransferLifecycle.getState(),
+      targetRoot,
     };
-    machine.releaseHeld();
-    machine.server.closeAllConnections?.();
-    await new Promise((resolve) => machine.server.close(resolve));
+    await directTransferLifecycle.stop().catch(() => undefined);
+    await home.io.close().catch(() => undefined);
     home.server.closeAllConnections?.();
     await new Promise((resolve) => home.server.close(resolve));
     if (admissionServer) await admissionServer.stop().catch(() => undefined);
     if (fixture) await fixture.dispose();
+    await rm(fixtureRoot, { recursive: true, force: true });
   }
 
   const { verdict, reasons } = evaluateBrowserMachineTransferJourney({ observations, failures });

@@ -1,4 +1,4 @@
-// Contract for the A7.4 browser Machine carrier/admission mode of the one
+// Contract for the A7.4 browser finite Machine transfer mode of the one
 // Chromium proof harness.
 //
 // The journey itself needs a Rust-built addon, a live relay, the canonical
@@ -30,17 +30,22 @@ import { fileURLToPath } from 'node:url';
 const toolsIrohDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(toolsIrohDir, '..', '..', '..', '..');
 
-/** The exact A7.4 carrier/admission observations. */
+/** The exact A7.4 finite-transfer observations. */
 const REQUIRED_OBSERVATIONS = [
-    'exactRelayToRealMachineAcceptor',
-    'signedGrantBindsInitiatorTargetOperationFlowAndMaxBytes',
-    'browserToMachineBytesWithIntegrity',
-    'machineToBrowserBytesWithIntegrity',
-    'abortedTransferCancelsPromptlyAndNeverCompletesLate',
-    'wrongPeerRoleEndpointOrGrantRejectedBeforeApplicationBytes',
-    'noUserSocketOrServerRelayFallbackAfterIrohSelection',
-    'browserReportsRelayOnlyNeverDirect',
-    'releaseClosesMachineStreamsAndConnections',
+  'exactRelayToRealMachineAcceptor',
+  'signedGrantBindsInitiatorTargetAndFiniteTransferPurpose',
+  'replacementWorkerMintsFreshEndpointAndLaterGrantBindsIt',
+  'productionImportPrepareEncryptedChunksFinalizeReceiptAndDestinationBytes',
+  'productionExportPrepareEncryptedChunksManifestResultAndDestinationBytes',
+  'productionImportCancellationAbortsOwnedSessionWithoutDestination',
+  'productionExportCancellationCleansDestination',
+  'attachmentGrantUsesFiniteTransferCarrierPurpose',
+  'productionAttachmentImportPrepareEncryptedChunksFinalizeReceiptAndDestinationBytes',
+  'productionAttachmentCancellationAndTerminalFailureDoNotFallback',
+  'wrongPeerRoleEndpointOrGrantRejectedBeforeApplicationBytes',
+  'terminalSelectedIrohFailureDoesNotFallbackForImportOrExport',
+  'browserReportsRelayOnlyNeverDirect',
+  'releaseClosesOwnedMachineStream',
 ];
 
 test('the one harness opts into the machine-transfer vertical without losing any existing mode', async () => {
@@ -68,9 +73,37 @@ test('the one harness opts into the machine-transfer vertical without losing any
     );
 });
 
-test('the journey declares exactly the A7.4 carrier/admission observations', async () => {
+test('the journey declares exactly the A7.4 finite-transfer observations', async () => {
     const journey = await import(resolve(toolsIrohDir, 'runBrowserMachineTransferJourney.mjs'));
     assert.deepEqual([...journey.REQUIRED_A74_OBSERVATIONS].sort(), [...REQUIRED_OBSERVATIONS].sort());
+});
+
+test('the Chromium journey consumes the canonical direct import/export owners instead of fixture transfer endpoints', () => {
+    const journeySource = readFileSync(resolve(toolsIrohDir, 'runBrowserMachineTransferJourney.mjs'), 'utf8');
+    const pageSource = readFileSync(resolve(toolsIrohDir, 'productionCarrierSeamPage.ts'), 'utf8');
+
+    assert.match(pageSource, /uploadBulkPayloadFromFileWithCarrierFallbacks/u);
+    assert.match(pageSource, /downloadBulkPayloadViaDirectExportToDestination/u);
+    assert.match(journeySource, /createDirectTransferServerLifecycle/u);
+    assert.match(journeySource, /registerMachineDirectTransferImportRpcHandlers/u);
+    assert.match(journeySource, /registerMachineDirectTransferExportRpcHandlers/u);
+    assert.doesNotMatch(journeySource, /\/v1\/machine\/transfer\/(upload|download|hold)/u);
+});
+
+test('the Chromium journey composes attachments through the existing transfer owners', () => {
+    const journeySource = readFileSync(resolve(toolsIrohDir, 'runBrowserMachineTransferJourney.mjs'), 'utf8');
+    const pageSource = readFileSync(resolve(toolsIrohDir, 'productionCarrierSeamPage.ts'), 'utf8');
+
+    assert.match(pageSource, /uploadSessionAttachmentFromReaderWithCarrierFallbacks/u);
+    assert.match(pageSource, /await uploadSessionAttachmentFromReaderWithCarrierFallbacks\(\{/u);
+    assert.match(journeySource, /allowedFlows:\s*\[FINITE_TRANSFER_CARRIER_FLOW\]/u);
+    assert.match(journeySource, /productionAttachmentImportPrepareEncryptedChunksFinalizeReceiptAndDestinationBytes/u);
+    assert.match(journeySource, /productionAttachmentCancellationAndTerminalFailureDoNotFallback/u);
+    assert.doesNotMatch(
+        journeySource,
+        /productionAttachmentExport/u,
+        'a workspace-file export must not be relabeled as an attachment export',
+    );
 });
 
 test('a verdict is PASS only when every required observation was really recorded', async () => {

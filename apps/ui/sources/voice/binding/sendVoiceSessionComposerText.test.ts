@@ -76,6 +76,11 @@ describe('sendVoiceSessionComposerText', () => {
         });
 
         expect(enqueuePendingMessage).toHaveBeenCalledWith('carrier-s1', 'hello', undefined, {
+            happierProvenanceV1: {
+                v: 1,
+                kind: 'host',
+                producer: 'executionRunVoice',
+            },
             happier: {
                 kind: 'conversation_turn.v1',
                 payload: { v: 1 },
@@ -89,6 +94,7 @@ describe('sendVoiceSessionComposerText', () => {
             localId: 'voice-local-1',
             deliveryMode: 'external_handoff',
             requestedAction: { v: 1, kind: 'send_now' },
+            hostAdmissionOrigin: 'voice',
         });
         expect(markPendingDeliveryHandled).toHaveBeenCalledExactlyOnceWith(
             'carrier-s1',

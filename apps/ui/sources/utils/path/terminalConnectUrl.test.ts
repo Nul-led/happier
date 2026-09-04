@@ -1,12 +1,125 @@
 import { describe, expect, it } from 'vitest';
+import { encodeTerminalConnectLinkV4Payload } from '@happier-dev/protocol';
 
 import {
     buildTerminalConnectDeepLink,
+    buildTerminalConnectWebHref,
     parseTerminalConnectRouteParams,
     parseTerminalConnectUrl,
 } from './terminalConnectUrl';
 
+it('rebuilds a pending descriptor link as strict opaque V4', () => {
+    const link = buildTerminalConnectWebHref({
+        publicKeyB64Url: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+        serverUrl: 'https://ignored.example.test',
+        serverIdentityId: 'srv_home_v4',
+        pairing: {
+            secretB64Url: 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE',
+            createdAtMs: 1_000,
+            expiresAtMs: 61_000,
+        },
+        supportsTokenOnly: true,
+        homeConnectionDescriptor: {
+            v: 1,
+            homeServerIdentityId: 'srv_home_v4',
+            canonicalServerUrl: 'https://home.example.test',
+            revision: 1,
+            endpoints: [{ kind: 'iroh', endpointId: 'a'.repeat(64) }],
+        },
+    });
+
+    expect(link).toMatch(/^\/terminal\/connect#v4=[A-Za-z0-9_-]+$/u);
+    expect(parseTerminalConnectUrl(`https://app.example.test${link}`)).toMatchObject({
+        wireVersion: 4,
+        serverIdentityId: 'srv_home_v4',
+    });
+});
+
 describe('parseTerminalConnectUrl', () => {
+    it('accepts the immutable cli-v0.2.11-preview.2 URL-only V3 link as released compatibility', () => {
+        const releasedVector = 'happier://terminal?key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+            + '&server=https%3A%2F%2Fhome.example.test'
+            + '&pairingSecret=AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE'
+            + '&createdAt=1000&expiresAt=61000';
+
+        expect(parseTerminalConnectUrl(releasedVector)).toEqual({
+            publicKeyB64Url: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+            serverUrl: 'https://home.example.test',
+            pairing: {
+                secretB64Url: 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE',
+                createdAtMs: 1_000,
+                expiresAtMs: 61_000,
+            },
+            compatibility: {
+                provenance: 'cli-v0.2.11-preview.2-url-only-v3',
+                admission: 'update_required',
+            },
+        });
+        expect(parseTerminalConnectUrl(releasedVector)).not.toHaveProperty('serverIdentityId');
+        expect(parseTerminalConnectUrl(releasedVector)).not.toHaveProperty('homeConnectionDescriptor');
+    });
+
+    it('classifies immutable HTTP and no-server V3 outputs without granting authority', () => {
+        const tuple = 'key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+            + '&pairingSecret=AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE'
+            + '&createdAt=1000&expiresAt=61000';
+        expect(parseTerminalConnectUrl(`happier://terminal?${tuple}&server=http%3A%2F%2Flan.example.test`))
+            .toMatchObject({
+                serverUrl: 'http://lan.example.test',
+                compatibility: { admission: 'update_required' },
+            });
+        expect(parseTerminalConnectUrl(`happier://terminal?${tuple}`)).toMatchObject({
+            serverUrl: null,
+            compatibility: { admission: 'update_required' },
+        });
+        for (const input of [
+            `happier://terminal?${tuple}&server=http%3A%2F%2Flan.example.test`,
+            `happier://terminal?${tuple}`,
+        ]) {
+            expect(parseTerminalConnectUrl(input)).not.toHaveProperty('serverIdentityId');
+            expect(parseTerminalConnectUrl(input)).not.toHaveProperty('homeConnectionDescriptor');
+        }
+        expect(parseTerminalConnectUrl(`happier://terminal?v4=invalid&${tuple}`)).toBeNull();
+    });
+
+    it('parses the strict opaque V4 descriptor link without a URL downgrade path', () => {
+        const homeConnectionDescriptor = {
+            v: 1 as const,
+            homeServerIdentityId: 'srv_home_v4',
+            canonicalServerUrl: 'http://localhost:3010',
+            revision: 4,
+            endpoints: [{ kind: 'iroh' as const, endpointId: 'a'.repeat(64) }],
+        };
+        const payload = encodeTerminalConnectLinkV4Payload({
+            v: 4,
+            publicKeyB64Url: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+            pairing: {
+                v: 3,
+                secretB64Url: 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE',
+                createdAtMs: 1_000,
+                expiresAtMs: 61_000,
+                homeServerIdentityId: homeConnectionDescriptor.homeServerIdentityId,
+                supportsTokenOnly: true,
+            },
+            homeConnectionDescriptor,
+        });
+
+        expect(parseTerminalConnectUrl(`happier://terminal?v4=${payload}`)).toEqual({
+            wireVersion: 4,
+            publicKeyB64Url: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+            serverUrl: null,
+            serverIdentityId: 'srv_home_v4',
+            pairing: {
+                secretB64Url: 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE',
+                createdAtMs: 1_000,
+                expiresAtMs: 61_000,
+            },
+            supportsTokenOnly: true,
+            homeConnectionDescriptor,
+        });
+        expect(parseTerminalConnectUrl(`happier://terminal?v4=${payload}&key=legacy`)).toBeNull();
+    });
+
     it('parses legacy terminal deeplink format', () => {
         expect(parseTerminalConnectUrl('happier://terminal?abcDEF_123-zzz')).toEqual({
             publicKeyB64Url: 'abcDEF_123-zzz',
@@ -51,10 +164,7 @@ describe('parseTerminalConnectUrl', () => {
         )).toBeNull();
     });
 
-    it('rejects authenticated pairing with missing or malformed Home identity', () => {
-        expect(parseTerminalConnectUrl(
-            'happier://terminal?key=abc&pairingSecret=secret&createdAt=1000&expiresAt=61000',
-        )).toBeNull();
+    it('rejects current authenticated pairing with malformed Home identity', () => {
         expect(parseTerminalConnectUrl(
             'happier://terminal?key=abc&pairingSecret=secret&createdAt=1000&expiresAt=61000&serverIdentityId=bad%20identity',
         )).toBeNull();
@@ -101,6 +211,34 @@ describe('parseTerminalConnectUrl', () => {
 });
 
 describe('parseTerminalConnectRouteParams', () => {
+    it('passes the one opaque V4 route parameter through the strict parser', () => {
+        const payload = encodeTerminalConnectLinkV4Payload({
+            v: 4,
+            publicKeyB64Url: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+            pairing: {
+                v: 3,
+                secretB64Url: 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE',
+                createdAtMs: 1_000,
+                expiresAtMs: 61_000,
+                homeServerIdentityId: 'srv_home_v4',
+                supportsTokenOnly: false,
+            },
+            homeConnectionDescriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_home_v4',
+                canonicalServerUrl: 'https://home.example.test',
+                revision: 1,
+                endpoints: [{ kind: 'https', url: 'https://home.example.test' }],
+            },
+        });
+
+        expect(parseTerminalConnectRouteParams({ v4: payload })).toMatchObject({
+            wireVersion: 4,
+            serverIdentityId: 'srv_home_v4',
+            homeConnectionDescriptor: { homeServerIdentityId: 'srv_home_v4' },
+        });
+    });
+
     it('delegates complete authenticated pairing parameters to the canonical parser', () => {
         expect(parseTerminalConnectRouteParams({
             key: 'abc',

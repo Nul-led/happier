@@ -45,7 +45,7 @@ export const REQUIRED_A73_OBSERVATIONS = [
   'exactRelayToIngresslessHome',
   'authenticatedHttpThroughCarrier',
   'liveSocketIoEventThroughCarrier',
-  'reconnectAfterHomeRestartWithoutDuplicateEvent',
+  'reconnectAfterCarrierAcceptorRestartWithoutDuplicateEvent',
   'mismatchedEndpointIdSendsNoApplicationBytes',
   'browserReportsRelayOrUnknownOnly',
   'abortedHttpCancelsPromptlyAndNeverCompletesLate',
@@ -399,7 +399,7 @@ export async function runRealHomeVerticalJourney({ webOutputRoot, openJourneyPag
       },
     );
 
-    // 7. The Home drops the socket and its acceptor restarts; the existing
+    // 7. The fixture drops the socket and restarts its carrier acceptor; the existing
     //    socket owner reconnects over a fresh carrier stream, and nothing is
     //    replayed or delivered twice.
     const updatesBeforeDrop = (await readSocket(page)).updates;
@@ -425,7 +425,7 @@ export async function runRealHomeVerticalJourney({ webOutputRoot, openJourneyPag
     const afterSecondEmit = await readSocket(page);
     const seqs = afterSecondEmit.updates.map((update) => update?.seq);
     observe(
-      'reconnectAfterHomeRestartWithoutDuplicateEvent',
+      'reconnectAfterCarrierAcceptorRestartWithoutDuplicateEvent',
       sawDisconnect === true
         && reconnected === true
         && afterReconnect.updates.length === updatesBeforeDrop.length

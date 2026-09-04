@@ -5,30 +5,30 @@ import { authQRStart, type HomeQrEnrollmentTarget, type QRAuthKeyPair } from '@/
 import { authQRWait } from '@/auth/flows/qrWait';
 import { buildRenderableHomeQrInviteDeepLink } from '@/auth/pairing/pairingUrl';
 import { decodeBase64, encodeBase64 } from '@/encryption/base64';
-import { pairingRequest } from '@/sync/api/account/apiPairingAuth';
+import { pairingConsume, pairingRequest, pairingStart } from '@/sync/api/account/apiPairingAuth';
 import { probeServerFeaturesAtUrl } from '@/sync/api/capabilities/serverFeaturesClient';
 import { adoptHomeProfileWithCredentials, HomeProfileAdoptionPartialCommitError } from '@/sync/domains/server/adoptHomeProfile';
-import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { buildHomeConnectionDescriptorForProfile, getServerProfileById } from '@/sync/domains/server/serverProfiles';
 import {
     computeHomeQrBindingProofV2,
     createHomeQrReverseInviteV2,
     deriveHomeQrBindingKeyV2,
     deriveHomeQrRendezvousSecretV2,
+    deriveHomeQrRendezvousVerifierV2,
     readServerEnabledBit,
     type HomeConnectionDescriptorV1,
     type HomeQrInviteV2,
 } from '@happier-dev/protocol';
 import { enrollmentPollingBackoffMs } from '@/auth/enrollment/enrollmentPollingBackoff';
 
-const PAIRING_FEATURE_ID = 'auth.pairing.desktopQrMobileScan' as const;
+const PAIRING_FEATURE_ID = 'auth.pairing.boundQrV2' as const;
 
 export type ReversePairingPresentation =
     | Readonly<{ phase: 'generating' }>
     | Readonly<{ phase: 'ready'; invite: HomeQrInviteV2; link: string; qrAvailable: boolean; descriptor: HomeConnectionDescriptorV1 }>
     | Readonly<{ phase: 'connecting' | 'adding'; descriptor: HomeConnectionDescriptorV1; expiresAtMs: number }>
     | Readonly<{ phase: 'succeeded'; descriptor: HomeConnectionDescriptorV1; profileId: string }>
-    | Readonly<{ phase: 'expired' | 'invalid'; descriptor?: HomeConnectionDescriptorV1 }>
+    | Readonly<{ phase: 'expired' | 'invalid' | 'update_required'; descriptor?: HomeConnectionDescriptorV1 }>
     | Readonly<{
         phase: 'retryable_error';
         descriptor?: HomeConnectionDescriptorV1;
@@ -39,11 +39,12 @@ type ReverseAttempt = {
     generation: number;
     controller: AbortController;
     target: HomeQrEnrollmentTarget | null;
+    pairId: string | null;
     authorityClaimed: boolean;
 };
 
 function isTransientStatus(status: number): boolean {
-    return status === 0 || status === 404 || status === 408 || status === 429 || status >= 500;
+    return status === 0 || status === 408 || status === 429 || status >= 500;
 }
 
 async function waitForRetry(expiresAtMs: number, failures: number, signal: AbortSignal): Promise<boolean> {
@@ -64,11 +65,11 @@ async function waitForRetry(expiresAtMs: number, failures: number, signal: Abort
 }
 
 /** Owns one credentialless, known-target requester-displayed QR lifecycle in memory. */
-export function useReversePairingSession(params: Readonly<{ enabled: boolean }>): Readonly<{
+export function useReversePairingSession(params: Readonly<{ enabled: boolean; targetProfileId: string | null }>): Readonly<{
     presentation: ReversePairingPresentation;
     canCancel: boolean;
     start: () => Promise<void>;
-    cancel: () => void;
+    cancel: () => Promise<void>;
 }> {
     const [presentation, setPresentation] = React.useState<ReversePairingPresentation>({ phase: 'generating' });
     const attemptRef = React.useRef<ReverseAttempt | null>(null);
@@ -86,13 +87,18 @@ export function useReversePairingSession(params: Readonly<{ enabled: boolean }>)
         await attempt.target?.close().catch(() => {});
     }, []);
 
-    const cancel = React.useCallback(() => {
+    const cancel = React.useCallback(async () => {
         const attempt = attemptRef.current;
         if (!attempt || attempt.authorityClaimed) return;
         generationRef.current += 1;
         attemptRef.current = null;
         attempt.controller.abort();
-        void attempt.target?.close().catch(() => {});
+        const target = attempt.target;
+        attempt.target = null;
+        if (target && attempt.pairId) {
+            await pairingConsume({ pairId: attempt.pairId, intent: 'cancel' }, target).catch(() => null);
+        }
+        await target?.close().catch(() => {});
         setPresentation((current) => ({
             phase: 'retryable_error',
             ...('descriptor' in current && current.descriptor ? { descriptor: current.descriptor } : {}),
@@ -108,26 +114,23 @@ export function useReversePairingSession(params: Readonly<{ enabled: boolean }>)
             generation,
             controller: new AbortController(),
             target: null,
+            pairId: null,
             authorityClaimed: false,
         };
         attemptRef.current = attempt;
         setPresentation({ phase: 'generating' });
 
         try {
-            // Capture the selected stored Home exactly once. Later focus changes never re-enter
-            // this owner or replace the descriptor/transport held by the active attempt.
-            const active = getActiveServerSnapshot();
-            const profile = getServerProfileById(active.serverId);
+            // Resolve only the caller-selected stored Home. Ambient focus and fallback profiles
+            // are deliberately not enrollment authority.
+            const profile = params.targetProfileId ? getServerProfileById(params.targetProfileId) : null;
             const descriptor = profile ? buildHomeConnectionDescriptorForProfile(profile) : null;
             if (!descriptor || profile?.serverIdentityId !== descriptor.homeServerIdentityId) {
                 if (!isCurrent(attempt)) return;
                 setPresentation({ phase: 'invalid' });
                 return;
             }
-            const transportResolution = await resolveHomeEnrollmentTransport(descriptor, {
-                runtimeOrigin: active.runtimeOrigin,
-                runtimeCarrier: active.carrier,
-            });
+            const transportResolution = await resolveHomeEnrollmentTransport(descriptor);
             if (!isCurrent(attempt)) {
                 if (transportResolution.ok) await transportResolution.transport.close().catch(() => {});
                 return;
@@ -147,12 +150,12 @@ export function useReversePairingSession(params: Readonly<{ enabled: boolean }>)
                 signal: attempt.controller.signal,
             });
             if (!isCurrent(attempt)) return;
-            if (
-                featureSnapshot.status !== 'ready'
-                || featureSnapshot.serverIdentityId !== descriptor.homeServerIdentityId
-                || readServerEnabledBit(featureSnapshot.features, PAIRING_FEATURE_ID) !== true
-            ) {
+            if (featureSnapshot.status !== 'ready' || featureSnapshot.serverIdentityId !== descriptor.homeServerIdentityId) {
                 setPresentation({ phase: 'invalid', descriptor });
+                return;
+            }
+            if (readServerEnabledBit(featureSnapshot.features, PAIRING_FEATURE_ID) !== true) {
+                setPresentation({ phase: 'update_required', descriptor });
                 return;
             }
 
@@ -161,6 +164,22 @@ export function useReversePairingSession(params: Readonly<{ enabled: boolean }>)
                 publicKey: material.requesterPublicKey,
                 secretKey: material.requesterSecretKey,
             };
+            const pairingStarted = await pairingStart({
+                direction: 'requester_displays',
+                pairId: material.invite.pairId,
+                expiresAtMs: material.invite.expiresAtMs,
+                secretHash: encodeBase64(deriveHomeQrRendezvousVerifierV2(material.qrSecret), 'base64url'),
+            }, target);
+            if (!isCurrent(attempt)) return;
+            if (
+                !pairingStarted.ok
+                || pairingStarted.data.pairId !== material.invite.pairId
+                || Date.parse(pairingStarted.data.expiresAt) !== material.invite.expiresAtMs
+            ) {
+                setPresentation({ phase: 'invalid', descriptor });
+                return;
+            }
+            attempt.pairId = material.invite.pairId;
             const started = await authQRStart(keypair, target, { signal: attempt.controller.signal });
             if (!isCurrent(attempt)) return;
             if (!started.ok) {
@@ -277,7 +296,7 @@ export function useReversePairingSession(params: Readonly<{ enabled: boolean }>)
         } finally {
             await retire(attempt);
         }
-    }, [isCurrent, params.enabled, retire]);
+    }, [isCurrent, params.enabled, params.targetProfileId, retire]);
 
     React.useEffect(() => {
         if (!params.enabled || startedRef.current) return;

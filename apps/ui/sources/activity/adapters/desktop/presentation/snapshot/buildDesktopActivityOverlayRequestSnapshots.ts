@@ -88,6 +88,7 @@ export function buildDesktopActivityOverlayRequestSnapshots(params: Readonly<{
             permissionRequests.push({
                 kind: 'permission_request',
                 requestId: request.id,
+                ...(request.turnId ? { turnId: request.turnId } : {}),
                 sessionId,
                 serverId,
                 title: semantic.permissionTitle ?? formatPermissionRequestSummary({

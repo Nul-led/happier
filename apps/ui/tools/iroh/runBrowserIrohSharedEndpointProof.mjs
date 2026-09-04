@@ -1,27 +1,23 @@
 #!/usr/bin/env node
 // Lane 06 amendment A7.2 — the real Chromium shared-endpoint proof.
 //
-// This proves the four A7.2 identity facts against the PACKAGED browser Iroh
+// This proves the three A7.2 live-owner facts against the PACKAGED browser Iroh
 // assets — the same `vendor/iroh/` files the web release build stages into its
 // export output and serves — through the real SharedWorker → endpoint owner →
 // wasm endpoint path:
 //
 //   1. two tabs share one endpoint ID over one worker;
 //   2. a tab reload preserves the endpoint ID;
-//   3. releasing one client does not stop the sibling;
-//   4. an explicit application-data clear removes the persistent endpoint
-//      identity: the owner goes terminal, the IndexedDB database is gone
-//      (observed without recreating it), and a fresh worker global cannot
-//      reproduce the old identity.
+//   3. releasing one client does not stop the sibling.
 //
 // Reuses the existing browser proof infrastructure — Playwright Chromium, the
 // same engine the A7.1 live gate (`packages/iroh-native/scripts/run-browser-
 // iroh-live.mjs`) uses — and the canonical asset producer
 // (`buildBrowserIrohAssets.mjs`). No second harness or framework.
 //
-// The proof is about endpoint IDENTITY and PERSISTENCE, not transport: the
+// The proof is about live-worker endpoint IDENTITY, not transport: the
 // default relay URL is grammar-valid but need not be reachable, because the
-// owner binds the endpoint from the persisted seed and no stream is opened.
+// owner binds one endpoint for its worker lifetime and no stream is opened.
 // Pass `--relay-url http://127.0.0.1:PORT` to run against a live local relay.
 //
 // `--production-page-seam` adds the A7.3/A7.4 LOADED SEAM stage: a second page,
@@ -34,7 +30,7 @@
 // `--real-home-vertical` runs the A7.3 COMPLETION journey on that same page: the
 // stock local relay and a real Home acceptor from the shared native fixture, an
 // ingress-less Home, authenticated HTTP, a live Socket.IO update, reconnect
-// after a Home drop, identity binding, cancellation, and release. See
+// after a carrier-acceptor restart, identity binding, cancellation, and release. See
 // `runRealHomeVerticalJourney.mjs`.
 //
 // Usage:
@@ -67,12 +63,6 @@ const toolsIrohDir = dirname(fileURLToPath(import.meta.url));
 const uiDir = resolve(toolsIrohDir, '..', '..');
 const PAGE_ENTRY = resolve(toolsIrohDir, 'sharedEndpointProofPage.ts');
 
-/** The one IndexedDB database the A7.2 endpoint-key owner persists its seed in. */
-const ENDPOINT_KEY_DATABASE = 'happier-browser-iroh-endpoint';
-/** A fresh Chromium SharedWorker global may take a moment to replace a cleared one. */
-const FRESH_GLOBAL_TIMEOUT_MS = 20_000;
-/** Grace period for Chromium to tear a SharedWorker down after its last client leaves. */
-const WORKER_TEARDOWN_GRACE_MS = 750;
 /** Where the loaded production-carrier seam page is served from, inside the same output. */
 const PRODUCTION_CARRIER_SEAM_PAGE_PATH = '/production-carrier-seam';
 /**
@@ -91,9 +81,6 @@ function bail(message) {
   throw new Error(message);
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 function listen(server) {
   return new Promise((resolve, reject) => {
@@ -206,28 +193,6 @@ async function releaseAll(page) {
 
 async function status(page) {
   return page.evaluate(async () => await window.__happierIrohProofClient.status());
-}
-
-async function clearApplicationData(page) {
-  return page.evaluate(async () => await window.__happierIrohProofClient.clearApplicationData());
-}
-
-/**
- * Lists the origin's IndexedDB database names WITHOUT opening anything: the
- * non-creating observer for the post-clear absence gate. Opening the database
- * to inspect it would recreate the database the clear just deleted — an empty
- * one without the `endpointKey` store — and the genuinely fresh worker global
- * gated in (5b) would then find no store to bind from. Resolves null only when
- * this Chromium cannot enumerate databases at all, which the caller turns into
- * an explicit proof failure rather than a weakened or recreating observation.
- */
-async function listIndexedDbDatabaseNames(page) {
-  return page.evaluate(async () => {
-    if (typeof indexedDB.databases !== 'function') return null;
-    return (await indexedDB.databases())
-      .map((info) => info.name)
-      .filter((name) => typeof name === 'string');
-  });
 }
 
 /**
@@ -373,72 +338,11 @@ async function main() {
         failures.push(`the sibling could not acquire again after the other client released: ${JSON.stringify(siblingSecondLease)}`);
       }
 
-      // (4) Every tab closed — the persisted seed, not a live worker, must own
-      // continuity. If Chromium kept the global alive the same ID is trivial;
-      // the discriminating persistence direction is the clear in (5).
+      // The endpoint identity belongs only to this live SharedWorker. Closing
+      // every client may let the browser destroy that worker at any time, so
+      // no cross-worker identity assertion belongs in this journey.
       await tabA.close();
       await tabB.close();
-      await sleep(WORKER_TEARDOWN_GRACE_MS);
-      const reopenedTab = await openTab(context, base, pageErrors);
-      const afterRestart = await acquireLease(reopenedTab, relayUrl);
-      report.endpointIdAfterTabsClosedAndReopened
-        = afterRestart.kind === 'leaseAcquired' ? afterRestart.endpointId : afterRestart;
-      if (afterRestart.kind !== 'leaseAcquired' || afterRestart.endpointId !== endpointId) {
-        failures.push(`reopening every tab changed the endpoint identity: ${JSON.stringify(afterRestart)}`);
-      }
-
-      // (5) Explicit application-data clear removes the persistent identity.
-      const cleared = await clearApplicationData(reopenedTab);
-      if (cleared.kind !== 'cleared') {
-        bail(`the explicit clear did not complete: ${JSON.stringify(cleared)}`);
-      }
-      const afterClear = await acquireLease(reopenedTab, relayUrl);
-      report.clearedOwnerRejectsLaterCommands = afterClear;
-      if (afterClear.kind !== 'error' || afterClear.code !== 'owner_cleared') {
-        failures.push(`a cleared owner answered a later acquire: ${JSON.stringify(afterClear)}`);
-      }
-      const databaseNamesAfterClear = await listIndexedDbDatabaseNames(reopenedTab);
-      report.indexedDbDatabaseNamesAfterClear = databaseNamesAfterClear;
-      if (databaseNamesAfterClear === null) {
-        bail('indexedDB.databases() is unavailable in this Chromium; the post-clear absence gate cannot observe the database without recreating it');
-      }
-      if (databaseNamesAfterClear.includes(ENDPOINT_KEY_DATABASE)) {
-        failures.push(`the cleared endpoint-key database still exists after the explicit clear: ${JSON.stringify(databaseNamesAfterClear)}`);
-      }
-
-      // (5b) A fresh worker global must not reproduce the cleared identity.
-      // While the old global is still routed, the cleared owner answers
-      // owner_cleared; only a genuinely fresh global re-binds from the emptied
-      // store — and it must mint a DIFFERENT identity.
-      await reopenedTab.close();
-      await sleep(WORKER_TEARDOWN_GRACE_MS);
-      let freshEndpointId = null;
-      let lastObservation = 'no fresh global observed';
-      const deadline = Date.now() + FRESH_GLOBAL_TIMEOUT_MS;
-      while (Date.now() < deadline && freshEndpointId === null) {
-        const page = await openTab(context, base, pageErrors);
-        const reply = await acquireLease(page, relayUrl);
-        if (reply.kind === 'error' && reply.code === 'owner_cleared') {
-          lastObservation = 'previous worker global still routed (owner_cleared)';
-          await page.close();
-          await sleep(250);
-          continue;
-        }
-        if (reply.kind === 'leaseAcquired') {
-          freshEndpointId = reply.endpointId;
-          await page.close();
-          break;
-        }
-        await page.close();
-        bail(`unexpected reply while waiting for a fresh worker global: ${JSON.stringify(reply)}`);
-      }
-      report.freshEndpointIdAfterClear = freshEndpointId;
-      report.freshGlobalObservation = lastObservation;
-      if (freshEndpointId === null) {
-        failures.push(`a fresh worker global never appeared after the clear; last observation: ${lastObservation}`);
-      } else if (freshEndpointId === endpointId) {
-        failures.push('a fresh worker global reproduced the explicitly cleared endpoint identity');
-      }
 
       if (pageErrors.length > 0) {
         failures.push(`browser page errors: ${pageErrors.join(' | ')}`);
@@ -449,10 +353,8 @@ async function main() {
       // web owner and executed in a real Chromium. This is not the A7.3
       // completion journey; that still needs the native relay/Home fixture.
       if (productionPageSeam) {
-        // Its own browser process, not just its own context: the A7.2 stage
-        // deliberately drove this origin's SharedWorker owner terminal, and the
-        // production carrier must load into a profile that was never told to
-        // forget its endpoint.
+        // Its own browser process keeps the loaded production seam isolated
+        // from the focused A7.2 worker-ownership assertions above.
         const seamBrowser = await chromium.launch(channel ? { channel } : {});
         const seamPageErrors = [];
         const seamPageUrl = `${base.replace(/\/$/u, '')}${PRODUCTION_CARRIER_SEAM_PAGE_PATH}`;
@@ -474,10 +376,8 @@ async function main() {
       // with the stock local relay and a real Home acceptor in front of it.
       let journeyVerdict = null;
       if (realHomeVertical) {
-        // Its own browser process for the same reason as the seam stage: the
-        // A7.2 stage deliberately drove this origin's SharedWorker owner
-        // terminal, and the production carrier must load into a profile that
-        // was never told to forget its endpoint.
+        // Its own browser process keeps the loaded production journey isolated
+        // from the focused A7.2 worker-ownership assertions above.
         const journeyBrowser = await chromium.launch(channel ? { channel } : {});
         const journeyPageErrors = [];
         const journeyPageUrl = `${base.replace(/\/$/u, '')}${PRODUCTION_CARRIER_SEAM_PAGE_PATH}`;
@@ -507,7 +407,7 @@ async function main() {
         }
       }
 
-      // (8) A7.4 — the real browser Machine carrier/admission journey on that same
+      // (8) A7.4 — the real browser finite Machine transfer journey on that same
       // production page: the stock local relay, a real `happier/machine/1`
       // acceptor, the canonical daemon admission owner and a real signed V2
       // grant from the canonical server mint.
@@ -518,7 +418,7 @@ async function main() {
         const machinePageErrors = [];
         const machinePageUrl = `${base.replace(/\/$/u, '')}${PRODUCTION_CARRIER_SEAM_PAGE_PATH}`;
         try {
-          const machineContext = await machineBrowser.newContext();
+          let machineContext = await machineBrowser.newContext();
           const outcome = await runBrowserMachineTransferJourney({
             webOutputRoot,
             pageErrors: machinePageErrors,
@@ -527,6 +427,16 @@ async function main() {
               machinePageUrl,
               machinePageErrors,
             ),
+            replaceJourneyPage: async (page) => {
+              await page.close();
+              await machineContext.close();
+              machineContext = await machineBrowser.newContext();
+              return await openProductionCarrierPage(
+                machineContext,
+                machinePageUrl,
+                machinePageErrors,
+              );
+            },
           });
           machineVerdict = outcome.verdict;
           report.browserMachineTransferJourney = {
@@ -536,7 +446,7 @@ async function main() {
             ...outcome.report,
           };
           if (outcome.verdict !== 'PASS') {
-            failures.push(...outcome.failures.map((reason) => `A7.4 browser Machine carrier — ${reason}`));
+            failures.push(...outcome.failures.map((reason) => `A7.4 browser Machine transfer — ${reason}`));
           }
         } finally {
           await machineBrowser.close();
@@ -549,7 +459,7 @@ async function main() {
       }
       process.stdout.write(
         '\nbrowser Iroh shared-endpoint proof: PASS '
-        + '(two tabs share one endpoint ID; reload preserves it; a released client leaves the sibling live; an explicit clear removes the persistent identity)\n',
+        + '(two tabs share one live-worker endpoint ID; reload preserves it while the worker lives; a released client leaves the sibling live)\n',
       );
       if (productionPageSeam) {
         process.stdout.write(
@@ -569,7 +479,7 @@ async function main() {
           `\nbrowser Iroh A7.3 real Home vertical: ${journeyVerdict}\n`
           + '  Observed through real Chromium, the stock local relay, and a real Home acceptor: the exact configured '
           + 'relay to an ingress-less Home; authenticated HTTP through the production carrier; a live Socket.IO update; '
-          + 'reconnect after a Home drop with no duplicate event; no application byte to a Home addressed by another '
+          + 'reconnect after a carrier-acceptor restart with no duplicate event; no application byte to a Home addressed by another '
           + "EndpointId; a relay-only observed path; prompt cancellation of a request the Home was holding, with no late "
           + 'completion; and release closing the Home connections.\n'
           + (machineTransferVertical
@@ -578,18 +488,18 @@ async function main() {
         );
       }
       if (machineTransferVertical) {
-        // Reached only when every carrier/admission observation was recorded true, because a
+        // Reached only when every finite-transfer observation was recorded true, because a
         // FAIL verdict pushed its reasons into `failures` and bailed above.
         process.stdout.write(
-          `\nbrowser Iroh A7.4 browser Machine carrier/admission: ${machineVerdict}\n`
+          `\nbrowser Iroh A7.4 browser Machine finite transfer: ${machineVerdict}\n`
           + '  Observed through real Chromium, the stock local relay, a real happier/machine/1 acceptor, the canonical '
-          + 'daemon admission owner and a real signed V2 grant from the canonical server mint: the relay-only dial to '
-          + 'the real acceptor; a grant binding the exact browser initiator EndpointId, target machine id/EndpointId, '
-          + 'operation, flow and max bytes; browser->machine and machine->browser bytes with hash integrity on one '
-          + 'admitted stream; prompt cancellation of a transfer the machine was holding, with no late completion; a '
-          + 'mis-bound role/endpoint/grant refused before any application byte; no ordinary user-socket or '
-          + 'server-relayed transfer after Iroh selection; a relay-only observed path; and release closing the machine '
-          + 'stream and connection.\n',
+          + 'daemon admission owner, production direct-import/direct-export owners, and real signed V2 grants from the '
+          + 'canonical server mint: relay-only dials to the real acceptor; grants binding the exact browser initiator '
+          + 'EndpointId, target machine id/EndpointId, operation, flow and max bytes; prepare, encrypted chunks, '
+          + 'manifest/receipt finalization and exact destination bytes for file import/export and session-attachment '
+          + 'upload; attachment destination semantics and cancellation cleanup; '
+          + 'mis-bound role/endpoint/grant refusal before application bytes; terminal no-fallback results after Iroh '
+          + 'selection; a relay-only observed path; and release closing the owned Machine stream.\n',
         );
       }
     } finally {

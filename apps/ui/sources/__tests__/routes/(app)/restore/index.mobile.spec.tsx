@@ -139,14 +139,14 @@ afterEach(() => {
 });
 
 describe('/restore (mobile)', () => {
-    it('renders a scanner-first restore UI', async () => {
+    it('renders scanner-first without offering targetless reverse QR', async () => {
         vi.resetModules();
         modalAlertSpy.mockClear();
         const { default: Screen } = await import('@/app/(app)/restore/index');
 
         const screen = await renderScreen(<Screen />);
         const button = screen.findByTestId('restore-show-qr-instead');
-        expect(button).not.toBeNull();
+        expect(button).toBeNull();
     });
 
     it('shows canonical update-required guidance from a secret-free native-intent marker', async () => {
@@ -159,6 +159,7 @@ describe('/restore (mobile)', () => {
         const { default: Screen } = await import('@/app/(app)/restore/index');
 
         const screen = await renderScreen(<Screen />);
+        expect(screen.findByTestId('legacy-pairing-update-required-route')).not.toBeNull();
         await flushHookEffects({ cycles: 2, turns: 2 });
 
         expect(modalAlertSpy).toHaveBeenCalledWith(
@@ -169,7 +170,7 @@ describe('/restore (mobile)', () => {
                 expect.objectContaining({ text: 'common.cancel', style: 'cancel' }),
             ],
         );
-        expect(screen.findByTestId('restore-show-qr-instead')).not.toBeNull();
+        expect(screen.findByTestId('restore-show-qr-instead')).toBeNull();
         expect(restoreMobileRouteState.replaceSpy).toHaveBeenCalledWith('/restore');
         expect(restoreMobileRouteState.replaceSpy.mock.invocationCallOrder[0]).toBeLessThan(
             modalAlertSpy.mock.invocationCallOrder[0]!,
@@ -183,6 +184,6 @@ describe('/restore (mobile)', () => {
         const remounted = await renderScreen(<Screen />);
         await flushHookEffects({ cycles: 2, turns: 2 });
         expect(modalAlertSpy).toHaveBeenCalledTimes(1);
-        expect(remounted.findByTestId('restore-show-qr-instead')).not.toBeNull();
+        expect(remounted.findByTestId('restore-show-qr-instead')).toBeNull();
     });
 });

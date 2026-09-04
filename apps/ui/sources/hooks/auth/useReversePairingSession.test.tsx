@@ -20,23 +20,16 @@ const target = {
 };
 
 const state = vi.hoisted(() => ({
-    activeServerId: 'known-profile',
     probe: vi.fn(),
+    pairingStart: vi.fn(),
+    pairingConsume: vi.fn(),
     authStart: vi.fn(),
     pairingRequest: vi.fn(),
     authWait: vi.fn(),
     adopt: vi.fn(),
     qrAvailable: true,
-}));
-
-vi.mock('@/sync/domains/server/serverRuntime', () => ({
-    getActiveServerSnapshot: () => ({
-        serverId: state.activeServerId,
-        serverUrl: 'https://focused-elsewhere.example.test',
-        runtimeOrigin: null,
-        carrier: null,
-        generation: 1,
-    }),
+    pairingFeatureEnabled: true,
+    resolveTransport: vi.fn(),
 }));
 
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
@@ -47,7 +40,7 @@ vi.mock('@/sync/domains/server/serverProfiles', () => ({
 }));
 
 vi.mock('@/auth/enrollment/homeEnrollmentTransport', () => ({
-    resolveHomeEnrollmentTransport: vi.fn(async () => ({ ok: true, transport: target })),
+    resolveHomeEnrollmentTransport: (...args: unknown[]) => state.resolveTransport(...args),
 }));
 
 vi.mock('@/sync/api/capabilities/serverFeaturesClient', () => ({
@@ -59,6 +52,8 @@ vi.mock('@/auth/flows/qrStart', () => ({
 }));
 
 vi.mock('@/sync/api/account/apiPairingAuth', () => ({
+    pairingStart: (...args: unknown[]) => state.pairingStart(...args),
+    pairingConsume: (...args: unknown[]) => state.pairingConsume(...args),
     pairingRequest: (...args: unknown[]) => state.pairingRequest(...args),
 }));
 
@@ -101,14 +96,16 @@ vi.mock('@happier-dev/protocol', async (importOriginal) => {
         computeHomeQrBindingProofV2: () => 'binding-proof',
         deriveHomeQrBindingKeyV2: () => new Uint8Array(32).fill(6),
         deriveHomeQrRendezvousSecretV2: () => new Uint8Array(32).fill(7),
-        readServerEnabledBit: () => true,
+        readServerEnabledBit: () => state.pairingFeatureEnabled,
     };
 });
 
 describe('useReversePairingSession', () => {
     beforeEach(() => {
-        state.activeServerId = 'known-profile';
         state.qrAvailable = true;
+        state.pairingFeatureEnabled = true;
+        state.resolveTransport.mockReset();
+        state.resolveTransport.mockResolvedValue({ ok: true, transport: target });
         target.close.mockClear();
         state.probe.mockReset();
         state.probe.mockResolvedValue({
@@ -118,6 +115,13 @@ describe('useReversePairingSession', () => {
         });
         state.authStart.mockReset();
         state.authStart.mockResolvedValue({ ok: true });
+        state.pairingStart.mockReset();
+        state.pairingStart.mockImplementation(async (params: { pairId: string; expiresAtMs: number }) => ({
+            ok: true,
+            data: { pairId: params.pairId, expiresAt: new Date(params.expiresAtMs).toISOString() },
+        }));
+        state.pairingConsume.mockReset();
+        state.pairingConsume.mockResolvedValue({ ok: true });
         state.pairingRequest.mockReset();
         state.pairingRequest.mockResolvedValue({ ok: true, data: { state: 'requested' } });
         state.authWait.mockReset();
@@ -138,13 +142,44 @@ describe('useReversePairingSession', () => {
         });
 
         const { useReversePairingSession } = await import('./useReversePairingSession');
-        const hook = await renderHook(() => useReversePairingSession({ enabled: true }));
+        const hook = await renderHook(() => useReversePairingSession({ enabled: true, targetProfileId: 'known-profile' }));
         await vi.waitFor(() => expect(observedSignal).not.toBeNull());
 
         await hook.unmount();
 
         expect(observedSignal?.aborted).toBe(true);
         expect(target.close).toHaveBeenCalledOnce();
+    });
+
+    it('does not acquire a carrier without an explicit known target profile', async () => {
+        const { useReversePairingSession } = await import('./useReversePairingSession');
+        const hook = await renderHook(() => useReversePairingSession({ enabled: true, targetProfileId: null }));
+        await vi.waitFor(() => expect(hook.getCurrent().presentation.phase).toBe('invalid'));
+        expect(state.resolveTransport).not.toHaveBeenCalled();
+        await hook.unmount();
+    });
+
+    it('does not create a requester invite when the exact Home lacks bound QR v2', async () => {
+        state.pairingFeatureEnabled = false;
+        const { useReversePairingSession } = await import('./useReversePairingSession');
+        const hook = await renderHook(() => useReversePairingSession({ enabled: true, targetProfileId: 'known-profile' }));
+        await vi.waitFor(() => expect(hook.getCurrent().presentation.phase).toBe('update_required'));
+        expect(state.authStart).not.toHaveBeenCalled();
+        expect(state.pairingStart).not.toHaveBeenCalled();
+        expect(state.pairingRequest).not.toHaveBeenCalled();
+        await hook.unmount();
+    });
+
+    it('preserves an immutable pair-id conflict without creating the account request', async () => {
+        state.pairingStart.mockResolvedValueOnce({ ok: false, reason: 'pair_id_conflict', status: 409 });
+
+        const { useReversePairingSession } = await import('./useReversePairingSession');
+        const hook = await renderHook(() => useReversePairingSession({ enabled: true, targetProfileId: 'known-profile' }));
+        await vi.waitFor(() => expect(hook.getCurrent().presentation.phase).toBe('invalid'));
+
+        expect(state.authStart).not.toHaveBeenCalled();
+        expect(state.pairingRequest).not.toHaveBeenCalled();
+        await hook.unmount();
     });
 
     it('prevents destructive cancellation after the bound requester claim is accepted', async () => {
@@ -154,7 +189,7 @@ describe('useReversePairingSession', () => {
         }));
 
         const { useReversePairingSession } = await import('./useReversePairingSession');
-        const hook = await renderHook(() => useReversePairingSession({ enabled: true }));
+        const hook = await renderHook(() => useReversePairingSession({ enabled: true, targetProfileId: 'known-profile' }));
         await vi.waitFor(() => expect(hook.getCurrent().presentation.phase).toBe('connecting'));
 
         expect(hook.getCurrent().canCancel).toBe(false);
@@ -174,11 +209,10 @@ describe('useReversePairingSession', () => {
         }));
 
         const { useReversePairingSession } = await import('./useReversePairingSession');
-        const hook = await renderHook(() => useReversePairingSession({ enabled: true }));
+        const hook = await renderHook(() => useReversePairingSession({ enabled: true, targetProfileId: 'known-profile' }));
         await vi.waitFor(() => expect(hook.getCurrent().presentation.phase).toBe('connecting'));
 
         // A focus change after claim cannot retarget the immutable run.
-        state.activeServerId = 'focused-other-home';
         await act(async () => resolveWait({
             ok: true,
             credentials: { token: 'known-home-token' },
@@ -219,7 +253,7 @@ describe('useReversePairingSession', () => {
         state.pairingRequest.mockImplementation(() => new Promise(() => {}));
 
         const { useReversePairingSession } = await import('./useReversePairingSession');
-        const hook = await renderHook(() => useReversePairingSession({ enabled: true }));
+        const hook = await renderHook(() => useReversePairingSession({ enabled: true, targetProfileId: 'known-profile' }));
         await vi.waitFor(() => expect(hook.getCurrent().presentation.phase).toBe('ready'));
 
         expect(hook.getCurrent().presentation).toMatchObject({
@@ -241,12 +275,16 @@ describe('useReversePairingSession', () => {
         });
 
         const { useReversePairingSession } = await import('./useReversePairingSession');
-        const hook = await renderHook(() => useReversePairingSession({ enabled: true }));
+        const hook = await renderHook(() => useReversePairingSession({ enabled: true, targetProfileId: 'known-profile' }));
         await vi.waitFor(() => expect(hook.getCurrent().canCancel).toBe(true));
 
         await act(async () => hook.getCurrent().cancel());
 
         expect(requestSignal?.aborted).toBe(true);
+        expect(state.pairingConsume).toHaveBeenCalledWith(
+            { pairId: 'pair-known', intent: 'cancel' },
+            expect.objectContaining({ serverId: 'known-profile' }),
+        );
         expect(target.close).toHaveBeenCalledOnce();
         expect(hook.getCurrent().presentation).toEqual({
             phase: 'retryable_error',
@@ -272,7 +310,7 @@ describe('useReversePairingSession', () => {
             state.authWait.mockImplementation(() => new Promise(() => {}));
 
             const { useReversePairingSession } = await import('./useReversePairingSession');
-            const hook = await renderHook(() => useReversePairingSession({ enabled: true }));
+            const hook = await renderHook(() => useReversePairingSession({ enabled: true, targetProfileId: 'known-profile' }));
             await act(async () => {
                 await vi.runAllTimersAsync();
             });
@@ -284,6 +322,17 @@ describe('useReversePairingSession', () => {
         } finally {
             vi.useRealTimers();
         }
+    });
+
+    it('treats post-start not_found as terminal instead of retrying', async () => {
+        state.pairingRequest.mockResolvedValueOnce({ ok: false, reason: 'not_found', status: 404 });
+
+        const { useReversePairingSession } = await import('./useReversePairingSession');
+        const hook = await renderHook(() => useReversePairingSession({ enabled: true, targetProfileId: 'known-profile' }));
+        await vi.waitFor(() => expect(hook.getCurrent().presentation.phase).toBe('invalid'));
+
+        expect(state.pairingRequest).toHaveBeenCalledOnce();
+        await hook.unmount();
     });
 
     it('distinguishes the canonical target-qualified adoption partial commit', async () => {
@@ -298,7 +347,7 @@ describe('useReversePairingSession', () => {
         state.adopt.mockRejectedValueOnce(partialCommit);
 
         const { useReversePairingSession } = await import('./useReversePairingSession');
-        const hook = await renderHook(() => useReversePairingSession({ enabled: true }));
+        const hook = await renderHook(() => useReversePairingSession({ enabled: true, targetProfileId: 'known-profile' }));
         await vi.waitFor(() => expect(hook.getCurrent().presentation.phase).toBe('retryable_error'));
 
         expect(hook.getCurrent().presentation).toMatchObject({

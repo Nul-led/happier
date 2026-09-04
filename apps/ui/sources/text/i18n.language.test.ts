@@ -51,4 +51,19 @@ describe('text/i18n language state', () => {
         expect(i18n.t('plugins.inspector.title')).toBe('Plugin Inspector');
         expect(i18n.t('agentInput.connectedServiceLabel.gemini')).toBe('Google Gemini');
     });
+
+    it('uses localized Home setup details while retaining English fallback for keys without overrides', () => {
+        i18n.setPreferredLanguageFromSettings('es');
+
+        expect(i18n.t('setupOnboarding.webDesktopOnlySetupCommandSubtitle')).toBe(
+            en.setupOnboarding.webDesktopOnlySetupCommandSubtitle,
+        );
+        expect(i18n.t('setupOnboarding.preAuthTitle')).toBe(en.setupOnboarding.preAuthTitle);
+        expect(i18n.t('setupOnboarding.thisComputerStages.registerComputerDetails')).toBe(
+            es.setupOnboarding.thisComputerStages.registerComputerDetails,
+        );
+        expect(es.setupOnboarding.thisComputerStages.registerComputerDetails).not.toBe(
+            en.setupOnboarding.thisComputerStages.registerComputerDetails,
+        );
+    });
 });

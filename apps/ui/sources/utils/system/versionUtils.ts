@@ -15,6 +15,10 @@ export const MINIMUM_CLI_SESSION_USER_MESSAGE_RPC_VERSION = '0.1.0-dev.0';
 export const MINIMUM_CLI_BACKEND_TARGET_SPAWN_VERSION = '0.1.0-dev.0';
 // First CLI build whose strict session-fork request schema accepts requestId.
 export const MINIMUM_CLI_SESSION_FORK_REQUEST_ID_VERSION = '0.2.10-dev.41';
+// First CLI build serving the workspace-sync retired-state inspection RPC
+// (`daemon.workspaceSync.legacy.inspect.v1`). The RPC ships only with the 0.3
+// workspace-sync cutover; every released 0.2.x daemon lacks it.
+export const MINIMUM_CLI_WORKSPACE_SYNC_LEGACY_INSPECT_VERSION = '0.3.0-dev.0';
 export type VersionSupportState = 'supported' | 'unsupported' | 'unknown';
 function normalizeComparableVersion(version: string): {
     baseParts: number[];

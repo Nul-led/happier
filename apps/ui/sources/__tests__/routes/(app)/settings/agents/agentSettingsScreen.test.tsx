@@ -31,7 +31,7 @@ import { createUseSettingMock } from '@/dev/testkit/mocks/storage';
 let mockProviderId: string | null = 'codex';
 let mockAgentPluginId: string | null = null;
 let mockRecoveryMachineId: string | null = null;
-let mockRecoveryServerId: string | null = null;
+let mockRecoveryServerIdentityId: string | null = null;
 let mockInstallIntent: string | null = null;
 let shouldThrowOnAppPaneScope = false;
 const routerPushSpy = vi.fn();
@@ -69,6 +69,7 @@ const administrationTargetState = vi.hoisted(() => ({
         serverIdentityId: 'server1',
         machineId: 'm1',
     } as { serverIdentityId: string; machineId: string } | null,
+    selectTargetCalls: [] as Readonly<{ serverIdentityId: string; machineId: string }>[],
     executionTarget: {
         target: {
             serverIdentityId: 'server1',
@@ -96,7 +97,7 @@ const machineCapabilitiesInvokeMock = vi.fn(async () => ({
     response: { ok: true, result: { plan: null } },
 }));
 const applySettingsMock = vi.fn();
-const mutateAccountSettingsMock = vi.fn();
+const mutateAccountSettingsOnceMock = vi.fn();
 const tauriDesktopState = vi.hoisted(() => ({ value: true }));
 const cliDetectionState = {
     available: { codex: false } as Record<string, boolean | null>,
@@ -178,6 +179,7 @@ function buildExternalSessionsAgentProjection() {
         agentsById: {
             codex: {
                 id: 'codex',
+                identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
                 title: 'Codex',
                 externalSessions: {
                     agent: { pluginId: 'happier.agent.codex', localId: 'codex' },
@@ -225,6 +227,20 @@ function buildBuiltInAgentSettingsProjection(): PluginProjectionV2 {
                 source: { kind: 'bundled', locator: 'happier.agent.codex' },
             },
         },
+        agentsById: {
+            ...PLUGIN_PROVIDER_DAEMON_PROJECTION_FIXTURE.agentsById,
+            codex: {
+                id: 'codex',
+                identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
+                title: 'Codex',
+                subtitle: 'Codex',
+                channel: 'stable',
+                isBuiltIn: true,
+                catalogAgentId: 'codex',
+                iconAgentId: 'codex',
+                providerOwnedEnvironmentKeys: [],
+            },
+        },
         settingsById: {
             'happier.agent.codex.agent-settings': {
                 id: 'agent-settings',
@@ -238,6 +254,30 @@ function buildBuiltInAgentSettingsProjection(): PluginProjectionV2 {
                     agent: { pluginId: 'happier.agent.codex', localId: 'codex' },
                 },
                 fields: [],
+            },
+        },
+    };
+}
+
+function buildPluginProviderProjectionWithCli(): PluginProjectionV2 {
+    return {
+        ...PLUGIN_PROVIDER_DAEMON_PROJECTION_FIXTURE,
+        agentsById: {
+            'acme.review.provider': {
+                ...PLUGIN_PROVIDER_DAEMON_PROJECTION_FIXTURE.agentsById['acme.review.provider'],
+                cli: {
+                    executable: {
+                        binaryName: 'acme-review',
+                        sourcePreference: 'system-first',
+                    },
+                    install: {
+                        manual: { kind: 'none' },
+                    },
+                    auth: {
+                        support: 'login_terminal',
+                        loginLaunches: [{ kind: 'primary', args: ['login'] }],
+                    },
+                },
             },
         },
     };
@@ -411,7 +451,7 @@ installSessionSettingsEntryModuleMocks({
                 agentId: mockProviderId,
                 pluginId: mockAgentPluginId,
                 machineId: mockRecoveryMachineId,
-                serverId: mockRecoveryServerId,
+                serverIdentityId: mockRecoveryServerIdentityId,
                 installIntent: mockInstallIntent,
             }),
             Redirect: (props: any) => React.createElement('Redirect', props),
@@ -561,8 +601,12 @@ vi.mock('@/utils/platform/desktopHost', () => ({
 vi.mock('@/sync/sync', () => ({
     sync: {
         applySettings: applySettingsMock,
-        mutateAccountSettings: mutateAccountSettingsMock,
+        mutateAccountSettingsOnce: mutateAccountSettingsOnceMock,
     },
+}));
+
+vi.mock('@/sync/store/hooks', () => ({
+    useSettingsVersion: () => 7,
 }));
 
 vi.mock('@/sync/store/settingsWriters', () => ({
@@ -579,7 +623,14 @@ vi.mock('@/sync/domains/server/serverProfiles', () => ({
             ? { id: serverId, serverIdentityId }
             : null;
     },
-    areServerProfileIdentifiersEquivalent: (left: string | null | undefined, right: string | null | undefined) => left === right,
+    // Mirrors the real owner: two identifiers are the same profile when one is the
+    // other or both resolve to the same profile — including a device-local profile
+    // id whose canonical identity is the other side.
+    areServerProfileIdentifiersEquivalent: (left: string | null | undefined, right: string | null | undefined) => (
+        left === right
+        || serverIdentityByProfileId[String(left ?? '')] === right
+        || serverIdentityByProfileId[String(right ?? '')] === left
+    ),
 }));
 
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
@@ -637,6 +688,9 @@ vi.mock('@/sync/domains/machines/administration/useTargetSelection', () => ({
         const [, rerender] = React.useState(0);
         return {
             selectedTarget: administrationTargetState.selectedTarget,
+            selectedTargetServerMatchesActiveAccount:
+                administrationTargetState.selectedTarget?.serverIdentityId
+                === (serverIdentityByProfileId[activeServerSnapshot.serverId] ?? activeServerSnapshot.serverId),
             resolveExecutionTarget: () => administrationTargetState.executionTarget,
             candidates: [
                 { target: { serverIdentityId: 'server1', machineId: 'm1' } },
@@ -650,6 +704,7 @@ vi.mock('@/sync/domains/machines/administration/useTargetSelection', () => ({
                     m3: 'Machine Three',
                 };
                 const displayName = machineNames[target.machineId] ?? target.machineId;
+                administrationTargetState.selectTargetCalls.push(target);
                 administrationTargetState.selectedTarget = target;
                 administrationTargetState.executionTarget = {
                     target,
@@ -934,13 +989,29 @@ describe('PluginAgentSettingsScreen', () => {
         mockProviderId = 'codex';
         mockAgentPluginId = null;
         mockRecoveryMachineId = null;
-        mockRecoveryServerId = null;
+        mockRecoveryServerIdentityId = null;
         mockInstallIntent = null;
+        administrationTargetState.selectTargetCalls = [];
         setAdministrationExecutionTarget('m1', 'server1');
         shouldThrowOnAppPaneScope = false;
         tauriDesktopState.value = true;
         applySettingsMock.mockReset();
-        mutateAccountSettingsMock.mockReset();
+        mutateAccountSettingsOnceMock.mockReset();
+        mutateAccountSettingsOnceMock.mockImplementation(async (input: Readonly<{
+            mutate: (settings: Record<string, unknown>) => Readonly<{
+                settings: Record<string, unknown>;
+                value: unknown;
+            }>;
+        }>) => {
+            const result = input.mutate({
+                externalSessionsSettingsV1: settingsState.externalSessionsSettingsV1,
+            });
+            return {
+                status: 'applied',
+                settingsVersion: 8,
+                value: result.value,
+            };
+        });
         cliDetectionState.available = { codex: false };
         cliDetectionState.login = { codex: null };
         cliDetectionState.authStatus = { codex: null };
@@ -1020,6 +1091,12 @@ describe('PluginAgentSettingsScreen', () => {
                 isBuiltIn,
                 backendTargetKey: isBuiltIn ? buildCanonicalBackendTargetKey(agentId) : null,
                 enabled: isBuiltIn ? true : null,
+                identity: (
+                    params?.mergedProviderProjectionById as
+                        | Record<string, { identity?: { pluginId: string; localId: string } | null }>
+                        | null
+                        | undefined
+                )?.[agentId]?.identity ?? null,
                 connectedAccounts: [],
                 cli: {
                     executable: { binaryName: agentId, sourcePreference: 'system-first' },
@@ -1113,6 +1190,7 @@ describe('PluginAgentSettingsScreen', () => {
             accountServerIdentityId: 'account-identity-a',
             daemonServerIdentityId: 'admin-identity-b',
             perActiveServerIdentityId: 'admin-identity-b',
+            accountOperationsAvailable: false,
             machineId: 'm2',
             serverId: 'admin-identity-b',
         });
@@ -1145,6 +1223,7 @@ describe('PluginAgentSettingsScreen', () => {
                         snapshot: null,
                     },
                     selectedTarget: { serverIdentityId: 'admin-identity-b', machineId: 'm2' },
+                    selectedTargetServerMatchesActiveAccount: false,
                     canExecute: false,
                     selectTarget: () => {},
                     clearTarget: () => {},
@@ -1158,8 +1237,89 @@ describe('PluginAgentSettingsScreen', () => {
             accountServerIdentityId: 'account-identity-a',
             daemonServerIdentityId: null,
             perActiveServerIdentityId: 'admin-identity-b',
+            accountOperationsAvailable: false,
             machineId: null,
             serverId: null,
+        });
+    });
+
+    it('keeps foreign-server daemon actions available while disabling every Account settings writer', async () => {
+        activeServerSnapshot = {
+            serverId: 'account-profile-a',
+            serverUrl: 'http://account-a.example.test',
+            generation: 1,
+        };
+        serverIdentityByProfileId = {
+            'account-profile-a': 'account-identity-a',
+        };
+        setAdministrationExecutionTarget('m3', 'server2');
+        mockAgentCatalogProjection.mockImplementation((agentId: string) => ({
+            agentId,
+            catalogAgentId: agentId,
+            iconAgentId: agentId,
+            title: agentId,
+            subtitle: agentId,
+            iconName: 'code-slash-outline',
+            isBuiltIn: true,
+            backendTargetKey: buildCanonicalBackendTargetKey(agentId),
+            enabled: true,
+            identity: { pluginId: 'acme.review', localId: 'provider' },
+            connectedAccounts: [{
+                purpose: 'primary',
+                service: { pluginId: 'acme.review', localId: 'account' },
+                required: false,
+            }],
+            cli: {
+                executable: { binaryName: agentId, sourcePreference: 'system-first' },
+                install: {
+                    managed: { kind: 'github_release_binary', githubRepo: 'openai/codex', binaryName: 'codex' },
+                    manual: { kind: 'none' },
+                    docsUrl: 'https://github.com/openai/codex',
+                },
+                auth: { support: 'unsupported', loginLaunches: [] },
+            },
+            authPlugin: null,
+            backendEntry: null,
+        }));
+        machineContributionRegistryProjectionDescribeMock.mockResolvedValue({
+            supported: true,
+            projection: buildBuiltInAgentSettingsProjection(),
+        });
+
+        const screen = await renderPluginAgentSettingsScreen();
+        await act(async () => {});
+        await flushHookEffects();
+
+        const enabledItem = screen.findAllByType('Item' as any)
+            .find((item: any) => item.props?.title === 'settingsAgents.enabledTitle');
+        expect(enabledItem?.props.disabled).toBe(true);
+        expect(enabledItem?.props.rightElement?.props.disabled).toBe(true);
+        enabledItem?.props.onPress?.();
+
+        const permissionMenu = screen.findAllByType('DropdownMenu' as any)
+            .find((node: any) => node.props?.itemTrigger?.title === 'settingsSession.permissions.defaultPermissionModeTitle');
+        expect(permissionMenu?.props.itemTrigger.itemProps.disabled).toBe(true);
+        permissionMenu?.props.onSelect('ask');
+
+        const sourceMenu = screen.findAllByType('DropdownMenu' as any)
+            .find((node: any) => node.props?.itemTrigger?.title === 'settingsAgents.cliSourcePreference.title');
+        expect(sourceMenu?.props.itemTrigger.itemProps.disabled).toBe(true);
+        sourceMenu?.props.onSelect('managed-first');
+
+        const chooser = screen.findByType('ConnectedAccountPurposeTargetChooser' as any);
+        expect(chooser.props.disabled).toBe(true);
+        chooser.props.onChange({
+            kind: 'account',
+            account: {
+                service: { pluginId: 'acme.review', localId: 'account' },
+                accountId: 'work',
+            },
+        });
+
+        expect(applySettingsMock).not.toHaveBeenCalled();
+        expect(screen.findByType('AgentCliInstallItem').props).toMatchObject({
+            machineId: 'm3',
+            serverId: 'server2',
         });
     });
 
@@ -1325,6 +1485,7 @@ describe('PluginAgentSettingsScreen', () => {
         expect(routerPushSpy).toHaveBeenCalledWith({
             pathname: '/settings/external-sessions',
             params: {
+                serverIdentityId: 'server1',
                 machineId: 'm2',
             },
         });
@@ -1484,12 +1645,12 @@ describe('PluginAgentSettingsScreen', () => {
             await Promise.resolve();
         });
 
-        expect(mutateAccountSettingsMock).toHaveBeenCalledTimes(1);
-        const mutate = mutateAccountSettingsMock.mock.calls[0]![0];
+        expect(mutateAccountSettingsOnceMock).toHaveBeenCalledTimes(1);
+        const mutate = mutateAccountSettingsOnceMock.mock.calls[0]![0].mutate;
         const next = mutate({
             externalSessionsSettingsV1: settingsState.externalSessionsSettingsV1,
         });
-        expect(next.externalSessionsSettingsV1.autoLinkSourcePolicies).toEqual([
+        expect(next.settings.externalSessionsSettingsV1.autoLinkSourcePolicies).toEqual([
             expect.objectContaining({ sourcePolicyId: `es-source-policy:v1:${'b'.repeat(64)}` }),
             expect.objectContaining({ sourcePolicyId: `es-source-policy:v1:${'c'.repeat(64)}` }),
         ]);
@@ -1661,7 +1822,7 @@ describe('PluginAgentSettingsScreen', () => {
 
         let resolveReload!: (value: {
             supported: true;
-            projection: typeof PLUGIN_PROVIDER_DAEMON_PROJECTION_FIXTURE;
+            projection: PluginProjectionV2;
         }) => void;
         machineContributionRegistryProjectionDescribeMock.mockImplementation(() => new Promise((resolve) => {
             resolveReload = resolve;
@@ -1690,7 +1851,7 @@ describe('PluginAgentSettingsScreen', () => {
         await act(async () => {
             resolveReload({
                 supported: true,
-                projection: PLUGIN_PROVIDER_DAEMON_PROJECTION_FIXTURE,
+                projection: buildPluginProviderProjectionWithCli(),
             });
         });
         await flushHookEffects();
@@ -1733,7 +1894,7 @@ describe('PluginAgentSettingsScreen', () => {
         mockProviderId = 'acme.review.provider';
         machineContributionRegistryProjectionDescribeMock.mockResolvedValue({
             supported: true,
-            projection: PLUGIN_PROVIDER_DAEMON_PROJECTION_FIXTURE,
+            projection: buildPluginProviderProjectionWithCli(),
         });
 
         const screen = await renderPluginAgentSettingsScreen();
@@ -1883,11 +2044,16 @@ describe('PluginAgentSettingsScreen', () => {
 
     it('targets the exact selected machine for Voice runtime update and re-probes after success', async () => {
         mockRecoveryMachineId = 'm2';
-        mockRecoveryServerId = 'server1';
+        mockRecoveryServerIdentityId = 'server1';
         mockInstallIntent = 'update';
 
         const screen = await renderPluginAgentSettingsScreen();
         await flushHookEffects();
+
+        // The route handoff named the portable Administration identity and the exact machine.
+        expect(administrationTargetState.selectTargetCalls).toEqual([
+            { serverIdentityId: 'server1', machineId: 'm2' },
+        ]);
 
         const installer = screen.findByType('AgentCliInstallItem' as any);
         expect(installer.props).toMatchObject({
@@ -1909,6 +2075,26 @@ describe('PluginAgentSettingsScreen', () => {
             bypassCache: true,
             includeLoginStatusForAgentIds: ['codex'],
         });
+    });
+
+    it('rejects a device-local profile id in the recovery handoff as non-portable selection authority', async () => {
+        // The route names a profile/routing id whose canonical identity *is* a live candidate.
+        // Equivalence must never promote it: only the exact portable serverIdentityId admits a
+        // recovery target.
+        serverIdentityByProfileId = {
+            server1: 'server1',
+            'legacy-profile-9': 'server1',
+        };
+        mockRecoveryMachineId = 'm2';
+        mockRecoveryServerIdentityId = 'legacy-profile-9';
+        mockInstallIntent = 'update';
+
+        const screen = await renderPluginAgentSettingsScreen();
+        await flushHookEffects();
+
+        expect(administrationTargetState.selectTargetCalls).toEqual([]);
+        const installer = screen.findByType('AgentCliInstallItem' as any);
+        expect(installer.props.intent).toBeUndefined();
     });
 
     it('uses the route plugin id to select the exact installed Agent display, installer, and operation', async () => {
@@ -2441,7 +2627,7 @@ describe('PluginAgentSettingsScreen', () => {
         expect(items.some((node: any) => node.props?.title === 'settingsAgents.notFoundTitle')).toBe(false);
         const fallbackIdentityRow = items.find((node: any) => node.props?.title === 'Acme Review Backend');
         expect(fallbackIdentityRow?.props?.icon?.props?.entry?.iconAgentId).toBe('claude');
-        expect(screen.findByType('BadgeGrid' as any)).toBeNull();
+        expect(screen.findAllByType('BadgeGrid' as any)).toHaveLength(0);
         expect(items.some((node: any) => node.props?.title === 'settingsProviders.models.manage')).toBe(false);
     });
 
@@ -2579,6 +2765,14 @@ describe('PluginAgentSettingsScreen', () => {
             isBuiltIn: false,
             backendTargetKey: null,
             enabled: true,
+            cli: {
+                executable: { binaryName: 'acme', sourcePreference: 'system-first' },
+                install: { manual: { kind: 'none' } },
+                auth: {
+                    support: 'login_terminal',
+                    loginLaunches: [{ kind: 'primary', args: ['login'] }],
+                },
+            },
             authPlugin: {
                 agentId: 'acme.native',
                 support: 'login_terminal',
@@ -2597,6 +2791,10 @@ describe('PluginAgentSettingsScreen', () => {
     it('renders the not found screen without requiring pane context', async () => {
         mockProviderId = 'unknown';
         shouldThrowOnAppPaneScope = true;
+        machineContributionRegistryProjectionDescribeMock.mockResolvedValue({
+            supported: true,
+            projection: PLUGIN_PROVIDER_DAEMON_PROJECTION_FIXTURE,
+        });
         const screen = await renderPluginAgentSettingsScreen();
         const textNodes = screen.findAllByType('Text' as any);
         expect(textNodes.some((node: any) => node.props?.children === 'settingsAgents.notFoundTitle')).toBe(true);
