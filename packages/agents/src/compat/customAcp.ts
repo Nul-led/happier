@@ -4,6 +4,7 @@ import type { AgentCliRuntimeSpec } from '../cli/runtime.js';
 import type { AgentSessionModeDescriptor } from '../sessionModes.js';
 import type { AgentCore, BundledAgentId } from '../types.js';
 import { isBundledAgentId } from '../types.js';
+import { readLegacyConfiguredAcpBackendId } from '@happier-dev/protocol';
 
 export const LEGACY_CUSTOM_ACP_AGENT_ID = 'customAcp' as const;
 
@@ -53,23 +54,11 @@ export function resolveLegacyCustomAcpCompatAgentIdFromFlavor(
     : null;
 }
 
-function readLegacyConfiguredAcpBackendIdFromFlavor(value: unknown): string | null {
-  if (typeof value !== 'string') {
-    return null;
-  }
-  const normalized = value.trim();
-  if (!normalized.startsWith('acp:')) {
-    return null;
-  }
-  const backendId = normalized.slice('acp:'.length).trim();
-  return backendId.length > 0 && backendId !== LEGACY_CUSTOM_ACP_AGENT_ID ? backendId : null;
-}
-
 export function readLegacyCustomAcpCompatBackendIdFromMetadata(metadata: unknown): string | null {
   if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
     return null;
   }
-  return readLegacyConfiguredAcpBackendIdFromFlavor((metadata as { flavor?: unknown }).flavor);
+  return readLegacyConfiguredAcpBackendId((metadata as { flavor?: unknown }).flavor);
 }
 
 const LEGACY_CUSTOM_ACP_AGENT_CLI_RUNTIME_SPEC = Object.freeze({

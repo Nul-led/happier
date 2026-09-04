@@ -8,7 +8,6 @@ const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 const publicationSubpaths = {
   './acpPresets': './dist/acpPresets.js',
-  './providers/claude-model-options': './dist/providers/claudeModelOptions.js',
   './runtime/facets/transcriptDispatch': './dist/runtime/facets/transcriptDispatch.js',
   './runtime/session/recoverableTurnFailurePolicy': './dist/runtime/session/recoverableTurnFailurePolicy.js',
   './runtime/session/runtimeConfigUpdateOutcome': './dist/runtime/session/runtimeConfigUpdateOutcome.js',

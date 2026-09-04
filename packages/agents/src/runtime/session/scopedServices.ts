@@ -362,7 +362,15 @@ export type SessionPermissionDecisionResultV1 = Readonly<{
 export interface SessionPermissionsServiceV1 {
   requestDecision(
     request: SessionPermissionDecisionRequestV1,
-    options?: Readonly<{ signal?: AbortSignal }>,
+    options?: Readonly<{
+      signal?: AbortSignal;
+      /**
+       * Apply the accepted decision at the provider boundary before the answering RPC succeeds.
+       * Throwing keeps the request pending so a client cannot persist follow-up policy for an
+       * action the provider did not accept.
+       */
+      acknowledgeDecisionApplication?: (decision: SessionPermissionDecisionResultV1) => Promise<void>;
+    }>,
   ): Promise<SessionPermissionDecisionResultV1>;
   getMode(): SessionPermissionModeV1;
 }

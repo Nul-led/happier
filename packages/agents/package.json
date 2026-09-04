@@ -30,10 +30,6 @@
       "types": "./dist/process/shellCommand.d.ts",
       "default": "./dist/process/shellCommand.js"
     },
-    "./providers/claude-model-options": {
-      "types": "./dist/providers/claudeModelOptions.d.ts",
-      "default": "./dist/providers/claudeModelOptions.js"
-    },
     "./definitions/agent-capabilities": {
       "types": "./dist/definitions/agentCapabilityProjection.d.ts",
       "default": "./dist/definitions/agentCapabilityProjection.js"
