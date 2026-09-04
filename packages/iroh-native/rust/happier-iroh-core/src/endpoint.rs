@@ -3,6 +3,7 @@ use crate::{snapshot_for_incoming_addr, IrohAlpn, IrohPathSnapshot};
 use crate::{IrohCapProfile, IrohError, Result};
 #[cfg(not(target_arch = "wasm32"))]
 use std::collections::HashMap;
+use std::collections::HashSet;
 #[cfg(not(target_arch = "wasm32"))]
 use std::fs;
 #[cfg(unix)]
@@ -28,10 +29,9 @@ static ENDPOINT_KEY_STORE_LOCK: Mutex<()> = Mutex::new(());
 #[cfg(not(target_arch = "wasm32"))]
 static ENDPOINT_KEY_TEMP_NONCE: AtomicU64 = AtomicU64::new(1);
 
-/// Descriptor relay-URL bounds mirrored from the canonical protocol descriptor
-/// (`packages/protocol/src/connectivity/iroh/endpointDescriptorV1.ts`); the
-/// grammar itself is owned by Iroh's `RelayUrl` parser, never re-implemented.
-pub const MAX_RELAY_URLS: usize = 8;
+/// Descriptor relay-URL item bound mirrored from the canonical protocol
+/// descriptor (`packages/protocol/src/connectivity/iroh/endpointDescriptorV1.ts`);
+/// the grammar itself is owned by Iroh's `RelayUrl` parser, never re-implemented.
 pub const MAX_RELAY_URL_UTF8_BYTES: usize = 512;
 
 /// Local relay ownership. `Disabled` never contacts any relay; `Custom`
@@ -49,16 +49,14 @@ pub enum RelaySelection {
 impl RelaySelection {
     /// Validates and resolves descriptor relay URLs with the Iroh-owned
     /// `RelayUrl` parser plus the descriptor policy (absolute HTTP(S), no
-    /// credentials, no fragment, bounded count/length).
+    /// credentials, no fragment, bounded item length).
     pub fn resolve(policy: &RelayPolicy, relay_urls: &[String]) -> Result<Self> {
-        if relay_urls.len() > MAX_RELAY_URLS {
-            return Err(IrohError::InvalidDescriptor);
-        }
         if matches!(policy, RelayPolicy::Disabled) && !relay_urls.is_empty() {
             // A direct-only policy must never silently contact descriptor relays.
             return Err(IrohError::InvalidDescriptor);
         }
         let mut urls = Vec::with_capacity(relay_urls.len());
+        let mut seen_urls = HashSet::with_capacity(relay_urls.len());
         for value in relay_urls {
             if value.len() > MAX_RELAY_URL_UTF8_BYTES {
                 return Err(IrohError::InvalidDescriptor);
@@ -81,7 +79,7 @@ impl RelaySelection {
             // spellings of one relay are an ambiguous transport fact, and
             // silently deduplicating them would hide a descriptor defect the
             // producer must fix.
-            if urls.contains(&url) {
+            if !seen_urls.insert(url.clone()) {
                 return Err(IrohError::InvalidDescriptor);
             }
             urls.push(url);
@@ -2279,15 +2277,16 @@ mod tests {
                 "must reject {invalid}"
             );
         }
-        assert_eq!(
-            RelaySelection::resolve(
-                &RelayPolicy::Automatic,
-                &(0..MAX_RELAY_URLS + 1)
-                    .map(|index| format!("https://relay-{index}.example.test"))
-                    .collect::<Vec<_>>()
-            ),
-            Err(IrohError::InvalidDescriptor)
-        );
+        let larger_relay_set = (0..9)
+            .map(|index| format!("https://relay-{index}.example.test"))
+            .collect::<Vec<_>>();
+        let RelaySelection::Custom(urls) =
+            RelaySelection::resolve(&RelayPolicy::Automatic, &larger_relay_set)
+                .expect("valid relay sets are not rejected by an arbitrary item ceiling")
+        else {
+            panic!("automatic with explicit URLs must be custom");
+        };
+        assert_eq!(urls.len(), 9);
     }
 
     #[test]

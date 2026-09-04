@@ -20,15 +20,15 @@ describe('Iroh endpoint descriptor (native adapter over the canonical protocol d
     expect(() => parseIrohEndpointDescriptor({ endpointId: 'a'.repeat(64), extra: true })).toThrow();
   });
 
-  it('honors the shared protocol bounds instead of a second native grammar', () => {
+  it('honors the shared protocol grammar without a second item-count policy', () => {
     expect(parseIrohEndpointDescriptor({
       endpointId: 'a'.repeat(64),
-      directAddresses: Array.from({ length: 16 }, (_, index) => `192.0.2.${index + 1}:443`),
-    }).directAddresses).toHaveLength(16);
-    expect(() => parseIrohEndpointDescriptor({
-      endpointId: 'a'.repeat(64),
       directAddresses: Array.from({ length: 17 }, (_, index) => `192.0.2.${index + 1}:443`),
-    })).toThrow();
+    }).directAddresses).toHaveLength(17);
+    expect(parseIrohEndpointDescriptor({
+      endpointId: 'a'.repeat(64),
+      relayUrls: Array.from({ length: 9 }, (_, index) => `https://relay-${index}.example`),
+    }).relayUrls).toHaveLength(9);
     expect(() => parseIrohEndpointDescriptor({
       endpointId: 'a'.repeat(64),
       relayUrls: ['https://user:pass@relay.example'],

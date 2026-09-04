@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::task::{JoinHandle, JoinSet};
 
 pub const MAX_MACHINE_HANDSHAKE_BYTES: usize = 64 * 1024;
@@ -69,6 +69,7 @@ pub struct MachineAcceptorStatus {
     pub connections_accepted: u64,
     pub connections_active: u64,
     pub streams_accepted: u64,
+    pub streams_active: u64,
     pub streams_rejected: u64,
     pub last_path: Option<IrohPathSnapshot>,
     pub last_failure: Option<MachineFailureCode>,
@@ -77,12 +78,14 @@ pub struct MachineAcceptorStatus {
 #[derive(Default)]
 struct AcceptorState {
     streams_accepted: AtomicU64,
+    streams_active: AtomicU64,
     streams_rejected: AtomicU64,
     last_failure: Mutex<Option<MachineFailureCode>>,
 }
 
 pub struct MachineAcceptor {
     task: JoinHandle<()>,
+    shutdown: watch::Sender<bool>,
     state: Arc<AcceptorState>,
     slot: Arc<ConsumerSlot>,
     _registration: ConsumerRegistration,
@@ -96,21 +99,25 @@ impl MachineAcceptor {
         let slot = registration.slot().clone();
         let state = Arc::new(AcceptorState::default());
         let loop_state = Arc::clone(&state);
+        let (shutdown, mut shutdown_rx) = watch::channel(false);
         let task = tokio::spawn(async move {
             let mut connections = JoinSet::new();
             loop {
                 tokio::select! {
+                    _ = shutdown_rx.changed() => { break; }
                     accepted = receiver.recv() => {
                         let Some(accepted) = accepted else { break };
-                        connections.spawn(pump_connection(accepted, config, Arc::clone(&loop_state)));
+                        let connection_shutdown = shutdown_rx.clone();
+                        connections.spawn(pump_connection(accepted, config, Arc::clone(&loop_state), connection_shutdown));
                     }
                     Some(_) = connections.join_next(), if !connections.is_empty() => {}
                 }
             }
-            drop(connections);
+            connections.shutdown().await;
         });
         Ok(Self {
             task,
+            shutdown,
             state,
             slot,
             _registration: registration,
@@ -124,6 +131,7 @@ impl MachineAcceptor {
             connections_accepted: counters.connections_accepted.load(Ordering::Relaxed),
             connections_active: counters.connections_active.load(Ordering::Relaxed),
             streams_accepted: self.state.streams_accepted.load(Ordering::Relaxed),
+            streams_active: self.state.streams_active.load(Ordering::Relaxed),
             streams_rejected: self.state.streams_rejected.load(Ordering::Relaxed),
             last_path: counters
                 .last_path
@@ -134,11 +142,19 @@ impl MachineAcceptor {
         }
     }
     pub fn stop(self) {
-        self.task.abort();
+        let _ = self.shutdown.send(true);
+    }
+
+    /// Stops the acceptor and joins its consumer task so completion means all
+    /// nested connection and stream pumps have released their resources.
+    pub async fn stop_and_wait(mut self) {
+        let _ = self.shutdown.send(true);
+        let _ = (&mut self.task).await;
     }
 }
 impl Drop for MachineAcceptor {
     fn drop(&mut self) {
+        let _ = self.shutdown.send(true);
         self.task.abort();
     }
 }
@@ -156,6 +172,7 @@ async fn pump_connection(
     accepted: AcceptedIrohConnection,
     config: MachineAcceptorConfig,
     state: Arc<AcceptorState>,
+    mut shutdown_rx: watch::Receiver<bool>,
 ) {
     let remote_endpoint_id = accepted.remote_endpoint_id.clone();
     let mut streams = JoinSet::new();
@@ -173,6 +190,7 @@ async fn pump_connection(
     ));
     loop {
         tokio::select! {
+            _ = shutdown_rx.changed() => { break; }
             opened = accepted.connection.accept_bi() => match opened {
                 Ok((send, recv)) => { streams.spawn(pump_stream(send, recv, config, remote_endpoint_id.clone(), Arc::clone(&state))); }
                 Err(_) => break,
@@ -180,7 +198,7 @@ async fn pump_connection(
             Some(_) = streams.join_next(), if !streams.is_empty() => {}
         };
     }
-    drop(streams);
+    streams.shutdown().await;
 }
 
 async fn pump_stream(
@@ -258,6 +276,14 @@ async fn pump_stream(
         return;
     }
     state.streams_accepted.fetch_add(1, Ordering::Relaxed);
+    state.streams_active.fetch_add(1, Ordering::Relaxed);
+    struct ActiveStreamGuard<'a>(&'a AtomicU64);
+    impl Drop for ActiveStreamGuard<'_> {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+    let _active_stream = ActiveStreamGuard(&state.streams_active);
     let (mut app_read, mut app_write) = app.split();
     pump_bidirectional(&mut app_read, &mut app_write, &mut recv, &mut send).await;
 }
@@ -450,7 +476,6 @@ struct TunnelState {
     connection_active: AtomicBool,
     streams_opened: AtomicU64,
     streams_active: AtomicU64,
-    max_streams: u64,
     single_stream: bool,
     local_stream_claimed: AtomicBool,
     last_failure: Mutex<Option<MachineFailureCode>>,
@@ -462,6 +487,8 @@ pub struct MachineTunnel {
     remote_endpoint_id: String,
     local_capability: String,
     task: JoinHandle<()>,
+    watcher_task: JoinHandle<()>,
+    shutdown: watch::Sender<bool>,
     state: Arc<TunnelState>,
 }
 
@@ -476,6 +503,7 @@ pub struct MachineHttpTunnel {
     local_capability: String,
     tunnel: MachineTunnel,
     task: JoinHandle<()>,
+    shutdown: watch::Sender<bool>,
 }
 
 async fn read_capability_gated_http_request(
@@ -546,28 +574,27 @@ impl MachineHttpTunnel {
         endpoint: &crate::IrohEndpoint,
         config: MachineTunnelConfig,
     ) -> Result<Self> {
+        // Bind the public listener before starting the inner machine tunnel.
+        // After `MachineTunnel::start` returns there must be no cancellation
+        // point before both owned task handles are assembled into `Self`, or
+        // dropping this start future could detach the already-started inner
+        // tunnel during endpoint shutdown.
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .map_err(|_| IrohError::LoopbackBindFailed)?;
+        let local_addr = listener
+            .local_addr()
+            .map_err(|_| IrohError::LoopbackBindFailed)?;
         let tunnel = MachineTunnel::start(endpoint, config).await?;
-        let private_addr = tunnel.local_addr()?;
-        let local_capability = tunnel.local_capability().to_owned();
+        let private_addr = tunnel.local_addr;
+        let local_capability = tunnel.local_capability.clone();
         let capability = Arc::<[u8]>::from(local_capability.as_bytes());
-        let listener = match TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await {
-            Ok(listener) => listener,
-            Err(_) => {
-                tunnel.stop();
-                return Err(IrohError::LoopbackBindFailed);
-            }
-        };
-        let local_addr = match listener.local_addr() {
-            Ok(local_addr) => local_addr,
-            Err(_) => {
-                tunnel.stop();
-                return Err(IrohError::LoopbackBindFailed);
-            }
-        };
+        let (shutdown, mut shutdown_rx) = watch::channel(false);
         let task = tokio::spawn(async move {
             let mut streams = JoinSet::new();
             loop {
                 tokio::select! {
+                    _ = shutdown_rx.changed() => { break; }
                     accepted = listener.accept() => {
                         let Ok((mut application, _)) = accepted else { break };
                         let capability = Arc::clone(&capability);
@@ -585,13 +612,14 @@ impl MachineHttpTunnel {
                     Some(_) = streams.join_next(), if !streams.is_empty() => {}
                 }
             }
-            drop(streams);
+            streams.shutdown().await;
         });
         Ok(Self {
             local_addr,
             local_capability,
             tunnel,
             task,
+            shutdown,
         })
     }
 
@@ -614,8 +642,14 @@ impl MachineHttpTunnel {
     }
 
     pub fn stop(self) {
-        self.task.abort();
+        let _ = self.shutdown.send(true);
         self.tunnel.stop();
+    }
+
+    pub async fn stop_and_wait(self) {
+        let _ = self.shutdown.send(true);
+        let _ = self.task.await;
+        self.tunnel.stop_and_wait().await;
     }
 }
 
@@ -669,14 +703,13 @@ impl MachineTunnel {
             connection_active: AtomicBool::new(true),
             streams_opened: AtomicU64::new(0),
             streams_active: AtomicU64::new(0),
-            max_streams: config.cap_profile.limits().max_streams as u64,
             single_stream,
             local_stream_claimed: AtomicBool::new(false),
             last_failure: Mutex::new(None),
         });
         let watcher_state = Arc::clone(&state);
         let watcher_connection = connection.clone();
-        tokio::spawn(async move {
+        let watcher_task = tokio::spawn(async move {
             watcher_connection.closed().await;
             watcher_state
                 .connection_active
@@ -684,19 +717,16 @@ impl MachineTunnel {
         });
         let loop_connection = connection.clone();
         let loop_state = Arc::clone(&state);
+        let (shutdown, mut shutdown_rx) = watch::channel(false);
         let task = tokio::spawn(async move {
             let mut streams = JoinSet::new();
             loop {
                 tokio::select! {
+                    _ = shutdown_rx.changed() => { break; }
                     accepted = listener.accept() => {
                         let Ok((socket, _)) = accepted else { break };
                         if !loop_state.connection_active.load(Ordering::Acquire) { break; }
-                        let previous = loop_state.streams_active.fetch_add(1, Ordering::AcqRel);
-                        if previous >= loop_state.max_streams {
-                            loop_state.streams_active.fetch_sub(1, Ordering::AcqRel);
-                            drop(socket);
-                            continue;
-                        }
+                        loop_state.streams_active.fetch_add(1, Ordering::AcqRel);
                         streams.spawn(pump_local(
                             loop_connection.clone(),
                             socket,
@@ -708,7 +738,7 @@ impl MachineTunnel {
                     Some(_) = streams.join_next(), if !streams.is_empty() => {}
                 }
             }
-            drop(streams);
+            streams.shutdown().await;
         });
         Ok(Self {
             local_addr,
@@ -716,6 +746,8 @@ impl MachineTunnel {
             remote_endpoint_id,
             local_capability,
             task,
+            watcher_task,
+            shutdown,
             state,
         })
     }
@@ -739,9 +771,18 @@ impl MachineTunnel {
         }
     }
     pub fn stop(self) {
-        self.task.abort();
+        let _ = self.shutdown.send(true);
         self.connection
             .close(0u32.into(), b"machine_tunnel_released");
+    }
+
+    pub async fn stop_and_wait(self) {
+        let _ = self.shutdown.send(true);
+        self.watcher_task.abort();
+        self.connection
+            .close(0u32.into(), b"machine_tunnel_released");
+        let _ = self.task.await;
+        let _ = self.watcher_task.await;
     }
 }
 

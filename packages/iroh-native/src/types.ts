@@ -2,8 +2,8 @@ export type IrohRelayPolicy = 'automatic' | 'disabled';
 export type IrohObservedPath = 'direct' | 'relay' | 'unknown';
 
 /**
- * Descriptor-derived Home tunnel request. `descriptorRevision`, `relayUrls`,
- * `directAddresses`, and `endpointKeyPath` are carried verbatim into the
+ * Descriptor-derived Home tunnel request. `relayUrls`, `directAddresses`, and
+ * `endpointKeyPath` are carried verbatim into the
  * native start request; the persistent key path keeps endpoint identity stable
  * across restarts. Current native behavior: a missing key is created once on
  * first use; a corrupt key fails closed and is never silently rotated.
@@ -17,7 +17,6 @@ export type IrohHomeTunnelRequest = Readonly<{
   policy: IrohRelayPolicy;
   directAddresses?: readonly string[];
   relayUrls?: readonly string[];
-  descriptorRevision?: number;
   endpointKeyPath?: string;
 }>;
 

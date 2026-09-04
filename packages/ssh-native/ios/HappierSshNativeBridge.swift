@@ -4,6 +4,18 @@ import Foundation
 @_silgen_name("happier_ssh_native_exec_json")
 private func happierSshNativeExecJson(_ requestJson: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar>?
 
+private typealias NativeSshStdoutCallback = @convention(c) (
+  UnsafePointer<CChar>?,
+  UnsafeMutableRawPointer?
+) -> Void
+
+@_silgen_name("happier_ssh_native_exec_json_streaming")
+private func happierSshNativeExecJsonStreaming(
+  _ requestJson: UnsafePointer<CChar>,
+  _ callback: NativeSshStdoutCallback,
+  _ context: UnsafeMutableRawPointer?
+) -> UnsafeMutablePointer<CChar>?
+
 @_silgen_name("happier_ssh_native_start_loopback_tunnel_json")
 private func happierSshNativeStartLoopbackTunnelJson(_ requestJson: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar>?
 
@@ -77,7 +89,14 @@ public enum HappierSshNativeBridge {
 
   public static func exec(module: Module, request: [String: Any]) throws -> [String: Any] {
     try withProgress(module: module, request: request, phase: "connecting") {
-      try callRustJsonWithPrompts(module: module, request: request, happierSshNativeExecJson)
+      try callRustJsonWithPrompts(module: module, request: request) { requestJson in
+        let sink = NativeSshStdoutEventSink(module: module)
+        return happierSshNativeExecJsonStreaming(
+          requestJson,
+          forwardNativeSshStdoutEvent,
+          Unmanaged.passUnretained(sink).toOpaque()
+        )
+      }
     }
   }
 
@@ -118,6 +137,27 @@ public enum HappierSshNativeBridge {
       }
     }
   }
+}
+
+private final class NativeSshStdoutEventSink {
+  let module: Module
+
+  init(module: Module) {
+    self.module = module
+  }
+}
+
+private func forwardNativeSshStdoutEvent(
+  _ eventJson: UnsafePointer<CChar>?,
+  _ context: UnsafeMutableRawPointer?
+) {
+  guard let eventJson, let context else { return }
+  let sink = Unmanaged<NativeSshStdoutEventSink>.fromOpaque(context).takeUnretainedValue()
+  guard
+    let data = String(cString: eventJson).data(using: .utf8),
+    let event = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+  else { return }
+  sink.module.sendEvent("stdout", event)
 }
 
 private func withProgress<T>(

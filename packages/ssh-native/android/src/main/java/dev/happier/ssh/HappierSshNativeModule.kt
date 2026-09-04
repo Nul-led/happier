@@ -9,7 +9,7 @@ class HappierSshNativeModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("HappierSshNative")
 
-    Events("hostKeyPrompt", "authPrompt", "progress")
+    Events("hostKeyPrompt", "authPrompt", "progress", "stdout")
 
     Function("getAvailability") {
       return@Function HappierSshNativeBridge.availability()

@@ -272,13 +272,12 @@ export function createOptionalIrohNativeAdapter(): IrohNativeAdapter {
   }
 
   return createIrohNativeAdapter(native ? {
-    ensureHomeTunnel: async ({ homeServerIdentityId, endpointId, directAddresses, relayUrls, descriptorRevision, ...input }) => {
+    ensureHomeTunnel: async ({ homeServerIdentityId, endpointId, directAddresses, relayUrls, ...input }) => {
       const { endpointHandle } = await applicationEndpoint({
         homeServerIdentityId,
         endpointId,
         directAddresses,
         relayUrls,
-        descriptorRevision,
         ...input,
       });
       const started = await native.ensureHomeTunnel({
@@ -287,7 +286,6 @@ export function createOptionalIrohNativeAdapter(): IrohNativeAdapter {
         endpointId,
         ...(directAddresses ? { directAddresses } : {}),
         ...(relayUrls ? { relayUrls } : {}),
-        ...(descriptorRevision !== undefined ? { descriptorRevision } : {}),
       });
       return { ...started, leaseId: started.tunnelId };
     },

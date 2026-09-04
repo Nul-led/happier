@@ -52,7 +52,7 @@ fn cancelled_error() -> JsValue {
 ///
 /// The seed-bearing [`BrowserEndpointPlan`] is deliberately NOT here: it is
 /// consumed by `create` and dropped (zeroizing the seed) as soon as the
-/// endpoint is bound, so the browser's persisted identity material has no
+/// endpoint is bound, so the live worker's ephemeral identity material has no
 /// second copy for the endpoint's lifetime. The applied relay facts are read
 /// back from the endpoint, which is their canonical owner.
 ///
@@ -94,16 +94,76 @@ struct ConnectionKey {
     kind: BrowserStreamKind,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamWriteState {
+    Ready,
+    Writing,
+    Finished,
+}
+
 struct IncrementalStream {
     remote_endpoint_id: iroh::EndpointId,
     /// The path the transport actually selected for this stream's connection,
     /// normalized for a relay-only carrier.
     observed_path: IrohObservedPath,
     send: RefCell<Option<iroh::endpoint::SendStream>>,
+    write_state: Cell<StreamWriteState>,
+    write_changed: tokio::sync::Notify,
     recv: RefCell<Option<iroh::endpoint::RecvStream>>,
     generation: Cell<u64>,
     changed: tokio::sync::Notify,
     closed: Cell<bool>,
+}
+
+/// Cancellation for exactly one pending stream open. It is passed directly to
+/// the Rust future that owns the dial; the probe keeps no operation registry,
+/// and cancelling it cannot close sibling streams or target connections.
+struct OpenCancellationInner {
+    cancelled: Cell<bool>,
+    changed: tokio::sync::Notify,
+}
+
+impl OpenCancellationInner {
+    fn cancel(&self) {
+        if !self.cancelled.replace(true) {
+            self.changed.notify_waiters();
+        }
+    }
+
+    async fn cancelled(&self) {
+        loop {
+            let notified = self.changed.notified();
+            if self.cancelled.get() {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+/// The generated JS boundary creates one of these per pending open and calls
+/// `cancel()` when that request's AbortSignal fires. No target, protocol, or
+/// endpoint state is carried here, so it cannot become another routing owner.
+#[wasm_bindgen]
+pub struct HappierBrowserIrohOpenCancellation {
+    inner: Rc<OpenCancellationInner>,
+}
+
+#[wasm_bindgen]
+impl HappierBrowserIrohOpenCancellation {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Self {
+        Self {
+            inner: Rc::new(OpenCancellationInner {
+                cancelled: Cell::new(false),
+                changed: tokio::sync::Notify::new(),
+            }),
+        }
+    }
+
+    pub fn cancel(&self) {
+        self.inner.cancel();
+    }
 }
 
 impl IncrementalStream {
@@ -113,6 +173,7 @@ impl IncrementalStream {
         }
         self.generation.set(self.generation.get().wrapping_add(1));
         self.changed.notify_waiters();
+        self.write_changed.notify_waiters();
         if let Some(mut send) = self.send.borrow_mut().take() {
             let _ = send.reset(0u32.into());
         }
@@ -164,9 +225,8 @@ impl Drop for ProbeInner {
     }
 }
 
-/// One persistent browser endpoint. A7.2 requires a single endpoint per
-/// browser application/profile; this probe therefore takes the persisted
-/// identity seed from its caller instead of minting one.
+/// One endpoint for a live SharedWorker. A7.2 requires every connected tab and
+/// operation to share it; a replacement worker supplies a new ephemeral seed.
 #[wasm_bindgen]
 pub struct HappierBrowserIrohProbe {
     inner: Rc<ProbeInner>,
@@ -204,8 +264,8 @@ impl Drop for HappierBrowserIrohProbe {
 
 #[wasm_bindgen]
 impl HappierBrowserIrohProbe {
-    /// Binds the browser endpoint. `secretKey` is the persisted 32-byte
-    /// identity; `relayUrls` are the descriptor's explicitly configured relays.
+    /// Binds the browser endpoint. `secretKey` is this live worker's ephemeral
+    /// 32-byte identity; `relayUrls` are the descriptor's configured relays.
     #[wasm_bindgen(js_name = create)]
     pub async fn create(
         mut secret_key: Vec<u8>,
@@ -221,7 +281,7 @@ impl HappierBrowserIrohProbe {
             .await
             .map_err(to_js)?;
         // The plan has done its one job. Dropping it here zeroizes the seed, so
-        // the running probe holds no copy of the browser's persisted identity —
+        // the running probe holds no copy of the worker's ephemeral identity —
         // only the endpoint iroh itself owns.
         drop(plan);
         // The dial-only role's inbound owner, started here because the browser
@@ -398,8 +458,14 @@ impl HappierBrowserIrohProbe {
         &self,
         endpoint_id: String,
         relay_urls: Vec<String>,
+        cancellation: &HappierBrowserIrohOpenCancellation,
     ) -> js_sys::Promise {
-        self.open_incremental_stream(BrowserStreamKind::Home, endpoint_id, relay_urls)
+        self.open_incremental_stream(
+            BrowserStreamKind::Home,
+            endpoint_id,
+            relay_urls,
+            Rc::clone(&cancellation.inner),
+        )
     }
 
     /// Opens one `happier/machine/1` stream to the exact signed machine
@@ -422,8 +488,14 @@ impl HappierBrowserIrohProbe {
         &self,
         endpoint_id: String,
         relay_urls: Vec<String>,
+        cancellation: &HappierBrowserIrohOpenCancellation,
     ) -> js_sys::Promise {
-        self.open_incremental_stream(BrowserStreamKind::Machine, endpoint_id, relay_urls)
+        self.open_incremental_stream(
+            BrowserStreamKind::Machine,
+            endpoint_id,
+            relay_urls,
+            Rc::clone(&cancellation.inner),
+        )
     }
 
     #[wasm_bindgen(js_name = streamRemoteEndpointId)]
@@ -471,7 +543,7 @@ impl HappierBrowserIrohProbe {
     pub fn finish_stream_write(&self, stream_handle: u32) -> js_sys::Promise {
         let inner = Rc::clone(&self.inner);
         wasm_bindgen_futures::future_to_promise(async move {
-            inner.finish_stream_write(stream_handle)?;
+            inner.finish_stream_write(stream_handle).await?;
             Ok(JsValue::UNDEFINED)
         })
     }
@@ -549,11 +621,12 @@ impl HappierBrowserIrohProbe {
         kind: BrowserStreamKind,
         endpoint_id: String,
         relay_urls: Vec<String>,
+        cancellation: Rc<OpenCancellationInner>,
     ) -> js_sys::Promise {
         let inner = Rc::clone(&self.inner);
         wasm_bindgen_futures::future_to_promise(async move {
             let handle = inner
-                .open_incremental_stream(kind, &endpoint_id, &relay_urls)
+                .open_incremental_stream(kind, &endpoint_id, &relay_urls, &cancellation)
                 .await?;
             Ok(JsValue::from_f64(f64::from(handle)))
         })
@@ -621,26 +694,49 @@ impl ProbeInner {
         kind: BrowserStreamKind,
         endpoint_id: &str,
         relay_urls: &[String],
+        cancellation: &OpenCancellationInner,
     ) -> Result<u32, JsValue> {
         BrowserEndpointPlan::validate_target(endpoint_id).map_err(to_js)?;
-        let selection = self.apply_relay_urls(relay_urls).await?;
+        let selection = BrowserEndpointPlan::resolve_target_relays(relay_urls).map_err(to_js)?;
+        let generation = self.generation.get();
+        let endpoint = self
+            .with_live(|live| Rc::clone(&live.endpoint))
+            .ok_or_else(closed_error)?;
+        self.until_open_cancelled(
+            generation,
+            cancellation,
+            endpoint.ensure_relay_urls(selection.relay_urls()),
+        )
+        .await?
+        .map_err(to_js)?;
         let target = iroh::EndpointId::from_str(endpoint_id).map_err(to_js)?;
         let key = ConnectionKey { target, kind };
-        let generation = self.generation.get();
         let connection = match self.live_connection(key)? {
             Some(connection) => connection,
-            None => self.connect(generation, key, &selection).await?,
+            None => {
+                self.connect(generation, key, &selection, cancellation)
+                    .await?
+            }
         };
         let (mut send, recv) = self
-            .until_cancelled(generation, connection.open_bi())
+            .until_open_cancelled(generation, cancellation, connection.open_bi())
             .await?
             .map_err(to_js)?;
         // Home framing only. The machine seam owns its whole admission frame;
         // see `openIncrementalMachineStream`.
         if matches!(kind, BrowserStreamKind::Home) {
-            send.write_all(&[TUNNEL_PREAMBLE]).await.map_err(to_js)?;
+            match self
+                .until_open_cancelled(generation, cancellation, send.write_all(&[TUNNEL_PREAMBLE]))
+                .await
+            {
+                Ok(result) => result.map_err(to_js)?,
+                Err(error) => {
+                    let _ = send.reset(0u32.into());
+                    return Err(error);
+                }
+            }
         }
-        if self.generation.get() != generation {
+        if self.generation.get() != generation || cancellation.cancelled.get() {
             let _ = send.reset(0u32.into());
             return Err(cancelled_error());
         }
@@ -649,6 +745,8 @@ impl ProbeInner {
             remote_endpoint_id: connection.remote_id(),
             observed_path: browser_observed_path(observed_path_for_connection(&connection)),
             send: RefCell::new(Some(send)),
+            write_state: Cell::new(StreamWriteState::Ready),
+            write_changed: tokio::sync::Notify::new(),
             recv: RefCell::new(Some(recv)),
             generation: Cell::new(0),
             changed: tokio::sync::Notify::new(),
@@ -706,32 +804,70 @@ impl ProbeInner {
             return Err(cancelled_error());
         }
         let generation = stream.generation.get();
+        match stream.write_state.get() {
+            StreamWriteState::Ready => {}
+            StreamWriteState::Writing => return Err(JsValue::from_str("write_in_progress")),
+            StreamWriteState::Finished => return Err(JsValue::from_str("write_finished")),
+        }
         let mut send = stream
             .send
             .borrow_mut()
             .take()
-            .ok_or_else(|| JsValue::from_str("write_in_progress"))?;
+            .ok_or_else(|| JsValue::from_str("write_direction_unavailable"))?;
+        stream.write_state.set(StreamWriteState::Writing);
         let written = tokio::select! {
             biased;
-            () = stream.await_cancellation(generation) => Err(cancelled_error()),
+            () = stream.await_cancellation(generation) => {
+                // The send direction is temporarily outside the stream
+                // record. Reset it while it is still owned here; dropping it
+                // must never look like a graceful partial FIN to the peer.
+                let _ = send.reset(0u32.into());
+                Err(cancelled_error())
+            },
             result = send.write_all(&bytes) => result.map_err(to_js),
         };
         if stream.closed.get() || stream.generation.get() != generation {
+            let _ = send.reset(0u32.into());
+            stream.write_state.set(StreamWriteState::Finished);
+            stream.write_changed.notify_waiters();
             return Err(cancelled_error());
         }
         stream.send.borrow_mut().replace(send);
+        stream.write_state.set(StreamWriteState::Ready);
+        stream.write_changed.notify_waiters();
         written
     }
 
-    fn finish_stream_write(&self, stream_handle: u32) -> Result<(), JsValue> {
+    async fn finish_stream_write(&self, stream_handle: u32) -> Result<(), JsValue> {
         let stream = self.stream(stream_handle)?;
-        if stream.closed.get() {
-            return Err(cancelled_error());
-        }
-        let send = stream.send.borrow_mut().take();
-        match send {
-            Some(mut send) => send.finish().map_err(to_js),
-            None => Ok(()),
+        let generation = stream.generation.get();
+        loop {
+            if stream.closed.get() || stream.generation.get() != generation {
+                return Err(cancelled_error());
+            }
+            match stream.write_state.get() {
+                StreamWriteState::Finished => return Ok(()),
+                StreamWriteState::Ready => {
+                    let Some(mut send) = stream.send.borrow_mut().take() else {
+                        return Err(JsValue::from_str("write_direction_unavailable"));
+                    };
+                    stream.write_state.set(StreamWriteState::Finished);
+                    return send.finish().map_err(to_js);
+                }
+                StreamWriteState::Writing => {
+                    let changed = stream.write_changed.notified();
+                    // Register before rechecking so a write cannot complete
+                    // between the state check and this wait.
+                    if stream.write_state.get() != StreamWriteState::Writing {
+                        continue;
+                    }
+                    tokio::select! {
+                        biased;
+                        () = stream.await_cancellation(generation) => return Err(cancelled_error()),
+                        () = changed => {}
+                    }
+                }
+            }
         }
     }
 
@@ -797,6 +933,10 @@ impl ProbeInner {
             kind: BrowserStreamKind::Home,
         };
         let generation = self.generation.get();
+        let cancellation = OpenCancellationInner {
+            cancelled: Cell::new(false),
+            changed: tokio::sync::Notify::new(),
+        };
 
         // A connection is reusable only for the target it is actually
         // authenticated to, and only for the protocol it negotiated, so a
@@ -804,7 +944,10 @@ impl ProbeInner {
         // peer's connection and the identity guard is never bypassed.
         let connection = match self.live_connection(key)? {
             Some(connection) => connection,
-            None => self.connect(generation, key, &selection).await?,
+            None => {
+                self.connect(generation, key, &selection, &cancellation)
+                    .await?
+            }
         };
 
         let (mut send, mut recv) = self
@@ -837,6 +980,26 @@ impl ProbeInner {
         tokio::select! {
             biased;
             () = self.await_cancellation(generation) => Err(cancelled_error()),
+            result = operation => Ok(result),
+        }
+    }
+
+    /// The same endpoint-wide terminal cancellation plus the one pending
+    /// open's cancellation. This per-operation signal is never stored on the
+    /// probe, so it cannot affect a sibling open or an established stream.
+    async fn until_open_cancelled<T>(
+        &self,
+        generation: u64,
+        cancellation: &OpenCancellationInner,
+        operation: impl Future<Output = T>,
+    ) -> Result<T, JsValue> {
+        if self.generation.get() != generation || cancellation.cancelled.get() {
+            return Err(cancelled_error());
+        }
+        tokio::select! {
+            biased;
+            () = self.await_cancellation(generation) => Err(cancelled_error()),
+            () = cancellation.cancelled() => Err(cancelled_error()),
             result = operation => Ok(result),
         }
     }
@@ -883,9 +1046,10 @@ impl ProbeInner {
         generation: u64,
         key: ConnectionKey,
         selection: &RelaySelection,
+        cancellation: &OpenCancellationInner,
     ) -> Result<iroh::endpoint::Connection, JsValue> {
         loop {
-            if self.generation.get() != generation {
+            if self.generation.get() != generation || cancellation.cancelled.get() {
                 return Err(cancelled_error());
             }
             if let Some(connection) = self.live_connection(key)? {
@@ -894,7 +1058,9 @@ impl ProbeInner {
             let owned = self.claim_dial(key)?;
             if owned {
                 let _guard = DialGuard { inner: self, key };
-                return self.dial_owned(generation, key, selection).await;
+                return self
+                    .dial_owned(generation, key, selection, cancellation)
+                    .await;
             }
             // Another open owns this key's dial. Wait for it to settle, then
             // re-check: normally its connection is now in custody.
@@ -902,7 +1068,8 @@ impl ProbeInner {
             if !self.is_dialing(key) || self.generation.get() != generation {
                 continue;
             }
-            notified.await;
+            self.until_open_cancelled(generation, cancellation, notified)
+                .await?;
         }
     }
 
@@ -921,6 +1088,7 @@ impl ProbeInner {
         generation: u64,
         key: ConnectionKey,
         selection: &RelaySelection,
+        cancellation: &OpenCancellationInner,
     ) -> Result<iroh::endpoint::Connection, JsValue> {
         let endpoint = self
             .with_live(|live| Rc::clone(&live.endpoint))
@@ -930,15 +1098,16 @@ impl ProbeInner {
         // endpoint's accumulated union is membership, not reachability: another
         // Home's relay is not a path to this target.
         let connection = self
-            .until_cancelled(
+            .until_open_cancelled(
                 generation,
+                cancellation,
                 dial(endpoint.endpoint(), selection.clone(), key),
             )
             .await??;
         // A dial that completed after a cancellation or a close must not enter
         // custody: it is closed instead of becoming a live connection nobody
         // asked for.
-        if self.generation.get() != generation {
+        if self.generation.get() != generation || cancellation.cancelled.get() {
             connection.close(0u32.into(), b"cancelled");
             return Err(cancelled_error());
         }

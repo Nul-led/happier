@@ -57,6 +57,7 @@ private object HappierIrohNativeBridge {
 
   fun createEndpoint(request: Map<String, Any?>, context: Context): Map<String, Any?> {
     ensureLoaded()
+    IrohAndroidContext.install(context)
     val seed = IrohEndpointIdentityStore.loadOrCreate(context)
     return try {
       val nativeRequest = request.toMutableMap()
@@ -116,6 +117,17 @@ private object HappierIrohNativeBridge {
   }
   private fun JSONObject.toMap(): Map<String, Any?> = keys().asSequence().associateWith { key -> when (val value = get(key)) { JSONObject.NULL -> null; is JSONObject -> value.toMap(); is JSONArray -> value.toList(); else -> value } }
   private fun JSONArray.toList(): List<Any?> = (0 until length()).map { index -> when (val value = get(index)) { JSONObject.NULL -> null; is JSONObject -> value.toMap(); is JSONArray -> value.toList(); else -> value } }
+}
+
+private object IrohAndroidContext {
+  private var installed = false
+
+  @Synchronized
+  fun install(context: Context) {
+    if (installed) return
+    HappierIrohNativeRust.installAndroidContext(context.applicationContext)
+    installed = true
+  }
 }
 
 private object IrohEndpointIdentityStore {
@@ -220,6 +232,7 @@ private class EndpointIdentityException(message: String) :
   CodedException("endpoint_key_unavailable", message, null)
 
 private object HappierIrohNativeRust {
+  external fun installAndroidContext(context: Context)
   external fun getTunnelStatusJson(requestJson: String): String
   external fun createEndpointJson(requestJson: String): String
   external fun ensureHomeTunnelJson(requestJson: String): String

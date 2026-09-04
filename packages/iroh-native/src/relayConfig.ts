@@ -1,4 +1,4 @@
-import { IROH_DESCRIPTOR_MAX_RELAY_URLS, IrohEndpointDescriptorV1Schema } from '@happier-dev/protocol';
+import { IrohEndpointDescriptorV1Schema } from '@happier-dev/protocol';
 
 import type { IrohRelayPolicy } from './types.js';
 
@@ -19,7 +19,7 @@ function parseRelayUrls(raw: string): readonly string[] {
   const result = IrohEndpointDescriptorV1Schema.shape.relayUrls.safeParse(candidates);
   if (!result.success || result.data === undefined) {
     throw new Error(
-      `${IROH_RELAY_URLS_ENV_KEY} entries must be unique absolute HTTP(S) URLs without credentials, query material, or fragments (at most ${IROH_DESCRIPTOR_MAX_RELAY_URLS})`,
+      `${IROH_RELAY_URLS_ENV_KEY} entries must be unique absolute HTTP(S) URLs without credentials, query material, or fragments`,
     );
   }
   return [...result.data].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));

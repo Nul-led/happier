@@ -201,6 +201,7 @@ export function buildBrowserIrohWasm() {
   const glue = readFileSync(bindgenJs, 'utf8');
   const requiredExports = [
     'HappierBrowserIrohProbe',
+    'HappierBrowserIrohOpenCancellation',
     'endpointId',
     'openHomeTunnelStream',
     'openIncrementalHomeTunnelStream',

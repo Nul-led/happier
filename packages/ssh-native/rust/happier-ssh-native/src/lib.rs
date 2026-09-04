@@ -9,13 +9,14 @@ pub mod host_key;
 pub mod tunnel;
 pub mod types;
 
-use std::ffi::{c_char, CStr, CString};
+use std::ffi::{c_char, c_void, CStr, CString};
 use std::ptr;
 use std::sync::Arc;
 
 use crate::cancellation::cancel_request;
-use crate::engine::run_exec_blocking;
+use crate::engine::{run_exec_blocking, run_exec_blocking_with_output_sink};
 use crate::error::NativeSshErrorPayload;
+use crate::exec::ExecOutputSink;
 use crate::host_key::RejectingHostKeyPrompter;
 use crate::tunnel::{start_loopback_tunnel_blocking, stop_loopback_tunnel};
 use crate::types::{NativeSshExecRequest, NativeSshLoopbackTunnelRequest};
@@ -26,6 +27,38 @@ struct NativeSshJsonResponse<T: serde::Serialize> {
     ok: bool,
     result: Option<T>,
     error: Option<NativeSshErrorPayload>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeSshStdoutEvent<'a> {
+    request_id: &'a str,
+    chunk: &'a str,
+}
+
+fn serialize_stdout_event(request_id: &str, chunk: &str) -> Option<String> {
+    serde_json::to_string(&NativeSshStdoutEvent { request_id, chunk }).ok()
+}
+
+type NativeSshStdoutCallback = extern "C" fn(*const c_char, *mut c_void);
+
+struct CExecOutputSink {
+    callback: NativeSshStdoutCallback,
+    context: usize,
+}
+
+unsafe impl Send for CExecOutputSink {}
+unsafe impl Sync for CExecOutputSink {}
+
+impl ExecOutputSink for CExecOutputSink {
+    fn stdout_chunk(&self, request_id: &str, chunk: &str) {
+        let Some(event) =
+            serialize_stdout_event(request_id, chunk).and_then(|value| CString::new(value).ok())
+        else {
+            return;
+        };
+        (self.callback)(event.as_ptr(), self.context as *mut c_void);
+    }
 }
 
 #[no_mangle]
@@ -43,6 +76,27 @@ pub extern "C" fn happier_ssh_native_exec_json(request_json: *const c_char) -> *
     let result = read_c_string(request_json)
         .and_then(|json| serde_json::from_str::<NativeSshExecRequest>(&json).map_err(Into::into))
         .and_then(|request| run_exec_blocking(request, Arc::new(RejectingHostKeyPrompter)));
+    write_json_response(result)
+}
+
+#[no_mangle]
+pub extern "C" fn happier_ssh_native_exec_json_streaming(
+    request_json: *const c_char,
+    callback: NativeSshStdoutCallback,
+    context: *mut c_void,
+) -> *mut c_char {
+    let result = read_c_string(request_json)
+        .and_then(|json| serde_json::from_str::<NativeSshExecRequest>(&json).map_err(Into::into))
+        .and_then(|request| {
+            run_exec_blocking_with_output_sink(
+                request,
+                Arc::new(RejectingHostKeyPrompter),
+                Arc::new(CExecOutputSink {
+                    callback,
+                    context: context as usize,
+                }),
+            )
+        });
     write_json_response(result)
 }
 
@@ -94,6 +148,73 @@ pub extern "system" fn Java_dev_happier_ssh_HappierSshNativeRust_execJson<'local
         Err(_) => CString::new("{}").expect("static JSON is a valid CString"),
     };
     let response = happier_ssh_native_exec_json(c_request.as_ptr());
+    if response.is_null() {
+        return ptr::null_mut();
+    }
+    let response_text = unsafe { CStr::from_ptr(response) }
+        .to_string_lossy()
+        .into_owned();
+    happier_ssh_native_free_string(response);
+    match env.new_string(response_text) {
+        Ok(value) => value.into_raw(),
+        Err(_) => ptr::null_mut(),
+    }
+}
+
+#[cfg(target_os = "android")]
+struct AndroidExecOutputSink {
+    vm: jni::JavaVM,
+    sink: jni::objects::GlobalRef,
+}
+
+#[cfg(target_os = "android")]
+impl ExecOutputSink for AndroidExecOutputSink {
+    fn stdout_chunk(&self, request_id: &str, chunk: &str) {
+        let Some(event) = serialize_stdout_event(request_id, chunk) else {
+            return;
+        };
+        let Ok(mut env) = self.vm.attach_current_thread() else {
+            return;
+        };
+        let Ok(event_string) = env.new_string(event) else {
+            return;
+        };
+        let event_object = jni::objects::JObject::from(event_string);
+        let _ = env.call_method(
+            self.sink.as_obj(),
+            "emit",
+            "(Ljava/lang/String;)V",
+            &[jni::objects::JValue::Object(&event_object)],
+        );
+    }
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_happier_ssh_HappierSshNativeRust_execJsonStreaming<'local>(
+    mut env: jni::JNIEnv<'local>,
+    _class: jni::objects::JClass<'local>,
+    request_json: jni::objects::JString<'local>,
+    sink: jni::objects::JObject<'local>,
+) -> jni::sys::jstring {
+    let request = match env.get_string(&request_json) {
+        Ok(value) => value.to_string_lossy().into_owned(),
+        Err(_) => String::new(),
+    };
+    let parsed = serde_json::from_str::<NativeSshExecRequest>(&request).map_err(Into::into);
+    let result = match (parsed, env.get_java_vm(), env.new_global_ref(sink)) {
+        (Ok(request), Ok(vm), Ok(sink)) => run_exec_blocking_with_output_sink(
+            request,
+            Arc::new(RejectingHostKeyPrompter),
+            Arc::new(AndroidExecOutputSink { vm, sink }),
+        ),
+        (Err(error), _, _) => Err(error),
+        _ => Err(crate::error::NativeSshError::new(
+            "engine-internal",
+            "Native SSH stdout event sink could not start.",
+        )),
+    };
+    let response = write_json_response(result);
     if response.is_null() {
         return ptr::null_mut();
     }

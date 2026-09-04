@@ -9,6 +9,7 @@ export {
   normalizeNativeSshAuthPromptEvent,
   normalizeNativeSshHostKeyPromptEvent,
   normalizeNativeSshProgressEvent,
+  normalizeNativeSshStdoutEvent,
 } from './events';
 export { NativeSshError, normalizeNativeSshError } from './errors';
 export { normalizeHostKeyFingerprintSha256 } from './hostKey';
@@ -36,6 +37,7 @@ import type {
   NativeSshModule,
   NativeSshProgressEvent,
   NativeSshSubscription,
+  NativeSshStdoutEvent,
   NativeSshUnavailableReason,
 } from './HappierSshNative.types';
 
@@ -54,6 +56,7 @@ export type {
   NativeSshModule,
   NativeSshProgressEvent,
   NativeSshSubscription,
+  NativeSshStdoutEvent,
   NativeSshUnavailableReason,
 } from './HappierSshNative.types';
 export type { NativeSshAvailabilityOptions, NativeSshRuntimePlatform } from './availability';

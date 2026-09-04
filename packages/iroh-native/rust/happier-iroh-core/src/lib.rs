@@ -41,7 +41,7 @@ pub use endpoint::refuse_inbound_until_closed;
 pub use endpoint::{
     inbound_alpns, validate_endpoint_id, verified_remote_endpoint_id, EndpointConfig, EndpointSeed,
     InboundAlpnRole, InboundStopSignal, IrohEndpoint, RelayPolicy, RelaySelection,
-    ResolvedEndpointConfig, MAX_RELAY_URLS, MAX_RELAY_URL_UTF8_BYTES, TARGET_INBOUND_ALPN_ROLE,
+    ResolvedEndpointConfig, MAX_RELAY_URL_UTF8_BYTES, TARGET_INBOUND_ALPN_ROLE,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use endpoint::{

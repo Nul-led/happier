@@ -5,7 +5,9 @@
  * One handle-based lifecycle owns the persistent application endpoint and
  * every Home tunnel lease. Tunnel bytes never cross this boundary.
  */
-export const IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER = 'x-happier-machine-local-capability' as const;
+export {
+  MACHINE_HTTP_LOCAL_CAPABILITY_HEADER as IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER,
+} from './descriptor.js';
 
 export type NativeIrohModule = Readonly<{
   getAvailability?: () => Record<string, unknown>;
@@ -38,7 +40,6 @@ export type NativeIrohModule = Readonly<{
     endpointId: string;
     directAddresses?: readonly string[];
     relayUrls?: readonly string[];
-    descriptorRevision?: number;
   }) => Promise<{
     tunnelId: string;
     homeServerIdentityId: string;

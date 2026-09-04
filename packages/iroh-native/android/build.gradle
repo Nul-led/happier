@@ -18,7 +18,10 @@ android {
     }
   }
   sourceSets {
-    main { jniLibs.srcDirs += ["${buildDir}/generated/rustJniLibs"] }
+    main {
+      jniLibs.srcDirs += ["${buildDir}/generated/rustJniLibs"]
+      assets.srcDirs += ["${projectDir}/../release-evidence"]
+    }
   }
 }
 

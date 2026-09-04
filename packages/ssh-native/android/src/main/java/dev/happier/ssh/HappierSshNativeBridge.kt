@@ -68,7 +68,11 @@ object HappierSshNativeBridge {
     }
     return withProgress(module, request, "connecting") {
       val response = callRustWithPrompts(module, request) { requestJson ->
-        HappierSshNativeRust.execJson(requestJson)
+        HappierSshNativeRust.execJsonStreaming(requestJson, object : HappierSshNativeStdoutSink {
+          override fun emit(eventJson: String) {
+            module.sendEvent("stdout", jsonObjectToMap(JSONObject(eventJson)))
+          }
+        })
       }
       jsonObjectToMap(response)
     }
@@ -231,9 +235,14 @@ object HappierSshNativeBridge {
 
 object HappierSshNativeRust {
   external fun execJson(requestJson: String): String
+  external fun execJsonStreaming(requestJson: String, sink: HappierSshNativeStdoutSink): String
   external fun startLoopbackTunnelJson(requestJson: String): String
   external fun stopLoopbackTunnelJson(nativeTunnelId: String): String
   external fun cancelRequestJson(requestId: String): String
+}
+
+interface HappierSshNativeStdoutSink {
+  fun emit(eventJson: String)
 }
 
 class NativeSshException(

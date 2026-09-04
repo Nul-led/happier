@@ -24,6 +24,13 @@ describe('readIrohRelayConfigFromEnv', () => {
       relayUrls: [],
       explicitlyConfigured: true,
     });
+
+    expect(readIrohRelayConfigFromEnv({
+      HAPPIER_IROH_RELAY_URLS: Array.from(
+        { length: 9 },
+        (_, index) => `https://relay-${index}.example`,
+      ).join(','),
+    }).relayUrls).toHaveLength(9);
   });
 
   it('fails closed for disabled relays with explicit URLs', () => {

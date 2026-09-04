@@ -112,6 +112,7 @@ async fn run_tunnel(
         port: request.port,
         username: request.username.clone(),
         command: String::new(),
+        input: None,
         auth: request.auth.clone(),
         connect_timeout_ms: request.connect_timeout_ms,
         auth_timeout_ms: request.auth_timeout_ms,

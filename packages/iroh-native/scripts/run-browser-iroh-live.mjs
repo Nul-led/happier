@@ -78,7 +78,7 @@ const NATIVE_DIAL_TIMEOUT_MS = 20_000;
  * Releasing it afterwards proves the cancelled operation does not complete late.
  */
 function startHomeApplication(marker) {
-  const state = { requests: 0, held: [] };
+  const state = { requests: 0, writeSideEnds: 0, held: [] };
   const answer = (socket, body) => {
     socket.write(
       `HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: ${Buffer.byteLength(body)}\r\nconnection: close\r\n\r\n${body}`,
@@ -91,6 +91,9 @@ function startHomeApplication(marker) {
     let buffered = '';
     let answered = false;
     socket.on('error', () => socket.destroy());
+    socket.on('end', () => {
+      state.writeSideEnds += 1;
+    });
     socket.on('data', (chunk) => {
       if (answered) return;
       buffered += chunk.toString('latin1');
@@ -178,11 +181,15 @@ function pageHtml() {
 <meta charset="utf-8">
 <title>Happier browser Iroh probe</title>
 <script type="module">
-import init, { HappierBrowserIrohProbe } from './happier_iroh_wasm.js';
+import init, { HappierBrowserIrohOpenCancellation, HappierBrowserIrohProbe } from './happier_iroh_wasm.js';
 window.__probe = (async () => {
   const startedAt = performance.now();
-  const wasm = await init();
-  return { HappierBrowserIrohProbe, wasm, initMs: performance.now() - startedAt };
+  await init();
+  return {
+    HappierBrowserIrohProbe,
+    wasm: { HappierBrowserIrohOpenCancellation },
+    initMs: performance.now() - startedAt,
+  };
 })();
 </script>
 `;
@@ -495,7 +502,7 @@ async function main() {
     Object.assign(
       outcome,
       await page.evaluate(async (input) => {
-        const { probe } = window.__live;
+        const { probe, wasm } = window.__live;
         const { decoder, requestA, open, openA, openB, outcomeOf } = window.__probeKit;
         const facts = {};
 
@@ -503,7 +510,12 @@ async function main() {
         // reject it promptly, leave no live connection, and leave the endpoint
         // reusable.
         let settled = null;
-        const pending = outcomeOf(open(input.absentId, requestA, [input.relayUrl], 1024)).then(
+        const cancellation = new wasm.HappierBrowserIrohOpenCancellation();
+        const pending = outcomeOf(probe.openIncrementalHomeTunnelStream(
+          input.absentId,
+          [input.relayUrl],
+          cancellation,
+        )).then(
           (result) => {
             settled = result;
             return result;
@@ -513,7 +525,7 @@ async function main() {
         facts.pendingStillInFlightBeforeCancel = settled === null;
 
         const cancelledAt = performance.now();
-        probe.cancel();
+        cancellation.cancel();
         facts.pendingCancelOutcome = await Promise.race([
           pending,
           new Promise((resolve) => setTimeout(() => resolve('still pending after cancel'), 4000)),
@@ -525,15 +537,57 @@ async function main() {
         facts.afterCancel = decoder.decode(await openA());
         facts.dialsAfterReuse = probe.dialsStarted();
 
-        // Two cold opens for the SAME target at once must share one dial, not
-        // race to replace each other's connection.
+        // Make Home B genuinely cold while leaving Home A live. Two opens for
+        // that same cold target must then share one dial instead of racing to
+        // replace each other's connection.
+        probe.closeHomeTunnelConnection(input.homeBId);
+        facts.targetsBeforeRacedSameTarget = probe.liveConnectionTargets();
+        const dialsBeforeRacedSameTarget = probe.dialsStarted();
         const raced = await Promise.all([openB(), openB()]);
         facts.racedSameTarget = raced.map((bytes) => decoder.decode(bytes));
         facts.dialsAfterRacedSameTarget = probe.dialsStarted();
+        facts.dialsForRacedSameTarget = facts.dialsAfterRacedSameTarget - dialsBeforeRacedSameTarget;
         facts.targetsAfterRacedSameTarget = probe.liveConnectionTargets();
         return facts;
       }, targetIds),
     );
+
+    // A finish racing an admitted write must wait for that write and then
+    // produce a real peer-visible FIN. Returning success merely because the
+    // send handle is temporarily owned by writeStream loses the half-close.
+    const writeSideEndsBeforeConcurrentFinish = homeA.application.writeSideEnds;
+    Object.assign(
+      outcome,
+      await page.evaluate(async (input) => {
+        const { probe, wasm } = window.__live;
+        const handle = await probe.openIncrementalHomeTunnelStream(
+          input.homeAId,
+          [input.relayUrl],
+          new wasm.HappierBrowserIrohOpenCancellation(),
+        );
+        const requestPrefix = new TextEncoder().encode(
+          `POST /concurrent-finish HTTP/1.1\r\nHost: browser.test\r\nContent-Length: 1048480\r\nConnection: close\r\n\r\n`,
+        );
+        const request = new Uint8Array(1024 * 1024);
+        request.set(requestPrefix);
+        request.fill(120, requestPrefix.byteLength);
+        let writeSettled = false;
+        const write = probe.writeStream(handle, request).then(() => {
+          writeSettled = true;
+        });
+        const finish = probe.finishStreamWrite(handle).then(() => ({
+          writeSettledWhenFinishResolved: writeSettled,
+        }));
+        const [, finishFacts] = await Promise.all([write, finish]);
+        await probe.closeStream(handle);
+        return finishFacts;
+      }, targetIds),
+    );
+    const concurrentFinishReachedPeerEof = await waitFor(
+      () => homeA.application.writeSideEnds > writeSideEndsBeforeConcurrentFinish,
+      15_000,
+    );
+    outcome.concurrentFinishReachedPeerEof = concurrentFinishReachedPeerEof;
 
     // 5c-iii. After a target's connection terminates, the NEXT open carries its
     //         relay facts again: nothing is remembered per target on this side.
@@ -559,11 +613,12 @@ async function main() {
     Object.assign(
       outcome,
       await page.evaluate(async (input) => {
-        const { probe } = window.__live;
+        const { probe, wasm } = window.__live;
         const { decoder, requestA } = window.__probeKit;
         const handle = await probe.openIncrementalHomeTunnelStream(
           input.homeAId,
           [input.relayUrl],
+          new wasm.HappierBrowserIrohOpenCancellation(),
         );
         const remoteEndpointId = probe.streamRemoteEndpointId(handle);
         const splitAt = Math.floor(requestA.byteLength / 2);
@@ -649,7 +704,7 @@ async function main() {
       outcome,
       await page.evaluate(
         async (input) => {
-          const { probe } = window.__live;
+          const { probe, wasm } = window.__live;
           const { decoder } = window.__probeKit;
           const encoder = new TextEncoder();
           const facts = {};
@@ -658,7 +713,7 @@ async function main() {
           // The machine dial is its own operation. No ALPN string is passed.
           const handle = await probe.openIncrementalMachineStream(input.machineTargetId, [
             input.relayUrl,
-          ]);
+          ], new wasm.HappierBrowserIrohOpenCancellation());
           facts.machineRemoteEndpointId = probe.streamRemoteEndpointId(handle);
           facts.machineObservedPath = probe.streamObservedPath(handle);
           // A live Home-tunnel connection to this same EndpointId must not be
@@ -714,11 +769,12 @@ async function main() {
     // 5c-v. A held incremental read is cancelled at stream scope. The Home's
     //        late response cannot resurrect it and the endpoint remains usable.
     await page.evaluate(async (input) => {
-      const { probe } = window.__live;
+      const { probe, wasm } = window.__live;
       const { requestHold } = window.__probeKit;
       const handle = await probe.openIncrementalHomeTunnelStream(
         input.homeAId,
         [input.relayUrl],
+        new wasm.HappierBrowserIrohOpenCancellation(),
       );
       await probe.writeStream(handle, requestHold);
       await probe.finishStreamWrite(handle);
@@ -1003,6 +1059,12 @@ async function main() {
         `incremental close did not retire its opaque handle: ${outcome.incrementalReadAfterClose}`,
       );
     }
+    if (outcome.writeSettledWhenFinishResolved !== true) {
+      failures.push('finishStreamWrite resolved while writeStream still owned the send direction');
+    }
+    if (!outcome.concurrentFinishReachedPeerEof) {
+      failures.push('concurrent finish did not produce a peer-visible write-side EOF');
+    }
 
     // A7.4 — the browser's machine/1 dial reached a real native MachineAcceptor
     // on an EndpointId that also serves the Home tunnel, was admitted through
@@ -1139,16 +1201,18 @@ async function main() {
     if (!(outcome.pendingCancelMs < 2000)) {
       failures.push(`cancel took ${Math.round(outcome.pendingCancelMs)}ms to reject the pending operation`);
     }
-    if (JSON.stringify(outcome.targetsAfterCancel) !== '[]') {
-      failures.push(`cancel left live connections: ${JSON.stringify(outcome.targetsAfterCancel)}`);
+    if (JSON.stringify(outcome.targetsAfterCancel) !== expectedTargets) {
+      failures.push(
+        `one cancelled open disturbed sibling connections: ${JSON.stringify(outcome.targetsAfterCancel)}`,
+      );
     }
     if (!outcome.afterCancel.includes(HOME_A_MARKER)) {
       failures.push('the endpoint was not reusable after a cancellation');
     }
-    // One dial for the cancelled pending open, one to re-establish Home A.
-    if (outcome.dialsAfterReuse !== outcome.dialsAfterRejectedHints + 2) {
+    // One dial for the cancelled pending open. Home A stays live and is reused.
+    if (outcome.dialsAfterReuse !== outcome.dialsAfterRejectedHints + 1) {
       failures.push(
-        `reuse after cancel must re-dial exactly once, dials went ${outcome.dialsAfterRejectedHints} -> ${outcome.dialsAfterReuse}`,
+        `a scoped cancel must not re-dial a sibling, dials went ${outcome.dialsAfterRejectedHints} -> ${outcome.dialsAfterReuse}`,
       );
     }
     if (!outcome.racedSameTarget.every((body) => body.includes(HOME_B_MARKER))) {
@@ -1156,9 +1220,14 @@ async function main() {
         `concurrent cold opens for one target did not both reach it: ${JSON.stringify(outcome.racedSameTarget)}`,
       );
     }
-    if (outcome.dialsAfterRacedSameTarget !== outcome.dialsAfterReuse + 1) {
+    if (JSON.stringify(outcome.targetsBeforeRacedSameTarget) !== JSON.stringify([targetIds.homeAId])) {
       failures.push(
-        `concurrent cold opens for one target must share one dial, dials went ${outcome.dialsAfterReuse} -> ${outcome.dialsAfterRacedSameTarget}`,
+        `the same-target race was not cold for Home B: ${JSON.stringify(outcome.targetsBeforeRacedSameTarget)}`,
+      );
+    }
+    if (outcome.dialsForRacedSameTarget !== 1) {
+      failures.push(
+        `concurrent cold opens for one target used ${outcome.dialsForRacedSameTarget} dials instead of one`,
       );
     }
     if (JSON.stringify(outcome.targetsAfterRacedSameTarget) !== expectedTargets) {

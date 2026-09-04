@@ -2,6 +2,7 @@ import type {
   NativeSshAuthPromptEvent,
   NativeSshHostKeyPromptEvent,
   NativeSshProgressEvent,
+  NativeSshStdoutEvent,
 } from './HappierSshNative.types';
 
 const PROGRESS_PHASES = new Set<NativeSshProgressEvent['phase']>([
@@ -39,6 +40,14 @@ export function normalizeNativeSshProgressEvent(value: unknown): NativeSshProgre
   const port = readPort(event.port);
   if (!requestId || !phase || !PROGRESS_PHASES.has(phase) || !host || port === null) return null;
   return { requestId, phase, host, port };
+}
+
+export function normalizeNativeSshStdoutEvent(value: unknown): NativeSshStdoutEvent | null {
+  if (!value || typeof value !== 'object') return null;
+  const event = value as Partial<NativeSshStdoutEvent>;
+  const requestId = readNonEmptyString(event.requestId);
+  if (!requestId || typeof event.chunk !== 'string' || event.chunk.length === 0) return null;
+  return { requestId, chunk: event.chunk };
 }
 
 export function normalizeNativeSshAuthPromptEvent(value: unknown): NativeSshAuthPromptEvent | null {

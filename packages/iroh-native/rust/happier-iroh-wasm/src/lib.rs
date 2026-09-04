@@ -1,5 +1,5 @@
 //! Browser binding for the shared Happier Iroh core (Lane 06 amendment A7,
-//! I10 feasibility plus the dormant A7.3 stream foundation).
+//! including the production A7.3 incremental stream boundary).
 //!
 //! A browser cannot bind a local TCP listener or accept an Iroh connection, so
 //! this crate exposes a dialer-only `wasm-bindgen` endpoint and incremental

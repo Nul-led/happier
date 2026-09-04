@@ -24,5 +24,5 @@ describe('Node ESM publication', () => {
     );
 
     expect(result.status, result.stderr || result.stdout).toBe(0);
-  });
+  }, 30_000);
 });

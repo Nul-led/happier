@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
+RUST_ENV="${CARGO_HOME:-${HOME}/.cargo}/env"
+if ! command -v cargo >/dev/null 2>&1 && [[ -f "${RUST_ENV}" ]]; then
+  # `eas-build-pre-install` runs in an earlier shell; consume the environment
+  # persisted by rustup rather than assuming that shell's PATH survived.
+  source "${RUST_ENV}"
+fi
+command -v cargo >/dev/null 2>&1 || { echo "Rust/Cargo is required to build the Iroh iOS carrier" >&2; exit 1; }
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CRATE_DIR="${ROOT_DIR}/rust/happier-iroh-native"
 CARGO_TARGET_DIR="${ROOT_DIR}/rust/target"
@@ -36,3 +43,6 @@ rm -rf "${XCFRAMEWORK}"
 xcodebuild -create-xcframework \
   -library "${CARGO_TARGET_DIR}/aarch64-apple-ios/release/libhappier_iroh_native.a" -headers "${HEADERS_DIR}" \
   -library "${SIM_UNIVERSAL}" -headers "${HEADERS_DIR}" -output "${XCFRAMEWORK}"
+node "${ROOT_DIR}/scripts/generate-native-release-evidence.mjs" \
+  --package-root "${ROOT_DIR}" \
+  --output-dir "${ROOT_DIR}/release-evidence"

@@ -86,4 +86,15 @@ describe('native SSH errors', () => {
       message: 'SSH transport was intercepted before the SSH banner.',
     }).code).toBe('network-captive-portal');
   });
+
+  it('preserves native exec input and output limit error codes', () => {
+    expect(normalizeNativeSshError({
+      code: 'input-limit-exceeded',
+      message: 'Native SSH command input exceeds the supported size.',
+    }).code).toBe('input-limit-exceeded');
+    expect(normalizeNativeSshError({
+      nativeErrorCode: 'output-limit-exceeded',
+      message: 'Native SSH command output exceeds the supported size.',
+    }).code).toBe('output-limit-exceeded');
+  });
 });

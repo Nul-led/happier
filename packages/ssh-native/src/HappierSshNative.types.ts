@@ -38,6 +38,8 @@ export type NativeSshExecRequest = Readonly<{
   port: number;
   username: string;
   command: string;
+  /** Optional bounded stdin written once before the remote channel receives EOF. */
+  input?: string;
   auth: NativeSshAuthRequest;
   connectTimeoutMs: number;
   authTimeoutMs: number;
@@ -125,6 +127,11 @@ export type NativeSshProgressEvent = Readonly<{
   port: number;
 }>;
 
+export type NativeSshStdoutEvent = Readonly<{
+  requestId: string;
+  chunk: string;
+}>;
+
 export type NativeSshSubscription = Readonly<{
   remove: () => void;
 }>;
@@ -138,7 +145,7 @@ export type NativeSshModule = Readonly<{
   startLoopbackTunnel?: (request: NativeSshLoopbackTunnelRequest) => Promise<NativeSshLoopbackTunnelResult>;
   stopLoopbackTunnel?: (nativeTunnelId: string) => Promise<void>;
   addListener?: (
-    eventName: 'hostKeyPrompt' | 'authPrompt' | 'progress',
-    listener: (event: NativeSshHostKeyPromptEvent | NativeSshAuthPromptEvent | NativeSshProgressEvent) => void,
+    eventName: 'hostKeyPrompt' | 'authPrompt' | 'progress' | 'stdout',
+    listener: (event: NativeSshHostKeyPromptEvent | NativeSshAuthPromptEvent | NativeSshProgressEvent | NativeSshStdoutEvent) => void,
   ) => NativeSshSubscription;
 }>;

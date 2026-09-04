@@ -18,6 +18,7 @@ Pod::Spec.new do |s|
     bash "../scripts/build-rust-ios.sh"
   CMD
   s.vendored_frameworks = 'vendor/happier-iroh-native/HappierIrohNativeRust.xcframework'
+  s.resources = '../release-evidence/*'
   s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES' }
   s.source_files = '**/*.{h,m,mm,swift}'
 end

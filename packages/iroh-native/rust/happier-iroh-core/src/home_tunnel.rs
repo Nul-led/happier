@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::task::{JoinHandle, JoinSet};
 
 /// Bounded resource-safety window for reading the one-byte tunnel preamble.
@@ -67,6 +67,7 @@ struct AcceptorState {
 /// transport boundary.
 pub struct HomeAcceptor {
     task: JoinHandle<()>,
+    shutdown: watch::Sender<bool>,
     state: Arc<AcceptorState>,
     slot: Arc<ConsumerSlot>,
     _registration: ConsumerRegistration,
@@ -82,32 +83,34 @@ impl HomeAcceptor {
         let slot = registration.slot().clone();
         let state = Arc::new(AcceptorState::default());
         let loop_state = Arc::clone(&state);
-        // The consumer loop owns the per-connection JoinSet: aborting the
-        // loop (stop/drop or released registration) aborts every connection
-        // and stream task. Completed connection tasks are reaped as they
-        // finish instead of being retained for the acceptor's lifetime.
+        let (shutdown, mut shutdown_rx) = watch::channel(false);
+        // The consumer loop owns the per-connection JoinSet: shutdown signals
+        // every nested connection/stream task, then joins it before public stop
+        // returns. Completed connection tasks are reaped as they finish.
         let task = tokio::spawn(async move {
             let mut connections: JoinSet<()> = JoinSet::new();
             loop {
                 tokio::select! {
+                    _ = shutdown_rx.changed() => { break; }
                     accepted = receiver.recv() => {
                         let Some(accepted) = accepted else {
                             // Registration released or endpoint shut down.
                             break;
                         };
                         let connection_state = Arc::clone(&loop_state);
+                        let connection_shutdown = shutdown_rx.clone();
                         connections.spawn(async move {
-                            pump_connection(accepted, config.target, connection_state).await;
+                            pump_connection(accepted, config.target, connection_state, connection_shutdown).await;
                         });
                     }
                     Some(_) = connections.join_next(), if !connections.is_empty() => {}
                 }
             }
-            // Dropping the JoinSet aborts all remaining connection tasks.
-            drop(connections);
+            connections.shutdown().await;
         });
         Ok(Self {
             task,
+            shutdown,
             state,
             slot,
             _registration: registration,
@@ -131,12 +134,20 @@ impl HomeAcceptor {
     /// registration is released with the acceptor, so the same live endpoint
     /// can start a fresh acceptor without a stale registration.
     pub fn stop(self) {
-        self.task.abort();
+        let _ = self.shutdown.send(true);
+    }
+
+    /// Stops the acceptor and waits until its consumer task has joined every
+    /// nested connection/stream pump and released the ALPN registration.
+    pub async fn stop_and_wait(mut self) {
+        let _ = self.shutdown.send(true);
+        let _ = (&mut self.task).await;
     }
 }
 
 impl Drop for HomeAcceptor {
     fn drop(&mut self) {
+        let _ = self.shutdown.send(true);
         self.task.abort();
         // `_registration` releases the Home ALPN slot when dropped.
     }
@@ -156,6 +167,7 @@ async fn pump_connection(
     accepted: AcceptedIrohConnection,
     target: SocketAddr,
     state: Arc<AcceptorState>,
+    mut shutdown_rx: watch::Receiver<bool>,
 ) {
     let mut streams: JoinSet<()> = JoinSet::new();
     let Some((send, recv)) = accept_first_application_stream(&accepted.connection).await else {
@@ -169,6 +181,7 @@ async fn pump_connection(
     });
     loop {
         tokio::select! {
+            _ = shutdown_rx.changed() => { break; }
             opened = accepted.connection.accept_bi() => {
                 match opened {
                     Ok((send, recv)) => {
@@ -188,10 +201,8 @@ async fn pump_connection(
             Some(_) = streams.join_next(), if !streams.is_empty() => {}
         }
     }
-    // Dropping the set aborts any still-active stream tasks for this
-    // connection; the connection is gone either way. Dropping `accepted`
-    // (including its endpoint cap lease) drains the admission.
-    drop(streams);
+    streams.shutdown().await;
+    // Dropping `accepted` (including its endpoint cap lease) drains admission.
 }
 
 /// One tunneled stream: bounded preamble read → fixed-target TCP connect →
@@ -282,6 +293,8 @@ pub struct HomeTunnel {
     remote_endpoint_id: String,
     connection: iroh::endpoint::Connection,
     task: JoinHandle<()>,
+    watcher_task: JoinHandle<()>,
+    shutdown: watch::Sender<bool>,
     state: Arc<TunnelState>,
 }
 
@@ -334,7 +347,7 @@ impl HomeTunnel {
         // loop here.
         let watcher_state = Arc::clone(&state);
         let watcher_connection = connection.clone();
-        tokio::spawn(async move {
+        let watcher_task = tokio::spawn(async move {
             watcher_connection.closed().await;
             watcher_state
                 .connection_active
@@ -343,10 +356,12 @@ impl HomeTunnel {
 
         let loop_connection = connection.clone();
         let loop_state = Arc::clone(&state);
+        let (shutdown, mut shutdown_rx) = watch::channel(false);
         let task = tokio::spawn(async move {
             let mut streams = JoinSet::new();
             loop {
                 tokio::select! {
+                    _ = shutdown_rx.changed() => { break; }
                     accepted = listener.accept() => {
                         let Ok((mut socket, _)) = accepted else { break };
                         if !loop_state.connection_active.load(Ordering::Acquire) { break; }
@@ -375,9 +390,7 @@ impl HomeTunnel {
                     Some(_) = streams.join_next(), if !streams.is_empty() => {}
                 }
             }
-            // Releasing the tunnel aborts this task, which drops the JoinSet
-            // and therefore every still-active local socket pump.
-            drop(streams);
+            streams.shutdown().await;
         });
         Ok(Self {
             origin: format!("http://{}:{}", local_addr.ip(), local_addr.port()),
@@ -385,6 +398,8 @@ impl HomeTunnel {
             remote_endpoint_id,
             connection,
             task,
+            watcher_task,
+            shutdown,
             state,
         })
     }
@@ -422,17 +437,20 @@ impl HomeTunnel {
     /// lease) stays healthy. Explicit endpoint shutdown is owned by the
     /// endpoint manager.
     pub fn stop(self) {
-        self.task.abort();
+        let _ = self.shutdown.send(true);
         self.connection.close(0u32.into(), b"tunnel_released");
     }
 
-    /// Releases the lease and waits until the loopback accept task has dropped
-    /// its listener. Native lifecycle APIs use this form because reporting a
-    /// completed release while the old runtime origin still accepts sockets
-    /// would let callers publish or reuse a resource they no longer own.
+    /// Releases the lease and waits until the loopback accept task has joined
+    /// all active local socket pumps. Native lifecycle APIs use this form
+    /// because reporting a completed release while the old runtime origin still
+    /// accepts sockets would let callers publish or reuse a resource they no
+    /// longer own.
     pub async fn stop_and_wait(self) {
-        self.task.abort();
+        let _ = self.shutdown.send(true);
+        self.watcher_task.abort();
         self.connection.close(0u32.into(), b"tunnel_released");
         let _ = self.task.await;
+        let _ = self.watcher_task.await;
     }
 }

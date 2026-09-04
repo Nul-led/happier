@@ -23,7 +23,8 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 
 use happier_iroh_native::{
-    happier_iroh_native_create_endpoint_json, happier_iroh_native_ensure_home_tunnel_json,
+    begin_endpoint_shutdown_json, happier_iroh_native_create_endpoint_json,
+    happier_iroh_native_ensure_home_tunnel_json,
     happier_iroh_native_free_string, happier_iroh_native_get_endpoint_status_json,
     happier_iroh_native_get_machine_acceptor_status_json,
     happier_iroh_native_get_machine_tunnel_status_json, happier_iroh_native_get_tunnel_status_json,
@@ -217,6 +218,11 @@ pub fn release_home_tunnel(request: String) -> Result<AsyncTask<JsonOpTask>> {
 /// `happier_iroh_native_shutdown_endpoint_json`.
 #[napi]
 pub fn shutdown_endpoint(request: String) -> Result<AsyncTask<JsonOpTask>> {
+    // Close the canonical native owner's admission on the JavaScript call
+    // thread before libuv queues the blocking cleanup task. Otherwise a full
+    // worker pool of pending starts can prevent shutdown from ever reaching
+    // the cancellation boundary that settles those starts.
+    let _ = begin_endpoint_shutdown_json(&request);
     json_op(happier_iroh_native_shutdown_endpoint_json, request)
 }
 

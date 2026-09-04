@@ -37,6 +37,8 @@ pub struct NativeSshExecRequest {
     pub port: u16,
     pub username: String,
     pub command: String,
+    #[serde(default)]
+    pub input: Option<String>,
     pub auth: NativeSshAuthRequest,
     pub connect_timeout_ms: u64,
     pub auth_timeout_ms: u64,

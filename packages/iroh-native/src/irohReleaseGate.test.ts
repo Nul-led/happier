@@ -69,6 +69,30 @@ describe('Iroh mobile release build contract', () => {
     );
   });
 
+  it('installs the Android application JNI context exactly once before endpoint construction', () => {
+    const kotlin = readPackageFile(
+      'android/src/main/java/dev/happier/iroh/HappierIrohNativeModule.kt',
+    );
+    const createEndpoint = kotlin.slice(
+      kotlin.indexOf('fun createEndpoint(request:'),
+      kotlin.indexOf('fun startMachineHttpTunnel('),
+    );
+
+    expect(createEndpoint.indexOf('IrohAndroidContext.install(context)')).toBeGreaterThan(-1);
+    expect(createEndpoint.indexOf('IrohAndroidContext.install(context)')).toBeLessThan(
+      createEndpoint.indexOf('HappierIrohNativeRust.createEndpointJson('),
+    );
+    expect(kotlin).toMatch(
+      /private object IrohAndroidContext[\s\S]*?installed[\s\S]*?@Synchronized[\s\S]*?if \(installed\) return[\s\S]*?installAndroidContext\(context\.applicationContext\)[\s\S]*?installed = true/u,
+    );
+    expect(kotlin).toContain('external fun installAndroidContext(context: Context)');
+
+    const rust = readPackageFile('rust/happier-iroh-native/src/lib.rs');
+    expect(rust).toContain('iroh::dns::install_android_jni_context(');
+    expect(rust).toContain('static ANDROID_APPLICATION_CONTEXT: Mutex<Option<GlobalRef>>');
+    expect(rust).toContain('env.new_global_ref(application_context)');
+  });
+
   it('does not publish the Cargo target directory with the package sources', () => {
     const manifest = JSON.parse(readPackageFile('package.json')) as { files?: string[] };
     expect(manifest.files).not.toContain('rust');

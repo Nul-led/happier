@@ -178,7 +178,6 @@ describe('typed operations over the C ABI JSON envelope', () => {
       carrier: 'iroh',
       observedPath: 'direct',
       startedAtMs: 1234,
-      descriptorRevision: 3,
       endpointHandle: 'c-1',
     };
     const addon = createFakeAddon((operation, request) => {
@@ -192,17 +191,14 @@ describe('typed operations over the C ABI JSON envelope', () => {
       homeServerIdentityId: 'srv_home',
       endpointId: 'ep',
       directAddresses: ['127.0.0.1:4001'],
-      descriptorRevision: 3,
     });
     expect(started.tunnelId).toBe('t-1');
     expect(started.runtimeOrigin).toBe('http://127.0.0.1:41023/');
-    expect(started.descriptorRevision).toBe(3);
     expect(JSON.parse(captured)).toEqual({
       endpointHandle: 'c-1',
       homeServerIdentityId: 'srv_home',
       endpointId: 'ep',
       directAddresses: ['127.0.0.1:4001'],
-      descriptorRevision: 3,
     });
   });
 
@@ -219,7 +215,6 @@ describe('typed operations over the C ABI JSON envelope', () => {
               carrier: 'iroh',
               observedPath: 'direct',
               startedAtMs: 1,
-              descriptorRevision: null,
               endpointHandle: 'c-1',
             },
           })

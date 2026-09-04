@@ -7,6 +7,8 @@ export type NativeSshErrorCode =
   | 'host-key-rejected'
   | 'host-key-mismatch'
   | 'authentication-failed'
+  | 'input-limit-exceeded'
+  | 'output-limit-exceeded'
   | 'exec-timeout'
   | 'exec-exit-failure'
   | 'loopback-bind-failed'
@@ -29,6 +31,8 @@ const ERROR_CODES = new Set<NativeSshErrorCode>([
   'host-key-rejected',
   'host-key-mismatch',
   'authentication-failed',
+  'input-limit-exceeded',
+  'output-limit-exceeded',
   'exec-timeout',
   'exec-exit-failure',
   'loopback-bind-failed',

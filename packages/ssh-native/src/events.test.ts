@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  normalizeNativeSshAuthPromptEvent,
-  normalizeNativeSshHostKeyPromptEvent,
-  normalizeNativeSshProgressEvent,
+    normalizeNativeSshAuthPromptEvent,
+    normalizeNativeSshHostKeyPromptEvent,
+    normalizeNativeSshProgressEvent,
+    normalizeNativeSshStdoutEvent,
 } from './events';
 
 describe('native SSH event normalization', () => {
@@ -54,6 +55,15 @@ describe('native SSH event normalization', () => {
       host: '10.0.0.5',
       port: 22,
     })).toBeNull();
+  });
+
+  it('normalizes only request-correlated non-empty stdout chunks', () => {
+    expect(normalizeNativeSshStdoutEvent({ requestId: 'request-1', chunk: 'first\n' })).toEqual({
+      requestId: 'request-1',
+      chunk: 'first\n',
+    });
+    expect(normalizeNativeSshStdoutEvent({ requestId: '', chunk: 'first\n' })).toBeNull();
+    expect(normalizeNativeSshStdoutEvent({ requestId: 'request-1', chunk: '' })).toBeNull();
   });
 
   it('normalizes private-key passphrase and keyboard-interactive auth prompts', () => {

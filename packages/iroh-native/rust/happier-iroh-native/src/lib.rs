@@ -26,9 +26,10 @@ use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
-    Mutex, OnceLock,
+    Arc, Condvar, Mutex, OnceLock,
 };
 use tokio::runtime::{Builder, Runtime};
+use tokio::sync::watch;
 use zeroize::Zeroize;
 
 fn default_relay_policy() -> String {
@@ -87,8 +88,6 @@ struct EnsureTunnelRequest {
     direct_addresses: Vec<SocketAddr>,
     #[serde(default)]
     relay_urls: Vec<String>,
-    #[serde(default)]
-    descriptor_revision: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -137,7 +136,6 @@ struct TunnelLease {
     tunnel: HomeTunnel,
     runtime_origin: String,
     started_at_ms: u64,
-    descriptor_revision: Option<u64>,
 }
 
 struct MachineAcceptorEntry {
@@ -149,6 +147,130 @@ struct MachineTunnelLease {
     endpoint_handle: String,
     tunnel: MachineTunnelKind,
     started_at_ms: u64,
+}
+
+struct EndpointHandleEntry {
+    identity: EndpointIdentity,
+    lifecycle: Arc<EndpointLifecycle>,
+}
+
+#[derive(Default)]
+struct EndpointLifecycleState {
+    shutting_down: bool,
+    admitted: usize,
+}
+
+/// Per-endpoint admission and cancellation owned by the existing native
+/// lifecycle boundary. This is deliberately not a general task registry:
+/// every admitted operation remains on its calling host thread, while this
+/// state only closes admission, signals cancellation, and lets shutdown wait
+/// for custody to settle.
+struct EndpointLifecycle {
+    state: Mutex<EndpointLifecycleState>,
+    settled: Condvar,
+    cancellation: watch::Sender<bool>,
+}
+
+impl EndpointLifecycle {
+    fn new() -> Self {
+        let (cancellation, _) = watch::channel(false);
+        Self {
+            state: Mutex::new(EndpointLifecycleState::default()),
+            settled: Condvar::new(),
+            cancellation,
+        }
+    }
+
+    fn try_admit(self: &Arc<Self>) -> Option<EndpointAdmission> {
+        let mut state = self.state.lock().expect("endpoint lifecycle lock poisoned");
+        if state.shutting_down {
+            return None;
+        }
+        state.admitted += 1;
+        Some(EndpointAdmission {
+            lifecycle: Arc::clone(self),
+            cancellation: self.cancellation.subscribe(),
+        })
+    }
+
+    fn begin_shutdown(&self) {
+        let mut state = self.state.lock().expect("endpoint lifecycle lock poisoned");
+        if !state.shutting_down {
+            state.shutting_down = true;
+            let _ = self.cancellation.send(true);
+        }
+    }
+
+    fn wait_for_admitted(&self) {
+        let mut state = self.state.lock().expect("endpoint lifecycle lock poisoned");
+        while state.admitted != 0 {
+            state = self
+                .settled
+                .wait(state)
+                .expect("endpoint lifecycle lock poisoned while waiting");
+        }
+    }
+
+    #[cfg(test)]
+    fn admitted_count(&self) -> usize {
+        self.state
+            .lock()
+            .expect("endpoint lifecycle lock poisoned")
+            .admitted
+    }
+}
+
+struct EndpointAdmission {
+    lifecycle: Arc<EndpointLifecycle>,
+    cancellation: watch::Receiver<bool>,
+}
+
+impl EndpointAdmission {
+    fn is_cancelled(&self) -> bool {
+        *self.cancellation.borrow()
+    }
+
+    async fn cancelled(&mut self) {
+        if self.is_cancelled() {
+            return;
+        }
+        let _ = self.cancellation.changed().await;
+    }
+
+    fn can_publish(&self) -> bool {
+        !self
+            .lifecycle
+            .state
+            .lock()
+            .expect("endpoint lifecycle lock poisoned")
+            .shutting_down
+    }
+
+    fn publish_if_active<T, R>(&self, value: T, publish: impl FnOnce(T) -> R) -> Result<R, T> {
+        let state = self
+            .lifecycle
+            .state
+            .lock()
+            .expect("endpoint lifecycle lock poisoned");
+        if state.shutting_down {
+            return Err(value);
+        }
+        Ok(publish(value))
+    }
+}
+
+impl Drop for EndpointAdmission {
+    fn drop(&mut self) {
+        let mut state = self
+            .lifecycle
+            .state
+            .lock()
+            .expect("endpoint lifecycle lock poisoned");
+        state.admitted = state.admitted.saturating_sub(1);
+        if state.admitted == 0 {
+            self.lifecycle.settled.notify_all();
+        }
+    }
 }
 
 enum MachineTunnelKind {
@@ -164,10 +286,10 @@ impl MachineTunnelKind {
         }
     }
 
-    fn stop(self) {
+    async fn stop_and_wait(self) {
         match self {
-            Self::Raw(tunnel) => tunnel.stop(),
-            Self::Http(tunnel) => tunnel.stop(),
+            Self::Raw(tunnel) => tunnel.stop_and_wait().await,
+            Self::Http(tunnel) => tunnel.stop_and_wait().await,
         }
     }
 }
@@ -195,7 +317,7 @@ struct TestFixtureState {
 /// Direct lifecycle state only — no registry framework.
 struct NativeRuntime {
     manager: EndpointManager,
-    endpoint_handles: Mutex<HashMap<String, EndpointIdentity>>,
+    endpoint_handles: Mutex<HashMap<String, EndpointHandleEntry>>,
     acceptors: Mutex<HashMap<String, AcceptorEntry>>,
     tunnels: Mutex<HashMap<String, TunnelLease>>,
     machine_acceptors: Mutex<HashMap<String, MachineAcceptorEntry>>,
@@ -279,13 +401,14 @@ fn invoke_json_request(request: &str, operation: fn(*const c_char) -> Value) -> 
     operation(request.as_ptr())
 }
 
-/// Interprets a C UTF-8 request pointer for the safe JSON entry points below.
-fn c_request_str<'a>(value: *const c_char) -> Result<&'a str, OpError> {
+/// Copies a C UTF-8 request before returning to safe Rust.
+fn c_request_string(value: *const c_char) -> Result<String, OpError> {
     if value.is_null() {
         return Err(("invalid-request", "request is required".to_owned()));
     }
     unsafe { CStr::from_ptr(value) }
         .to_str()
+        .map(str::to_owned)
         .map_err(|_| ("invalid-request", "request is not UTF-8".to_owned()))
 }
 
@@ -360,21 +483,61 @@ fn ephemeral_identity() -> EndpointIdentity {
     EndpointIdentity::Ephemeral(NEXT_EPHEMERAL.fetch_add(1, Ordering::Relaxed))
 }
 
-fn register_endpoint_handle(handle: &str, identity: EndpointIdentity) {
-    state()
-        .endpoint_handles
-        .lock()
-        .expect("endpoint handle lock poisoned")
-        .insert(handle.to_owned(), identity);
-}
-
 fn endpoint_identity_for(handle: &str) -> Option<EndpointIdentity> {
     state()
         .endpoint_handles
         .lock()
         .expect("endpoint handle lock poisoned")
         .get(handle)
-        .cloned()
+        .map(|entry| entry.identity.clone())
+}
+
+fn begin_endpoint_create(
+    handle: &str,
+    identity: EndpointIdentity,
+) -> Result<EndpointAdmission, Value> {
+    let mut handles = state()
+        .endpoint_handles
+        .lock()
+        .expect("endpoint handle lock poisoned");
+    let lifecycle = match handles.get(handle) {
+        Some(existing) if existing.identity != identity => {
+            return Err(error_response(
+                "endpoint_config_conflict",
+                "endpoint handle is already bound to another identity",
+            ));
+        }
+        Some(existing) => Arc::clone(&existing.lifecycle),
+        None => {
+            let lifecycle = Arc::new(EndpointLifecycle::new());
+            handles.insert(
+                handle.to_owned(),
+                EndpointHandleEntry {
+                    identity,
+                    lifecycle: Arc::clone(&lifecycle),
+                },
+            );
+            lifecycle
+        }
+    };
+    lifecycle
+        .try_admit()
+        .ok_or_else(|| error_response("cancelled", "Iroh endpoint shutdown has already started"))
+}
+
+fn admit_endpoint_work(handle: &str) -> Result<(EndpointIdentity, EndpointAdmission), Value> {
+    let handles = state()
+        .endpoint_handles
+        .lock()
+        .expect("endpoint handle lock poisoned");
+    let Some(entry) = handles.get(handle) else {
+        return Err(error_response("not-found", "endpointHandle is unknown"));
+    };
+    let admission = entry
+        .lifecycle
+        .try_admit()
+        .ok_or_else(|| error_response("cancelled", "Iroh endpoint shutdown has already started"))?;
+    Ok((entry.identity.clone(), admission))
 }
 
 fn endpoint_config(
@@ -539,11 +702,9 @@ fn test_relay_url() -> Option<String> {
 /// application relay policy is stable; explicit automatic-policy relays are
 /// unioned by the core and outgoing flow caps are connection-local.
 async fn acquire_shared_endpoint(
-    handle: String,
     identity: EndpointIdentity,
     config: EndpointConfig,
 ) -> Result<std::sync::Arc<IrohEndpoint>, Value> {
-    register_endpoint_handle(&handle, identity.clone());
     match state().manager.acquire_identified(identity, &config).await {
         Ok(endpoint) => Ok(endpoint),
         Err(happier_iroh_core::IrohError::EndpointConfigConflict) => Err(error_response(
@@ -625,6 +786,7 @@ fn machine_start_error(error: happier_iroh_core::IrohError) -> Value {
             happier_iroh_core::MachineFailureCode::EndpointIdentityMismatch.as_str(),
             "machine tunnel remote identity does not match the requested endpoint",
         ),
+        IrohError::Cancelled => error_response("cancelled", "machine tunnel start was cancelled"),
         _ => error_response("transport-unavailable", "machine transport is unavailable"),
     }
 }
@@ -642,7 +804,6 @@ fn insert_lease(
     home_server_identity_id: String,
     endpoint_handle: String,
     tunnel: HomeTunnel,
-    descriptor_revision: Option<u64>,
 ) -> (String, String, u64, &'static str) {
     let runtime_origin = tunnel.local_origin().unwrap_or_default();
     let observed_path = observed_path_string(&tunnel);
@@ -657,7 +818,6 @@ fn insert_lease(
             tunnel,
             runtime_origin: runtime_origin.clone(),
             started_at_ms,
-            descriptor_revision,
         },
     );
     (tunnel_id, runtime_origin, started_at_ms, observed_path)
@@ -668,11 +828,6 @@ fn insert_lease(
 // ---------------------------------------------------------------------------
 
 fn create_endpoint(value: *const c_char) -> Value {
-    #[cfg(feature = "test-relay-fixture")]
-    let _test_operation = state()
-        .test_operation
-        .lock()
-        .expect("test operation lock poisoned");
     let mut input = match parse_json::<CreateEndpointRequest>(value) {
         Ok(v) => v,
         Err((code, message)) => return error_response(&code, message),
@@ -703,9 +858,6 @@ fn create_endpoint(value: *const c_char) -> Value {
             "keyPath and native endpoint seed are mutually exclusive",
         );
     }
-    if let Err((code, message)) = ensure_endpoint_key(key_path.as_deref()) {
-        return error_response(code, message);
-    }
     let handle = match &key_seed {
         Some(seed) => format!("mobile:{}", seed.endpoint_id()),
         None => endpoint_handle_for(key_path.as_deref()),
@@ -715,20 +867,50 @@ fn create_endpoint(value: *const c_char) -> Value {
         (None, Some(seed)) => EndpointIdentity::Seeded(seed.endpoint_id()),
         (None, None) => ephemeral_identity(),
     };
-    let endpoint = match runtime().block_on(acquire_shared_endpoint(
-        handle.clone(),
-        identity,
-        endpoint_config(
+    let (mut admission, config) = {
+        #[cfg(feature = "test-relay-fixture")]
+        let _test_operation = state()
+            .test_operation
+            .lock()
+            .expect("test operation lock poisoned");
+        let admission = match begin_endpoint_create(&handle, identity.clone()) {
+            Ok(admission) => admission,
+            Err(error) => return error,
+        };
+        // Key provisioning is endpoint work too. Admit it only after the
+        // lifecycle boundary has closed the create-vs-shutdown race, so a
+        // create refused during shutdown performs no key-store I/O first.
+        if let Err((code, message)) = ensure_endpoint_key(key_path.as_deref()) {
+            return error_response(code, message);
+        }
+        let config = endpoint_config(
             key_path,
             key_seed,
             relay_policy,
             input.relay_urls.clone(),
             caps,
-        ),
-    )) {
+        );
+        (admission, config)
+    };
+    let endpoint = match runtime().block_on(async {
+        tokio::select! {
+            result = acquire_shared_endpoint(identity.clone(), config) => result,
+            _ = admission.cancelled() => Err(error_response(
+                "cancelled",
+                "Iroh endpoint creation was cancelled by shutdown",
+            )),
+        }
+    }) {
         Ok(endpoint) => endpoint,
         Err(error) => return error,
     };
+    if !admission.can_publish() {
+        runtime().block_on(state().manager.shutdown(&identity));
+        return error_response(
+            "cancelled",
+            "Iroh endpoint creation was cancelled by shutdown",
+        );
+    }
     // Report one coherent snapshot of the configuration that the native
     // endpoint actually applied. A later Home may add another explicit relay,
     // so reading relay mode and URLs through separate locks could otherwise
@@ -770,14 +952,18 @@ fn start_home_acceptor(value: *const c_char) -> Value {
         }
     };
     let target = SocketAddr::new(target_ip, input.target_port);
-    let Some(identity) = endpoint_identity_for(&input.endpoint_handle) else {
-        return error_response("not-found", "endpointHandle is unknown");
+    let (identity, admission) = match admit_endpoint_work(&input.endpoint_handle) {
+        Ok(admitted) => admitted,
+        Err(error) => return error,
     };
     let Some((_, endpoint)) = state().manager.get(&identity) else {
         return error_response("not-found", "endpoint is shut down");
     };
     let mut acceptors = state().acceptors.lock().expect("acceptor lock poisoned");
     if let Some(existing) = acceptors.get(&input.endpoint_handle) {
+        if !admission.can_publish() {
+            return error_response("cancelled", "Home acceptor start was cancelled");
+        }
         if existing.target == target {
             return json!({"ok": true, "result": {
                 "endpointHandle": input.endpoint_handle,
@@ -796,10 +982,16 @@ fn start_home_acceptor(value: *const c_char) -> Value {
     match HomeAcceptor::start(&endpoint, HomeAcceptorConfig { target }) {
         Ok(acceptor) => {
             let status = acceptor.status();
-            acceptors.insert(
-                input.endpoint_handle.clone(),
-                AcceptorEntry { acceptor, target },
-            );
+            let published = admission.publish_if_active(acceptor, |acceptor| {
+                acceptors.insert(
+                    input.endpoint_handle.clone(),
+                    AcceptorEntry { acceptor, target },
+                );
+            });
+            if let Err(acceptor) = published {
+                runtime().block_on(acceptor.stop_and_wait());
+                return error_response("cancelled", "Home acceptor start was cancelled");
+            }
             json!({"ok": true, "result": {
                 "endpointHandle": input.endpoint_handle,
                 "reused": false,
@@ -821,7 +1013,7 @@ fn stop_home_acceptor(value: *const c_char) -> Value {
         .expect("acceptor lock poisoned")
         .remove(&input.endpoint_handle)
     {
-        entry.acceptor.stop();
+        runtime().block_on(entry.acceptor.stop_and_wait());
     }
     json!({"ok": true})
 }
@@ -837,14 +1029,9 @@ fn ensure_home_tunnel(value: *const c_char) -> Value {
     if validate_endpoint_id(&input.endpoint_id).is_err() {
         return error_response("invalid-request", "endpointId is invalid");
     }
-    if input.descriptor_revision == Some(0) {
-        return error_response(
-            "invalid-request",
-            "descriptorRevision must be a positive integer",
-        );
-    }
-    let Some(identity) = endpoint_identity_for(&input.endpoint_handle) else {
-        return error_response("not-found", "endpointHandle is unknown");
+    let (identity, mut admission) = match admit_endpoint_work(&input.endpoint_handle) {
+        Ok(admitted) => admitted,
+        Err(error) => return error,
     };
     let Some((config, endpoint)) = state().manager.get(&identity) else {
         return error_response("not-found", "endpoint is shut down");
@@ -869,25 +1056,38 @@ fn ensure_home_tunnel(value: *const c_char) -> Value {
             }
         }
     };
-    let tunnel = match runtime().block_on(HomeTunnel::start(
-        &endpoint,
-        HomeTunnelConfig {
-            endpoint_id: input.endpoint_id.clone(),
-            direct_addresses: input.direct_addresses.clone(),
-            relay_urls: tunnel_hints,
-            ..HomeTunnelConfig::default()
-        },
-    )) {
+    let tunnel = match runtime().block_on(async {
+        tokio::select! {
+            result = HomeTunnel::start(
+                &endpoint,
+                HomeTunnelConfig {
+                    endpoint_id: input.endpoint_id.clone(),
+                    direct_addresses: input.direct_addresses.clone(),
+                    relay_urls: tunnel_hints,
+                    ..HomeTunnelConfig::default()
+                },
+            ) => result,
+            _ = admission.cancelled() => Err(happier_iroh_core::IrohError::Cancelled),
+        }
+    }) {
         Ok(tunnel) => tunnel,
         Err(error) => return tunnel_start_error(error),
     };
-    let (tunnel_id, runtime_origin, started_at_ms, observed_path) = insert_lease(
-        next_id(),
-        input.home_server_identity_id.clone(),
-        input.endpoint_handle.clone(),
-        tunnel,
-        input.descriptor_revision,
-    );
+    let published = admission.publish_if_active(tunnel, |tunnel| {
+        insert_lease(
+            next_id(),
+            input.home_server_identity_id.clone(),
+            input.endpoint_handle.clone(),
+            tunnel,
+        )
+    });
+    let (tunnel_id, runtime_origin, started_at_ms, observed_path) = match published {
+        Ok(published) => published,
+        Err(tunnel) => {
+            runtime().block_on(tunnel.stop_and_wait());
+            return tunnel_start_error(happier_iroh_core::IrohError::Cancelled);
+        }
+    };
     json!({"ok": true, "result": {
         "tunnelId": tunnel_id,
         "homeServerIdentityId": input.home_server_identity_id,
@@ -896,7 +1096,6 @@ fn ensure_home_tunnel(value: *const c_char) -> Value {
         "carrier": "iroh",
         "observedPath": observed_path,
         "startedAtMs": started_at_ms,
-        "descriptorRevision": input.descriptor_revision,
         "endpointHandle": input.endpoint_handle,
     }})
 }
@@ -952,8 +1151,9 @@ fn start_machine_acceptor(value: *const c_char) -> Value {
         Ok(value) => value,
         Err(error) => return error,
     };
-    let Some(identity) = endpoint_identity_for(&input.endpoint_handle) else {
-        return error_response("not-found", "endpointHandle is unknown");
+    let (identity, admission) = match admit_endpoint_work(&input.endpoint_handle) {
+        Ok(admitted) => admitted,
+        Err(error) => return error,
     };
     let Some((_, endpoint)) = state().manager.get(&identity) else {
         return error_response("not-found", "endpoint is shut down");
@@ -963,6 +1163,9 @@ fn start_machine_acceptor(value: *const c_char) -> Value {
         .lock()
         .expect("machine acceptor lock poisoned");
     if let Some(existing) = acceptors.get(&input.endpoint_handle) {
+        if !admission.can_publish() {
+            return error_response("cancelled", "machine acceptor start was cancelled");
+        }
         if existing.admission_target == admission_target {
             return json!({"ok": true, "result": {"endpointHandle": input.endpoint_handle, "reused": true, "status": machine_acceptor_status_json(existing.acceptor.status())}});
         }
@@ -975,13 +1178,19 @@ fn start_machine_acceptor(value: *const c_char) -> Value {
     match MachineAcceptor::start(&endpoint, MachineAcceptorConfig { admission_target }) {
         Ok(acceptor) => {
             let status = acceptor.status();
-            acceptors.insert(
-                input.endpoint_handle.clone(),
-                MachineAcceptorEntry {
-                    acceptor,
-                    admission_target,
-                },
-            );
+            let published = admission.publish_if_active(acceptor, |acceptor| {
+                acceptors.insert(
+                    input.endpoint_handle.clone(),
+                    MachineAcceptorEntry {
+                        acceptor,
+                        admission_target,
+                    },
+                );
+            });
+            if let Err(acceptor) = published {
+                runtime().block_on(acceptor.stop_and_wait());
+                return error_response("cancelled", "machine acceptor start was cancelled");
+            }
             json!({"ok": true, "result": {"endpointHandle": input.endpoint_handle, "reused": false, "status": machine_acceptor_status_json(status)}})
         }
         Err(_) => error_response("transport-unavailable", "machine acceptor failed to start"),
@@ -999,7 +1208,7 @@ fn stop_machine_acceptor(value: *const c_char) -> Value {
         .expect("machine acceptor lock poisoned")
         .remove(&input.endpoint_handle);
     if let Some(entry) = entry {
-        entry.acceptor.stop();
+        runtime().block_on(entry.acceptor.stop_and_wait());
     }
     json!({"ok": true})
 }
@@ -1012,8 +1221,9 @@ fn start_machine_tunnel(value: *const c_char) -> Value {
     if validate_endpoint_id(&input.endpoint_id).is_err() {
         return error_response("invalid-request", "endpointId is invalid");
     }
-    let Some(identity) = endpoint_identity_for(&input.endpoint_handle) else {
-        return error_response("not-found", "endpointHandle is unknown");
+    let (identity, mut admission) = match admit_endpoint_work(&input.endpoint_handle) {
+        Ok(admitted) => admitted,
+        Err(error) => return error,
     };
     let Some((config, endpoint)) = state().manager.get(&identity) else {
         return error_response("not-found", "endpoint is shut down");
@@ -1034,17 +1244,22 @@ fn start_machine_tunnel(value: *const c_char) -> Value {
             }
         }
     };
-    let tunnel = match runtime().block_on(MachineTunnel::start(
-        &endpoint,
-        MachineTunnelConfig {
-            endpoint_id: input.endpoint_id,
-            bind_addr: "127.0.0.1:0".parse().expect("fixed loopback"),
-            direct_addresses: input.direct_addresses,
-            relay_urls,
-            handshake_json: input.handshake_json,
-            cap_profile,
-        },
-    )) {
+    let tunnel = match runtime().block_on(async {
+        tokio::select! {
+            result = MachineTunnel::start(
+                &endpoint,
+                MachineTunnelConfig {
+                    endpoint_id: input.endpoint_id,
+                    bind_addr: "127.0.0.1:0".parse().expect("fixed loopback"),
+                    direct_addresses: input.direct_addresses,
+                    relay_urls,
+                    handshake_json: input.handshake_json,
+                    cap_profile,
+                },
+            ) => result,
+            _ = admission.cancelled() => Err(happier_iroh_core::IrohError::Cancelled),
+        }
+    }) {
         Ok(tunnel) => tunnel,
         Err(error) => return machine_start_error(error),
     };
@@ -1052,18 +1267,24 @@ fn start_machine_tunnel(value: *const c_char) -> Value {
     let status = tunnel.status();
     let tunnel_local_capability = tunnel.local_capability().to_owned();
     let started_at_ms = now_ms();
-    state()
-        .machine_tunnels
-        .lock()
-        .expect("machine tunnel lock poisoned")
-        .insert(
-            id.clone(),
-            MachineTunnelLease {
-                endpoint_handle: input.endpoint_handle.clone(),
-                tunnel: MachineTunnelKind::Raw(tunnel),
-                started_at_ms,
-            },
-        );
+    let published = admission.publish_if_active(tunnel, |tunnel| {
+        state()
+            .machine_tunnels
+            .lock()
+            .expect("machine tunnel lock poisoned")
+            .insert(
+                id.clone(),
+                MachineTunnelLease {
+                    endpoint_handle: input.endpoint_handle.clone(),
+                    tunnel: MachineTunnelKind::Raw(tunnel),
+                    started_at_ms,
+                },
+            );
+    });
+    if let Err(tunnel) = published {
+        runtime().block_on(tunnel.stop_and_wait());
+        return machine_start_error(happier_iroh_core::IrohError::Cancelled);
+    }
     json!({"ok": true, "result": {"machineTunnelId": id, "endpointHandle": input.endpoint_handle, "localPort": status.local_port, "localCapability": tunnel_local_capability, "connectionActive": status.connection_active, "remoteEndpointId": status.remote_endpoint_id, "observedPath": status.observed_path.observed_path.as_str(), "lastErrorCode": status.last_failure.map(|failure| failure.as_str()), "startedAtMs": started_at_ms}})
 }
 
@@ -1075,8 +1296,9 @@ fn start_machine_http_tunnel(value: *const c_char) -> Value {
     if validate_endpoint_id(&input.endpoint_id).is_err() {
         return error_response("invalid-request", "endpointId is invalid");
     }
-    let Some(identity) = endpoint_identity_for(&input.endpoint_handle) else {
-        return error_response("not-found", "endpointHandle is unknown");
+    let (identity, mut admission) = match admit_endpoint_work(&input.endpoint_handle) {
+        Ok(admitted) => admitted,
+        Err(error) => return error,
     };
     let Some((config, endpoint)) = state().manager.get(&identity) else {
         return error_response("not-found", "endpoint is shut down");
@@ -1102,17 +1324,22 @@ fn start_machine_http_tunnel(value: *const c_char) -> Value {
             }
         }
     };
-    let tunnel = match runtime().block_on(MachineHttpTunnel::start(
-        &endpoint,
-        MachineTunnelConfig {
-            endpoint_id: input.endpoint_id,
-            bind_addr: "127.0.0.1:0".parse().expect("fixed loopback"),
-            direct_addresses: input.direct_addresses,
-            relay_urls,
-            handshake_json: input.handshake_json,
-            cap_profile,
-        },
-    )) {
+    let tunnel = match runtime().block_on(async {
+        tokio::select! {
+            result = MachineHttpTunnel::start(
+                &endpoint,
+                MachineTunnelConfig {
+                    endpoint_id: input.endpoint_id,
+                    bind_addr: "127.0.0.1:0".parse().expect("fixed loopback"),
+                    direct_addresses: input.direct_addresses,
+                    relay_urls,
+                    handshake_json: input.handshake_json,
+                    cap_profile,
+                },
+            ) => result,
+            _ = admission.cancelled() => Err(happier_iroh_core::IrohError::Cancelled),
+        }
+    }) {
         Ok(tunnel) => tunnel,
         Err(error) => return machine_start_error(error),
     };
@@ -1121,18 +1348,24 @@ fn start_machine_http_tunnel(value: *const c_char) -> Value {
     let local_port = tunnel.local_port();
     let local_capability = tunnel.local_capability().to_owned();
     let started_at_ms = now_ms();
-    state()
-        .machine_tunnels
-        .lock()
-        .expect("machine tunnel lock poisoned")
-        .insert(
-            id.clone(),
-            MachineTunnelLease {
-                endpoint_handle: input.endpoint_handle.clone(),
-                tunnel: MachineTunnelKind::Http(tunnel),
-                started_at_ms,
-            },
-        );
+    let published = admission.publish_if_active(tunnel, |tunnel| {
+        state()
+            .machine_tunnels
+            .lock()
+            .expect("machine tunnel lock poisoned")
+            .insert(
+                id.clone(),
+                MachineTunnelLease {
+                    endpoint_handle: input.endpoint_handle.clone(),
+                    tunnel: MachineTunnelKind::Http(tunnel),
+                    started_at_ms,
+                },
+            );
+    });
+    if let Err(tunnel) = published {
+        runtime().block_on(tunnel.stop_and_wait());
+        return machine_start_error(happier_iroh_core::IrohError::Cancelled);
+    }
     json!({"ok": true, "result": {"machineTunnelId": id, "endpointHandle": input.endpoint_handle, "localPort": local_port, "localCapability": local_capability, "connectionActive": status.connection_active, "remoteEndpointId": status.remote_endpoint_id, "observedPath": status.observed_path.observed_path.as_str(), "lastErrorCode": status.last_failure.map(|failure| failure.as_str()), "startedAtMs": started_at_ms}})
 }
 
@@ -1152,7 +1385,7 @@ fn stop_machine_tunnel(value: *const c_char) -> Value {
         .expect("machine tunnel lock poisoned")
         .remove(&input.machine_tunnel_id);
     if let Some(lease) = lease {
-        lease.tunnel.stop();
+        runtime().block_on(lease.tunnel.stop_and_wait());
     }
     json!({"ok": true})
 }
@@ -1191,52 +1424,35 @@ fn get_machine_acceptor_status(value: *const c_char) -> Value {
 }
 
 fn shutdown_endpoint(value: *const c_char) -> Value {
-    match c_request_str(value) {
-        Ok(request) => shutdown_endpoint_json(request),
+    match c_request_string(value) {
+        Ok(request) => shutdown_endpoint_json(&request),
         Err((code, message)) => error_response(&code, message),
     }
 }
 
-/// Safe JSON lifecycle entry point for the explicit process shutdown of one
-/// endpoint (and its acceptors/leases). The persistent key file is retained;
-/// identity is never rotated or deleted.
-pub fn shutdown_endpoint_json(request: &str) -> Value {
-    #[cfg(feature = "test-relay-fixture")]
-    let _test_operation = state()
-        .test_operation
-        .lock()
-        .expect("test operation lock poisoned");
-    let input = match serde_json::from_str::<EndpointHandleRequest>(request) {
-        Ok(v) => v,
-        Err(error) => return error_response("invalid-request", error.to_string()),
-    };
-    let Some(identity) = endpoint_identity_for(&input.endpoint_handle) else {
-        return json!({"ok": true, "result": {"stopped": false}});
-    };
-    // Explicit process shutdown owns endpoint teardown: its acceptor and all
-    // its tunnel leases stop with it.
+fn stop_endpoint_resources(endpoint_handle: &str) {
     if let Some(entry) = state()
         .acceptors
         .lock()
         .expect("acceptor lock poisoned")
-        .remove(&input.endpoint_handle)
+        .remove(endpoint_handle)
     {
-        entry.acceptor.stop();
+        runtime().block_on(entry.acceptor.stop_and_wait());
     }
     if let Some(entry) = state()
         .machine_acceptors
         .lock()
         .expect("machine acceptor lock poisoned")
-        .remove(&input.endpoint_handle)
+        .remove(endpoint_handle)
     {
-        entry.acceptor.stop();
+        runtime().block_on(entry.acceptor.stop_and_wait());
     }
     let bound_leases: Vec<String> = state()
         .tunnels
         .lock()
         .expect("lease lock poisoned")
         .iter()
-        .filter(|(_, lease)| lease.endpoint_handle == input.endpoint_handle)
+        .filter(|(_, lease)| lease.endpoint_handle == endpoint_handle)
         .map(|(id, _)| id.clone())
         .collect();
     for lease_id in bound_leases {
@@ -1254,7 +1470,7 @@ pub fn shutdown_endpoint_json(request: &str) -> Value {
         .lock()
         .expect("machine tunnel lock poisoned")
         .iter()
-        .filter(|(_, lease)| lease.endpoint_handle == input.endpoint_handle)
+        .filter(|(_, lease)| lease.endpoint_handle == endpoint_handle)
         .map(|(id, _)| id.clone())
         .collect();
     for lease_id in machine_leases {
@@ -1264,15 +1480,80 @@ pub fn shutdown_endpoint_json(request: &str) -> Value {
             .expect("machine tunnel lock poisoned")
             .remove(&lease_id)
         {
-            lease.tunnel.stop();
+            runtime().block_on(lease.tunnel.stop_and_wait());
         }
     }
-    let stopped = runtime().block_on(state().manager.shutdown(&identity));
-    state()
+}
+
+fn begin_endpoint_shutdown(
+    input: &EndpointHandleRequest,
+) -> Option<(EndpointIdentity, Arc<EndpointLifecycle>)> {
+    {
+        #[cfg(feature = "test-relay-fixture")]
+        let _test_operation = state()
+            .test_operation
+            .lock()
+            .expect("test operation lock poisoned");
+        let found = state()
+            .endpoint_handles
+            .lock()
+            .expect("endpoint handle lock poisoned")
+            .get(&input.endpoint_handle)
+            .map(|entry| (entry.identity.clone(), Arc::clone(&entry.lifecycle)));
+        let (identity, lifecycle) = found?;
+        lifecycle.begin_shutdown();
+        Some((identity, lifecycle))
+    }
+}
+
+/// Closes endpoint admission synchronously without performing blocking cleanup.
+/// Host bindings call this at their public shutdown invocation boundary so an
+/// already-saturated worker pool cannot queue shutdown behind new starts. The
+/// aggregate shutdown below remains the sole cleanup/join owner.
+pub fn begin_endpoint_shutdown_json(request: &str) -> Value {
+    let input = match serde_json::from_str::<EndpointHandleRequest>(request) {
+        Ok(v) => v,
+        Err(error) => return error_response("invalid-request", error.to_string()),
+    };
+    let found = begin_endpoint_shutdown(&input).is_some();
+    json!({"ok": true, "result": {"found": found}})
+}
+
+/// Safe JSON lifecycle entry point for the explicit process shutdown of one
+/// endpoint (and its acceptors/leases). The persistent key file is retained;
+/// identity is never rotated or deleted.
+pub fn shutdown_endpoint_json(request: &str) -> Value {
+    let input = match serde_json::from_str::<EndpointHandleRequest>(request) {
+        Ok(v) => v,
+        Err(error) => return error_response("invalid-request", error.to_string()),
+    };
+    let Some((identity, lifecycle)) = begin_endpoint_shutdown(&input) else {
+        return json!({"ok": true, "result": {"stopped": false}});
+    };
+    // Close admission before taking any resource snapshot. Endpoint shutdown
+    // also wakes outgoing Iroh connects; the per-operation cancellation arm
+    // ensures a caller that was admitted earlier settles without publishing a
+    // late handle.
+    stop_endpoint_resources(&input.endpoint_handle);
+    let stopped_before_settle = runtime().block_on(state().manager.shutdown(&identity));
+    lifecycle.wait_for_admitted();
+
+    // Admitted work checks the lifecycle before publishing. Sweep again as a
+    // defensive owner-boundary invariant and close an endpoint whose bind won
+    // the manager race after the first shutdown snapshot.
+    stop_endpoint_resources(&input.endpoint_handle);
+    let stopped_after_settle = runtime().block_on(state().manager.shutdown(&identity));
+    let mut handles = state()
         .endpoint_handles
         .lock()
-        .expect("endpoint handle lock poisoned")
-        .remove(&input.endpoint_handle);
+        .expect("endpoint handle lock poisoned");
+    if handles
+        .get(&input.endpoint_handle)
+        .is_some_and(|entry| Arc::ptr_eq(&entry.lifecycle, &lifecycle))
+    {
+        handles.remove(&input.endpoint_handle);
+    }
+    let stopped = stopped_before_settle || stopped_after_settle;
     json!({"ok": true, "result": {"stopped": stopped}})
 }
 
@@ -1298,6 +1579,7 @@ fn machine_acceptor_status_json(status: happier_iroh_core::MachineAcceptorStatus
         "connectionsAccepted": status.connections_accepted,
         "connectionsActive": status.connections_active,
         "streamsAccepted": status.streams_accepted,
+        "streamsActive": status.streams_active,
         "streamsRejected": status.streams_rejected,
         "lastErrorCode": status.last_failure.map(|failure| failure.as_str()),
         "lastPath": status.last_path.map(|snapshot| json!({
@@ -1357,7 +1639,6 @@ pub fn get_tunnel_status_json(request: &str) -> Value {
                 "connectionActive": tunnel_status.connection_active,
                 "streamsOpened": tunnel_status.streams_opened,
                 "startedAtMs": lease.started_at_ms,
-                "descriptorRevision": lease.descriptor_revision,
                 "endpointHandle": lease.endpoint_handle,
             }})
         }
@@ -1365,8 +1646,8 @@ pub fn get_tunnel_status_json(request: &str) -> Value {
 }
 
 fn get_tunnel_status(value: *const c_char) -> Value {
-    match c_request_str(value) {
-        Ok(request) => get_tunnel_status_json(request),
+    match c_request_string(value) {
+        Ok(request) => get_tunnel_status_json(&request),
         Err((code, message)) => error_response(code, message),
     }
 }
@@ -1508,10 +1789,67 @@ pub extern "C" fn happier_iroh_native_free_string(value: *mut c_char) {
 mod android {
     use super::*;
     use jni::{
-        objects::{JClass, JString},
+        objects::{GlobalRef, JClass, JObject, JString},
         sys::jstring,
         JNIEnv,
     };
+    use std::sync::Mutex;
+
+    // `ndk_context` retains this raw jobject for the process lifetime. Keep a
+    // JNI global reference alive so Android cannot collect the application
+    // context after this boundary call returns.
+    static ANDROID_APPLICATION_CONTEXT: Mutex<Option<GlobalRef>> = Mutex::new(None);
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_happier_iroh_HappierIrohNativeRust_installAndroidContext(
+        mut env: JNIEnv<'_>,
+        _: JClass<'_>,
+        application_context: JObject<'_>,
+    ) {
+        let mut installed = match ANDROID_APPLICATION_CONTEXT.lock() {
+            Ok(installed) => installed,
+            Err(_) => {
+                let _ = env.throw_new(
+                    "java/lang/IllegalStateException",
+                    "Iroh Android application context initialization failed",
+                );
+                return;
+            }
+        };
+        if installed.is_some() {
+            return;
+        }
+
+        let java_vm = match env.get_java_vm() {
+            Ok(java_vm) => java_vm,
+            Err(_) => {
+                let _ = env.throw_new(
+                    "java/lang/IllegalStateException",
+                    "Iroh could not access the Android Java VM",
+                );
+                return;
+            }
+        };
+        let application_context = match env.new_global_ref(application_context) {
+            Ok(application_context) => application_context,
+            Err(_) => {
+                let _ = env.throw_new(
+                    "java/lang/IllegalStateException",
+                    "Iroh could not retain the Android application context",
+                );
+                return;
+            }
+        };
+
+        unsafe {
+            iroh::dns::install_android_jni_context(
+                java_vm.get_java_vm_pointer().cast(),
+                application_context.as_obj().as_raw().cast(),
+            );
+        }
+        *installed = Some(application_context);
+    }
+
     fn call(
         env: &mut JNIEnv<'_>,
         input: JString<'_>,
@@ -1607,6 +1945,171 @@ mod android {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn endpoint_lifecycle_closes_admission_and_waits_for_admitted_work() {
+        let lifecycle = Arc::new(EndpointLifecycle::new());
+        let admitted = lifecycle
+            .try_admit()
+            .expect("active endpoint admits lifecycle work");
+
+        lifecycle.begin_shutdown();
+        assert!(
+            lifecycle.try_admit().is_none(),
+            "shutdown must synchronously refuse later endpoint work"
+        );
+        assert!(admitted.is_cancelled(), "admitted work observes shutdown");
+
+        let (settled_tx, settled_rx) = std::sync::mpsc::channel();
+        let waiting_lifecycle = Arc::clone(&lifecycle);
+        let waiter = std::thread::spawn(move || {
+            waiting_lifecycle.wait_for_admitted();
+            settled_tx.send(()).expect("report settled admission");
+        });
+        assert!(
+            settled_rx
+                .recv_timeout(std::time::Duration::from_millis(25))
+                .is_err(),
+            "shutdown cannot complete while admitted work still owns custody"
+        );
+
+        drop(admitted);
+        settled_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("shutdown settles after admitted work releases custody");
+        waiter.join().expect("lifecycle waiter joins");
+    }
+
+    #[test]
+    fn endpoint_shutdown_refuses_concurrent_recreate_and_allows_clean_restart() {
+        let key = temp_key_path("shutdown-admission");
+        let (handle, _, _) = create_disabled_endpoint(&key);
+        let lifecycle = state()
+            .endpoint_handles
+            .lock()
+            .expect("endpoint handle lock")
+            .get(&handle)
+            .map(|entry| Arc::clone(&entry.lifecycle))
+            .expect("created endpoint lifecycle");
+        let admitted = lifecycle.try_admit().expect("hold admitted work");
+
+        let shutdown_handle = handle.clone();
+        let shutdown = std::thread::spawn(move || {
+            shutdown_endpoint_json(&json!({ "endpointHandle": shutdown_handle }).to_string())
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !admitted.is_cancelled() && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(admitted.is_cancelled(), "shutdown closes admission first");
+
+        let rejected = create_endpoint_json(
+            &json!({ "keyPath": &key, "relayPolicy": "disabled" }).to_string(),
+        );
+        assert_eq!(rejected["ok"], false, "concurrent recreate: {rejected}");
+        assert_eq!(rejected["error"]["code"], "cancelled");
+
+        drop(admitted);
+        let stopped = shutdown.join().expect("shutdown thread joins");
+        assert_eq!(stopped["ok"], true, "shutdown result: {stopped}");
+        assert!(endpoint_identity_for(&handle).is_none());
+
+        let restarted = create_endpoint_json(
+            &json!({ "keyPath": &key, "relayPolicy": "disabled" }).to_string(),
+        );
+        assert_eq!(restarted["ok"], true, "clean restart: {restarted}");
+        let restarted_handle = restarted["result"]["endpointHandle"]
+            .as_str()
+            .expect("restarted handle");
+        let _ = shutdown_endpoint_json(&json!({ "endpointHandle": restarted_handle }).to_string());
+        remove_temp_key(&key);
+    }
+
+    #[test]
+    fn endpoint_shutdown_admission_can_close_before_blocking_cleanup_is_scheduled() {
+        let key = temp_key_path("shutdown-preclose");
+        let (handle, _, _) = create_disabled_endpoint(&key);
+        let request = json!({ "endpointHandle": handle }).to_string();
+
+        let closed = begin_endpoint_shutdown_json(&request);
+        assert_eq!(closed["ok"], true, "pre-close result: {closed}");
+        assert_eq!(closed["result"]["found"], true, "pre-close result: {closed}");
+
+        let lifecycle = state()
+            .endpoint_handles
+            .lock()
+            .expect("endpoint handle lock")
+            .get(&handle)
+            .map(|entry| Arc::clone(&entry.lifecycle))
+            .expect("pre-close retains the handle for aggregate cleanup");
+        assert!(
+            lifecycle.try_admit().is_none(),
+            "the host-call boundary closes admission before queued cleanup can run"
+        );
+
+        let stopped = shutdown_endpoint_json(&request);
+        assert_eq!(stopped["ok"], true, "shutdown result: {stopped}");
+        let _ = std::fs::remove_file(key);
+    }
+
+    #[test]
+    fn endpoint_shutdown_cancels_an_admitted_home_connect_without_publishing_a_lease() {
+        let remote_key = temp_key_path("shutdown-remote");
+        let (remote_handle, remote_endpoint_id, _) = create_disabled_endpoint(&remote_key);
+        let _ = shutdown_endpoint_json(&json!({ "endpointHandle": remote_handle }).to_string());
+
+        let client_key = temp_key_path("shutdown-client");
+        let (client_handle, _, _) = create_disabled_endpoint(&client_key);
+        let lifecycle = state()
+            .endpoint_handles
+            .lock()
+            .expect("endpoint handle lock")
+            .get(&client_handle)
+            .map(|entry| Arc::clone(&entry.lifecycle))
+            .expect("client lifecycle");
+        let start_handle = client_handle.clone();
+        let start = std::thread::spawn(move || {
+            ensure_home_tunnel_json(
+                &json!({
+                    "endpointHandle": start_handle,
+                    "homeServerIdentityId": "srv_shutdown_race",
+                    "endpointId": remote_endpoint_id,
+                    "directAddresses": ["127.0.0.1:9"],
+                    "relayUrls": []
+                })
+                .to_string(),
+            )
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while lifecycle.admitted_count() == 0 && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert_eq!(lifecycle.admitted_count(), 1, "Home connect was admitted");
+
+        let stopped =
+            shutdown_endpoint_json(&json!({ "endpointHandle": client_handle }).to_string());
+        assert_eq!(stopped["ok"], true, "shutdown result: {stopped}");
+        let start_result = start.join().expect("Home start thread joins");
+        assert_eq!(start_result["ok"], false, "late Home start: {start_result}");
+        assert!(
+            matches!(
+                start_result["error"]["code"].as_str(),
+                Some("cancelled" | "transport_closed")
+            ),
+            "shutdown may win through the admission signal or by closing the owned endpoint: {start_result}"
+        );
+        assert!(
+            state()
+                .tunnels
+                .lock()
+                .expect("lease lock")
+                .values()
+                .all(|lease| lease.endpoint_handle != client_handle),
+            "cancelled Home start must not publish a late lease"
+        );
+        remove_temp_key(&remote_key);
+        remove_temp_key(&client_key);
+    }
 
     #[test]
     fn machine_tunnel_identity_mismatch_surfaces_the_existing_failure_code() {

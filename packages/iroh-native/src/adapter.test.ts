@@ -51,7 +51,6 @@ describe('Iroh native lifecycle adapter', () => {
       endpointId: 'endpoint-a',
       policy: 'automatic',
       relayUrls: ['https://relay.example.test'],
-      descriptorRevision: 7,
       endpointKeyPath: '/data/runtime/iroh/endpoint.key',
     });
     expect(native.ensureHomeTunnel).toHaveBeenCalledWith(expect.objectContaining({
@@ -61,7 +60,6 @@ describe('Iroh native lifecycle adapter', () => {
       // policy → relayPolicy rename belongs to the native module boundary.
       policy: 'automatic',
       relayUrls: ['https://relay.example.test'],
-      descriptorRevision: 7,
       endpointKeyPath: '/data/runtime/iroh/endpoint.key',
     }));
   });
@@ -81,7 +79,6 @@ describe('Iroh native lifecycle adapter', () => {
       policy: 'disabled',
       directAddresses: ['127.0.0.1:4242'],
       relayUrls: ['https://relay.example.test'],
-      descriptorRevision: 7,
       endpointKeyPath: '/data/runtime/iroh/endpoint.key',
     });
     await adapter.ensureHomeTunnel({
@@ -102,7 +99,6 @@ describe('Iroh native lifecycle adapter', () => {
       endpointId: 'endpoint-a',
       directAddresses: ['127.0.0.1:4242'],
       relayUrls: ['https://relay.example.test'],
-      descriptorRevision: 7,
     });
   });
 

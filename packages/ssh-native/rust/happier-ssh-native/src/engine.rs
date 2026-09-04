@@ -2,13 +2,21 @@ use std::sync::Arc;
 
 use crate::cancellation::register_request;
 use crate::error::NativeSshError;
-use crate::exec::exec;
+use crate::exec::{exec, ExecOutputSink, NoopExecOutputSink};
 use crate::host_key::HostKeyPrompter;
 use crate::types::{NativeSshExecRequest, NativeSshExecResult};
 
 pub fn run_exec_blocking(
     request: NativeSshExecRequest,
     prompter: Arc<dyn HostKeyPrompter>,
+) -> Result<NativeSshExecResult, NativeSshError> {
+    run_exec_blocking_with_output_sink(request, prompter, Arc::new(NoopExecOutputSink))
+}
+
+pub fn run_exec_blocking_with_output_sink(
+    request: NativeSshExecRequest,
+    prompter: Arc<dyn HostKeyPrompter>,
+    output_sink: Arc<dyn ExecOutputSink>,
 ) -> Result<NativeSshExecResult, NativeSshError> {
     let cancellation = register_request(&request.request_id)?;
     let receiver = cancellation.receiver();
@@ -19,5 +27,5 @@ pub fn run_exec_blocking(
         .map_err(|_| {
             NativeSshError::new("engine-internal", "Native SSH runtime could not start.")
         })?;
-    runtime.block_on(exec(request, prompter, receiver))
+    runtime.block_on(exec(request, prompter, output_sink, receiver))
 }

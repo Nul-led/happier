@@ -5,7 +5,7 @@ public final class HappierSshNativeModule: Module {
   public func definition() -> ModuleDefinition {
     Name("HappierSshNative")
 
-    Events("hostKeyPrompt", "authPrompt", "progress")
+    Events("hostKeyPrompt", "authPrompt", "progress", "stdout")
 
     Function("getAvailability") { () -> [String: Any] in
       HappierSshNativeBridge.availability()

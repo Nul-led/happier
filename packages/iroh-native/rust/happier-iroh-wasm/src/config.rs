@@ -80,8 +80,8 @@ pub fn validate_stream_write_size(bytes: usize) -> Result<()> {
     Ok(())
 }
 
-/// A validated browser endpoint plan: the persisted identity seed plus the
-/// explicitly configured relay set the endpoint is allowed to use.
+/// A validated browser endpoint plan: the live SharedWorker's ephemeral
+/// identity seed plus the explicitly configured relay set the endpoint may use.
 ///
 /// `EndpointSeed`'s own `Debug` is redacted, so this stays safe to log.
 #[derive(Debug)]
@@ -93,11 +93,12 @@ pub struct BrowserEndpointPlan {
 impl BrowserEndpointPlan {
     /// Validates a browser endpoint request.
     ///
-    /// * `secret_key` is the 32-byte persisted browser identity. The browser
-    ///   never mints one per load, per Home, per tab, or per request. The
-    ///   caller owns wiping its own buffer; the intermediate copy taken here is
-    ///   zeroized before returning, exactly as the native key store does, so
-    ///   the only retained copy is `EndpointSeed`'s zeroize-on-drop one.
+    /// * `secret_key` is the 32-byte ephemeral identity of one live SharedWorker
+    ///   endpoint. Tabs and operations share it for that worker's lifetime; a
+    ///   replacement worker receives a new seed and later Machine grants bind
+    ///   the new EndpointId. The caller owns wiping its own buffer; the
+    ///   intermediate copy taken here is zeroized before returning, so the only
+    ///   retained copy is `EndpointSeed`'s zeroize-on-drop one.
     /// * `relay_urls` are the descriptor's explicitly configured relays. An
     ///   empty set fails closed: a relay-only carrier with no relay would
     ///   otherwise be silently unusable, and ambient infrastructure is never
@@ -216,7 +217,7 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_relay_policy_violations_are_rejected_by_the_core() {
+    fn descriptor_relay_grammar_violations_are_rejected_without_an_arbitrary_item_ceiling() {
         for invalid in [
             "https://user:secret@relay.happier.test",
             "ftp://relay.happier.test",
@@ -229,17 +230,16 @@ mod tests {
                 "{invalid} must be rejected"
             );
         }
-        let too_many = (0..9)
+        let larger_relay_set = (0..9)
             .map(|index| format!("https://relay-{index}.happier.test"))
             .collect::<Vec<_>>();
-        assert_eq!(
-            BrowserEndpointPlan::resolve(&SEED, &too_many).unwrap_err(),
-            IrohError::InvalidDescriptor
-        );
+        let plan = BrowserEndpointPlan::resolve(&SEED, &larger_relay_set)
+            .expect("valid relay sets are not rejected by an arbitrary item ceiling");
+        assert_eq!(plan.relay_urls(), larger_relay_set);
     }
 
     #[test]
-    fn the_browser_identity_is_the_persisted_seed_not_a_fresh_key() {
+    fn the_supplied_live_worker_seed_deterministically_defines_browser_identity() {
         let relays = vec!["https://relay.happier.test".to_string()];
         let first = BrowserEndpointPlan::resolve(&SEED, &relays).expect("plan");
         let second = BrowserEndpointPlan::resolve(&SEED, &relays).expect("plan");

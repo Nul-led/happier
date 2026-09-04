@@ -12,6 +12,7 @@ const serverDir = resolve(packageDir, '../../apps/server');
 const cliDir = resolve(packageDir, '../../apps/cli');
 const uiDir = resolve(packageDir, '../../apps/ui');
 const testsDir = resolve(packageDir, '../tests');
+const repoRoot = resolve(packageDir, '../..');
 
 export function createHomeIrohRealIntegrationPlan({
   platform = process.platform,
@@ -21,6 +22,7 @@ export function createHomeIrohRealIntegrationPlan({
   cliDir: selectedCliDir = cliDir,
   uiDir: selectedUiDir = uiDir,
   testsDir: selectedTestsDir = testsDir,
+  repoRoot: selectedRepoRoot = repoRoot,
 } = {}) {
   const platformPath = platform === 'win32' ? win32 : posix;
   const addonPath = platformPath.join(
@@ -36,6 +38,14 @@ export function createHomeIrohRealIntegrationPlan({
       // through the package's production loader, not the relay-fixture addon.
       { args: ['-s', 'build:native'], cwd: selectedPackageDir },
     ],
+    // The spawned Personal Home starts before the daemon, so prepare the
+    // server's current workspace-package outputs here. In particular this
+    // rebuilds the protocol exports from current source instead of consuming
+    // a stale dist tree or a frozen/archive representation.
+    workspacePreparation: {
+      args: ['-s', 'workspace', '@happier-dev/server', 'build:shared'],
+      cwd: selectedRepoRoot,
+    },
     tests: {
       server: {
         args: [
@@ -168,6 +178,11 @@ export function runHomeIrohRealIntegration({
         stdio: 'inherit',
       });
     }
+    execYarnImpl(plan.workspacePreparation.args, {
+      cwd: plan.workspacePreparation.cwd,
+      env,
+      stdio: 'inherit',
+    });
     const ordinaryBuild = plan.builds[2];
     if (!ordinaryBuild) throw new Error('Missing ordinary native addon build step.');
     execYarnImpl(ordinaryBuild.args, {

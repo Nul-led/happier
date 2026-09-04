@@ -8,17 +8,14 @@ import type { NativeIrohModule } from './HappierIrohNative.types.js';
 import type { IrohObservedPath, IrohRelayPolicy } from './types.js';
 
 /** Fixed machine-carrier admission/framing metadata shared with daemon composition. */
-export const IROH_MACHINE_ADMISSION_PATH = '/v1/iroh/machine/admit' as const;
-export const IROH_MACHINE_REMOTE_ENDPOINT_HEADER = 'X-Happier-Iroh-Remote-Endpoint-Id' as const;
-/**
- * Header of the trusted local admission response that selects the application
- * loopback port for one authenticated machine stream. Only the locally trusted
- * admission owner may select a destination; the peer can never supply one.
- */
-export const IROH_MACHINE_APPLICATION_PORT_HEADER = 'X-Happier-Iroh-Application-Port' as const;
-export const IROH_MACHINE_APPLICATION_CAPABILITY_HEADER = 'X-Happier-Iroh-Application-Capability' as const;
-export const IROH_MACHINE_STREAM_ACCEPT_BYTE = 0x01 as const;
-export const IROH_MACHINE_STREAM_REJECT_BYTE = 0x00 as const;
+export {
+  MACHINE_ADMISSION_PATH as IROH_MACHINE_ADMISSION_PATH,
+  MACHINE_APPLICATION_CAPABILITY_HEADER as IROH_MACHINE_APPLICATION_CAPABILITY_HEADER,
+  MACHINE_APPLICATION_PORT_HEADER as IROH_MACHINE_APPLICATION_PORT_HEADER,
+  MACHINE_REMOTE_ENDPOINT_HEADER as IROH_MACHINE_REMOTE_ENDPOINT_HEADER,
+  MACHINE_STREAM_ACCEPT_BYTE as IROH_MACHINE_STREAM_ACCEPT_BYTE,
+  MACHINE_STREAM_REJECT_BYTE as IROH_MACHINE_STREAM_REJECT_BYTE,
+} from './descriptor.js';
 
 /** Cap profile ids accepted by the C ABI (`IrohCapProfile`). */
 export type IrohNodeCapProfile = 'homeInteractive' | 'machineBulk';
@@ -104,7 +101,6 @@ export type IrohNodeEnsureHomeTunnelRequest = Readonly<{
   endpointId: string;
   directAddresses?: readonly string[];
   relayUrls?: readonly string[];
-  descriptorRevision?: number;
 }>;
 
 /**
@@ -118,6 +114,8 @@ export type IrohNodeAcceptorStatus = Readonly<{
   connectionsAccepted: number;
   connectionsActive: number;
   streamsAccepted: number;
+  /** Machine acceptors report currently admitted application streams. */
+  streamsActive?: number;
   streamsRejected: number;
   lastPath: Readonly<{
     observedPath: IrohObservedPath;
@@ -200,7 +198,6 @@ export type IrohNodeTunnelStarted = Readonly<{
   carrier: 'iroh';
   observedPath: IrohObservedPath;
   startedAtMs: number;
-  descriptorRevision: number | null;
   endpointHandle: string;
 }>;
 
@@ -213,7 +210,6 @@ export type IrohNodeTunnelStatus = Readonly<{
   connectionActive: boolean;
   streamsOpened: number;
   startedAtMs: number;
-  descriptorRevision: number | null;
   endpointHandle: string;
 }>;
 

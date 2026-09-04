@@ -23,11 +23,12 @@
       "default": "./dist/testController.js"
     }
   },
-  "files": ["dist", "native", "ios/HappierIrohNativeModule.swift", "ios/HappierIrohNative.podspec", "android/build.gradle", "android/src", "rust/Cargo.toml", "rust/Cargo.lock", "rust/happier-iroh-core", "rust/happier-iroh-native", "rust/happier-iroh-node", "scripts", "expo-module.config.json", "package.json", "README.md"],
+  "files": ["dist", "native", "ios/HappierIrohNativeModule.swift", "ios/HappierIrohNative.podspec", "android/build.gradle", "android/src", "rust-toolchain.toml", "rust/Cargo.toml", "rust/Cargo.lock", "rust/happier-iroh-core", "rust/happier-iroh-native", "rust/happier-iroh-node", "scripts", "expo-module.config.json", "package.json", "README.md"],
   "scripts": {
     "build": "node ../../scripts/workspaces/buildTypeScriptPackageDist.mjs -p tsconfig.json",
     "build:native": "node scripts/build-node-addon.mjs",
     "build:native:test-relay": "node scripts/build-node-addon.mjs --test-relay-fixture",
+    "generate:release-evidence": "node scripts/generate-native-release-evidence.mjs --package-root . --output-dir release-evidence",
     "test:home-iroh:real": "../../apps/stack/bin/hstack-exec --script=test:home-iroh:real:local",
     "test:home-iroh:real:local": "node scripts/run-home-iroh-real-integration.mjs",
     "verify:native": "node scripts/verify-node-addon-load.mjs",
@@ -38,7 +39,7 @@
     "verify:iroh-lock-parity": "node scripts/verify-iroh-lock-parity.mjs",
     "verify:native:bun": "bun scripts/verify-node-addon-load.mjs",
     "test": "../../apps/stack/bin/hstack-exec --script=test:local",
-    "test:local": "node ../../node_modules/vitest/vitest.mjs run --config ../../vitest.config.ts src && node --test scripts/run-home-iroh-real-integration.test.mjs scripts/verify-browser-iroh-wasm.test.mjs",
+    "test:local": "node ../../node_modules/vitest/vitest.mjs run --config ../../vitest.config.ts src && node --test scripts/ensure-rust-toolchain.test.mjs scripts/generate-native-release-evidence.test.mjs scripts/native-release-evidence-platform-packaging.contract.test.mjs scripts/run-home-iroh-real-integration.test.mjs scripts/verify-browser-iroh-wasm.test.mjs",
     "typecheck": "../../apps/stack/bin/hstack-exec --script=typecheck:local",
     "typecheck:local": "node ../../scripts/workspaces/runTypeScriptCli.mjs -p tsconfig.json --noEmit"
   },

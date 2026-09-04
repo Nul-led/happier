@@ -1,18 +1,15 @@
 use crate::{IrohError, Result};
-use std::time::Duration;
 
-/// Per-connection QUIC resource bounds for a named workload profile. These
-/// protect receive memory and stream fan-out at the transport boundary; they
-/// deliberately do not impose an endpoint-wide device/peer quota.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct IrohTunnelLimits {
-    pub max_streams: usize,
-    pub receive_window: usize,
-    pub stream_receive_window: usize,
-    /// Transport-layer idle timeout in milliseconds; `None` disables it so
-    /// long-lived application sockets (Socket.IO heartbeats) own liveness.
-    pub idle_timeout_ms: Option<u64>,
-}
+// noq-proto 1.2.0 defaults. Its TransportConfig documentation defines
+// worst-case stream receive memory as stream fan-out × per-stream window, while
+// the default aggregate receive window is VarInt::MAX. Use that documented
+// finite structural boundary for the aggregate window instead of inventing a
+// separate Home/Machine tuning value. The owner test below pins these inputs to
+// the dependency's actual defaults so an upstream change requires review.
+const PINNED_UPSTREAM_MAX_BIDI_STREAMS: usize = 100;
+const PINNED_UPSTREAM_STREAM_RECEIVE_WINDOW: usize = 1_250_000;
+const FINITE_CONNECTION_RECEIVE_WINDOW: usize =
+    PINNED_UPSTREAM_MAX_BIDI_STREAMS * PINNED_UPSTREAM_STREAM_RECEIVE_WINDOW;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IrohCapProfile {
@@ -21,50 +18,19 @@ pub enum IrohCapProfile {
 }
 
 impl IrohCapProfile {
-    pub(crate) const fn limits(self) -> IrohTunnelLimits {
-        match self {
-            Self::HomeInteractive => IrohTunnelLimits {
-                max_streams: 64,
-                receive_window: 16 * 1024 * 1024,
-                stream_receive_window: 4 * 1024 * 1024,
-                idle_timeout_ms: None,
-            },
-            Self::MachineBulk => IrohTunnelLimits {
-                max_streams: 32,
-                receive_window: 64 * 1024 * 1024,
-                stream_receive_window: 8 * 1024 * 1024,
-                idle_timeout_ms: Some(10 * 60 * 1000),
-            },
-        }
-    }
-
-    /// Builds the QUIC transport config that enforces the profile's stream and
-    /// receive-window caps at the actual connection boundary. This is the real
-    /// enforcement point: peers cannot open more streams or exceed these
-    /// windows regardless of what any caller-side counter says.
+    /// Builds the QUIC transport config with only the two justified deviations
+    /// from the pinned defaults: a finite connection receive-memory window and
+    /// no transport idle timeout. Home Socket.IO and Machine/workspace streams
+    /// own application liveness, so an arbitrary transport idle cutoff would
+    /// terminate otherwise valid idle work.
     pub fn transport_config(self) -> Result<iroh::endpoint::QuicTransportConfig> {
-        let limits = self.limits();
-        let mut builder = iroh::endpoint::QuicTransportConfig::builder()
-            .max_concurrent_bidi_streams(iroh::endpoint::VarInt::from(
-                u32::try_from(limits.max_streams).map_err(|_| IrohError::ResourceLimit)?,
-            ))
-            .receive_window(iroh::endpoint::VarInt::from(
-                u32::try_from(limits.receive_window).map_err(|_| IrohError::ResourceLimit)?,
-            ))
-            .stream_receive_window(iroh::endpoint::VarInt::from(
-                u32::try_from(limits.stream_receive_window)
+        let mut builder = iroh::endpoint::QuicTransportConfig::builder().receive_window(
+            iroh::endpoint::VarInt::from(
+                u32::try_from(FINITE_CONNECTION_RECEIVE_WINDOW)
                     .map_err(|_| IrohError::ResourceLimit)?,
-            ));
-        builder = match limits.idle_timeout_ms {
-            // Disabled at the transport layer (home_interactive); application
-            // heartbeats own liveness.
-            None => builder.max_idle_timeout(None),
-            Some(ms) => builder.max_idle_timeout(Some(
-                Duration::from_millis(ms)
-                    .try_into()
-                    .map_err(|_| IrohError::ResourceLimit)?,
-            )),
-        };
+            ),
+        );
+        builder = builder.max_idle_timeout(None);
         Ok(builder.build())
     }
 }
@@ -91,32 +57,104 @@ impl IrohCapProfile {
 mod tests {
     use super::*;
 
+    /// Reads one field out of a `QuicTransportConfig`'s debug rendering. The
+    /// built config exposes no getters, so this is the only way to observe what
+    /// the profile actually applied at the QUIC boundary rather than what the
+    /// profile struct says.
+    fn transport_field(rendered: &str, field: &str) -> String {
+        let needle = format!(" {field}: ");
+        let start = rendered
+            .find(&needle)
+            .unwrap_or_else(|| panic!("transport config debug must contain `{field}`"))
+            + needle.len();
+        let mut depth = 0usize;
+        for (offset, character) in rendered[start..].char_indices() {
+            match character {
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' if depth > 0 => depth -= 1,
+                ',' if depth == 0 => return rendered[start..start + offset].to_string(),
+                _ => {}
+            }
+        }
+        rendered[start..].to_string()
+    }
+
+    fn rendered_transport_config(profile: IrohCapProfile) -> String {
+        format!(
+            "{:?}",
+            profile
+                .transport_config()
+                .expect("profile builds a QUIC transport config")
+        )
+    }
+
+    /// Both profiles bound the upstream effectively-unbounded receive window,
+    /// leave finite upstream stream/fan-out defaults alone, and avoid imposing
+    /// an arbitrary transport liveness policy.
     #[test]
-    fn home_interactive_profile_enforces_per_connection_transport_bounds() {
-        let limits = IrohCapProfile::HomeInteractive.limits();
-        assert_eq!(limits.max_streams, 64);
-        assert_eq!(limits.receive_window, 16 * 1024 * 1024);
-        assert_eq!(limits.stream_receive_window, 4 * 1024 * 1024);
-        // No transport idle timeout: Socket.IO/application heartbeats own liveness.
-        assert_eq!(limits.idle_timeout_ms, None);
-        // The QUIC boundary really carries the caps.
-        let _config = IrohCapProfile::HomeInteractive
-            .transport_config()
-            .expect("home_interactive profile builds a QUIC transport config");
+    fn profiles_bound_only_real_per_connection_resources() {
+        let pinned = format!("{:?}", iroh::endpoint::QuicTransportConfig::default());
+        let pinned_max_streams = transport_field(&pinned, "max_concurrent_bidi_streams");
+        let pinned_stream_window = transport_field(&pinned, "stream_receive_window");
+        let finite_receive_window = pinned_max_streams
+            .parse::<usize>()
+            .expect("pinned stream fan-out is an integer")
+            .checked_mul(
+                pinned_stream_window
+                    .parse::<usize>()
+                    .expect("pinned stream window is an integer"),
+            )
+            .expect("pinned receive-credit product fits usize");
+        assert_eq!(
+            pinned_max_streams,
+            PINNED_UPSTREAM_MAX_BIDI_STREAMS.to_string(),
+            "review the finite connection boundary when the pinned transport fan-out changes",
+        );
+        assert_eq!(
+            pinned_stream_window,
+            PINNED_UPSTREAM_STREAM_RECEIVE_WINDOW.to_string(),
+            "review the finite connection boundary when the pinned stream window changes",
+        );
+        assert_eq!(FINITE_CONNECTION_RECEIVE_WINDOW, finite_receive_window);
+        for profile in [IrohCapProfile::HomeInteractive, IrohCapProfile::MachineBulk] {
+            let rendered = rendered_transport_config(profile);
+            assert_eq!(
+                transport_field(&rendered, "max_concurrent_bidi_streams"),
+                pinned_max_streams,
+                "{} must keep the pinned upstream stream fan-out",
+                profile.id(),
+            );
+            assert_eq!(
+                transport_field(&rendered, "receive_window"),
+                finite_receive_window.to_string(),
+                "{} must carry a finite receive-memory boundary",
+                profile.id(),
+            );
+            // Per-stream flow control already has a finite pinned upstream
+            // default; no Home/Machine measurement supports overriding it.
+            assert_eq!(
+                transport_field(&rendered, "stream_receive_window"),
+                pinned_stream_window,
+                "{} must keep the pinned upstream per-stream window",
+                profile.id(),
+            );
+            // Application liveness owns idle connections on both profiles.
+            assert_eq!(
+                transport_field(&rendered, "max_idle_timeout"),
+                "None",
+                "{} must not impose a transport idle timeout",
+                profile.id(),
+            );
+        }
     }
 
     #[test]
     fn machine_bulk_is_the_only_machine_transport_profile() {
-        let machine = IrohCapProfile::MachineBulk.limits();
-        assert_eq!(machine.max_streams, 32);
-        assert_eq!(machine.receive_window, 64 * 1024 * 1024);
-        assert_eq!(machine.stream_receive_window, 8 * 1024 * 1024);
-        assert_eq!(machine.idle_timeout_ms, Some(10 * 60 * 1000));
-
         assert!(IrohCapProfile::parse("homeInteractive").is_ok());
         assert!(IrohCapProfile::parse("machineBulk").is_ok());
         assert!(IrohCapProfile::parse("workspaceSync").is_err());
         assert_eq!(IrohCapProfile::HomeInteractive.id(), "homeInteractive");
+        assert_eq!(IrohCapProfile::MachineBulk.id(), "machineBulk");
         assert!(IrohCapProfile::parse("unlimited").is_err());
     }
 }

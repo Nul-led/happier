@@ -88,8 +88,9 @@ use std::thread;
 use std::time::Duration;
 
 use happier_ssh_native::cancellation::cancel_request;
-use happier_ssh_native::engine::run_exec_blocking;
+use happier_ssh_native::engine::{run_exec_blocking, run_exec_blocking_with_output_sink};
 use happier_ssh_native::error::NativeSshError;
+use happier_ssh_native::exec::ExecOutputSink;
 use happier_ssh_native::host_key::HostKeyPrompter;
 use happier_ssh_native::tunnel::{start_loopback_tunnel_blocking, stop_loopback_tunnel};
 use happier_ssh_native::types::{
@@ -139,6 +140,20 @@ impl HostKeyPrompter for SmokePrompter {
     }
 }
 
+#[derive(Default)]
+struct RecordingOutputSink {
+    chunks: Mutex<Vec<(String, String)>>,
+}
+
+impl ExecOutputSink for RecordingOutputSink {
+    fn stdout_chunk(&self, request_id: &str, chunk: &str) {
+        self.chunks
+            .lock()
+            .expect("output sink lock")
+            .push((request_id.to_string(), chunk.to_string()));
+    }
+}
+
 struct SmokeConfig {
     host: String,
     port: u16,
@@ -156,6 +171,7 @@ fn base_request(config: &SmokeConfig, request_id: &str, auth: NativeSshAuthReque
         port: config.port,
         username: config.username.clone(),
         command: command.to_string(),
+        input: None,
         auth,
         connect_timeout_ms: 15_000,
         auth_timeout_ms: 15_000,
@@ -221,6 +237,29 @@ fn main() {
     assert_eq!(exec_result.stdout, "stdout-ok");
     assert_eq!(exec_result.stderr, "stderr-ok");
     assert!(accept_prompter.observed_fingerprint.lock().expect("fingerprint").is_some());
+
+    let output_sink = Arc::new(RecordingOutputSink::default());
+    let mut streaming_request = base_request(
+        &config,
+        "smoke-streaming-stdin",
+        password_auth(&config),
+        "IFS= read -r value; printf 'stream:%s' \"$value\"",
+    );
+    streaming_request.input = Some("stdin-ok\n".to_string());
+    let streaming_result = run_exec_blocking_with_output_sink(
+        streaming_request,
+        Arc::new(SmokePrompter::accept()),
+        output_sink.clone(),
+    ).expect("streaming stdin exec");
+    assert_eq!(streaming_result.exit_code, Some(0));
+    assert_eq!(streaming_result.stdout, "stream:stdin-ok");
+    let streaming_chunks = output_sink.chunks.lock().expect("output sink lock");
+    assert!(!streaming_chunks.is_empty());
+    assert!(streaming_chunks.iter().all(|(request_id, _)| request_id == "smoke-streaming-stdin"));
+    assert_eq!(
+        streaming_chunks.iter().map(|(_, chunk)| chunk.as_str()).collect::<String>(),
+        "stream:stdin-ok",
+    );
 
     run_exec_blocking(
         base_request(&config, "smoke-private-key", private_key_auth(&config, false), "true"),
@@ -309,7 +348,7 @@ fn main() {
         Err(error) => assert_eq!(error.code, "cancellation"),
     }
 
-    println!("phase0 openssh smoke passed: password auth, private key auth, passphrase key auth, host-key accept/reject/mismatch, bounded exec stdout/stderr/exit, direct TCP loopback tunnel, cancellation while executing and connecting");
+    println!("phase0 openssh smoke passed: password auth, private key auth, passphrase key auth, host-key accept/reject/mismatch, bounded exec stdout/stderr/exit, stdin with correlated stdout streaming, direct TCP loopback tunnel, cancellation while executing and connecting");
 }
 `, 'utf8');
 }

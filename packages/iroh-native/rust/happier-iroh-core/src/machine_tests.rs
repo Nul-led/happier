@@ -337,6 +337,69 @@ async fn machine_tunnel_moves_duplex_bytes_to_the_admission_selected_application
     acceptor.stop();
 }
 
+/// The public Machine acceptor shutdown boundary owns its active per-stream
+/// pumps. Once it returns, an already-admitted local tunnel socket can no
+/// longer exchange bytes through a detached task.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stopping_acceptor_joins_an_active_machine_stream() {
+    let server = endpoint(IrohCapProfile::MachineBulk).await;
+    let client = endpoint(IrohCapProfile::MachineBulk).await;
+    let app_contacts = Arc::new(AtomicUsize::new(0));
+    let app_port = echo_server(Arc::clone(&app_contacts)).await.port();
+    let admission_target = admission_server(
+        client.id().to_string(),
+        Arc::new(Mutex::new(VecDeque::from([vec![app_port.to_string()]]))),
+        Arc::new(AtomicUsize::new(0)),
+    )
+    .await;
+    let acceptor = MachineAcceptor::start(&server, MachineAcceptorConfig { admission_target })
+        .expect("machine acceptor");
+    let tunnel = MachineTunnel::start(
+        &client,
+        MachineTunnelConfig {
+            endpoint_id: server.id().to_string(),
+            bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+            direct_addresses: vec![direct_addr(&server).await],
+            relay_urls: vec![],
+            handshake_json: r#"{"v":1,"operationId":"joined-stop"}"#.to_owned(),
+            cap_profile: IrohCapProfile::MachineBulk,
+        },
+    )
+    .await
+    .expect("machine tunnel");
+    let local_addr = tunnel.local_addr().expect("local addr");
+    let local_capability = tunnel.local_capability().to_owned();
+    let mut local = TcpStream::connect(local_addr).await.expect("local connect");
+    local
+        .write_all(local_capability.as_bytes())
+        .await
+        .expect("write local capability");
+    local
+        .write_all(b"active-before-acceptor-stop")
+        .await
+        .expect("write active payload");
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while acceptor.status().streams_active == 0 && tokio::time::Instant::now() < deadline {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(acceptor.status().streams_active, 1, "stream became active");
+
+    acceptor.stop_and_wait().await;
+    let mut byte = [0u8; 1];
+    let closed = tokio::time::timeout(Duration::from_secs(5), local.read(&mut byte))
+        .await
+        .expect("joined Machine shutdown must settle its active stream");
+    assert!(
+        !matches!(closed, Ok(n) if n > 0),
+        "joined Machine shutdown must not leave a stream serving bytes"
+    );
+
+    tunnel.stop_and_wait().await;
+    client.shutdown().await;
+    server.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn machine_http_tunnel_requires_capability_before_opening_a_machine_stream() {
     let server = endpoint(IrohCapProfile::MachineBulk).await;

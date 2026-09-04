@@ -410,10 +410,11 @@ async fn tunnel_propagates_home_response_eof_to_local_client() {
     target.await.unwrap();
 }
 
-/// Releasing a live Home tunnel owns its active per-socket pumps: the local
-/// stream must close promptly rather than surviving as a detached task.
+/// Stopping a live Home acceptor owns its active connection and stream pumps:
+/// the public joined boundary cannot return while a detached pump can still
+/// serve the old fixed target.
 #[tokio::test]
-async fn releasing_tunnel_closes_an_active_local_stream() {
+async fn stopping_acceptor_joins_an_active_home_stream() {
     let (target_addr, target, mut target_accepted) = spawn_echo_target().await;
     let server = IrohEndpoint::bind(&direct_endpoint_config()).await.unwrap();
     let client = IrohEndpoint::bind(&direct_endpoint_config()).await.unwrap();
@@ -444,17 +445,17 @@ async fn releasing_tunnel_closes_an_active_local_stream() {
     local.write_all(b"active-before-release").await.unwrap();
     assert!(target_accepted.recv().await.is_some());
 
-    tunnel.stop();
+    acceptor.stop_and_wait().await;
     let mut byte = [0u8; 1];
     let closed = tokio::time::timeout(Duration::from_secs(5), local.read(&mut byte))
         .await
-        .expect("released tunnel must settle its active local stream");
+        .expect("joined acceptor shutdown must settle its active stream");
     assert!(
         !matches!(closed, Ok(n) if n > 0),
-        "released tunnel must not leave an active local stream serving bytes"
+        "joined acceptor shutdown must not leave a stream serving bytes"
     );
 
-    acceptor.stop();
+    tunnel.stop_and_wait().await;
     client.shutdown().await;
     server.shutdown().await;
     target.abort();

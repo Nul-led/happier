@@ -22,6 +22,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { classifyIrohNativeErrorCode, IrohError } from './errors.js';
+export { MACHINE_ALPN, MACHINE_HTTP_LOCAL_CAPABILITY_HEADER } from './descriptor.js';
+export { createNodeIrohHomeTunnelSession } from './nodeHomeTunnelSession.js';
+export type { NodeIrohHomeTunnelLease, NodeIrohHomeTunnelSession } from './nodeHomeTunnelSession.js';
 import {
   IROH_NODE_NATIVE_EXPORTS,
   type IrohNodeAcceptorStarted,
@@ -255,15 +258,6 @@ function requireNumber(value: unknown, field: string): number {
   return value;
 }
 
-function requireRevisionOrNull(value: unknown): number | null {
-  if (value === null) return null;
-  if (typeof value === 'number' && Number.isInteger(value) && value > 0) return value;
-  throw new IrohError(
-    'unknown',
-    'Iroh native response field descriptorRevision must be a positive integer or null',
-  );
-}
-
 function requireStringArray(value: unknown, field: string): readonly string[] {
   if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string')) {
     throw new IrohError('unknown', `Iroh native response field ${field} must be a string array`);
@@ -309,7 +303,6 @@ function validateTunnelIdentityFields(record: Record<string, unknown>) {
     carrier: requireIrohCarrier(record.carrier),
     observedPath: requireObservedPath(record.observedPath),
     startedAtMs: requireNumber(record.startedAtMs, 'startedAtMs'),
-    descriptorRevision: requireRevisionOrNull(record.descriptorRevision),
   };
 }
 
@@ -340,6 +333,9 @@ function validateAcceptorStatus(result: unknown): IrohNodeAcceptorStatus {
     connectionsAccepted: requireNumber(record.connectionsAccepted, 'connectionsAccepted'),
     connectionsActive: requireNumber(record.connectionsActive, 'connectionsActive'),
     streamsAccepted: requireNumber(record.streamsAccepted, 'streamsAccepted'),
+    ...(record.streamsActive === undefined
+      ? {}
+      : { streamsActive: requireNumber(record.streamsActive, 'streamsActive') }),
     streamsRejected: requireNumber(record.streamsRejected, 'streamsRejected'),
     ...(record.lastErrorCode === undefined
       ? {}
