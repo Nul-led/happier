@@ -42,6 +42,7 @@ export async function fetchMemorySemanticTranscriptPage(params: Readonly<{
   contentPolicy?: MemoryContentPolicy | null;
   includeLegacyUnknownRoleFallback?: boolean;
   fetchPage?: FetchTranscriptRawPage;
+  signal?: AbortSignal;
 }>): Promise<FetchMemorySemanticTranscriptPageResult> {
   const fetchSemanticPage = async (
     serverRoles: readonly ['user', 'agent'] | undefined,
@@ -63,6 +64,7 @@ export async function fetchMemorySemanticTranscriptPage(params: Readonly<{
     transcriptRoles: ['user', 'assistant'],
     includeReasoning: params.contentPolicy?.includeReasoning === true,
     includeTools: params.contentPolicy?.includeToolSummaries === true,
+    ...(params.signal ? { signal: params.signal } : {}),
     ...(fetchPage ? { fetchPage } : {}),
   });
 
@@ -88,6 +90,7 @@ export async function fetchMemorySemanticTranscriptPage(params: Readonly<{
       ...(typeof args.afterSeq === 'number' ? { afterSeq: args.afterSeq } : {}),
       scope: args.scope,
       ...(args.sidechainId ? { sidechainId: args.sidechainId } : {}),
+      ...(args.signal ? { signal: args.signal } : {}),
     }));
     const fetchLegacyNullRolePage: FetchTranscriptRawPage = async (args) => {
       const rawPage = await fetchRawPage(args);

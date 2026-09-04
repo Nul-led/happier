@@ -133,6 +133,38 @@ describe('workspaceSyncNativeProcessLaunchers', () => {
     expect(spawn).not.toHaveBeenCalled();
   });
 
+  it('still attempts Windows sidecar stop when handshake-file cleanup fails', async () => {
+    const fake = createFakeChild(147);
+    const handshakeFailure = new Error('handshake cleanup failed');
+    const terminateProcessCustodyByJob = vi.fn(async () => 'absent' as const);
+    const launchers = createWorkspaceSyncNativeProcessLaunchers({
+      platform: 'win32',
+      spawn: () => fake.child,
+      createManagedChildProcess: () => createManaged(147),
+      resolveProcessCustodyRuntimeExecutable: () => '/verified/happier-process-custody.exe',
+      createWindowsJobCustodyName: () => 'Local\\happier-workspace-sync-sidecar-cleanup-test',
+      createProcessCustodyHandshakePath: () => 'C:\\Temp\\workspace-sync-sidecar-cleanup.json',
+      waitForProcessCustodyHandshake: vi.fn(async () => null),
+      removeProcessCustodyHandshakeFile: vi.fn(async () => { throw handshakeFailure; }),
+      terminateProcessCustodyByJob,
+      killProcessTree: vi.fn(async () => undefined),
+      logStderr: vi.fn(),
+    });
+
+    const error = await launchers.spawnSidecar({
+      executablePath: '/verified/happier-mutagen.exe',
+      args: ['--daemon', '--broker-descriptor', '3'],
+      inheritedBrokerDescriptor: Buffer.from('descriptor'),
+    }).then(() => null, (caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(AggregateError);
+    expect((error as AggregateError).errors).toEqual([
+      expect.objectContaining({ message: expect.stringContaining('custody could not be established') }),
+      handshakeFailure,
+    ]);
+    expect(terminateProcessCustodyByJob).toHaveBeenCalledOnce();
+  });
+
   it('runs the Windows rooted agent through the same pre-execution Job Object owner', async () => {
     const fake = createFakeChild(142);
     const calls: SpawnCall[] = [];
@@ -153,10 +185,11 @@ describe('workspaceSyncNativeProcessLaunchers', () => {
       logStderr: vi.fn(),
     });
 
-    const stream = await launchers.launchLocalAgent({
+    const agent = await launchers.launchLocalAgent({
       executablePath: '/verified/happier-mutagen-agent.exe',
       args: ['--root', 'C:\\workspaces\\owned', '--stdio'],
     });
+    const { stream } = agent;
 
     expect(calls[0]).toEqual({
       command: '/verified/happier-process-custody.exe',
@@ -179,9 +212,8 @@ describe('workspaceSyncNativeProcessLaunchers', () => {
     });
 
     stream.on('error', () => undefined);
-    const closed = new Promise<void>((resolve) => stream.once('close', resolve));
     stream.destroy();
-    await closed;
+    await agent.stop();
     expect(terminateProcessCustodyByJob).toHaveBeenCalledWith(expect.objectContaining({
       jobName: 'Local\\happier-workspace-sync-agent-test',
     }));
@@ -234,6 +266,38 @@ describe('workspaceSyncNativeProcessLaunchers', () => {
     expect(killProcessTree).toHaveBeenCalledTimes(1);
   });
 
+  it('coalesces an in-flight sidecar stop and retries after the stop rejects', async () => {
+    const fake = createFakeChild(46);
+    const cleanupFailure = new Error('process tree cleanup failed');
+    let finishFirstStop!: () => void;
+    const firstStopGate = new Promise<void>((resolve) => { finishFirstStop = resolve; });
+    const killProcessTree = vi.fn()
+      .mockImplementationOnce(async () => {
+        await firstStopGate;
+        throw cleanupFailure;
+      })
+      .mockResolvedValueOnce(undefined);
+    const launchers = createWorkspaceSyncNativeProcessLaunchers({
+      spawn: () => fake.child,
+      createManagedChildProcess: () => createManaged(46),
+      killProcessTree,
+      logStderr: vi.fn(),
+    });
+    fake.descriptor.resume();
+    const launched = await launchers.spawnSidecar({
+      executablePath: '/verified/bin/happier-mutagen',
+      args: ['--daemon', '--broker-descriptor', '3'],
+      inheritedBrokerDescriptor: Buffer.from('descriptor'),
+    });
+
+    const first = launched.stop();
+    const concurrent = launched.stop();
+    finishFirstStop();
+    await expect(Promise.all([first, concurrent])).rejects.toBe(cleanupFailure);
+    await expect(launched.stop()).resolves.toBeUndefined();
+    expect(killProcessTree).toHaveBeenCalledTimes(2);
+  });
+
   it('fails the sidecar launch and retires the child when fd 3 is unavailable', async () => {
     const fake = createFakeChild(42);
     const childWithoutDescriptor = Object.assign(fake.child, {
@@ -253,6 +317,60 @@ describe('workspaceSyncNativeProcessLaunchers', () => {
       inheritedBrokerDescriptor: Buffer.from('descriptor'),
     })).rejects.toThrow('descriptor');
     expect(killProcessTree).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains a sidecar whose pre-return cleanup fails and retries it through the launcher owner', async () => {
+    const fake = createFakeChild(148);
+    const childWithoutDescriptor = Object.assign(fake.child, {
+      stdio: [fake.stdin, fake.stdout, fake.stderr, null, null],
+    }) as ChildProcess;
+    const cleanupFailure = new Error('sidecar process cleanup failed');
+    const killProcessTree = vi.fn()
+      .mockRejectedValueOnce(cleanupFailure)
+      .mockResolvedValueOnce(undefined);
+    const launchers = createWorkspaceSyncNativeProcessLaunchers({
+      spawn: () => childWithoutDescriptor,
+      createManagedChildProcess: () => createManaged(148),
+      killProcessTree,
+      logStderr: vi.fn(),
+    });
+
+    const error = await launchers.spawnSidecar({
+      executablePath: '/verified/bin/happier-mutagen',
+      args: [],
+      inheritedBrokerDescriptor: Buffer.from('descriptor'),
+    }).then(() => null, (caught: unknown) => caught);
+    expect(error).toBeInstanceOf(AggregateError);
+    expect((error as AggregateError).errors).toEqual([
+      expect.objectContaining({ message: expect.stringContaining('descriptor') }),
+      cleanupFailure,
+    ]);
+    await expect(launchers.stopRetainedNativeProcesses()).resolves.toBeUndefined();
+    expect(killProcessTree).toHaveBeenCalledTimes(2);
+  });
+
+  it('surfaces persistent retained sidecar cleanup failure on every launcher shutdown attempt', async () => {
+    const fake = createFakeChild(149);
+    const childWithoutDescriptor = Object.assign(fake.child, {
+      stdio: [fake.stdin, fake.stdout, fake.stderr, null, null],
+    }) as ChildProcess;
+    const cleanupFailure = new Error('persistent sidecar cleanup failure');
+    const killProcessTree = vi.fn(async () => { throw cleanupFailure; });
+    const launchers = createWorkspaceSyncNativeProcessLaunchers({
+      spawn: () => childWithoutDescriptor,
+      createManagedChildProcess: () => createManaged(149),
+      killProcessTree,
+      logStderr: vi.fn(),
+    });
+
+    await expect(launchers.spawnSidecar({
+      executablePath: '/verified/bin/happier-mutagen',
+      args: [],
+      inheritedBrokerDescriptor: Buffer.from('descriptor'),
+    })).rejects.toBeInstanceOf(AggregateError);
+    await expect(launchers.stopRetainedNativeProcesses()).rejects.toBe(cleanupFailure);
+    await expect(launchers.stopRetainedNativeProcesses()).rejects.toBe(cleanupFailure);
+    expect(killProcessTree).toHaveBeenCalledTimes(3);
   });
 
   it('fails the sidecar launch and retires the child when the descriptor write fails', async () => {
@@ -293,10 +411,11 @@ describe('workspaceSyncNativeProcessLaunchers', () => {
     const childInput: Buffer[] = [];
     fake.stdin.on('data', (chunk: Buffer) => childInput.push(Buffer.from(chunk)));
 
-    const stream = await launchers.launchLocalAgent({
+    const agent = await launchers.launchLocalAgent({
       executablePath: '/verified/bin/happier-mutagen-agent',
       args: ['--root', '/workspace', '--stdio'],
     });
+    const { stream } = agent;
     const childOutput: Buffer[] = [];
     stream.on('data', (chunk: Buffer) => childOutput.push(Buffer.from(chunk)));
 
@@ -323,7 +442,7 @@ describe('workspaceSyncNativeProcessLaunchers', () => {
     expect(JSON.stringify(logStderr.mock.calls)).not.toContain('private-broker-secret');
 
     stream.destroy();
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await agent.stop();
     expect(killProcessTree).toHaveBeenCalledTimes(1);
   });
 
@@ -337,17 +456,46 @@ describe('workspaceSyncNativeProcessLaunchers', () => {
       logStderr: vi.fn(),
     });
     const controller = new AbortController();
-    const stream = await launchers.launchLocalAgent({
+    const agent = await launchers.launchLocalAgent({
       executablePath: '/verified/bin/happier-mutagen-agent',
       args: [],
       signal: controller.signal,
     });
+    const { stream } = agent;
     stream.on('error', () => undefined);
 
     controller.abort();
     await new Promise<void>((resolve) => setImmediate(resolve));
+    await agent.stop();
 
     expect(stream.destroyed).toBe(true);
     expect(killProcessTree).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains a local agent whose launch cleanup fails and retries it through the launcher owner', async () => {
+    const fake = createFakeChild(45);
+    const childWithoutInput = Object.assign(fake.child, { stdin: null }) as ChildProcess;
+    const cleanupFailure = new Error('agent process cleanup failed');
+    const killProcessTree = vi.fn()
+      .mockRejectedValueOnce(cleanupFailure)
+      .mockResolvedValueOnce(undefined);
+    const launchers = createWorkspaceSyncNativeProcessLaunchers({
+      spawn: () => childWithoutInput,
+      createManagedChildProcess: () => createManaged(45),
+      killProcessTree,
+      logStderr: vi.fn(),
+    });
+
+    const error = await launchers.launchLocalAgent({
+      executablePath: '/verified/bin/happier-mutagen-agent',
+      args: [],
+    }).then(() => null, (caught: unknown) => caught);
+    expect(error).toBeInstanceOf(AggregateError);
+    expect((error as AggregateError).errors).toEqual([
+      expect.objectContaining({ message: expect.stringContaining('stdio pipes') }),
+      cleanupFailure,
+    ]);
+    await expect(launchers.stopRetainedNativeProcesses()).resolves.toBeUndefined();
+    expect(killProcessTree).toHaveBeenCalledTimes(2);
   });
 });

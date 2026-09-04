@@ -1,7 +1,9 @@
 import { join } from 'node:path';
 
 import type { PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
+import { MACHINE_HTTP_LOCAL_CAPABILITY_HEADER } from '@happier-dev/iroh-native/node';
 import type {
+  WorkspaceContentPolicyV1,
   WorkspaceSyncStatusV1,
   WorkspaceSyncRelationshipV1,
   WorkspaceSyncTargetBootstrapPrepareV1,
@@ -20,6 +22,7 @@ import {
   subscribeActiveAccountSettingsSnapshot,
   type ActiveAccountSettingsSnapshot,
 } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
+import { resolveWorkspaceSyncRelationshipEndpointRoles } from '@/workspaces/sync/workspaceSyncRelationshipEndpoints';
 import { resolveWorkspaceRefById } from '@/settings/accountSettings/workspaceRefsV1';
 import { refreshAccountSettingsForMinimumVersion } from '@/settings/accountSettings/refreshAccountSettingsForMinimumVersion';
 import { callMachineRpc } from '@/session/transport/rpc/machineRpc';
@@ -34,7 +37,7 @@ import {
   type WorkspaceSyncMachineIngress,
 } from '@/workspaces/sync/workspaceSyncTargetAuthority';
 import { prepareWorkspaceSyncGitTarget } from '@/workspaces/sync/workspaceSyncTargetBootstrap';
-import { createWorkspaceSyncSeedExport, createWorkspaceSyncSeedTunnelHttpProxy, materializeLocalWorkspaceSyncSeed, materializeWorkspaceSyncSeedExport } from '@/workspaces/sync/workspaceSyncSeedTransfer';
+import { createWorkspaceSyncSeedExport, materializeLocalWorkspaceSyncSeed, materializeWorkspaceSyncSeedExport } from '@/workspaces/sync/workspaceSyncSeedTransfer';
 import { materializeWorkspaceExportArtifactsWithScmWorkspace } from '@/scm/workspace/workspaceExportMaterialization';
 import { buildDirectPeerTransferEndpointPath } from '@/machines/transfer/directPeerTransport';
 import { createWorkspaceSyncPeerIdentityValidator } from '@/workspaces/sync/transport/workspaceSyncPeerIdentity';
@@ -58,6 +61,7 @@ import {
 import {
   launchWorkspaceSyncLocalAgent,
   spawnWorkspaceSyncSidecar,
+  stopRetainedWorkspaceSyncNativeProcesses,
 } from './workspaceSyncNativeProcessLaunchers';
 
 export type ProductionDaemonWorkspaceSyncFactories = Readonly<{
@@ -69,6 +73,7 @@ export type ProductionDaemonWorkspaceSyncFactories = Readonly<{
   createBroker: typeof createDaemonWorkspaceSyncBroker;
   spawnSidecar: typeof spawnWorkspaceSyncSidecar;
   launchLocalAgent: typeof launchWorkspaceSyncLocalAgent;
+  stopRetainedNativeProcesses: typeof stopRetainedWorkspaceSyncNativeProcesses;
   getSettingsSnapshot: () => ActiveAccountSettingsSnapshot | null;
   subscribeSettingsSnapshot: typeof subscribeActiveAccountSettingsSnapshot;
   callMachineRpc: typeof callMachineRpc;
@@ -98,6 +103,7 @@ const defaultFactories: ProductionDaemonWorkspaceSyncFactories = {
   createBroker: createDaemonWorkspaceSyncBroker,
   spawnSidecar: spawnWorkspaceSyncSidecar,
   launchLocalAgent: launchWorkspaceSyncLocalAgent,
+  stopRetainedNativeProcesses: stopRetainedWorkspaceSyncNativeProcesses,
   getSettingsSnapshot: getActiveAccountSettingsSnapshot,
   subscribeSettingsSnapshot: subscribeActiveAccountSettingsSnapshot,
   callMachineRpc,
@@ -110,6 +116,38 @@ const defaultFactories: ProductionDaemonWorkspaceSyncFactories = {
   materializeLocalSeed: materializeLocalWorkspaceSyncSeed,
   warn: (message, error) => logger.warn(message, error),
 };
+
+/**
+ * Projects the bounded workspace content policy onto the finite seed transfer
+ * request. `extraIncludePatterns` are the paths the user explicitly opted back
+ * in past Git's ignore rules: dropping them here would silently seed a target
+ * that is missing content the persistent relationship is required to carry.
+ */
+function resolveSeedWorkspaceTransfer(
+  contentPolicy: WorkspaceContentPolicyV1,
+): Readonly<{
+  includeIgnoredMode: 'exclude' | 'include_selected';
+  ignoredIncludeGlobs: readonly string[];
+  includeAllIgnored?: boolean;
+  extraIgnorePatterns: readonly string[];
+}> {
+  const ignoredIncludeGlobs = [...contentPolicy.extraIncludePatterns];
+  if (contentPolicy.selection === 'all_files') {
+    // Keep include-all separate from explicit re-includes. The latter are
+    // applied after the ignore overlay, while include-all is not an override.
+    return {
+      includeIgnoredMode: ignoredIncludeGlobs.length > 0 ? 'include_selected' : 'exclude',
+      ignoredIncludeGlobs,
+      includeAllIgnored: true,
+      extraIgnorePatterns: [...contentPolicy.extraIgnorePatterns],
+    };
+  }
+  return {
+    includeIgnoredMode: ignoredIncludeGlobs.length > 0 ? 'include_selected' : 'exclude',
+    ignoredIncludeGlobs,
+    extraIgnorePatterns: [...contentPolicy.extraIgnorePatterns],
+  };
+}
 
 function compositionError(code: string, message: string): Error {
   return Object.assign(new Error(message), { code });
@@ -154,22 +192,22 @@ function resolveRelationshipBootstrapTarget(
   if (!alpha || !beta) {
     throw compositionError('peer_unavailable', 'Workspace sync relationship endpoint is unavailable');
   }
-  if (relationship.mode !== 'keep_both_in_sync') {
-    if (alpha.machineId !== relationship.controllerMachineId) {
-      throw compositionError('relationship_definition_conflict', 'One-way workspace sync controller must own the alpha endpoint');
-    }
-    return { workspaceRefId: beta.id, machineId: beta.machineId, endpointRole: 'beta' };
+  const roles = resolveWorkspaceSyncRelationshipEndpointRoles({
+    mode: relationship.mode,
+    controllerMachineId: relationship.controllerMachineId,
+    alphaMachineId: alpha.machineId,
+    betaMachineId: beta.machineId,
+  });
+  if (!roles) {
+    throw compositionError(
+      'relationship_definition_conflict',
+      relationship.mode === 'keep_both_in_sync'
+        ? 'Workspace sync controller does not own a relationship endpoint'
+        : 'One-way workspace sync controller must own the alpha endpoint',
+    );
   }
-  if (alpha.machineId === relationship.controllerMachineId && beta.machineId !== relationship.controllerMachineId) {
-    return { workspaceRefId: beta.id, machineId: beta.machineId, endpointRole: 'beta' };
-  }
-  if (beta.machineId === relationship.controllerMachineId && alpha.machineId !== relationship.controllerMachineId) {
-    return { workspaceRefId: alpha.id, machineId: alpha.machineId, endpointRole: 'alpha' };
-  }
-  if (alpha.machineId === relationship.controllerMachineId && beta.machineId === relationship.controllerMachineId) {
-    return { workspaceRefId: beta.id, machineId: beta.machineId, endpointRole: 'beta' };
-  }
-  throw compositionError('relationship_definition_conflict', 'Workspace sync controller does not own a relationship endpoint');
+  const target = roles.targetEndpointRole === 'alpha' ? alpha : beta;
+  return { workspaceRefId: target.id, machineId: target.machineId, endpointRole: roles.targetEndpointRole };
 }
 
 function resolveBootstrapPrepareRequest(
@@ -206,7 +244,9 @@ function resolveBootstrapPrepareRequest(
       // target owner inspects the directory and requires host approval only
       // if source materialization would replace non-empty contents.
       targetBootstrap: 'materialize_from_source_workspace',
-      ...(input.targetReplacementApproval ? { targetReplacementApproval: input.targetReplacementApproval } : {}),
+      ...(input.targetReplacementApproval
+        ? { targetReplacementApproval: input.targetReplacementApproval }
+        : {}),
       ...(input.signal ? { signal: input.signal } : {}),
     };
   }
@@ -271,6 +311,7 @@ export async function createProductionDaemonWorkspaceSyncRuntime(
       expectedManifestHash?: string;
       fetchFn?: typeof fetch;
     }>) => Promise<unknown>;
+    onStatusPublished?: (status: WorkspaceSyncStatusV1) => void;
   }>,
   overrides: Partial<ProductionDaemonWorkspaceSyncFactories> = {},
 ): Promise<ProductionDaemonWorkspaceSyncRuntime> {
@@ -303,30 +344,34 @@ export async function createProductionDaemonWorkspaceSyncRuntime(
     localMachineId: input.localMachineId,
     getSettingsSnapshot: factories.getSettingsSnapshot,
     assertLegacyStateAvailable,
-    prepareSourceSeedExport: async ({ operationId, sourcePath, contentSelection }) => await factories.prepareSourceSeedExport({
-      operationId,
-      activeServerDir: input.activeServerDir,
-      sourcePath,
-      workspaceTransfer: {
-        includeIgnoredMode: contentSelection === 'all_files' ? 'include_selected' : 'exclude',
-        ignoredIncludeGlobs: [],
-      },
-    }),
+    prepareSourceSeedExport: async ({ operationId, sourceWorkspaceRefId, targetMachineId, contentPolicy }) => {
+      if (!runtime) {
+        throw compositionError('workspace_sync_unavailable', 'Workspace sync runtime is unavailable');
+      }
+      return await runtime.managedWorkspaceSync.withAuthorizedSourceSeedExport({
+        operationId,
+        sourceWorkspaceRefId,
+        targetMachineId,
+        contentPolicy,
+      }, async (sourcePath) => await factories.prepareSourceSeedExport({
+        operationId,
+        activeServerDir: input.activeServerDir,
+        sourcePath,
+        workspaceTransfer: resolveSeedWorkspaceTransfer(contentPolicy),
+      }));
+    },
     bootstrap: {
       stagingDirectory: join(workspaceSyncRoot, 'bootstrap'),
       rootOwnershipManager,
       prepareGitTarget: factories.prepareGitTarget,
-      materializeLocalSeed: async ({ operationId, sourcePath, canonicalRoot, contentSelection, materializationReceiptPath, originalTargetExists }) => await factories.materializeLocalSeed({
+      materializeLocalSeed: async ({ operationId, sourcePath, canonicalRoot, contentPolicy, materializationReceiptPath, originalTargetExists }) => await factories.materializeLocalSeed({
         operationId,
         activeServerDir: input.activeServerDir,
         sourcePath,
         targetPath: canonicalRoot,
         materializationReceiptPath,
         originalTargetExists,
-        workspaceTransfer: {
-          includeIgnoredMode: contentSelection === 'all_files' ? 'include_selected' : 'exclude',
-          ignoredIncludeGlobs: [],
-        },
+        workspaceTransfer: resolveSeedWorkspaceTransfer(contentPolicy),
       }),
       ...(input.openMachineCarrierTunnel && input.requestDirectTransferPayloadFile
         ? { materializeRemoteSeed: async (request) => {
@@ -338,7 +383,8 @@ export async function createProductionDaemonWorkspaceSyncRuntime(
                   t: 'workspace_sync_seed_v1',
                   operationId: request.operationId,
                   sourceWorkspaceRefId: request.sourceWorkspaceRefId,
-                  contentSelection: request.contentSelection,
+                  targetMachineId: input.localMachineId,
+                  contentPolicy: request.contentPolicy,
                 },
                 ...(request.signal ? { signal: request.signal } : {}),
               })
@@ -373,22 +419,16 @@ export async function createProductionDaemonWorkspaceSyncRuntime(
                   throw compositionError('target_bootstrap_offline', 'Workspace sync seed payload commitment is invalid');
                 }
                 const tunnel = await input.openMachineCarrierTunnel!({
-                  operationId: transferId,
                   sourceMachineId: input.localMachineId,
                   targetMachineId: request.sourceMachineId,
                   flow: 'file_transfer',
-                  maxBytes: Math.max(1, sizeBytes),
                   ...(request.signal ? { signal: request.signal } : {}),
-                });
-                const proxy = await createWorkspaceSyncSeedTunnelHttpProxy(tunnel).catch(async (error) => {
-                  await tunnel.close().catch(() => undefined);
-                  throw error;
                 });
                 try {
                   const url = new URL(sourceCandidate.url);
                   url.protocol = 'http:';
                   url.hostname = '127.0.0.1';
-                  url.port = String(proxy.localPort);
+                  url.port = String(tunnel.localPort);
                   url.pathname = buildDirectPeerTransferEndpointPath(transferId);
                   const endpointCandidates: readonly TransferEndpointCandidate[] = [{
                     ...sourceCandidate,
@@ -405,13 +445,12 @@ export async function createProductionDaemonWorkspaceSyncRuntime(
                       ...fetchInit,
                       headers: {
                         ...Object.fromEntries(new Headers(fetchInit?.headers).entries()),
-                        ...proxy.requestHeaders,
+                        [MACHINE_HTTP_LOCAL_CAPABILITY_HEADER]: tunnel.localCapability,
                       },
                     }),
                   });
                 } finally {
-                  await proxy.close().catch(() => undefined);
-                  await tunnel.close().catch(() => undefined);
+                  await tunnel.close();
                 }
               },
               materializeWorkspaceExportArtifacts: materializeWorkspaceExportArtifactsWithScmWorkspace,
@@ -437,6 +476,7 @@ export async function createProductionDaemonWorkspaceSyncRuntime(
 
   runtime = factories.createDaemonRuntime({
     daemonDataRoot,
+    localServerId: input.activeServerId ?? configuration.activeServerId,
     localMachineId: input.localMachineId,
     releaseChannel: input.releaseChannel,
     resolveWorkspaceRef: async (workspaceRefId) => {
@@ -444,7 +484,7 @@ export async function createProductionDaemonWorkspaceSyncRuntime(
         factories.getSettingsSnapshot()?.settings.workspaceRefsV1 ?? [],
         workspaceRefId,
       );
-      return ref ? { machineId: ref.machineId, rootPath: ref.rootPath } : null;
+      return ref ? { serverId: ref.serverId, machineId: ref.machineId, rootPath: ref.rootPath } : null;
     },
     rootOwnershipManager,
     prepareRelationshipTarget: async (relationship, signal, preparation) => {
@@ -537,11 +577,16 @@ export async function createProductionDaemonWorkspaceSyncRuntime(
         factories.getSettingsSnapshot(),
       );
       let sourceOwnership: WorkspaceRootOwnershipHandle | null = null;
+      let copySourceWorkspaceRefId: string | null = null;
+      let copyTargetWorkspaceRefId: string | null = null;
       if (bootstrapInput.action.kind === 'copy_once') {
         const sourceWorkspaceRefId = bootstrapInput.sourceWorkspaceRefId;
-        if (!sourceWorkspaceRefId) {
-          throw compositionError('workspace_ref_not_ready', 'Workspace sync copy source endpoint was not materialized');
+        const targetWorkspaceRefId = bootstrapInput.targetWorkspaceRefId;
+        if (!sourceWorkspaceRefId || !targetWorkspaceRefId) {
+          throw compositionError('workspace_ref_not_ready', 'Workspace sync copy endpoints were not materialized');
         }
+        copySourceWorkspaceRefId = sourceWorkspaceRefId;
+        copyTargetWorkspaceRefId = targetWorkspaceRefId;
         const sourceRef = resolveWorkspaceRefById(
           factories.getSettingsSnapshot()?.settings.workspaceRefsV1 ?? [],
           sourceWorkspaceRefId,
@@ -561,7 +606,18 @@ export async function createProductionDaemonWorkspaceSyncRuntime(
       }
       let targetOwnershipHandles: readonly WorkspaceRootOwnershipHandle[] = [];
       try {
-        const preparedTarget = await targetAuthority.prepareBootstrapAtTarget(prepareRequest);
+        const prepareTarget = async () => await targetAuthority.prepareBootstrapAtTarget(prepareRequest);
+        const preparedTarget = sourceOwnership && copySourceWorkspaceRefId && copyTargetWorkspaceRefId
+          && bootstrapInput.action.kind === 'copy_once' && runtime
+          ? await runtime.managedWorkspaceSync.withSourceSeedAuthorization({
+              v: 1,
+              operationId: bootstrapInput.operationId,
+              controllerMachineId: bootstrapInput.sourceMachineId,
+              alphaWorkspaceRefId: copySourceWorkspaceRefId,
+              betaWorkspaceRefId: copyTargetWorkspaceRefId,
+              contentPolicy: bootstrapInput.action.contentPolicy,
+            }, [sourceOwnership], prepareTarget)
+          : await prepareTarget();
         targetOwnershipHandles = preparedTarget.ownershipHandles ?? [];
       } catch (error) {
         await sourceOwnership?.release();
@@ -607,6 +663,7 @@ export async function createProductionDaemonWorkspaceSyncRuntime(
     }),
     spawnSidecar: factories.spawnSidecar,
     launchLocalAgent: factories.launchLocalAgent,
+    stopRetainedNativeProcesses: factories.stopRetainedNativeProcesses,
     ...(input.openMachineCarrierTunnel
       ? { openMachineCarrierTunnel: input.openMachineCarrierTunnel }
       : {}),
@@ -614,6 +671,7 @@ export async function createProductionDaemonWorkspaceSyncRuntime(
     readFileAtTarget: targetAuthority.readFileAtTarget,
     getSettingsSnapshot: factories.getSettingsSnapshot,
     assertLegacyStateAvailable,
+    ...(input.onStatusPublished ? { onStatusPublished: input.onStatusPublished } : {}),
   });
 
   relationshipOwner = factories.createRelationshipOwner({
@@ -729,7 +787,8 @@ export async function createProductionDaemonWorkspaceSyncRuntime(
     workspaceSync,
     acquireWorkspaceSyncMachineIngress: targetAuthority.acquireWorkspaceSyncMachineIngress,
     stop: () => {
-      stopPromise ??= (async () => {
+      if (stopPromise) return stopPromise;
+      stopPromise = (async () => {
         unsubscribe();
         await authorityTail.catch(() => undefined);
         const failures: unknown[] = [];
@@ -741,7 +800,10 @@ export async function createProductionDaemonWorkspaceSyncRuntime(
         if (failures.length > 1) {
           throw new AggregateError(failures, 'Workspace sync daemon runtime cleanup failed');
         }
-      })();
+      })().catch((error: unknown) => {
+        stopPromise = null;
+        throw error;
+      });
       return stopPromise;
     },
   };

@@ -3,8 +3,8 @@ import type { OperationalMemoryEmbeddingsDiagnostics } from '@/daemon/memory/res
 export type EmbeddingsProvider = Readonly<{
   providerKind: 'local_transformers' | 'openai_compatible';
   modelId: string;
-  embedQuery: (text: string) => Promise<Float32Array>;
-  embedDocuments: (texts: readonly string[]) => Promise<Float32Array[]>;
+  embedQuery: (text: string, signal?: AbortSignal) => Promise<Float32Array>;
+  embedDocuments: (texts: readonly string[], signal?: AbortSignal) => Promise<Float32Array[]>;
 }>;
 
 export type EmbeddingsProviderResolution = Readonly<{

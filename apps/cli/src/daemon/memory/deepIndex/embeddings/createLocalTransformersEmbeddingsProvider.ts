@@ -247,14 +247,18 @@ export async function createLocalTransformersEmbeddingsProvider(params: Readonly
   return {
     providerKind: 'local_transformers',
     modelId: params.config.modelId,
-    embedDocuments: async (texts) => {
+    embedDocuments: async (texts, signal) => {
+      signal?.throwIfAborted();
       const clean = texts.map((text) => applyPrefix(text, params.config.documentPrefix));
       if (clean.length === 0) return [];
       const out = await extractor(clean, { pooling: 'mean', normalize: true });
+      signal?.throwIfAborted();
       return await tensorToVectors(out as { tolist?: () => any; data?: unknown; dims?: unknown }, clean.length);
     },
-    embedQuery: async (text) => {
+    embedQuery: async (text, signal) => {
+      signal?.throwIfAborted();
       const out = await extractor(applyPrefix(text, params.config.queryPrefix), { pooling: 'mean', normalize: true });
+      signal?.throwIfAborted();
       const rows = await tensorToVectors(out as { tolist?: () => any; data?: unknown; dims?: unknown }, 1);
       if (!rows[0]) throw new Error('No embedding produced');
       return rows[0];

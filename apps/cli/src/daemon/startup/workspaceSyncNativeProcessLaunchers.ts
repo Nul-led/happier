@@ -52,6 +52,7 @@ type NativeProcessLauncherDependencies = Readonly<{
 export type WorkspaceSyncNativeProcessLaunchers = Readonly<{
   spawnSidecar: SpawnWorkspaceSyncSidecar;
   launchLocalAgent: LaunchWorkspaceSyncLocalAgent;
+  stopRetainedNativeProcesses(): Promise<void>;
 }>;
 
 function assertNativeExecutablePath(executablePath: string): void {
@@ -156,6 +157,7 @@ export function createWorkspaceSyncNativeProcessLaunchers(
     }
   };
 
+  const retainedNativeProcessStops = new Set<() => Promise<void>>();
   const spawnSidecar: SpawnWorkspaceSyncSidecar = async (input) => {
     assertNativeExecutablePath(input.executablePath);
     const custody = platform === 'win32' ? createWindowsCustody('sidecar') : null;
@@ -177,11 +179,19 @@ export function createWorkspaceSyncNativeProcessLaunchers(
     });
     let stopPromise: Promise<void> | null = null;
     const stop = (): Promise<void> => {
-      stopPromise ??= custody
+      if (stopPromise) return stopPromise;
+      const attempt = custody
         ? stopWindowsCustody(child, custody)
         : killProcessTree(child, processGroupOptions(platform));
+      stopPromise = attempt.then(() => {
+        retainedNativeProcessStops.delete(stop);
+      }, (error: unknown) => {
+        stopPromise = null;
+        throw error;
+      });
       return stopPromise;
     };
+    retainedNativeProcessStops.add(stop);
 
     try {
       const managed = createManagedChildProcess(child);
@@ -205,14 +215,23 @@ export function createWorkspaceSyncNativeProcessLaunchers(
       }
       drainStderr(child, 'workspace-sync-sidecar', logStderr);
       await writeAndCloseDescriptor(descriptor, input.inheritedBrokerDescriptor);
+      retainedNativeProcessStops.delete(stop);
       return Object.freeze({
         pid: targetPid,
         waitForTermination: managed.waitForTermination,
         stop,
       });
     } catch (error) {
-      if (custody) await removeProcessCustodyHandshakeFile(custody.handshakePath);
-      await stop().catch(() => undefined);
+      const cleanupFailures: unknown[] = [];
+      if (custody) {
+        await removeProcessCustodyHandshakeFile(custody.handshakePath).catch((cleanupError: unknown) => {
+          cleanupFailures.push(cleanupError);
+        });
+      }
+      await stop().catch((cleanupError: unknown) => { cleanupFailures.push(cleanupError); });
+      if (cleanupFailures.length > 0) {
+        throw new AggregateError([error, ...cleanupFailures], 'Workspace sync sidecar launch cleanup failed');
+      }
       throw error;
     }
   };
@@ -238,11 +257,19 @@ export function createWorkspaceSyncNativeProcessLaunchers(
     });
     let stopPromise: Promise<void> | null = null;
     const stop = (): Promise<void> => {
-      stopPromise ??= custody
+      if (stopPromise) return stopPromise;
+      const attempt = custody
         ? stopWindowsCustody(child, custody)
         : killProcessTree(child, processGroupOptions(platform));
+      stopPromise = attempt.then(() => {
+        retainedNativeProcessStops.delete(stop);
+      }, (error: unknown) => {
+        stopPromise = null;
+        throw error;
+      });
       return stopPromise;
     };
+    retainedNativeProcessStops.add(stop);
 
     try {
       const managed = createManagedChildProcess(child);
@@ -275,25 +302,46 @@ export function createWorkspaceSyncNativeProcessLaunchers(
       const onAbort = (): void => {
         stream.destroy(createAbortError());
       };
+      const termination = managed.waitForTermination();
+      void termination.then(cleanup, cleanup);
       stream.once('close', () => {
         cleanup();
         void stop().catch(() => undefined);
       });
-      void managed.waitForTermination().then(cleanup, cleanup);
       input.signal?.addEventListener('abort', onAbort, { once: true });
       if (input.signal?.aborted) onAbort();
-      return stream;
+      retainedNativeProcessStops.delete(stop);
+      return Object.freeze({
+        stream,
+        stop,
+      });
     } catch (error) {
-      if (custody) await removeProcessCustodyHandshakeFile(custody.handshakePath);
-      await stop().catch(() => undefined);
+      const cleanupFailures: unknown[] = [];
+      if (custody) {
+        await removeProcessCustodyHandshakeFile(custody.handshakePath).catch((cleanupError: unknown) => {
+          cleanupFailures.push(cleanupError);
+        });
+      }
+      await stop().catch((cleanupError: unknown) => { cleanupFailures.push(cleanupError); });
+      if (cleanupFailures.length > 0) {
+        throw new AggregateError([error, ...cleanupFailures], 'Workspace sync local agent launch cleanup failed');
+      }
       throw error;
     }
   };
 
-  return Object.freeze({ spawnSidecar, launchLocalAgent });
+  const stopRetainedNativeProcesses = async (): Promise<void> => {
+    const results = await Promise.allSettled([...retainedNativeProcessStops].map(async (stop) => await stop()));
+    const failures = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : []);
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, 'Workspace sync local agent cleanup failed');
+  };
+
+  return Object.freeze({ spawnSidecar, launchLocalAgent, stopRetainedNativeProcesses });
 }
 
 const defaultLaunchers = createWorkspaceSyncNativeProcessLaunchers();
 
 export const spawnWorkspaceSyncSidecar = defaultLaunchers.spawnSidecar;
 export const launchWorkspaceSyncLocalAgent = defaultLaunchers.launchLocalAgent;
+export const stopRetainedWorkspaceSyncNativeProcesses = defaultLaunchers.stopRetainedNativeProcesses;

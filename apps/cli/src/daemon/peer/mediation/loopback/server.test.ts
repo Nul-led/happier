@@ -205,12 +205,12 @@ const IROH_TARGET_ENDPOINT_ID = 'b'.repeat(64);
 const IROH_OPERATION_ID = 'operation_iroh_1';
 
 function createIrohMachineHandshake(input: Readonly<{
-  flow?: 'file_transfer' | 'attachment_transfer' | 'workspace_sync';
+  flow?: 'finite_transfer' | 'workspace_sync';
   targetMachineId?: string;
   grantOverrides?: Partial<DirectRouteGrantPayloadV2>;
   breakProof?: boolean;
 }> = {}): IrohMachineHandshakeV1 {
-  const flow = input.flow ?? 'file_transfer';
+  const flow = input.flow ?? 'finite_transfer';
   const sourceMachineId = 'machine_source';
   const targetMachineId = input.targetMachineId ?? 'machine_1';
   const initiator = {
@@ -229,7 +229,9 @@ function createIrohMachineHandshake(input: Readonly<{
     machineId: targetMachineId,
     flowKind: 'bounded_transfer',
     routeKind: 'iroh_peer',
-    scope: { kind: 'bounded_transfer', mode: 'single', transferId: IROH_OPERATION_ID, maxBytes: 1024 },
+    scope: flow === 'finite_transfer'
+      ? { kind: 'bounded_transfer', mode: 'carrier' }
+      : { kind: 'bounded_transfer', mode: 'single', transferId: IROH_OPERATION_ID, maxBytes: 1024 },
     iat: 1_000,
     exp: 601_000,
     aud: DIRECT_ROUTE_GRANT_AUDIENCE_V1,
@@ -257,16 +259,17 @@ function createIrohMachineHandshake(input: Readonly<{
     },
   };
   const proof = handle.sign(grant);
-  return {
-    v: 1,
+  const sharedHandshake = {
+    v: 1 as const,
     accountId: 'account_1',
     initiator,
     target,
-    flow,
-    operationId: IROH_OPERATION_ID,
     grant,
     proof: input.breakProof ? { ...proof, nonceBase64Url: toBase64Url(new Uint8Array(16).fill(7)) } : proof,
   };
+  return flow === 'workspace_sync'
+    ? { ...sharedHandshake, flow, operationId: IROH_OPERATION_ID }
+    : { ...sharedHandshake, flow };
 }
 
 /**
@@ -304,7 +307,7 @@ function createIrohAdmissionTestApp() {
     irohMachineAdmission: {
       localEndpointId: IROH_TARGET_ENDPOINT_ID,
       role: 'acceptor',
-      allowedFlows: ['file_transfer', 'workspace_sync'],
+      allowedFlows: ['finite_transfer', 'workspace_sync'],
       resolveApplicationTarget: () => ({ port: 46_001 }),
     },
   });
@@ -1201,7 +1204,7 @@ describe('machine/1 Iroh admission route', () => {
       irohMachineAdmission: {
         localEndpointId: IROH_TARGET_ENDPOINT_ID,
         role: 'acceptor',
-        allowedFlows: ['file_transfer'],
+        allowedFlows: ['finite_transfer'],
         resolveTrustRoots: () => currentRoots,
         resolveApplicationTarget: () => ({ port: 46_001 }),
       },
@@ -1244,7 +1247,7 @@ describe('machine/1 Iroh admission route', () => {
       irohMachineAdmission: {
         localEndpointId: IROH_TARGET_ENDPOINT_ID,
         role: 'acceptor',
-        allowedFlows: ['file_transfer'],
+        allowedFlows: ['finite_transfer'],
         resolveApplicationTarget: () => ({ port: applicationAddress.port }),
       },
     });
@@ -1297,7 +1300,7 @@ describe('machine/1 Iroh admission route', () => {
     const app = createIrohAdmissionTestApp();
     const localCapabilities: string[] = [];
 
-    for (const flow of ['file_transfer', 'workspace_sync'] as const) {
+    for (const flow of ['finite_transfer', 'workspace_sync'] as const) {
       const response = await app.inject({
         method: 'POST',
         url: IROH_MACHINE_ADMISSION_PATH,
@@ -1355,7 +1358,7 @@ describe('machine/1 Iroh admission route', () => {
       irohMachineAdmission: {
         localEndpointId: IROH_TARGET_ENDPOINT_ID,
         role: 'acceptor',
-        allowedFlows: ['file_transfer'],
+        allowedFlows: ['finite_transfer'],
         resolveApplicationTarget: () => null,
       },
     });
@@ -1390,7 +1393,7 @@ describe('machine/1 Iroh admission route', () => {
       { name: 'duplicate endpoint header', headers: { [IROH_MACHINE_REMOTE_ENDPOINT_HEADER]: `${IROH_SOURCE_ENDPOINT_ID}, ${IROH_SOURCE_ENDPOINT_ID}` }, payload: validHandshake },
       { name: 'wrong endpoint header', headers: { [IROH_MACHINE_REMOTE_ENDPOINT_HEADER]: 'c'.repeat(64) }, payload: validHandshake },
       { name: 'wrong target machine', headers: remoteEndpointHeader, payload: createIrohMachineHandshake({ targetMachineId: 'machine_other' }) },
-      { name: 'flow not admitted', headers: remoteEndpointHeader, payload: createIrohMachineHandshake({ flow: 'attachment_transfer' }) },
+      { name: 'removed legacy flow', headers: remoteEndpointHeader, payload: { ...validHandshake, flow: 'attachment_transfer' } },
       { name: 'expired grant', headers: remoteEndpointHeader, payload: createIrohMachineHandshake({ grantOverrides: { exp: 2_000 } }) },
       { name: 'invalid proof', headers: remoteEndpointHeader, payload: createIrohMachineHandshake({ breakProof: true }) },
       { name: 'malformed non-Iroh body', headers: remoteEndpointHeader, payload: { v: 1, grant: {}, nonceProof: {} } },

@@ -65,7 +65,8 @@ export async function searchTier2Memory(params: Readonly<{
   previewChars: number;
   candidateLimit?: number;
   embeddings?: OperationalMemoryEmbeddingsSettings | null;
-  embedQuery?: (queryText: string) => Promise<Float32Array>;
+  embedQuery?: (queryText: string, signal?: AbortSignal) => Promise<Float32Array>;
+  signal?: AbortSignal;
 }>): Promise<MemorySearchResultV1> {
   const maxResults = params.query.maxResults ?? 20;
   const minScore = params.query.minScore ?? 0;
@@ -100,7 +101,9 @@ export async function searchTier2Memory(params: Readonly<{
       const modelId = String(embeddings.modelId ?? '').trim();
       if (provider && modelId) {
         try {
-          const queryEmbedding = await params.embedQuery(params.query.query);
+          params.signal?.throwIfAborted();
+          const queryEmbedding = await params.embedQuery(params.query.query, params.signal);
+          params.signal?.throwIfAborted();
           const embeddingMap = db.loadEmbeddings({
             provider,
             modelId,
@@ -130,6 +133,7 @@ export async function searchTier2Memory(params: Readonly<{
             .map((hit) => ({ ...hit, finalScore: scoreByKey.get(hit.key) ?? hit.baseScore }))
             .sort((a, b) => (b.finalScore ?? 0) - (a.finalScore ?? 0));
         } catch {
+          params.signal?.throwIfAborted();
           // Best-effort: fall back to base rank ordering.
         }
       }
@@ -151,6 +155,7 @@ export async function searchTier2Memory(params: Readonly<{
         .filter((hit) => hit.score >= minScore),
     };
   } catch (e: any) {
+    params.signal?.throwIfAborted();
     return {
       v: 1,
       ok: false,

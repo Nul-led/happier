@@ -140,7 +140,7 @@ describe('startPeerMediationLoopback', () => {
     const irohMachineAdmission = {
       localEndpointId: 'a'.repeat(64),
       role: 'acceptor' as const,
-      allowedFlows: ['file_transfer', 'attachment_transfer', 'workspace_sync'] as const,
+      allowedFlows: ['finite_transfer', 'workspace_sync'] as const,
       resolveApplicationTarget: vi.fn(async () => ({ port: 47321 })),
     };
     const startPeerMediationLoopbackServer = vi.fn(async (options) => ({

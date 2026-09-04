@@ -6,6 +6,58 @@ import { describe, expect, it } from 'vitest';
 import { openSummaryShardIndexDb } from './summaryShardIndexDb';
 
 describe('syncMemoryHintsForSessionsOnce', () => {
+  it('applies coverage after content policy so latest_messages counts semantic messages', async () => {
+    const { syncMemoryHintsForSessionsOnce } = await import('./syncMemoryHintsForSessionsOnce');
+    const dir = await mkdtemp(join(os.tmpdir(), 'happier-memory-sync-coverage-'));
+    try {
+      const tier1 = openSummaryShardIndexDb({ dbPath: join(dir, 'memory.sqlite') });
+      tier1.init();
+      let promptText = '';
+      await syncMemoryHintsForSessionsOnce({
+        sessionIds: ['sess-1'],
+        tier1,
+        settings: {
+          enabled: true,
+          enabledAtMs: 0,
+          indexMode: 'hints',
+          backfillPolicy: 'all_history',
+          coveragePolicy: { type: 'latest_messages', maxSemanticMessagesPerSession: 2 },
+          contentPolicy: { includeUserMessages: true, includeAssistantMessages: false },
+          hints: {
+            updateMode: 'continuous', idleDelayMs: 0, windowSizeMessages: 40,
+            maxShardChars: 12_000, maxSummaryChars: 500, maxKeywords: 5,
+            maxEntities: 5, maxDecisions: 5, maxRunsPerHour: 999,
+            maxShardsPerSession: 250, failureBackoffBaseMs: 0, failureBackoffMaxMs: 0,
+          },
+        },
+        now: () => 10_000,
+        fetchRecentDecryptedRows: async () => [
+          { seq: 1, createdAtMs: 1_000, role: 'user' as const, content: { type: 'text', text: 'old user row' } },
+          { seq: 2, createdAtMs: 2_000, role: 'agent' as const, content: { type: 'text', text: 'excluded assistant row' } },
+          { seq: 3, createdAtMs: 3_000, role: 'user' as const, content: { type: 'text', text: 'middle user row' } },
+          { seq: 4, createdAtMs: 4_000, role: 'user' as const, content: { type: 'text', text: 'latest user row' } },
+        ],
+        runSummarizer: async (prompt) => {
+          promptText = prompt;
+          return JSON.stringify({
+            shard: { v: 1, seqFrom: 3, seqTo: 4, createdAtFromMs: 3_000, createdAtToMs: 4_000,
+              summary: 'latest rows', keywords: [], entities: [], decisions: [] },
+            synopsis: null,
+          });
+        },
+        commitArtifacts: async () => {},
+      });
+
+      expect(promptText).not.toContain('old user row');
+      expect(promptText).not.toContain('excluded assistant row');
+      expect(promptText).toContain('middle user row');
+      expect(promptText).toContain('latest user row');
+      tier1.close();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('indexes semantic provider messages without requiring the legacy text window gate', async () => {
     const { syncMemoryHintsForSessionsOnce } = await import('./syncMemoryHintsForSessionsOnce');
 

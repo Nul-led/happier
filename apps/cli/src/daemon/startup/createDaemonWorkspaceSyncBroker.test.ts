@@ -8,7 +8,7 @@ function fixture(sidecarPid = 42) {
   const command = vi.fn(async () => ({ ok: true }));
   const close = vi.fn(async () => undefined);
   const broker = {
-    socketPath: '/private/broker/control.sock',
+    socketPath: '/private/broker/control-broker-instance.sock',
     brokerInstanceId: 'broker-instance',
     launchNonce: 'launch-nonce',
     authenticatedSidecarPid: sidecarPid,
@@ -41,7 +41,7 @@ describe('createDaemonWorkspaceSyncBroker', () => {
     });
 
     expect(harness.listenBroker).toHaveBeenCalledWith({
-      socketPath: join('/private/broker', 'control.sock'),
+      socketPath: join('/private/broker', 'control-broker-instance.sock'),
       brokerInstanceId: 'broker-instance',
       launchNonce: 'launch-nonce',
       launchSecret,
@@ -50,7 +50,7 @@ describe('createDaemonWorkspaceSyncBroker', () => {
     });
     expect(JSON.parse(Buffer.from(result.bootstrapDescriptor).toString('utf8'))).toEqual({
       protocol: 1,
-      brokerEndpoint: '/private/broker/control.sock',
+      brokerEndpoint: '/private/broker/control-broker-instance.sock',
       brokerInstanceId: 'broker-instance',
       launchNonce: 'launch-nonce',
       secret: Buffer.from(launchSecret).toString('base64url'),
@@ -72,9 +72,9 @@ describe('createDaemonWorkspaceSyncBroker', () => {
 
     result.setExpectedSidecarPid?.(42);
     await expect(result.waitForReady(42)).resolves.toBeUndefined();
-    await expect(result.command({ t: 'list', requestId: 'request-1' }, abort.signal)).resolves.toEqual({ ok: true });
+    await expect(result.command({ t: 'list', requestId: 'request-1', limit: 100 }, abort.signal)).resolves.toEqual({ ok: true });
     expect(harness.command).toHaveBeenCalledWith(
-      { t: 'list', requestId: 'request-1' },
+      { t: 'list', requestId: 'request-1', limit: 100 },
       { signal: abort.signal },
     );
   });

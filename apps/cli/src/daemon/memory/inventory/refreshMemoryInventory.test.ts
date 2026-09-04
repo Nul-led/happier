@@ -190,6 +190,107 @@ describe('refreshMemoryInventoryOnce', () => {
     expect(result.allowInitialBackfillSessionIds).toEqual(['new']);
   });
 
+  it('pages new_only through the enablement boundary without scanning older history', async () => {
+    const { calls, fetchSessionsPage } = createFetcher({
+      active: [
+        {
+          sessions: [row('recent-1', { meaningfulActivityAt: 9_000, createdAt: 9_000 })],
+          nextCursor: 'active-2',
+          hasNext: true,
+        },
+        {
+          sessions: [
+            row('recent-2', { meaningfulActivityAt: 6_000, createdAt: 6_000 }),
+            row('boundary-old', { meaningfulActivityAt: 4_000, createdAt: 4_000 }),
+          ],
+          nextCursor: 'active-3',
+          hasNext: true,
+        },
+        {
+          sessions: [row('too-old', { meaningfulActivityAt: 3_000, createdAt: 3_000 })],
+          nextCursor: null,
+          hasNext: false,
+        },
+      ],
+      archived: [
+        {
+          sessions: [row('archived-recent', { meaningfulActivityAt: 7_000, createdAt: 7_000, archivedAt: 8_000 })],
+          nextCursor: 'archived-2',
+          hasNext: true,
+        },
+        {
+          sessions: [row('archived-boundary', { meaningfulActivityAt: 2_000, createdAt: 2_000, archivedAt: 3_000 })],
+          nextCursor: 'archived-3',
+          hasNext: true,
+        },
+        {
+          sessions: [row('archived-too-old', { meaningfulActivityAt: 1_000, createdAt: 1_000, archivedAt: 2_000 })],
+          nextCursor: null,
+          hasNext: false,
+        },
+      ],
+    });
+
+    const result = await refreshMemoryInventoryOnce({
+      ...BASE,
+      enabledAtMs: 5_000,
+      backfillPolicy: 'new_only',
+      includeArchivedSessions: true,
+      fetchSessionsPage,
+    });
+
+    expect(calls).toEqual([
+      { scope: 'active', cursor: undefined, limit: 50 },
+      { scope: 'active', cursor: 'active-2', limit: 50 },
+      { scope: 'archived', cursor: undefined, limit: 50 },
+      { scope: 'archived', cursor: 'archived-2', limit: 50 },
+    ]);
+    expect(result.sessionIds).toEqual([
+      'recent-1',
+      'recent-2',
+      'boundary-old',
+      'archived-recent',
+      'archived-boundary',
+    ]);
+    expect(result.allowInitialBackfillSessionIds).toEqual(['recent-1', 'recent-2', 'archived-recent']);
+  });
+
+  it('does not mistake an old pinned row ahead of the ordered page for the enablement boundary', async () => {
+    const { calls, fetchSessionsPage } = createFetcher({
+      active: [
+        {
+          sessions: [
+            row('old-pinned', { meaningfulActivityAt: 1_000, createdAt: 1_000 }),
+            row('recent', { meaningfulActivityAt: 9_000, createdAt: 9_000 }),
+          ],
+          nextCursor: 'active-2',
+          hasNext: true,
+        },
+        {
+          sessions: [row('ordered-boundary', { meaningfulActivityAt: 4_000, createdAt: 4_000 })],
+          nextCursor: 'active-3',
+          hasNext: true,
+        },
+        {
+          sessions: [row('too-old', { meaningfulActivityAt: 3_000, createdAt: 3_000 })],
+          nextCursor: null,
+          hasNext: false,
+        },
+      ],
+    });
+
+    const result = await refreshMemoryInventoryOnce({
+      ...BASE,
+      enabledAtMs: 5_000,
+      backfillPolicy: 'new_only',
+      includeArchivedSessions: false,
+      fetchSessionsPage,
+    });
+
+    expect(calls).toHaveLength(2);
+    expect(result.sessionIds).toEqual(['old-pinned', 'recent', 'ordered-boundary']);
+  });
+
   it('restarts an exhausted scope from its head page without re-opening paging', async () => {
     const { calls, fetchSessionsPage } = createFetcher({
       active: [{ sessions: [row('s1')], nextCursor: 'ignored', hasNext: true }],

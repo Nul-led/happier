@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { StatementSync } from 'node:sqlite';
+import { vi } from 'vitest';
 
 import { openSqliteDatabaseSync } from '../../persistence/sqliteSync';
 import { openDeepIndexDb } from './deepIndexDb';
@@ -469,7 +471,19 @@ describe('deepIndexDb', () => {
       legacy.exec('PRAGMA user_version=1');
       legacy.close();
 
-      const db = openDeepIndexDb({ dbPath });
+      const originalAll = StatementSync.prototype.all;
+      const allSpy = vi.spyOn(StatementSync.prototype, 'all').mockImplementation(function (this: StatementSync, ...args) {
+        if (/FROM\s+message_chunks/i.test(this.sourceSQL) && !/\bLIMIT\b/i.test(this.sourceSQL)) {
+          throw new Error('deep migration selected the complete retained corpus');
+        }
+        return Reflect.apply(originalAll, this, args);
+      });
+      let db: ReturnType<typeof openDeepIndexDb>;
+      try {
+        db = openDeepIndexDb({ dbPath });
+      } finally {
+        allSpy.mockRestore();
+      }
       db.init();
 
       expect(

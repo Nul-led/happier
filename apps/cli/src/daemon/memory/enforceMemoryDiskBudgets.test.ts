@@ -58,5 +58,41 @@ describe('enforceMemoryDiskBudgets', () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
-});
 
+  it('enforces the retained deep-index budget while its long-lived handle is closed', async () => {
+    const dir = await mkdtemp(join(os.tmpdir(), 'happier-memory-budgets-closed-deep-'));
+    try {
+      const tier1Path = join(dir, 'memory.sqlite');
+      const deepPath = join(dir, 'deep.sqlite');
+      const tier1 = openSummaryShardIndexDb({ dbPath: tier1Path });
+      tier1.init();
+      const deep = openDeepIndexDb({ dbPath: deepPath });
+      deep.init();
+      deep.insertChunk({
+        sessionId: 's1',
+        seqFrom: 1,
+        seqTo: 2,
+        createdAtFromMs: 1,
+        createdAtToMs: 2,
+        text: 'retained deep memory',
+      });
+      deep.close();
+
+      await enforceMemoryDiskBudgets({
+        tier1,
+        deep: null,
+        tier1DbPath: tier1Path,
+        deepDbPath: deepPath,
+        budgets: { tier1Bytes: Number.MAX_SAFE_INTEGER, deepBytes: 0 },
+      });
+
+      const reopened = openDeepIndexDb({ dbPath: deepPath });
+      reopened.init();
+      expect(reopened.search({ query: 'retained', scope: { type: 'global' }, maxResults: 10 })).toEqual([]);
+      reopened.close();
+      tier1.close();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});

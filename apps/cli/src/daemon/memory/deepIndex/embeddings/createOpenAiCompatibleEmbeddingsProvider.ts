@@ -46,7 +46,9 @@ export async function createOpenAiCompatibleEmbeddingsProvider(params: Readonly<
   const requestEmbeddings = async (
     input: string | readonly string[],
     expectedCount: number,
+    callerSignal?: AbortSignal,
   ): Promise<Float32Array[]> => {
+    callerSignal?.throwIfAborted();
     const body: Record<string, unknown> = {
       input,
       model: params.config.model,
@@ -58,6 +60,9 @@ export async function createOpenAiCompatibleEmbeddingsProvider(params: Readonly<
     let response: Response;
     try {
       response = await withAbortTimeout(configuration.memoryEmbeddingsRemoteRequestTimeoutMs, async (signal) => {
+        const requestSignal = callerSignal
+          ? AbortSignal.any([callerSignal, signal])
+          : signal;
         return await fetch(buildEmbeddingsUrl(baseUrl), {
           method: 'POST',
           headers: {
@@ -65,10 +70,11 @@ export async function createOpenAiCompatibleEmbeddingsProvider(params: Readonly<
             authorization: `Bearer ${apiKey}`,
           },
           body: JSON.stringify(body),
-          signal,
+          signal: requestSignal,
         });
       });
     } catch (error) {
+      callerSignal?.throwIfAborted();
       if (
         error instanceof DOMException
         && error.name === 'AbortError'
@@ -92,13 +98,13 @@ export async function createOpenAiCompatibleEmbeddingsProvider(params: Readonly<
   return {
     providerKind: 'openai_compatible',
     modelId: params.config.model,
-    embedDocuments: async (texts) => {
+    embedDocuments: async (texts, signal) => {
       const clean = texts.map((text) => String(text ?? '').trim());
       if (clean.length === 0) return [];
-      return await requestEmbeddings(clean, clean.length);
+      return await requestEmbeddings(clean, clean.length, signal);
     },
-    embedQuery: async (text) => {
-      const rows = await requestEmbeddings(String(text ?? '').trim(), 1);
+    embedQuery: async (text, signal) => {
+      const rows = await requestEmbeddings(String(text ?? '').trim(), 1, signal);
       if (!rows[0]) throw new Error('No embedding produced');
       return rows[0];
     },

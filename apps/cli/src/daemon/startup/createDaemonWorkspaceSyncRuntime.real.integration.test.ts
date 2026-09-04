@@ -6,7 +6,9 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+import { deleteWorkspaceSyncConflictLoserAtRoot } from '@/workspaces/sync/workspaceSyncConflicts';
 import { createWorkspaceRootOwnershipManager } from '@/workspaces/sync/workspaceSyncRootOwnership';
+import type { WorkspaceSyncSidecarProcess } from '@/workspaces/sync/workspaceSyncSidecarLifecycle';
 import { createWorkspaceSyncPeerIdentityValidator } from '@/workspaces/sync/transport/workspaceSyncPeerIdentity';
 import { computeWorkspaceSyncPolicyDigest } from '@/workspaces/sync/workspaceSyncTypes';
 import type {
@@ -208,7 +210,6 @@ const contentPolicy = Object.freeze({
   selection: 'all_files' as const,
   extraIgnorePatterns: [] as const,
   extraIncludePatterns: [] as const,
-  includeGitDirectory: false,
 });
 
 function liveRelationship(input: Readonly<{
@@ -236,6 +237,7 @@ async function startLiveRuntime(input: Readonly<{
   root: string;
   binaries: Readonly<{ manager: string; agent: string; custody: string }>;
   relationship: WorkspaceSyncRelationshipV1 | null;
+  onSidecarSpawned?: (process: WorkspaceSyncSidecarProcess) => void | Promise<void>;
 }>): Promise<DaemonWorkspaceSyncRuntime> {
   const alphaRoot = join(input.root, 'alpha');
   const betaRoot = join(input.root, 'beta');
@@ -255,8 +257,8 @@ async function startLiveRuntime(input: Readonly<{
     scopeKey: input.relationship?.relationshipId ?? 'live-copy-once',
   };
   const workspaceRefs = new Map([
-    ['alpha-ref', { machineId: 'local-machine', rootPath: alphaRoot }],
-    ['beta-ref', { machineId: 'local-machine', rootPath: betaRoot }],
+    ['alpha-ref', { serverId: 'server-1', machineId: 'local-machine', rootPath: alphaRoot }],
+    ['beta-ref', { serverId: 'server-1', machineId: 'local-machine', rootPath: betaRoot }],
   ]);
   const rootOwnershipManager = createWorkspaceRootOwnershipManager({
     lockDirectory: join(dataRoot, 'root-ownership'),
@@ -265,6 +267,7 @@ async function startLiveRuntime(input: Readonly<{
   const peerIdentityEvents: string[] = [];
   const runtime = createDaemonWorkspaceSyncRuntime({
     daemonDataRoot: dataRoot,
+    localServerId: 'server-1',
     localMachineId: 'local-machine',
     releaseChannel: 'publicdev',
     resolveWorkspaceRef: (id) => workspaceRefs.get(id) ?? null,
@@ -273,6 +276,18 @@ async function startLiveRuntime(input: Readonly<{
     // local two-root harness starts with both authorized roots prepared.
     prepareRelationshipTarget: async () => undefined,
     bootstrap: async () => ({ release: async () => undefined }),
+    deleteConflictLoserAtTarget: async (request) => {
+      const target = workspaceRefs.get(request.targetWorkspaceRefId);
+      if (!target || target.machineId !== request.targetMachineId) {
+        throw Object.assign(new Error('Workspace sync conflict target is unavailable'), { code: 'peer_unavailable' });
+      }
+      await deleteWorkspaceSyncConflictLoserAtRoot({
+        rootPath: target.rootPath,
+        relativePath: request.path,
+        expectedKind: request.expectedKind,
+        ...(request.expectedDigest === undefined ? {} : { expectedDigest: request.expectedDigest }),
+      });
+    },
     createBroker: async (brokerInput) => {
       const validator = createWorkspaceSyncPeerIdentityValidator({
         resolveExecutable: () => input.binaries.custody,
@@ -297,7 +312,11 @@ async function startLiveRuntime(input: Readonly<{
         },
       });
     },
-    spawnSidecar: spawnWorkspaceSyncSidecar,
+    spawnSidecar: async (request) => {
+      const process = await spawnWorkspaceSyncSidecar(request);
+      await input.onSidecarSpawned?.(process);
+      return process;
+    },
     launchLocalAgent: launchWorkspaceSyncLocalAgent,
     getSettingsSnapshot: () => snapshot,
     subscribeSettingsSnapshot: () => () => undefined,
@@ -540,7 +559,7 @@ describe(
       );
     });
 
-    it('keep_both_in_sync (two-way-safe) reconciles both directions and surfaces a divergent edit as an explicit conflict', async () => {
+    it('keep_both_in_sync (two-way-safe) reconciles both directions and resolves a divergent edit through the conflict owner', async () => {
       const binaries = await requireLiveBinaries();
       await withLiveRuntime(
         { binaries, relationship: liveRelationship({ relationshipId: 'live-two-way-mode', mode: 'keep_both_in_sync' }) },
@@ -551,10 +570,9 @@ describe(
           await writeFile(join(betaRoot, 'beta-to-alpha.txt'), 'non-empty beta payload\n');
           await waitForContents(join(alphaRoot, 'beta-to-alpha.txt'), 'non-empty beta payload\n');
 
-          // Minimal conflict observation only: divergent edits on both
-          // endpoints must be reported by the engine-derived projection.
-          // Resolution belongs to the dedicated conflict owner and is not
-          // exercised here.
+          // Divergent edits must be reported by the engine-derived projection,
+          // then resolved through the same controller and guarded filesystem
+          // mutation owner used below the authenticated target authority.
           await writeFile(join(alphaRoot, 'conflicted.txt'), 'alpha divergent edit\n');
           await writeFile(join(betaRoot, 'conflicted.txt'), 'beta divergent edit\n');
           await runtime.managedWorkspaceSync.flush('live-two-way-mode');
@@ -570,8 +588,98 @@ describe(
           });
           expect(status?.conflictCount).toBeGreaterThanOrEqual(1);
           expect(status?.state).toBe('conflicted');
+
+          const conflict = conflicts.conflicts.find((entry) => entry.path.includes('conflicted.txt'))!;
+          await runtime.managedWorkspaceSync.deleteConflictLoser({
+            relationshipId: 'live-two-way-mode',
+            path: conflict.path,
+            keep: 'alpha',
+            expectedKind: conflict.beta.kind,
+            ...(conflict.beta.digest === undefined ? {} : { expectedDigest: conflict.beta.digest }),
+          });
+          await waitForContents(join(betaRoot, 'conflicted.txt'), 'alpha divergent edit\n', 'resolved alpha conflict');
+
+          const resolvedConflicts = await runtime.managedWorkspaceSync.listConflicts('live-two-way-mode');
+          expect(resolvedConflicts.conflicts.some((entry) => entry.path.includes('conflicted.txt'))).toBe(false);
         },
       );
     });
+
+    it('rehydrates the persisted relationship after a full daemon runtime restart without creating another session', async () => {
+      const binaries = await requireLiveBinaries();
+      const root = await realpath(await mkdtemp(join(tmpdir(), 'hwsl-')));
+      const relationship = liveRelationship({ relationshipId: 'live-restart-rehydrate', mode: 'keep_both_in_sync' });
+      let runtime: DaemonWorkspaceSyncRuntime | null = null;
+      try {
+        const alphaRoot = join(root, 'alpha');
+        const betaRoot = join(root, 'beta');
+        await Promise.all([mkdir(alphaRoot, { recursive: true }), mkdir(betaRoot, { recursive: true })]);
+
+        runtime = await startLiveRuntime({ root, binaries, relationship });
+        await writeFile(join(alphaRoot, 'before-restart.txt'), 'persisted before restart\n');
+        await waitForContents(join(betaRoot, 'before-restart.txt'), 'persisted before restart\n');
+        await runtime.stop();
+        runtime = null;
+
+        runtime = await startLiveRuntime({ root, binaries, relationship });
+        const relationships = await runtime.managedWorkspaceSync.list();
+        expect(relationships).toHaveLength(1);
+        expect(relationships[0]).toMatchObject({
+          relationshipId: 'live-restart-rehydrate',
+          mode: 'keep_both_in_sync',
+        });
+
+        await writeFile(join(betaRoot, 'after-restart.txt'), 'persisted after restart\n');
+        await waitForContents(join(alphaRoot, 'after-restart.txt'), 'persisted after restart\n');
+      } finally {
+        await runtime?.stop().catch(() => undefined);
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+
+    it('reconciles the persisted relationship after an unexpected real sidecar termination', async () => {
+      const binaries = await requireLiveBinaries();
+      const root = await realpath(await mkdtemp(join(tmpdir(), 'hwsl-')));
+      const relationship = liveRelationship({ relationshipId: 'live-sidecar-restart', mode: 'keep_both_in_sync' });
+      const spawned: WorkspaceSyncSidecarProcess[] = [];
+      let runtime: DaemonWorkspaceSyncRuntime | null = null;
+      try {
+        const alphaRoot = join(root, 'alpha');
+        const betaRoot = join(root, 'beta');
+        await Promise.all([mkdir(alphaRoot, { recursive: true }), mkdir(betaRoot, { recursive: true })]);
+        runtime = await startLiveRuntime({
+          root,
+          binaries,
+          relationship,
+          onSidecarSpawned: (process) => {
+            spawned.push(process);
+          },
+        });
+
+        await writeFile(join(alphaRoot, 'before-sidecar-restart.txt'), 'before sidecar restart\n');
+        await waitForContents(join(betaRoot, 'before-sidecar-restart.txt'), 'before sidecar restart\n');
+        expect(spawned).toHaveLength(1);
+
+        await spawned[0]!.stop();
+        const deadline = Date.now() + 20_000;
+        while (spawned.length < 2 && Date.now() < deadline) {
+          await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
+        }
+        expect(spawned.length).toBeGreaterThanOrEqual(2);
+
+        await expect(runtime.managedWorkspaceSync.list()).resolves.toEqual([
+          expect.objectContaining({
+            relationshipId: 'live-sidecar-restart',
+            mode: 'keep_both_in_sync',
+          }),
+        ]);
+        await writeFile(join(betaRoot, 'after-sidecar-restart.txt'), 'after sidecar restart\n');
+        await waitForContents(join(alphaRoot, 'after-sidecar-restart.txt'), 'after sidecar restart\n');
+      } finally {
+        await runtime?.stop().catch(() => undefined);
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+
   },
 );

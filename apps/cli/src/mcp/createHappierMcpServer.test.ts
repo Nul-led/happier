@@ -327,8 +327,10 @@ describe('createHappierMcpServer', () => {
       rpcHandlerManager: { invokeLocal: async () => ({}) },
       updateMetadata: () => {},
       getPermissionMode: () => 'yolo',
-      getActiveTurnCausalPermissionAuthority: () => causalPermissionAuthority,
-      getActiveTurnId: () => 'turn_native_agent_tool_1',
+      getActiveTurnPermissionWitness: () => ({
+        turnId: 'turn_native_agent_tool_1',
+        causalPermissionAuthority,
+      }),
     } as any, {
       accountSettings: {
         sessionAgentSpawnPolicyV1: spawnPolicy,
@@ -457,6 +459,80 @@ describe('createHappierMcpServer', () => {
       sourceKind: 'configured',
       configuredBackendId: 'review-bot',
     });
+  });
+
+  it('suppresses retained memory hits outside the session bound to an unauthenticated MCP client', async () => {
+    const captured: { overrides?: any } = {};
+    vi.doMock('@/session/actions/createCliActionExecutorHarness', () => ({
+      createCliActionExecutorHarness: (_params: unknown, overrides: any) => {
+        captured.overrides = overrides;
+        return { executor: { execute: vi.fn(async () => ({ ok: true, result: { ok: true } })) } };
+      },
+    }));
+
+    const { createHappierMcpServer } = await import('@/mcp/createHappierMcpServer');
+    createHappierMcpServer({
+      sessionId: 'bound-session',
+      rpcHandlerManager: {
+        invokeLocal: async () => ({
+          v: 1,
+          ok: true,
+          hits: [
+            {
+              sessionId: 'bound-session',
+              seqFrom: 1,
+              seqTo: 1,
+              createdAtFromMs: 1,
+              createdAtToMs: 1,
+              summary: 'readable',
+              score: 1,
+            },
+            {
+              sessionId: 'revoked-session',
+              seqFrom: 1,
+              seqTo: 1,
+              createdAtFromMs: 1,
+              createdAtToMs: 1,
+              summary: 'retained after revocation',
+              score: 0.5,
+            },
+          ],
+        }),
+      },
+      updateMetadata: () => {},
+    } as any, { credentials: null } as any);
+
+    await expect(captured.overrides.daemonMemorySearch({
+      query: { v: 1, query: 'retained', scope: { type: 'global' }, mode: 'hints' },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      hits: [expect.objectContaining({ sessionId: 'bound-session' })],
+    }));
+  });
+
+  it('rejects an unauthenticated memory window outside the MCP-bound Session before daemon RPC', async () => {
+    const captured: { overrides?: any } = {};
+    const invokeLocal = vi.fn(async () => ({ v: 1, snippets: [], citations: [] }));
+    vi.doMock('@/session/actions/createCliActionExecutorHarness', () => ({
+      createCliActionExecutorHarness: (_params: unknown, overrides: any) => {
+        captured.overrides = overrides;
+        return { executor: { execute: vi.fn(async () => ({ ok: true, result: { ok: true } })) } };
+      },
+    }));
+
+    const { createHappierMcpServer } = await import('@/mcp/createHappierMcpServer');
+    createHappierMcpServer({
+      sessionId: 'bound-session',
+      rpcHandlerManager: { invokeLocal },
+      updateMetadata: () => {},
+    } as any, { credentials: null } as any);
+
+    await expect(captured.overrides.daemonMemoryGetWindow({
+      sessionId: 'other-session',
+      seqFrom: 1,
+      seqTo: 2,
+    })).rejects.toMatchObject({ code: 'not_authenticated' });
+    expect(invokeLocal).not.toHaveBeenCalled();
   });
 
   it('passes live session location into action executor deps', async () => {
@@ -853,7 +929,10 @@ describe('createHappierMcpServer', () => {
         updateMetadata: () => {},
         // The mutable Session mode has widened since this turn was admitted.
         getPermissionMode: () => 'yolo',
-        getActiveTurnCausalPermissionAuthority: () => activeTurnAuthority,
+        getActiveTurnPermissionWitness: () => ({
+          turnId: 'turn-active',
+          causalPermissionAuthority: activeTurnAuthority,
+        }),
       } as any,
       {
         credentials: null,

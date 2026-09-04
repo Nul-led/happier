@@ -56,6 +56,7 @@ describe('memoryWorker archived eligibility and derived-index removal', () => {
     vi.doUnmock('@/configuration');
     vi.doUnmock('@/session/transport/http/sessionsHttp');
     vi.doUnmock('@/session/systemRecords/memory/fetchMemorySystemRecords');
+    vi.doUnmock('./removeMemorySessionIndexes');
     vi.doUnmock('./transcript/fetchSemanticPage');
     vi.resetModules();
     vi.useRealTimers();
@@ -104,6 +105,7 @@ describe('memoryWorker archived eligibility and derived-index removal', () => {
         sessionId: string;
         afterSeq: number;
         limit: number;
+        signal?: AbortSignal;
       }>) => Promise<Array<{
         seq: number;
         createdAtMs: number;
@@ -333,6 +335,24 @@ describe('memoryWorker archived eligibility and derived-index removal', () => {
     worker.stop();
   });
 
+  it('keeps archive exclusion pending and rethrows when a live archive purge fails', async () => {
+    mockSessionsHttp(() => ({ sessions: [], nextCursor: null, hasNext: false }));
+    const purgeError = new Error('archive_purge_failed');
+    vi.doMock('./removeMemorySessionIndexes', () => ({
+      removeMemorySessionIndexes: vi.fn(() => {
+        throw purgeError;
+      }),
+    }));
+    const worker = await startWorker({ includeArchivedSessions: false });
+
+    await expect(worker.applySessionArchivedState({
+      sessionId: 'archive-purge-failure',
+      archived: true,
+    })).rejects.toBe(purgeError);
+
+    expect(worker.getSettings().includeArchivedSessions).toBe(true);
+  });
+
   it('retains a session that becomes archived while archived eligibility is on', async () => {
     mockSessionsHttp(() => ({ sessions: [], nextCursor: null, hasNext: false }));
     const worker = await startWorker({ includeArchivedSessions: true });
@@ -483,18 +503,26 @@ describe('memoryWorker archived eligibility and derived-index removal', () => {
     worker.stop();
   });
 
-  it('includes deep-only rows in retained access reconciliation', async () => {
-    const fetchSessionById = vi.fn(async ({ sessionId }: { sessionId: string }) => (
-      sessionId === 'deep-kept' ? { id: sessionId } : null
-    ));
+  it('uses paged visible-session inventory for retained access reconciliation', async () => {
+    const fetchSessionById = vi.fn();
+    const fetchSessionsPage = vi.fn(async ({ archivedOnly, cursor }: SessionsPageArgs) => {
+      if (archivedOnly) {
+        return cursor
+          ? { sessions: [sessionRow('deep-archived', { archivedAt: 2 })], nextCursor: null, hasNext: false }
+          : { sessions: [], nextCursor: 'archived-2', hasNext: true };
+      }
+      return cursor
+        ? { sessions: [sessionRow('deep-kept', { archivedAt: null })], nextCursor: null, hasNext: false }
+        : { sessions: [], nextCursor: 'active-2', hasNext: true };
+    });
     vi.doMock('@/session/transport/http/sessionsHttp', () => ({
-      fetchSessionsPage: vi.fn(async () => ({ sessions: [], nextCursor: null, hasNext: false })),
+      fetchSessionsPage,
       fetchSessionById,
     }));
     const worker = await startWorker({ indexMode: 'deep' });
     const { openDeepIndexDb } = await import('./deepIndex/deepIndexDb');
     const deepDb = openDeepIndexDb({ dbPath: worker.getDeepDbPath()! });
-    for (const sessionId of ['deep-kept', 'deep-revoked']) {
+    for (const sessionId of ['deep-kept', 'deep-archived', 'deep-revoked']) {
       deepDb.insertChunk({
         sessionId,
         seqFrom: 1,
@@ -506,19 +534,17 @@ describe('memoryWorker archived eligibility and derived-index removal', () => {
     }
     deepDb.close();
 
-    expect([...worker.listIndexedSessionIds()].sort()).toEqual(['deep-kept', 'deep-revoked']);
+    expect([...worker.listIndexedSessionIds()].sort()).toEqual(['deep-archived', 'deep-kept', 'deep-revoked']);
     await worker.reconcileRetainedSessionAccess();
-    expect([...worker.listIndexedSessionIds()]).toEqual(['deep-kept']);
-    expect(fetchSessionById.mock.calls.map(([input]) => input.sessionId).sort()).toEqual([
-      'deep-kept',
-      'deep-revoked',
-    ]);
+    expect([...worker.listIndexedSessionIds()].sort()).toEqual(['deep-archived', 'deep-kept']);
+    expect(fetchSessionById).not.toHaveBeenCalled();
+    expect(fetchSessionsPage).toHaveBeenCalledTimes(4);
     worker.stop();
   });
 
-  it('waits for in-flight indexing before purging a removed Session', async () => {
-    const transcriptRelease = createDeferred();
+  it('aborts and waits for in-flight indexing before purging a removed Session', async () => {
     const transcriptStarted = createDeferred();
+    let transcriptSignal: AbortSignal | undefined;
     vi.doMock('@/session/transport/http/sessionsHttp', () => ({
       fetchSessionsPage: vi.fn(async () => ({ sessions: [], nextCursor: null, hasNext: false })),
       fetchSessionById: vi.fn(async () => sessionRow('removed-in-flight', { archivedAt: null })),
@@ -526,35 +552,56 @@ describe('memoryWorker archived eligibility and derived-index removal', () => {
     const worker = await startWorker(
       { indexMode: 'deep', backfillPolicy: 'all_history' },
       {
-        fetchDecryptedTranscriptPageAfterSeq: async () => {
+        fetchDecryptedTranscriptPageAfterSeq: async ({ signal }) => {
+          transcriptSignal = signal;
           transcriptStarted.resolve();
-          await transcriptRelease.promise;
-          return [{
-            seq: 1,
-            createdAtMs: 1,
-            role: 'user' as const,
-            content: { type: 'text' as const, text: 'must not survive removal' },
-            meta: null,
-          }];
+          await new Promise<never>((_resolve, reject) => {
+            signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+          });
+          return [];
         },
       },
     );
 
     const indexing = worker.ensureUpToDate('removed-in-flight');
     await transcriptStarted.promise;
-    let removalSettled = false;
-    const removal = worker.removeSessions(['removed-in-flight']).then(() => {
-      removalSettled = true;
-    });
-    await Promise.resolve();
-    const removalSettledBeforeRelease = removalSettled;
+    const removal = worker.removeSessions(['removed-in-flight']);
+    const [indexingResult, removalResult] = await Promise.allSettled([indexing, removal]);
 
-    transcriptRelease.resolve();
-    await Promise.all([indexing, removal]);
-
-    expect(removalSettledBeforeRelease).toBe(false);
+    expect(transcriptSignal?.aborted).toBe(true);
+    expect(indexingResult.status).toBe('fulfilled');
+    expect(removalResult.status).toBe('fulfilled');
     expect(worker.listIndexedSessionIds()).not.toContain('removed-in-flight');
     await worker.stop();
+  });
+
+  it('passes the loop lifecycle signal into active transcript work before shutdown settles', async () => {
+    mockDaemonProcess();
+    const transcriptStarted = createDeferred();
+    let transcriptSignal: AbortSignal | undefined;
+    mockSessionsHttp(() => ({
+      sessions: [sessionRow('shutdown-in-flight', { archivedAt: null })],
+      nextCursor: null,
+      hasNext: false,
+    }));
+    const worker = await startWorker(
+      { indexMode: 'deep', backfillPolicy: 'all_history' },
+      {
+        fetchDecryptedTranscriptPageAfterSeq: async ({ signal }) => {
+          transcriptSignal = signal;
+          transcriptStarted.resolve();
+          await new Promise<never>((_resolve, reject) => {
+            signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+          });
+          return [];
+        },
+      },
+    );
+
+    await transcriptStarted.promise;
+    await worker.stop();
+
+    expect(transcriptSignal?.aborted).toBe(true);
   });
 
   it('does not let explicit ensureUpToDate bypass archived opt-in', async () => {

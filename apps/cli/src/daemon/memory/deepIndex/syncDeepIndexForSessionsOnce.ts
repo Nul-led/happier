@@ -10,10 +10,18 @@ import type { OperationalMemoryEmbeddingsSettings } from '../resolveOperationalM
 import {
   extractMemoryIndexableTranscriptItemFromDecryptedRow,
 } from '../transcript/extractIndexableItem';
+import {
+  applyMemoryCoveragePolicy,
+  memoryIndexPolicyKey,
+  resolveMemoryCoverageCreatedAtCutoffMs,
+  resolveMemoryIndexPolicy,
+} from '../transcript/coveragePolicy';
 
 export type SyncDeepIndexSettings = Readonly<{
   enabled: boolean;
+  enabledAtMs?: number;
   indexMode: 'deep';
+  backfillPolicy?: 'new_only' | 'last_30_days' | 'all_history';
   coveragePolicy?: MemoryCoveragePolicyV1;
   contentPolicy?: MemoryContentPolicyV1;
   deep: Readonly<{
@@ -25,6 +33,7 @@ export type SyncDeepIndexSettings = Readonly<{
     failureBackoffMaxMs: number;
   }>;
   embeddings?: OperationalMemoryEmbeddingsSettings | null;
+  forceSnapshot?: boolean;
 }>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -48,12 +57,16 @@ export async function syncDeepIndexForSessionsOnce(params: Readonly<{
   deep: DeepIndexDbHandle;
   settings: SyncDeepIndexSettings;
   now: () => number;
-  fetchDecryptedTranscriptPageAfterSeq: (args: Readonly<{ sessionId: string; afterSeq: number; limit: number }>) => Promise<DecryptedTranscriptRow[]>;
-  embedDocuments?: (texts: readonly string[]) => Promise<Float32Array[]>;
+  fetchDecryptedTranscriptPageAfterSeq: (args: Readonly<{ sessionId: string; afterSeq: number; limit: number; signal?: AbortSignal }>) => Promise<DecryptedTranscriptRow[]>;
+  fetchRecentDecryptedRows?: (sessionId: string, signal?: AbortSignal) => Promise<DecryptedTranscriptRow[]>;
+  embedDocuments?: (texts: readonly string[], signal?: AbortSignal) => Promise<Float32Array[]>;
+  signal?: AbortSignal;
 }>): Promise<void> {
   if (!params.settings.enabled) return;
   if (params.settings.indexMode !== 'deep') return;
   const nowMs = Math.max(0, Math.trunc(params.now()));
+  const memoryPolicy = resolveMemoryIndexPolicy(params.settings);
+  const policyKey = memoryIndexPolicyKey(memoryPolicy);
   const pageLimit = Math.max(1, Math.min(500, Math.trunc(configuration.memoryMaxTranscriptWindowMessages)));
   const run = {
     sessionsConsidered: 0,
@@ -66,6 +79,7 @@ export async function syncDeepIndexForSessionsOnce(params: Readonly<{
   };
 
   for (const rawSessionId of params.sessionIds) {
+    params.signal?.throwIfAborted();
     const sessionId = String(rawSessionId ?? '').trim();
     if (!sessionId) continue;
     run.sessionsConsidered += 1;
@@ -76,8 +90,21 @@ export async function syncDeepIndexForSessionsOnce(params: Readonly<{
     const afterSeq = Math.max(0, Math.trunc(cursors.lastDeepIndexedSeq));
     let rows: DecryptedTranscriptRow[] = [];
     try {
-      rows = await params.fetchDecryptedTranscriptPageAfterSeq({ sessionId, afterSeq, limit: pageLimit });
-    } catch {
+      const needsBoundedSnapshot = params.settings.coveragePolicy?.type !== 'full'
+        || params.settings.backfillPolicy === 'new_only'
+        || params.settings.forceSnapshot === true
+        || params.deep.hasSessionArtifactsOutsidePolicy({ sessionId, policyKey });
+      rows = needsBoundedSnapshot && params.fetchRecentDecryptedRows
+        ? await params.fetchRecentDecryptedRows(sessionId, params.signal)
+        : await params.fetchDecryptedTranscriptPageAfterSeq({
+          sessionId,
+          afterSeq,
+          limit: pageLimit,
+          ...(params.signal ? { signal: params.signal } : {}),
+        });
+      params.signal?.throwIfAborted();
+    } catch (error) {
+      params.signal?.throwIfAborted();
       params.tier1.markDeepIndexFailure({
         sessionId,
         nowMs,
@@ -85,6 +112,7 @@ export async function syncDeepIndexForSessionsOnce(params: Readonly<{
         backoffMaxMs: params.settings.deep.failureBackoffMaxMs,
       });
       run.sessionsFailed += 1;
+      if (params.settings.forceSnapshot === true) throw error;
       continue;
     }
     run.rawRowsFetched += rows.length;
@@ -92,7 +120,7 @@ export async function syncDeepIndexForSessionsOnce(params: Readonly<{
     const lastScannedSeq = rows.length > 0 ? rows[rows.length - 1]!.seq : afterSeq;
 
     try {
-      const indexable = rows
+      const extracted = rows
         .filter((row) => !shouldSkipAssistantAcpPayload(
           row.content,
           params.settings.deep.includeAssistantAcpMessage,
@@ -110,6 +138,33 @@ export async function syncDeepIndexForSessionsOnce(params: Readonly<{
           text: item.text,
           role: item.role === 'user' ? 'user' as const : 'agent' as const,
         }));
+      const indexable = applyMemoryCoveragePolicy({
+        items: extracted,
+        policy: params.settings.coveragePolicy,
+        nowMs,
+        enabledAtMs: params.settings.enabledAtMs ?? 0,
+        backfillPolicy: params.settings.backfillPolicy,
+      });
+      const coverageCutoffMs = resolveMemoryCoverageCreatedAtCutoffMs({
+        policy: params.settings.coveragePolicy,
+        nowMs,
+        enabledAtMs: params.settings.enabledAtMs ?? 0,
+      });
+      const pruned = params.deep.pruneSessionArtifacts({
+        sessionId,
+        policyKey,
+        ...(params.settings.coveragePolicy?.type === 'latest_messages' && indexable.length > 0
+          ? { minSeq: indexable[0]!.seq }
+          : {}),
+        ...(coverageCutoffMs !== null ? { createdAtCutoffMs: coverageCutoffMs } : {}),
+      });
+      if (pruned) {
+        params.tier1.rewindSessionCursor({
+          sessionId,
+          lane: 'deep',
+          seq: Math.max(0, (indexable[0]?.seq ?? 1) - 1),
+        });
+      }
       run.semanticRowsFound += indexable.length;
 
       const chunks = chunkTranscriptRows({
@@ -129,6 +184,7 @@ export async function syncDeepIndexForSessionsOnce(params: Readonly<{
           createdAtFromMs: chunk.createdAtFromMs,
           createdAtToMs: chunk.createdAtToMs,
           text: chunk.text,
+          policyKey,
         });
       }
       run.deepChunksCreated += chunks.length;
@@ -145,7 +201,8 @@ export async function syncDeepIndexForSessionsOnce(params: Readonly<{
         });
         if (chunksToEmbed.length > 0) {
           try {
-            const vectors = await params.embedDocuments(chunksToEmbed.map((chunk) => chunk.text));
+            const vectors = await params.embedDocuments(chunksToEmbed.map((chunk) => chunk.text), params.signal);
+            params.signal?.throwIfAborted();
             if (Array.isArray(vectors) && vectors.length === chunksToEmbed.length) {
               for (let i = 0; i < chunksToEmbed.length; i += 1) {
                 const chunk = chunksToEmbed[i]!;
@@ -163,6 +220,7 @@ export async function syncDeepIndexForSessionsOnce(params: Readonly<{
               }
             }
           } catch (error) {
+            params.signal?.throwIfAborted();
             logger.debug('[memoryWorker] Missing chunk embeddings backfill failed (best-effort)', {
               sessionId,
               provider,
@@ -197,7 +255,8 @@ export async function syncDeepIndexForSessionsOnce(params: Readonly<{
           updatedAtMs: nowMs,
         });
       }
-    } catch {
+    } catch (error) {
+      params.signal?.throwIfAborted();
       params.tier1.markDeepIndexFailure({
         sessionId,
         nowMs,
@@ -205,6 +264,7 @@ export async function syncDeepIndexForSessionsOnce(params: Readonly<{
         backoffMaxMs: params.settings.deep.failureBackoffMaxMs,
       });
       run.sessionsFailed += 1;
+      if (params.settings.forceSnapshot === true) throw error;
     }
   }
 

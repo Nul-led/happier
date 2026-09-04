@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdir, stat, writeFile } from 'node:fs/promises';
+import { mkdir, stat, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { applyEnvValues, restoreEnvValues, snapshotEnvValues } from '@/testkit/env/envSnapshot';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
@@ -56,6 +56,27 @@ describe('memoryWorker', () => {
     await worker.stop();
   });
 
+  it.runIf(process.platform !== 'win32')('refuses a symlinked memory root before creating an index', async () => {
+    const { writeMemorySettingsToDisk } = await import('@/settings/memorySettings');
+    await writeMemorySettingsToDisk({ v: 1, enabled: true, indexMode: 'hints' });
+
+    const { configuration } = await import('@/configuration');
+    const outside = join(homeDir!, 'outside-memory');
+    await mkdir(outside, { recursive: true });
+    await mkdir(configuration.activeServerDir, { recursive: true });
+    await symlink(outside, join(configuration.activeServerDir, 'memory'));
+
+    const { startMemoryWorker } = await import('./memoryWorker');
+    const credentials: Credentials = {
+      token: 't',
+      encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
+    };
+
+    await expect(startMemoryWorker({ credentials, machineId: 'machine_1' }))
+      .rejects.toThrow('Protected local state must not be a symbolic link');
+    await expect(stat(join(outside, 'memory.sqlite'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('loads persisted settings when the worker starts so status matches the saved machine configuration', async () => {
     const { writeMemorySettingsToDisk } = await import('@/settings/memorySettings');
     await writeMemorySettingsToDisk({ v: 1, enabled: true, indexMode: 'hints' });
@@ -93,6 +114,7 @@ describe('memoryWorker', () => {
 
     await worker.stop();
   });
+
 
   it('resolves embeddings diagnostics on settings reload even before any session indexing runs', async () => {
     const { writeMemorySettingsToDisk } = await import('@/settings/memorySettings');
@@ -316,6 +338,173 @@ describe('memoryWorker', () => {
     expect(result.hits.length).toBeGreaterThan(0);
     expect(result.hits[0]!.sessionId).toBe('sess-1');
 
+    await worker.stop();
+  });
+
+  it('rebuilds an advanced empty projection when a content-policy change admits earlier rows', async () => {
+    vi.doMock('@/session/transport/http/sessionsHttp', () => ({
+      fetchSessionsPage: vi.fn(async () => ({ sessions: [], nextCursor: null, hasNext: false })),
+      fetchSessionById: vi.fn(async () => ({
+        id: 'sess-policy', seq: 1, createdAt: 1_000, updatedAt: 2_000,
+        active: false, activeAt: 0, archivedAt: null,
+      })),
+    }));
+    vi.doMock('./transcript/fetchSemanticPage', () => ({
+      fetchMemorySemanticTranscriptPage: vi.fn(async () => ({
+        items: [{
+          sessionId: 'sess-policy',
+          id: '1',
+          seq: 1,
+          createdAtMs: 1_000,
+          role: 'assistant',
+          kind: 'assistant_message',
+          text: 'newly admitted policy memory',
+          textChars: 28,
+        }],
+        nextCursor: null,
+        hasMore: false,
+        diagnostics: {
+          rawRowsScanned: 1,
+          pagesFetched: 1,
+          scanLimitReached: false,
+          payloadTruncations: 0,
+          semanticRowsFound: 1,
+        },
+      })),
+    }));
+
+    const { writeMemorySettingsToDisk } = await import('@/settings/memorySettings');
+    await writeMemorySettingsToDisk({
+      v: 1,
+      enabled: true,
+      indexMode: 'deep',
+      backfillPolicy: 'all_history',
+      contentPolicy: { includeUserMessages: true, includeAssistantMessages: false },
+    });
+
+    const { startMemoryWorker } = await import('./memoryWorker');
+    const { searchTier2Memory } = await import('./searchMemory');
+    const credentials: Credentials = {
+      token: 't',
+      encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
+    };
+    const worker = await startMemoryWorker({
+      credentials,
+      machineId: 'machine_1',
+      deps: {
+        fetchDecryptedTranscriptPageAfterSeq: async () => [{
+          seq: 1,
+          createdAtMs: 1_000,
+          role: 'agent' as const,
+          content: { type: 'text', text: 'newly admitted policy memory' },
+        }],
+        fetchCommittedSummaryShards: async () => [],
+      },
+    });
+
+    await worker.ensureUpToDate('sess-policy');
+    const deepPath = worker.getDeepDbPath()!;
+    const beforePolicyChange = await searchTier2Memory({
+      dbPath: deepPath,
+      query: { v: 1, query: 'admitted', scope: { type: 'global' }, mode: 'deep' },
+      previewChars: 240,
+    });
+    expect(beforePolicyChange.ok && beforePolicyChange.hits).toEqual([]);
+
+    await writeMemorySettingsToDisk({
+      v: 1,
+      enabled: true,
+      indexMode: 'deep',
+      backfillPolicy: 'all_history',
+      contentPolicy: { includeUserMessages: true, includeAssistantMessages: true },
+    });
+    await worker.reloadSettings();
+
+    expect(worker.getSettings().contentPolicy.includeAssistantMessages).toBe(true);
+    const rebuilt = await searchTier2Memory({
+      dbPath: deepPath,
+      query: { v: 1, query: 'admitted', scope: { type: 'global' }, mode: 'deep' },
+      previewChars: 240,
+    });
+    expect(rebuilt.ok && rebuilt.hits.map((hit) => hit.sessionId)).toEqual(['sess-policy']);
+
+    await worker.stop();
+  });
+
+  it('purges retained deep artifacts when deep policy changes while hints mode is active', async () => {
+    const { writeMemorySettingsToDisk } = await import('@/settings/memorySettings');
+    await writeMemorySettingsToDisk({
+      v: 1,
+      enabled: true,
+      indexMode: 'deep',
+      deep: { includeToolOutput: true },
+    });
+    const { startMemoryWorker } = await import('./memoryWorker');
+    const { openDeepIndexDb } = await import('./deepIndex/deepIndexDb');
+    const { openSummaryShardIndexDb } = await import('./summaryShardIndexDb');
+    const { searchTier2Memory } = await import('./searchMemory');
+    const credentials: Credentials = {
+      token: 't',
+      encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
+    };
+    const worker = await startMemoryWorker({ credentials, machineId: 'machine_1' });
+    const deepPath = worker.getDeepDbPath()!;
+
+    await writeMemorySettingsToDisk({
+      v: 1,
+      enabled: true,
+      indexMode: 'hints',
+      deep: { includeToolOutput: true },
+    });
+    await worker.reloadSettings();
+
+    const seed = openDeepIndexDb({ dbPath: deepPath });
+    seed.insertChunk({
+      sessionId: 'sess-stale-deep-policy',
+      seqFrom: 1,
+      seqTo: 1,
+      createdAtFromMs: 1,
+      createdAtToMs: 1,
+      text: 'stale private tool output',
+      policyKey: 'old-deep-tool-output-policy',
+    });
+    seed.close();
+
+    await writeMemorySettingsToDisk({
+      v: 1,
+      enabled: true,
+      indexMode: 'hints',
+      deep: { includeToolOutput: false },
+    });
+    await worker.reloadSettings();
+
+    const result = await searchTier2Memory({
+      dbPath: deepPath,
+      query: { v: 1, query: 'private tool', scope: { type: 'global' }, mode: 'deep' },
+      previewChars: 240,
+    });
+    expect(result.ok && result.hits).toEqual([]);
+    expect(worker.getSettings().deep.includeToolOutput).toBe(false);
+
+    const tier1Path = worker.getTier1DbPath()!;
+    const tier1Seed = openSummaryShardIndexDb({ dbPath: tier1Path });
+    tier1Seed.trySeedSessionCursorsIfMissing({
+      sessionId: 'sess-deep-cursor-only',
+      nowMs: 10,
+      lastHintedSeq: 0,
+      lastDeepIndexedSeq: 99,
+    });
+    tier1Seed.close();
+    await writeMemorySettingsToDisk({
+      v: 1,
+      enabled: true,
+      indexMode: 'hints',
+      deep: { includeToolOutput: true },
+    });
+    await worker.reloadSettings();
+    const tier1Read = openSummaryShardIndexDb({ dbPath: tier1Path });
+    expect(tier1Read.getSessionCursors({ sessionId: 'sess-deep-cursor-only', nowMs: 20 }).lastDeepIndexedSeq).toBe(0);
+    tier1Read.close();
     await worker.stop();
   });
 

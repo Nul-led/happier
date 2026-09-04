@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { configuration, reloadConfiguration } from '@/configuration';
 import { readDaemonState, readSettings, readStoredCredentials } from '@/persistence';
 import { getActiveServerProfile, upsertServerProfileByUrl } from '@/server/serverProfiles';
+import { resolveCurrentCliHomeTarget } from '@/server/homeTarget';
 import { isBun } from '@/utils/runtime';
 import { buildMissingLocalRelayError, resolveLocalRelay } from '@/utils/localRelay';
 import { resolveJavaScriptRuntimeExecutable } from '@/packagedRuntime/js/resolveJavaScriptRuntimeExecutable';
@@ -1285,6 +1286,20 @@ export async function runDaemonServiceCliCommand(params: Readonly<{
       argv: params.argv,
       json: flags.json,
     });
+  }
+
+  if (
+    !flags.help
+    && action !== 'list'
+    && action !== 'paths'
+    && !(action === 'install' && params.argv.includes('--local-relay'))
+  ) {
+    const homeTarget = await resolveCurrentCliHomeTarget();
+    if (homeTarget.profileId && homeTarget.profileId !== runtime.activeServerId) {
+      throw new Error(
+        `Daemon service target profile ${runtime.activeServerId} does not match resolved Home profile ${homeTarget.profileId}`,
+      );
+    }
   }
 
   if (flags.help) {

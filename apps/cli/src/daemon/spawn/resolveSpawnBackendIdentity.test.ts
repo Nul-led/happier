@@ -192,6 +192,39 @@ describe('resolveSpawnBackendIdentity credential precedence', () => {
     expect(loadLocalHandoffMetadataByVendorResumeId).toHaveBeenCalledWith('sess-handoff-direct');
   });
 
+  it('rejects a local handoff overlay whose ACP flavor nests the customAcp placeholder', async () => {
+    const liveCredentials = createLegacyCredentials('live-token', 16);
+    resolveExistingSessionAttachContextMock.mockResolvedValueOnce({
+      ok: true,
+      attachPayload: { v: 2, encryptionMode: 'plain' },
+      vendorResumeId: 'sess-handoff-direct',
+      backendTarget: null,
+    });
+
+    const result = await resolveSpawnBackendIdentity({
+      existingSessionId: 'sess-handoff-source',
+      resume: '',
+      agentTarget: undefined,
+      backendTarget: undefined,
+      credentials: liveCredentials,
+      loadLocalHandoffMetadataByVendorResumeId: async () => ({
+        handoffV1: {
+          v: 1,
+          providerId: 'acp:customAcp',
+        },
+      }),
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        type: 'error',
+        errorCode: 'INVALID_REQUEST',
+        errorMessage: 'Unknown Agent or backend target',
+      },
+    });
+  });
+
   it('uses an active external Agent handoff identity without substituting a bundled Agent', async () => {
     const liveCredentials = createLegacyCredentials('live-token', 14);
     resolveExistingSessionAttachContextMock.mockResolvedValueOnce({

@@ -10,7 +10,26 @@ import {
 import { createOpenAiCompatibleEmbeddingsProvider } from './createOpenAiCompatibleEmbeddingsProvider';
 import type { EmbeddingsProviderResolution } from './embeddingsProviderTypes';
 
-const providerCache = new Map<string, Promise<EmbeddingsProviderResolution>>();
+export type EmbeddingsProviderCache = Map<string, Promise<EmbeddingsProviderResolution>>;
+
+export function createEmbeddingsProviderCache(): EmbeddingsProviderCache {
+  return new Map();
+}
+
+async function awaitProviderResolution(
+  promise: Promise<EmbeddingsProviderResolution>,
+  signal?: AbortSignal,
+): Promise<EmbeddingsProviderResolution> {
+  if (!signal) return await promise;
+  signal.throwIfAborted();
+  return await new Promise<EmbeddingsProviderResolution>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => {
+      signal.removeEventListener('abort', onAbort);
+    });
+  });
+}
 
 function buildCacheKey(params: Readonly<{
   cacheDir: string;
@@ -68,6 +87,8 @@ export async function resolveEmbeddingsProvider(params: Readonly<{
   settings: OperationalMemoryEmbeddingsSettings | null;
   cacheDir: string;
   settingsSecretsReadKeys?: ReadonlyArray<Uint8Array | null | undefined>;
+  signal?: AbortSignal;
+  cache?: EmbeddingsProviderCache;
 }>): Promise<EmbeddingsProviderResolution> {
   const settings = params.settings;
   if (!settings?.enabled || !settings.providerConfig || !settings.providerKind || !settings.modelId) {
@@ -102,8 +123,8 @@ export async function resolveEmbeddingsProvider(params: Readonly<{
     cacheDir: params.cacheDir,
     providerConfig,
   });
-  const cached = providerCache.get(cacheKey);
-  if (cached) return await cached;
+  const cached = params.cache?.get(cacheKey);
+  if (cached) return await awaitProviderResolution(cached, params.signal);
 
   const promise = (async (): Promise<EmbeddingsProviderResolution> => {
     try {
@@ -134,7 +155,7 @@ export async function resolveEmbeddingsProvider(params: Readonly<{
         modelId,
         message: error instanceof Error ? error.message : String(error),
       });
-      providerCache.delete(cacheKey);
+      params.cache?.delete(cacheKey);
       return {
         provider: null,
         mode: settings.mode,
@@ -148,13 +169,9 @@ export async function resolveEmbeddingsProvider(params: Readonly<{
     }
   })();
 
-  providerCache.set(cacheKey, promise);
-  return await promise;
+  params.cache?.set(cacheKey, promise);
+  return await awaitProviderResolution(promise, params.signal);
 }
 
 export { importTransformersModuleWithFallback };
 export { createFeatureExtractionPipelineWithFallback };
-
-export function resetEmbeddingsProviderCacheForTests(): void {
-  providerCache.clear();
-}

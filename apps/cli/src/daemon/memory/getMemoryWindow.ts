@@ -23,14 +23,16 @@ export async function getMemoryWindow(params: Readonly<{
   seqTo: number;
   paddingMessages: number;
   contentPolicy?: MemoryContentPolicy | null;
+  signal?: AbortSignal;
   deps?: Readonly<{
-    fetchSessionById: (args: Readonly<{ token: string; sessionId: string }>) => Promise<RawSessionRecord | null>;
+    fetchSessionById: (args: Readonly<{ token: string; sessionId: string; signal?: AbortSignal }>) => Promise<RawSessionRecord | null>;
     fetchEncryptedTranscriptMessagesPage?: (args: Readonly<{
       token: string;
       sessionId: string;
       limit: number;
       afterSeq?: number;
       scope?: 'main' | 'sidechain' | 'all';
+      signal?: AbortSignal;
     }>) => Promise<FetchEncryptedTranscriptMessagesPageResult>;
   }>;
 }>): Promise<MemoryWindowV1> {
@@ -50,7 +52,9 @@ export async function getMemoryWindow(params: Readonly<{
   const effectiveFrom = paddedFrom;
   const effectiveTo = requestedMessages > maxMessages ? Math.max(effectiveFrom, effectiveFrom + maxMessages - 1) : paddedTo;
 
-  const rawSession = await fetchSession({ token: params.credentials.token, sessionId });
+  params.signal?.throwIfAborted();
+  const rawSession = await fetchSession({ token: params.credentials.token, sessionId, ...(params.signal ? { signal: params.signal } : {}) });
+  params.signal?.throwIfAborted();
   if (!rawSession) {
     return {
       v: 1,
@@ -71,7 +75,9 @@ export async function getMemoryWindow(params: Readonly<{
     afterSeq: Math.max(0, effectiveFrom - 1),
     limit: Math.max(1, effectiveTo - effectiveFrom + 1),
     scope: 'main',
+    ...(params.signal ? { signal: params.signal } : {}),
   });
+  params.signal?.throwIfAborted();
   const rows = page.messages.filter((row) => {
     const seq = typeof row.seq === 'number' && Number.isFinite(row.seq) ? Math.trunc(row.seq) : null;
     return seq !== null && seq >= effectiveFrom && seq <= effectiveTo;

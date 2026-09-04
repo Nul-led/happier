@@ -33,6 +33,7 @@ export type MemoryInventoryPageFetcher = (args: Readonly<{
   scope: MemoryInventoryScope;
   cursor?: string;
   limit: number;
+  signal?: AbortSignal;
 }>) => Promise<MemoryInventoryPage>;
 
 export type MemoryInventoryRefresh = Readonly<{
@@ -74,6 +75,19 @@ function readCreatedAtMs(row: RawSessionListRow): number {
   const value = typeof raw === 'number' ? raw : Number(raw);
   if (!Number.isFinite(value) || value <= 0) return 0;
   return Math.trunc(value);
+}
+
+function readMeaningfulActivityAtMs(row: RawSessionListRow): number {
+  for (const raw of [
+    (row as { meaningfulActivityAt?: unknown }).meaningfulActivityAt,
+    (row as { updatedAt?: unknown }).updatedAt,
+    (row as { activeAt?: unknown }).activeAt,
+    (row as { createdAt?: unknown }).createdAt,
+  ]) {
+    const value = typeof raw === 'number' ? raw : Number(raw);
+    if (Number.isFinite(value) && value > 0) return Math.trunc(value);
+  }
+  return 0;
 }
 
 export type MemoryInventorySessionEligibility = Readonly<{
@@ -130,6 +144,7 @@ export async function refreshMemoryInventoryOnce(params: Readonly<{
   state: MemoryInventoryState;
   seenSessionIds: ReadonlySet<string>;
   fetchSessionsPage: MemoryInventoryPageFetcher;
+  signal?: AbortSignal;
 }>): Promise<MemoryInventoryRefresh> {
   const scopes = resolveMemoryInventoryScopes(params.includeArchivedSessions);
   const limit = Math.max(1, Math.trunc(params.pageLimit));
@@ -146,34 +161,62 @@ export async function refreshMemoryInventoryOnce(params: Readonly<{
   };
 
   for (const scope of scopes) {
+    params.signal?.throwIfAborted();
     const scopeState = params.state[scope];
-    const cursor = scopeState.hasNext ? scopeState.cursor ?? undefined : undefined;
-    const page = await params.fetchSessionsPage({
-      scope,
-      ...(isSnapshot || cursor === undefined ? {} : { cursor }),
-      limit,
-    });
-
     if (isSnapshot) {
-      for (const row of page.sessions) {
-        const eligibility = resolveMemoryInventorySessionEligibility({
-          session: row,
-          backfillPolicy: params.backfillPolicy,
-          includeArchivedSessions: params.includeArchivedSessions,
-          enabledAtMs,
-          nowMs: params.nowMs,
+      let cursor: string | undefined;
+      const seenCursors = new Set<string>();
+      for (;;) {
+        const page = await params.fetchSessionsPage({
+          scope,
+          ...(cursor === undefined ? {} : { cursor }),
+          limit,
+          ...(params.signal ? { signal: params.signal } : {}),
         });
-        if (!eligibility || emitted.has(eligibility.sessionId)) continue;
-        emitted.add(eligibility.sessionId);
-        observedSeqBySessionId.set(eligibility.sessionId, eligibility.observedSeq);
-        if (eligibility.allowInitialBackfill) {
-          allowInitialBackfillSessionIds.push(eligibility.sessionId);
+        params.signal?.throwIfAborted();
+        for (const row of page.sessions) {
+          const eligibility = resolveMemoryInventorySessionEligibility({
+            session: row,
+            backfillPolicy: params.backfillPolicy,
+            includeArchivedSessions: params.includeArchivedSessions,
+            enabledAtMs,
+            nowMs: params.nowMs,
+          });
+          if (!eligibility || emitted.has(eligibility.sessionId)) continue;
+          emitted.add(eligibility.sessionId);
+          observedSeqBySessionId.set(eligibility.sessionId, eligibility.observedSeq);
+          if (eligibility.allowInitialBackfill) {
+            allowInitialBackfillSessionIds.push(eligibility.sessionId);
+          }
+          sessionIds.push(eligibility.sessionId);
         }
-        sessionIds.push(eligibility.sessionId);
+        // The first active page may prepend pinned rows ahead of its
+        // meaningful-activity ordering. Its final row still belongs to the
+        // ordered page used to derive nextCursor, so only that row can prove
+        // this inventory has crossed the enablement boundary.
+        const finalOrderedRow = page.sessions.at(-1);
+        const crossedEnablementBoundary = enabledAtMs > 0
+          && finalOrderedRow !== undefined
+          && readMeaningfulActivityAtMs(finalOrderedRow) < enabledAtMs;
+        if (enabledAtMs <= 0 || crossedEnablementBoundary || !page.hasNext || !page.nextCursor) break;
+        if (seenCursors.has(page.nextCursor)) {
+          throw new Error('memory_inventory_cursor_stalled');
+        }
+        seenCursors.add(page.nextCursor);
+        cursor = page.nextCursor;
       }
       nextState[scope] = INITIAL_MEMORY_INVENTORY_STATE[scope];
       continue;
     }
+
+    const cursor = scopeState.hasNext ? scopeState.cursor ?? undefined : undefined;
+    const page = await params.fetchSessionsPage({
+      scope,
+      ...(cursor === undefined ? {} : { cursor }),
+      limit,
+      ...(params.signal ? { signal: params.signal } : {}),
+    });
+    params.signal?.throwIfAborted();
 
     const selected = selectSessionsForBackfill({
       sessions: page.sessions,

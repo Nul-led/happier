@@ -250,11 +250,13 @@ describe('startHappyServer (MCP integration)', () => {
       rpcHandlerManager,
       updateMetadata: () => {},
       getPermissionMode: () => 'default',
-      getActiveTurnCausalPermissionAuthority: () => ({
-        kind: 'admittedSessionInputV1',
-        admittedPermissionCeiling: 'default',
+      getActiveTurnPermissionWitness: () => ({
+        turnId: 'turn_native_agent_tool_rpc_1',
+        causalPermissionAuthority: {
+          kind: 'admittedSessionInputV1',
+          admittedPermissionCeiling: 'default',
+        },
       }),
-      getActiveTurnId: () => 'turn_native_agent_tool_rpc_1',
     };
 
     registerHappierSessionAgentToolRpc(fakeClient);

@@ -2,13 +2,12 @@ import type { Metadata, PermissionMode } from '@/api/types';
 import type { AgentCompositionToolSelection } from '@/plugins/runtime/hooks/execution/dispatchAgentTurnHooks';
 import type {
   BackendTargetRefV2,
-  SessionInputCausalPermissionAuthorityV1,
 } from '@happier-dev/protocol';
+import type { RuntimeActiveTurnPermissionWitness } from '@/agent/runtime/turns/runtimeTurnOperations';
 
 export type RunnerMcpSessionContextAccessors = Readonly<{
   getPermissionMode?: (() => PermissionMode | null | undefined) | null;
-  getActiveTurnCausalPermissionAuthority?: (() => SessionInputCausalPermissionAuthorityV1 | null | undefined) | null;
-  getActiveTurnId?: (() => string | null | undefined) | null;
+  getActiveTurnPermissionWitness?: (() => RuntimeActiveTurnPermissionWitness | null | undefined) | null;
   getBackendTarget?: (() => BackendTargetRefV2 | null | undefined) | null;
   getCurrentSessionLocation?: (() => Readonly<{
     path?: string | null;
@@ -21,8 +20,7 @@ export type RunnerMcpSessionContextAccessors = Readonly<{
 export type RunnerMcpSessionWithContext<TSession> = TSession & {
   getMetadataSnapshot?: () => Metadata | null;
   getPermissionMode?: () => PermissionMode | null | undefined;
-  getActiveTurnCausalPermissionAuthority?: () => SessionInputCausalPermissionAuthorityV1 | null | undefined;
-  getActiveTurnId?: () => string | null | undefined;
+  getActiveTurnPermissionWitness?: () => RuntimeActiveTurnPermissionWitness | null | undefined;
   getBackendTarget?: () => BackendTargetRefV2 | null | undefined;
   getCurrentSessionLocation?: () => Readonly<{
     path?: string | null;
@@ -40,11 +38,8 @@ export function applyRunnerMcpSessionContext<TSession extends object>(
   if (accessors.getPermissionMode) {
     target.getPermissionMode = accessors.getPermissionMode;
   }
-  if (accessors.getActiveTurnCausalPermissionAuthority) {
-    target.getActiveTurnCausalPermissionAuthority = accessors.getActiveTurnCausalPermissionAuthority;
-  }
-  if (accessors.getActiveTurnId) {
-    target.getActiveTurnId = accessors.getActiveTurnId;
+  if (accessors.getActiveTurnPermissionWitness) {
+    target.getActiveTurnPermissionWitness = accessors.getActiveTurnPermissionWitness;
   }
   if (accessors.getBackendTarget) {
     target.getBackendTarget = accessors.getBackendTarget;

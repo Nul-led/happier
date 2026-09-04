@@ -8,6 +8,35 @@ import { openDeepIndexDb } from './deepIndexDb';
 import { syncDeepIndexForSessionsOnce } from './syncDeepIndexForSessionsOnce';
 
 describe('syncDeepIndexForSessionsOnce', () => {
+  it('applies since_enabled coverage to deep semantic rows', async () => {
+    const dir = await mkdtemp(join(os.tmpdir(), 'happier-memory-deep-coverage-'));
+    try {
+      const tier1 = openSummaryShardIndexDb({ dbPath: join(dir, 'memory.sqlite') });
+      tier1.init();
+      const deep = openDeepIndexDb({ dbPath: join(dir, 'deep.sqlite') });
+      deep.init();
+      await syncDeepIndexForSessionsOnce({
+        sessionIds: ['sess-1'], tier1, deep, now: () => 10_000,
+        settings: {
+          enabled: true, enabledAtMs: 2_000, indexMode: 'deep',
+          coveragePolicy: { type: 'since_enabled' },
+          deep: { maxChunkChars: 8_000, maxChunkMessages: 20, minChunkMessages: 1,
+            includeAssistantAcpMessage: true, failureBackoffBaseMs: 0, failureBackoffMaxMs: 0 },
+        },
+        fetchDecryptedTranscriptPageAfterSeq: async () => [
+          { seq: 1, createdAtMs: 1_999, role: 'user' as const, content: { type: 'text', text: 'before enable secret' } },
+          { seq: 2, createdAtMs: 2_000, role: 'user' as const, content: { type: 'text', text: 'at enable visible' } },
+        ],
+      });
+      expect(deep.search({ query: 'secret', scope: { type: 'global' }, maxResults: 10 })).toEqual([]);
+      expect(deep.search({ query: 'visible', scope: { type: 'global' }, maxResults: 10 })).toHaveLength(1);
+      deep.close();
+      tier1.close();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('skips ACP and Codex assistant payload content when includeAssistantAcpMessage is false', async () => {
     const dir = await mkdtemp(join(os.tmpdir(), 'happier-memory-deep-sync-assistant-acp-'));
     try {

@@ -167,6 +167,20 @@ describe('resolveEmbeddingsProvider', () => {
     expect(recovered.runtimeState).toBe('ready');
   });
 
+  it('retires cached provider closures with their owning worker lifecycle', async () => {
+    const { createEmbeddingsProviderCache, resolveEmbeddingsProvider } = await import('./resolveEmbeddingsProvider');
+    const cache = createEmbeddingsProviderCache();
+    const settings = createPresetOperationalSettings();
+
+    const first = await resolveEmbeddingsProvider({ settings, cacheDir: '/tmp/happier-memory-embeddings-test', cache });
+    const reused = await resolveEmbeddingsProvider({ settings, cacheDir: '/tmp/happier-memory-embeddings-test', cache });
+    expect(reused.provider).toBe(first.provider);
+
+    cache.clear();
+    const replacement = await resolveEmbeddingsProvider({ settings, cacheDir: '/tmp/happier-memory-embeddings-test', cache });
+    expect(replacement.provider).not.toBe(first.provider);
+  });
+
   it('preserves tensor tolist binding when extracting embeddings', async () => {
     vi.doMock('@huggingface/transformers', () => ({
       env: {},

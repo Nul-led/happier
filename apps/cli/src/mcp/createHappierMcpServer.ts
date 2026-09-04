@@ -35,6 +35,7 @@ import {
   createMcpActionSettingsProvider,
 } from '@/mcp/server/createMcpActionEnablement';
 import type { ProjectedPluginToolCatalogEntry } from '@/plugins/runtime/toolCatalog';
+import { isSessionBoundMemoryTarget } from '@/mcp/sessionBoundMemoryTarget';
 
 const MCP_SESSION_STATE_CAPABILITIES: SessionStateCapabilitiesV1 = {
   display: {
@@ -56,9 +57,9 @@ function resolveLiveClientPermissionMode(client: HappyMcpSessionClient): string 
  * host-only Action context so the canonical strict parser can reject malformed
  * authority rather than treating it as absent and broadening a call.
  */
-function resolveLiveClientCausalPermissionAuthority(client: HappyMcpSessionClient): unknown {
+function resolveLiveClientActiveTurnPermissionWitness(client: HappyMcpSessionClient): unknown {
   try {
-    return client.getActiveTurnCausalPermissionAuthority?.() ?? null;
+    return client.getActiveTurnPermissionWitness?.() ?? null;
   } catch {
     return null;
   }
@@ -301,11 +302,30 @@ export function createHappierMcpServer(
           // Compatibility MCP clients without Account credentials can only reach
           // the daemon already bound to their session. Authenticated callers keep
           // the canonical machine-aware dependencies from createCliActionDeps.
-          daemonMemorySearch: async ({ query }): Promise<MemorySearchResultV1> => {
+          daemonMemorySearch: async ({ query, signal }): Promise<MemorySearchResultV1> => {
             const res = await sessionScopedRpc(RPC_METHODS.DAEMON_MEMORY_SEARCH, query);
-            return MemorySearchResultV1Schema.parse(res);
+            signal?.throwIfAborted();
+            const result = MemorySearchResultV1Schema.parse(res);
+            return result.ok
+              ? {
+                  ...result,
+                  hits: result.hits.filter((hit) => isSessionBoundMemoryTarget({
+                    boundSessionId: client.sessionId,
+                    requestedSessionId: hit.sessionId,
+                  })),
+                }
+              : result;
           },
           daemonMemoryGetWindow: async ({ sessionId, seqFrom, seqTo }): Promise<MemoryWindowV1> => {
+            if (!isSessionBoundMemoryTarget({
+              boundSessionId: client.sessionId,
+              requestedSessionId: sessionId,
+            })) {
+              throw Object.assign(
+                new Error('Memory window access is limited to the MCP-bound Session'),
+                { code: 'not_authenticated' as const },
+              );
+            }
             const res = await sessionScopedRpc(RPC_METHODS.DAEMON_MEMORY_GET_WINDOW, { v: 1, sessionId, seqFrom, seqTo });
             return MemoryWindowV1Schema.parse(res);
           },
@@ -351,8 +371,7 @@ export function createHappierMcpServer(
     actionsSettings: readActionsSettings(),
     getActionsSettings: readActionsSettings,
     resolveCallerPermissionMode: resolveAgentCallerPermissionMode,
-    resolveCausalPermissionAuthority: () => resolveLiveClientCausalPermissionAuthority(client),
-    resolveActiveTurnId: () => client.getActiveTurnId?.() ?? null,
+    resolveActiveTurnPermissionWitness: () => resolveLiveClientActiveTurnPermissionWitness(client),
     sessionInputVia: opts?.sessionInputVia ?? 'mcp',
     sessionAgentSpawnPolicyV1: readSessionAgentSpawnPolicyV1(),
     getSessionAgentSpawnPolicyV1: readSessionAgentSpawnPolicyV1,

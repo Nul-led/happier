@@ -17,6 +17,7 @@ export async function runMemoryHintsExecutionRun(params: Readonly<{
   prompt: string;
   credentials?: StoredCredentials | null;
   timeoutMs?: number | null;
+  signal?: AbortSignal;
   runTextPrompt?: MemoryHintsExecutionRunTextPromptRunner;
 }>): Promise<string> {
   const runTextPrompt = params.runTextPrompt ?? (await import(
@@ -35,5 +36,6 @@ export async function runMemoryHintsExecutionRun(params: Readonly<{
     prompt: params.prompt,
     ...(params.credentials !== undefined ? { credentials: params.credentials } : {}),
     timeoutMs: params.timeoutMs,
+    ...(params.signal ? { signal: params.signal } : {}),
   });
 }

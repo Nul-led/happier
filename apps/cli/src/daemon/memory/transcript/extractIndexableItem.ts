@@ -86,14 +86,17 @@ function mapSemanticItemToMemoryIndexable(params: Readonly<{
     role = 'assistant';
     kind = 'reasoning';
   } else if (params.item.semanticRole === 'tool') {
-    if (!policy.includeToolSummaries) return null;
-    if (params.item.kind === 'tool_result') return null;
+    if (params.item.kind === 'tool_result') {
+      if (!policy.includeToolOutputs) return null;
+    } else if (!policy.includeToolSummaries) {
+      return null;
+    }
     role = 'assistant';
     kind = 'tool_summary';
   }
 
   if (!role || !kind) return null;
-  const text = kind === 'tool_summary'
+  const text = kind === 'tool_summary' && params.item.kind !== 'tool_result'
     ? summarizeToolUseForMemory(params.item)
     : normalizeMemoryText({ value: params.item.text ?? params.item.summary, kind });
   if (!text) return null;
@@ -135,7 +138,7 @@ export function extractMemoryIndexableTranscriptItem(params: Readonly<{
       mode: 'transcript',
       transcriptRoles: transcriptRolesForPolicy(policy),
       includeReasoning: policy.includeReasoning,
-      includeTools: policy.includeToolSummaries,
+      includeTools: policy.includeToolSummaries || policy.includeToolOutputs,
     },
   });
 
@@ -187,7 +190,7 @@ export function extractMemoryIndexableTranscriptItemFromDecryptedPayload(params:
       mode: 'transcript',
       transcriptRoles: transcriptRolesForPolicy(policy),
       includeReasoning: policy.includeReasoning,
-      includeTools: policy.includeToolSummaries,
+      includeTools: policy.includeToolSummaries || policy.includeToolOutputs,
     },
   });
 

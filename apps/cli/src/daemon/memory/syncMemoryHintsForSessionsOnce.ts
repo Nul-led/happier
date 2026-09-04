@@ -10,6 +10,12 @@ import {
   extractMemoryIndexableTranscriptItemFromDecryptedRow,
 } from './transcript/extractIndexableItem';
 import type { MemoryContentPolicy } from './transcript/contentPolicy';
+import {
+  applyMemoryCoveragePolicy,
+  memoryIndexPolicyKey,
+  resolveMemoryCoverageCreatedAtCutoffMs,
+  resolveMemoryIndexPolicy,
+} from './transcript/coveragePolicy';
 
 export type MemoryCoveragePolicy =
   | Readonly<{ type: 'full' }>
@@ -21,6 +27,7 @@ export type SyncMemoryHintsSettings = Readonly<{
   enabled: boolean;
   indexMode: 'hints' | 'deep';
   backfillPolicy: 'new_only' | 'last_30_days' | 'all_history';
+  enabledAtMs?: number;
   coveragePolicy?: MemoryCoveragePolicy;
   contentPolicy?: MemoryContentPolicy;
   hints: Readonly<{
@@ -49,19 +56,22 @@ export async function syncMemoryHintsForSessionsOnce(params: Readonly<{
   tier1: SummaryShardIndexDbHandle;
   settings: SyncMemoryHintsSettings;
   now: () => number;
-  fetchRecentDecryptedRows: (sessionId: string) => Promise<DecryptedTranscriptRow[]>;
-  fetchCommittedSummaryShards?: (sessionId: string) => Promise<SessionSummaryShardV1[]>;
-  runSummarizer: (prompt: string, sessionId: string) => Promise<string>;
+  fetchRecentDecryptedRows: (sessionId: string, signal?: AbortSignal) => Promise<DecryptedTranscriptRow[]>;
+  fetchCommittedSummaryShards?: (sessionId: string, signal?: AbortSignal) => Promise<SessionSummaryShardV1[]>;
+  runSummarizer: (prompt: string, sessionId: string, signal?: AbortSignal) => Promise<string>;
   commitArtifacts: (args: Readonly<{
     sessionId: string;
     shardPayload: SessionSummaryShardV1;
     synopsisPayload: SessionSynopsisV1 | null;
-  }>) => Promise<void>;
+  }>, signal?: AbortSignal) => Promise<void>;
+  signal?: AbortSignal;
 }>): Promise<void> {
   if (!params.settings.enabled) return;
   if (params.settings.indexMode !== 'hints') return;
 
   const nowMs = params.now();
+  const memoryPolicy = resolveMemoryIndexPolicy(params.settings);
+  const policyKey = memoryIndexPolicyKey(memoryPolicy);
   const run = {
     sessionsConsidered: 0,
     sessionsProcessed: 0,
@@ -77,6 +87,7 @@ export async function syncMemoryHintsForSessionsOnce(params: Readonly<{
   );
 
   for (const rawSessionId of params.sessionIds) {
+    params.signal?.throwIfAborted();
     const sessionId = String(rawSessionId ?? '').trim();
     if (!sessionId) continue;
     run.sessionsConsidered += 1;
@@ -95,9 +106,14 @@ export async function syncMemoryHintsForSessionsOnce(params: Readonly<{
     }
 
     const committedSummaryShards = params.fetchCommittedSummaryShards
-      ? await params.fetchCommittedSummaryShards(sessionId)
+      ? await params.fetchCommittedSummaryShards(sessionId, params.signal)
       : [];
+    params.signal?.throwIfAborted();
     for (const shard of committedSummaryShards) {
+      const shardPolicyKey = shard.memoryPolicy ? memoryIndexPolicyKey(shard.memoryPolicy) : null;
+      // Pre-provenance committed summaries cannot prove which excluded source
+      // classes they contain, so current readers rebuild them from raw rows.
+      if (shardPolicyKey !== policyKey) continue;
       params.tier1.insertSummaryShard({
         sessionId,
         seqFrom: shard.seqFrom,
@@ -108,11 +124,13 @@ export async function syncMemoryHintsForSessionsOnce(params: Readonly<{
         keywords: shard.keywords ?? [],
         entities: shard.entities ?? [],
         decisions: shard.decisions ?? [],
+        policyKey,
       });
       params.tier1.markHintRunSuccess({ sessionId, seqTo: shard.seqTo, nowMs });
     }
 
-    const rows = await params.fetchRecentDecryptedRows(sessionId);
+    const rows = await params.fetchRecentDecryptedRows(sessionId, params.signal);
+    params.signal?.throwIfAborted();
     run.rawRowsFetched += rows.length;
     if (rows.length === 0) continue;
     run.sessionsProcessed += 1;
@@ -128,11 +146,7 @@ export async function syncMemoryHintsForSessionsOnce(params: Readonly<{
       if (seeded) continue;
     }
 
-    const lastHintedSeq = params.tier1.getSessionCursors({ sessionId, nowMs }).lastHintedSeq;
-    const eligibleRows = rows.filter((row) => row.seq > lastHintedSeq);
-    if (eligibleRows.length === 0) continue;
-
-    const indexableItems = eligibleRows
+    const extractedItems = rows
       .map((row, index) => extractMemoryIndexableTranscriptItemFromDecryptedRow({
         sessionId,
         row,
@@ -140,10 +154,39 @@ export async function syncMemoryHintsForSessionsOnce(params: Readonly<{
         contentPolicy: params.settings.contentPolicy,
       }))
       .filter((item): item is NonNullable<typeof item> => item !== null);
+    const indexableItems = applyMemoryCoveragePolicy({
+      items: extractedItems,
+      policy: params.settings.coveragePolicy,
+      nowMs,
+      enabledAtMs: params.settings.enabledAtMs ?? 0,
+      backfillPolicy: params.settings.backfillPolicy,
+    });
+    const coverageCutoffMs = resolveMemoryCoverageCreatedAtCutoffMs({
+      policy: params.settings.coveragePolicy,
+      nowMs,
+      enabledAtMs: params.settings.enabledAtMs ?? 0,
+    });
+    const pruned = params.tier1.pruneSessionArtifacts({
+      sessionId,
+      policyKey,
+      ...(params.settings.coveragePolicy?.type === 'latest_messages' && indexableItems.length > 0
+        ? { minSeq: indexableItems[0]!.seq }
+        : {}),
+      ...(coverageCutoffMs !== null ? { createdAtCutoffMs: coverageCutoffMs } : {}),
+    });
+    if (pruned) {
+      params.tier1.rewindSessionCursor({
+        sessionId,
+        lane: 'hints',
+        seq: Math.max(0, (indexableItems[0]?.seq ?? 1) - 1),
+      });
+    }
+    const lastHintedSeq = params.tier1.getSessionCursors({ sessionId, nowMs }).lastHintedSeq;
+    const newIndexableItems = indexableItems.filter((item) => item.seq > lastHintedSeq);
     run.semanticRowsFound += indexableItems.length;
-    if (indexableItems.length === 0) continue;
+    if (newIndexableItems.length === 0) continue;
 
-    const lastCreatedAtMs = eligibleRows[eligibleRows.length - 1]!.createdAtMs;
+    const lastCreatedAtMs = newIndexableItems[newIndexableItems.length - 1]!.createdAtMs;
     const idleDelayMs = Math.max(0, Math.trunc(params.settings.hints.idleDelayMs));
     if (params.settings.hints.updateMode === 'onIdle' && nowMs - lastCreatedAtMs < idleDelayMs) continue;
 
@@ -168,7 +211,7 @@ export async function syncMemoryHintsForSessionsOnce(params: Readonly<{
     ));
 
     const windows = buildMemorySummaryShardWindows({
-      items: indexableItems,
+      items: newIndexableItems,
       targetShardMessages,
       minShardMessages,
       targetShardChars,
@@ -179,6 +222,7 @@ export async function syncMemoryHintsForSessionsOnce(params: Readonly<{
     let lastIndexedSeq = 0;
 
     for (const window of windows) {
+      params.signal?.throwIfAborted();
       let generated: Awaited<ReturnType<typeof generateMemoryHintsShard>> | null = null;
       try {
         generated = await generateMemoryHintsShard({
@@ -195,9 +239,10 @@ export async function syncMemoryHintsForSessionsOnce(params: Readonly<{
             maxEntities: params.settings.hints.maxEntities,
             maxDecisions: params.settings.hints.maxDecisions,
           },
-          run: async (prompt) => await params.runSummarizer(prompt, sessionId),
+          run: async (prompt) => await params.runSummarizer(prompt, sessionId, params.signal),
         });
       } catch {
+        params.signal?.throwIfAborted();
         generated = null;
       }
 
@@ -216,6 +261,7 @@ export async function syncMemoryHintsForSessionsOnce(params: Readonly<{
 
       const searchableShardPayload = {
         ...generated.shard.payload,
+        memoryPolicy,
         keywords: buildMemoryShardSearchKeywords({
           modelKeywords: generated.shard.payload.keywords ?? [],
           items: window.items,
@@ -223,12 +269,14 @@ export async function syncMemoryHintsForSessionsOnce(params: Readonly<{
       };
 
       try {
+        params.signal?.throwIfAborted();
         await params.commitArtifacts({
           sessionId,
           shardPayload: searchableShardPayload,
           synopsisPayload: generated.synopsis?.payload ?? null,
-        });
+        }, params.signal);
       } catch {
+        params.signal?.throwIfAborted();
         params.tier1.markHintRunFailure({
           sessionId,
           nowMs,
@@ -248,6 +296,7 @@ export async function syncMemoryHintsForSessionsOnce(params: Readonly<{
         keywords: searchableShardPayload.keywords ?? [],
         entities: searchableShardPayload.entities ?? [],
         decisions: searchableShardPayload.decisions ?? [],
+        policyKey,
       });
       params.tier1.markHintRunSuccess({ sessionId, seqTo: searchableShardPayload.seqTo, nowMs });
       params.tier1.enforceMaxShardsPerSession({ sessionId, maxShardsPerSession: params.settings.hints.maxShardsPerSession });

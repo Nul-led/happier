@@ -15,8 +15,8 @@ import type { ExecutionRunServiceResult, WaitForExecutionRunResult } from "@/ses
 import type {
     AccountSettings,
     BackendTargetRefV2,
-    SessionInputCausalPermissionAuthorityV1,
 } from '@happier-dev/protocol';
+import type { RuntimeActiveTurnPermissionWitness } from '@/agent/runtime/turns/runtimeTurnOperations';
 import {
     createMcpActionEnablement,
     createMcpActionSettingsProvider,
@@ -47,8 +47,7 @@ export type HappyMcpSessionClient = {
     updateMetadata(updater: (metadata: Metadata) => Metadata): void | Promise<void>;
     getMetadataSnapshot?(): Metadata | null;
     getPermissionMode?(): PermissionMode | null | undefined;
-    getActiveTurnCausalPermissionAuthority?(): SessionInputCausalPermissionAuthorityV1 | null | undefined;
-    getActiveTurnId?(): string | null | undefined;
+    getActiveTurnPermissionWitness?(): RuntimeActiveTurnPermissionWitness | null | undefined;
     getBackendTarget?(): BackendTargetRefV2 | null | undefined;
     getCurrentSessionLocation?(): Readonly<{
         path?: string | null;

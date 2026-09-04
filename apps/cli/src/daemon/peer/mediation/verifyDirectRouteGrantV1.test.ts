@@ -232,18 +232,13 @@ describe('verifyDirectRouteGrantV2', () => {
                 machineId: 'machine_target',
                 endpointId: targetEndpointId,
             },
-            operationKind: 'file_transfer' as const,
+            operationKind: 'finite_transfer' as const,
         };
         const { grant, proof } = createV2GrantAndProof({
             machineId: iroh.target.machineId,
             flowKind: 'bounded_transfer',
             routeKind: 'iroh_peer',
-            scope: {
-                kind: 'bounded_transfer',
-                mode: 'single',
-                transferId: 'transfer_1',
-                maxBytes: 1024,
-            },
+            scope: { kind: 'bounded_transfer', mode: 'carrier' },
             endpointFingerprint: targetEndpointId,
             iroh,
         });

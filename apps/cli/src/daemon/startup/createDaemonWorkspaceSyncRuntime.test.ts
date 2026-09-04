@@ -1,6 +1,6 @@
 import { MUTAGEN_ENGINE_VERSION } from '@happier-dev/cli-common/firstPartyRuntime';
 import { AccountSettingsSchema } from '@happier-dev/protocol';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -13,7 +13,7 @@ import {
   type DaemonWorkspaceSyncRuntimeDependencies,
 } from './createDaemonWorkspaceSyncRuntime';
 
-const policyInput = { v: 1 as const, selection: 'all_files' as const, extraIgnorePatterns: [], extraIncludePatterns: [], includeGitDirectory: false };
+const policyInput = { v: 1 as const, selection: 'all_files' as const, extraIgnorePatterns: [], extraIncludePatterns: [] };
 const relationship = {
   v: 1 as const,
   relationshipId: 'relationship-1',
@@ -41,12 +41,10 @@ function session(overrides: Readonly<Record<string, unknown>> = {}) {
       'external.controller_machine_id': relationship.controllerMachineId,
       'external.operation_kind': 'relationship',
       'external.policy_selection': relationship.contentPolicy.selection,
-      'external.include_git_directory': 'false',
     },
     alpha: { protocol: 'external', host: deriveWorkspaceSyncEndpointId(relationship.relationshipId, 'alpha'), path: '', connected: true, scanned: true },
     beta: { protocol: 'external', host: deriveWorkspaceSyncEndpointId(relationship.relationshipId, 'beta'), path: '', connected: true, scanned: true },
-    mode: 'one-way-safe', paused: false, status: 'watching', successfulCycles: 1, conflicts: [], excludedConflicts: 0,
-    ignore: { paths: ['.git/'] },
+    mode: 'one-way-safe', paused: false, status: 'watching', successfulCycles: 1, conflictCount: 0,
     ...overrides,
   };
 }
@@ -87,14 +85,14 @@ function boundaries(options: Readonly<{
       relationshipPaused = true;
       return session({ paused: true, status: 'disconnected' });
     }
-    if (!activeRelationships) return [];
+    if (!activeRelationships) return input.t === 'list' ? { sessions: [], nextCursor: null } : [];
     if (input.t === 'terminate') {
       activeRelationships = false;
       return null;
     }
     if (input.t === 'pause') relationshipPaused = true;
     if (input.t === 'resume') relationshipPaused = false;
-    if (input.t === 'list') return [session({ paused: relationshipPaused })];
+    if (input.t === 'list') return { sessions: [session({ paused: relationshipPaused })], nextCursor: null };
     if (input.t === 'get' || input.t === 'pause' || input.t === 'resume') {
       return session({ paused: relationshipPaused });
     }
@@ -137,10 +135,10 @@ function boundaries(options: Readonly<{
   const prepareRelationshipTarget = vi.fn(async () => undefined);
   return {
     deps: {
-      daemonDataRoot: '/daemon', localMachineId: 'machine-1', releaseChannel: 'publicdev' as const,
+      daemonDataRoot: '/daemon', localServerId: 'server-1', localMachineId: 'machine-1', releaseChannel: 'publicdev' as const,
       resolveWorkspaceRef: (id: string) => id === 'alpha-ref'
-        ? { machineId: 'machine-1', rootPath: '/canonical/alpha' }
-        : { machineId: 'machine-2', rootPath: '/canonical/beta' },
+        ? { serverId: 'server-1', machineId: 'machine-1', rootPath: '/canonical/alpha' }
+        : { serverId: 'server-1', machineId: 'machine-2', rootPath: '/canonical/beta' },
       rootOwnershipManager: {
         tryAcquire: vi.fn(async (owner) => ({
           owner: { ...owner, rootFingerprint: null },
@@ -154,7 +152,10 @@ function boundaries(options: Readonly<{
       deleteConflictLoserAtTarget,
       readFileAtTarget,
       createBroker, spawnSidecar,
-      launchLocalAgent: vi.fn(async () => new PassThrough()),
+      launchLocalAgent: vi.fn(async () => {
+        const stream = new PassThrough();
+        return { stream, stop: async () => undefined };
+      }),
       ensurePrivateDirectory: vi.fn(async () => undefined),
       randomBytes: () => new Uint8Array(32).fill(7), randomId: () => 'opaque-id',
       getSettingsSnapshot: () => null,
@@ -253,6 +254,36 @@ describe('createDaemonWorkspaceSyncRuntime', () => {
     expect(harness.unsubscribeSettings).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps admission closed but retries a failed runtime cleanup on a later stop', async () => {
+    const harness = boundaries();
+    const cleanupFailure = new Error('broker cleanup failed');
+    harness.closeBroker.mockRejectedValueOnce(cleanupFailure);
+    const runtime = createDaemonWorkspaceSyncRuntime(harness.deps);
+    await runtime.start();
+
+    await expect(runtime.stop()).rejects.toBeInstanceOf(AggregateError);
+    await expect(runtime.stop()).resolves.toBeUndefined();
+    await expect(runtime.start()).rejects.toThrow('stopped');
+    expect(harness.closeBroker).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries retained local agent cleanup after shutdown reports a process cleanup failure', async () => {
+    const harness = boundaries();
+    const cleanupFailure = new Error('retained local agent cleanup failed');
+    const stopRetainedNativeProcesses = vi.fn()
+      .mockRejectedValueOnce(cleanupFailure)
+      .mockResolvedValueOnce(undefined);
+    const runtime = createDaemonWorkspaceSyncRuntime({
+      ...harness.deps,
+      stopRetainedNativeProcesses,
+    });
+    await runtime.start();
+
+    await expect(runtime.stop()).rejects.toBe(cleanupFailure);
+    await expect(runtime.stop()).resolves.toBeUndefined();
+    expect(stopRetainedNativeProcesses).toHaveBeenCalledTimes(2);
+  });
+
   it('carries bootstrap root custody into the production controller without reacquiring the exact root', async () => {
     const harness = boundaries();
     const active = new Map<string, Readonly<{
@@ -287,6 +318,7 @@ describe('createDaemonWorkspaceSyncRuntime', () => {
     const runtime = createDaemonWorkspaceSyncRuntime({
       ...harness.deps,
       resolveWorkspaceRef: (id) => ({
+        serverId: 'server-1',
         machineId: 'machine-1',
         rootPath: id === 'alpha-ref' ? '/canonical/alpha' : '/canonical/beta',
       }),
@@ -299,8 +331,8 @@ describe('createDaemonWorkspaceSyncRuntime', () => {
     await runtime.whenSettingsSettled();
 
     expect(tryAcquire.mock.calls.map(([request]) => [request.canonicalRoot, request.operation])).toEqual([
-      ['/canonical/beta', 'bootstrap'],
       ['/canonical/alpha', 'sync'],
+      ['/canonical/beta', 'bootstrap'],
     ]);
     await runtime.stop();
     expect(releases.get('/canonical/alpha')).toHaveBeenCalledTimes(1);
@@ -446,7 +478,7 @@ describe('createDaemonWorkspaceSyncRuntime', () => {
           return [];
         }
         if (input.t === 'create' || input.t === 'resume') return session();
-        return [];
+        return input.t === 'list' ? { sessions: [], nextCursor: null } : [];
       });
       brokerCommands.push(command);
       return {
@@ -477,9 +509,9 @@ describe('createDaemonWorkspaceSyncRuntime', () => {
 
       expect(spawnSidecar).toHaveBeenCalledTimes(2);
       expect(maximumActiveSidecars).toBe(1);
+      await settingsSettled;
       expect(brokerCommands[1]).toHaveBeenCalledWith(expect.objectContaining({ t: 'create' }), undefined);
       expect(brokerEvents.indexOf('2:ready')).toBeLessThan(brokerEvents.indexOf('2:create'));
-      await settingsSettled;
       restartReconciled = true;
     } finally {
       if (restartReconciled) await runtime.stop();
@@ -495,17 +527,18 @@ describe('createDaemonWorkspaceSyncRuntime', () => {
       const runtime = createDaemonWorkspaceSyncRuntime({
         ...harness.deps,
         resolveWorkspaceRef: (id: string) => id === 'alpha-ref'
-          ? { machineId: 'machine-1', rootPath: root }
-          : { machineId: 'machine-2', rootPath: '/canonical/beta' },
+          ? { serverId: 'server-1', machineId: 'machine-1', rootPath: root }
+          : { serverId: 'server-1', machineId: 'machine-2', rootPath: '/canonical/beta' },
       });
       await runtime.start();
       harness.activateRelationships();
       await runtime.whenSettingsSettled();
 
       await runtime.openExternalStream({ endpointId: deriveWorkspaceSyncEndpointId(relationship.relationshipId, 'alpha') });
+      const canonicalRoot = await realpath(root);
       expect(harness.deps.launchLocalAgent).toHaveBeenCalledWith({
         executablePath: '/installed/version/bin/happier-mutagen-agent',
-        args: ['synchronizer', '--external', '--root', root],
+        args: ['synchronizer', '--external', '--root', canonicalRoot],
       });
       await runtime.stop();
     } finally {

@@ -1,12 +1,34 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { Credentials, StoredCredentials } from '@/persistence';
 import { encryptSessionPayload, type SessionEncryptionContext } from '@/session/transport/encryption/sessionEncryptionContext';
 import { createSessionRecordFixture } from '@/testkit/backends/sessionFixtures';
+import { getMemoryWindow } from './getMemoryWindow';
 
 describe('getMemoryWindow', () => {
+  it('passes the caller signal to Session metadata and transcript HTTP boundaries', async () => {
+    const controller = new AbortController();
+    const fetchSessionById = vi.fn(async () => createSessionRecordFixture({
+      id: 'sess-signal', active: true, activeAt: 1, metadata: 'b64', encryptionMode: 'plain',
+    }));
+    const fetchEncryptedTranscriptMessagesPage = vi.fn(async () => ({
+      messages: [], hasMore: false, nextBeforeSeq: null, nextAfterSeq: null,
+    }));
+
+    await getMemoryWindow({
+      credentials: { token: 'token', encryption: null },
+      sessionId: 'sess-signal',
+      seqFrom: 1,
+      seqTo: 1,
+      paddingMessages: 0,
+      signal: controller.signal,
+      deps: { fetchSessionById, fetchEncryptedTranscriptMessagesPage },
+    });
+
+    expect(fetchSessionById).toHaveBeenCalledWith(expect.objectContaining({ signal: controller.signal }));
+    expect(fetchEncryptedTranscriptMessagesPage).toHaveBeenCalledWith(expect.objectContaining({ signal: controller.signal }));
+  });
   it('uses semantic extraction for provider messages and excludes events', async () => {
-    const { getMemoryWindow } = await import('./getMemoryWindow');
 
     const credentials: StoredCredentials = { token: 't', encryption: null };
 
@@ -52,7 +74,6 @@ describe('getMemoryWindow', () => {
   });
 
   it('decrypts a bounded transcript range and returns a redacted snippet window', async () => {
-    const { getMemoryWindow } = await import('./getMemoryWindow');
 
     const key = new Uint8Array(32).fill(9);
     const credentials: Credentials = {
@@ -98,7 +119,6 @@ describe('getMemoryWindow', () => {
   });
 
   it('supports plaintext transcript windows (no decrypt)', async () => {
-    const { getMemoryWindow } = await import('./getMemoryWindow');
 
     const key = new Uint8Array(32).fill(7);
     const credentials: Credentials = { token: 't', encryption: { type: 'legacy', secret: key } };
@@ -144,7 +164,6 @@ describe('getMemoryWindow', () => {
   });
 
   it('rejects retained encrypted transcript windows when account encryption material is unavailable', async () => {
-    const { getMemoryWindow } = await import('./getMemoryWindow');
 
     const credentials: StoredCredentials = { token: 't', encryption: null };
 

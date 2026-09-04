@@ -1,16 +1,7 @@
 import type { SummaryShardIndexDbHandle } from './summaryShardIndexDb';
-import type { DeepIndexDbHandle } from './deepIndex/deepIndexDb';
+import { openDeepIndexDb, type DeepIndexDbHandle } from './deepIndex/deepIndexDb';
 
-import { stat } from 'node:fs/promises';
-
-async function getFileSizeBytes(path: string): Promise<number> {
-  try {
-    const s = await stat(path);
-    return typeof s.size === 'number' && Number.isFinite(s.size) ? Math.max(0, Math.trunc(s.size)) : 0;
-  } catch {
-    return 0;
-  }
-}
+import { getSqliteFootprintBytes } from './sqliteFootprint';
 
 async function enforceSqliteBudget(params: Readonly<{
   dbPath: string;
@@ -28,8 +19,15 @@ async function enforceSqliteBudget(params: Readonly<{
     return;
   }
 
+  // WAL growth is often fully reclaimable without evicting useful rows. Ask
+  // the incumbent DB owner to checkpoint first, then charge the remaining
+  // physical main/WAL/SHM footprint to the configured budget.
+  if (await getSqliteFootprintBytes(params.dbPath) > budget) {
+    params.vacuum();
+  }
+
   for (;;) {
-    const size = await getFileSizeBytes(params.dbPath);
+    const size = await getSqliteFootprintBytes(params.dbPath);
     if (size <= budget) return;
     const deleted = params.deleteBatch(50);
     if (deleted <= 0) return;
@@ -51,12 +49,25 @@ export async function enforceMemoryDiskBudgets(params: Readonly<{
     vacuum: () => params.tier1.checkpointAndVacuum(),
   });
 
-  if (params.deep) {
-    await enforceSqliteBudget({
-      dbPath: params.deepDbPath,
-      budgetBytes: params.budgets.deepBytes,
-      deleteBatch: (limit) => params.deep!.deleteOldestChunks({ limit }),
-      vacuum: () => params.deep!.checkpointAndVacuum(),
-    });
+  const normalizedDeepBudget = Number.isFinite(params.budgets.deepBytes)
+    ? Math.max(0, Math.trunc(params.budgets.deepBytes))
+    : 0;
+  const retainedDeepNeedsEnforcement = params.deep === null
+    && await getSqliteFootprintBytes(params.deepDbPath) > normalizedDeepBudget;
+  const deep = params.deep ?? (retainedDeepNeedsEnforcement
+    ? openDeepIndexDb({ dbPath: params.deepDbPath })
+    : null);
+  if (deep) {
+    if (deep !== params.deep) deep.init();
+    try {
+      await enforceSqliteBudget({
+        dbPath: params.deepDbPath,
+        budgetBytes: params.budgets.deepBytes,
+        deleteBatch: (limit) => deep.deleteOldestChunks({ limit }),
+        vacuum: () => deep.checkpointAndVacuum(),
+      });
+    } finally {
+      if (deep !== params.deep) deep.close();
+    }
   }
 }

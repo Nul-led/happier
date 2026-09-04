@@ -1,5 +1,6 @@
 import {
-  openSqliteDatabaseSync,
+  openProtectedSqliteDatabaseSync,
+  protectSqliteDatabaseFilesSync,
   resolveSqliteSupportedValueBatchSize,
   type SqliteDatabaseSync,
 } from '../../persistence/sqliteSync';
@@ -36,6 +37,7 @@ export type DeepIndexDbHandle = Readonly<{
     createdAtFromMs: number;
     createdAtToMs: number;
     text: string;
+    policyKey?: string;
   }>) => void;
   upsertEmbedding: (args: Readonly<{
     sessionId: string;
@@ -65,6 +67,13 @@ export type DeepIndexDbHandle = Readonly<{
   getDeepIndexStats: () => DeepIndexStats;
   /** Every Session id for which this deep index retains a chunk or embedding. */
   listIndexedSessionIds: () => readonly string[];
+  hasSessionArtifactsOutsidePolicy: (args: Readonly<{ sessionId: string; policyKey: string }>) => boolean;
+  pruneSessionArtifacts: (args: Readonly<{
+    sessionId: string;
+    policyKey: string;
+    minSeq?: number;
+    createdAtCutoffMs?: number;
+  }>) => boolean;
   search: (args: Readonly<{
     query: string;
     scope: DeepIndexSearchScope;
@@ -98,12 +107,8 @@ function intOrZero(value: unknown): number {
   return nullableInt(value) ?? 0;
 }
 
-/**
- * Bumped to 2 when chunk terms moved to the canonical Unicode-aware tokenizer:
- * v1 term rows were produced by an ASCII-only tokenizer and cannot be matched
- * by current queries.
- */
-const DEEP_INDEX_SCHEMA_VERSION = 2;
+/** v2 rebuilt Unicode terms; v3 adds canonical memory-policy provenance. */
+const DEEP_INDEX_SCHEMA_VERSION = 3;
 function applyConnectionPragmas(db: SqliteDatabaseSync): void {
   db.exec(`PRAGMA journal_mode=WAL;`);
   db.exec(`PRAGMA synchronous=NORMAL;`);
@@ -124,6 +129,7 @@ function ensureSchemaTables(db: SqliteDatabaseSync): void {
       createdAtFromMs INTEGER NOT NULL,
       createdAtToMs INTEGER NOT NULL,
       text TEXT NOT NULL,
+      policyKey TEXT NOT NULL DEFAULT '',
       UNIQUE (sessionId, seqFrom, seqTo)
     );
   `);
@@ -184,17 +190,32 @@ function deleteOrphanEmbeddings(db: SqliteDatabaseSync): void {
  * without discarding chunks, embeddings, or session progress cursors.
  */
 function rebuildChunkTerms(db: SqliteDatabaseSync): void {
-  const chunks = db.prepare(`SELECT chunkId, text FROM message_chunks;`).all() as any[];
+  const selectChunksPageStmt = db.prepare(`
+    SELECT chunkId, text
+    FROM message_chunks
+    WHERE chunkId > ?
+    ORDER BY chunkId ASC
+    LIMIT ?;
+  `);
   const insertTermStmt = db.prepare(`INSERT OR IGNORE INTO chunk_terms (term, chunkId) VALUES (?, ?);`);
   db.exec('BEGIN IMMEDIATE');
   try {
     db.exec('DELETE FROM chunk_terms;');
-    for (const chunk of chunks) {
-      const chunkId = Number(chunk?.chunkId);
-      if (!Number.isFinite(chunkId)) continue;
-      for (const term of tokenizeMemoryText(String(chunk?.text ?? ''))) {
-        insertTermStmt.run(term, chunkId);
+    let afterChunkId = 0;
+    while (true) {
+      const chunks = selectChunksPageStmt.all(afterChunkId, 250) as any[];
+      if (chunks.length === 0) break;
+      for (const chunk of chunks) {
+        const chunkId = Number(chunk?.chunkId);
+        if (!Number.isFinite(chunkId)) continue;
+        for (const term of tokenizeMemoryText(String(chunk?.text ?? ''))) {
+          insertTermStmt.run(term, chunkId);
+        }
       }
+      const nextAfterChunkId = Number(chunks.at(-1)?.chunkId);
+      if (!Number.isFinite(nextAfterChunkId) || nextAfterChunkId <= afterChunkId) break;
+      afterChunkId = nextAfterChunkId;
+      if (chunks.length < 250) break;
     }
     deleteOrphanEmbeddings(db);
     db.exec('COMMIT');
@@ -213,14 +234,21 @@ function ensureSchema(db: SqliteDatabaseSync): void {
   }
 
   ensureSchemaTables(db);
+  if (userVersion > 0 && userVersion < 3) {
+    const columns = db.prepare(`PRAGMA table_info(message_chunks)`).all() as Array<{ name?: unknown }>;
+    if (!columns.some((column) => column.name === 'policyKey')) {
+      db.exec(`ALTER TABLE message_chunks ADD COLUMN policyKey TEXT NOT NULL DEFAULT '';`);
+    }
+  }
   if (userVersion === DEEP_INDEX_SCHEMA_VERSION) return;
-  if (userVersion > 0) rebuildChunkTerms(db);
+  if (userVersion > 0 && userVersion < 2) rebuildChunkTerms(db);
   db.exec(`PRAGMA user_version=${DEEP_INDEX_SCHEMA_VERSION}`);
 }
 
 export function openDeepIndexDb(args: Readonly<{ dbPath: string }>): DeepIndexDbHandle {
-  const db = openSqliteDatabaseSync(args.dbPath);
+  const db = openProtectedSqliteDatabaseSync(args.dbPath);
   ensureSchema(db);
+  protectSqliteDatabaseFilesSync(args.dbPath);
 
   const insertChunkStmt = db.prepare(`
     INSERT OR IGNORE INTO message_chunks (
@@ -230,7 +258,8 @@ export function openDeepIndexDb(args: Readonly<{ dbPath: string }>): DeepIndexDb
       seqTo,
       createdAtFromMs,
       createdAtToMs,
-      text
+      text,
+      policyKey
     ) VALUES (
       NULL,
       ?,
@@ -238,7 +267,7 @@ export function openDeepIndexDb(args: Readonly<{ dbPath: string }>): DeepIndexDb
       ?,
       ?,
       ?,
-      ?
+      ?, ?
     );
   `);
   const insertTermStmt = db.prepare(`INSERT OR IGNORE INTO chunk_terms (term, chunkId) VALUES (?, ?);`);
@@ -309,6 +338,12 @@ export function openDeepIndexDb(args: Readonly<{ dbPath: string }>): DeepIndexDb
     FROM message_chunks;
   `);
   const deepEmbeddingStatsStmt = db.prepare(`SELECT COUNT(*) AS deepEmbeddingCount FROM chunk_embeddings;`);
+  const selectPrunableChunksStmt = db.prepare(`
+    SELECT chunkId, sessionId, seqFrom, seqTo FROM message_chunks
+    WHERE sessionId = ?
+      AND (policyKey <> ? OR seqFrom < ? OR createdAtFromMs < ?);
+  `);
+  const hasMismatchedPolicyStmt = db.prepare(`SELECT 1 FROM message_chunks WHERE sessionId = ? AND policyKey <> ? LIMIT 1;`);
 
   const embeddingKey = (sessionId: string, seqFrom: number, seqTo: number): string => `${sessionId}:${seqFrom}-${seqTo}`;
 
@@ -341,6 +376,7 @@ export function openDeepIndexDb(args: Readonly<{ dbPath: string }>): DeepIndexDb
         Math.max(0, Math.trunc(chunk.createdAtFromMs)),
         Math.max(0, Math.trunc(chunk.createdAtToMs)),
         text,
+        String(chunk.policyKey ?? ''),
       );
       if (!res || typeof (res as any).changes !== 'number' || (res as any).changes <= 0) return;
       const chunkId = Number((res as any).lastInsertRowid);
@@ -435,6 +471,31 @@ export function openDeepIndexDb(args: Readonly<{ dbPath: string }>): DeepIndexDb
         searchableSessionCount: intOrZero(stats?.searchableSessionCount),
         latestIndexedMessageAtMs: nullableInt(stats?.latestIndexedMessageAtMs),
       };
+    },
+    hasSessionArtifactsOutsidePolicy: ({ sessionId, policyKey }) => Boolean(
+      hasMismatchedPolicyStmt.get(String(sessionId ?? '').trim(), String(policyKey ?? '')),
+    ),
+    pruneSessionArtifacts: ({ sessionId, policyKey, minSeq, createdAtCutoffMs }) => {
+      const id = String(sessionId ?? '').trim();
+      if (!id) return false;
+      const doomed = selectPrunableChunksStmt.all(
+        id,
+        String(policyKey ?? ''),
+        Math.max(0, Math.trunc(minSeq ?? 0)),
+        Math.max(0, Math.trunc(createdAtCutoffMs ?? 0)),
+      ) as Array<{ chunkId: number; sessionId: string; seqFrom: number; seqTo: number }>;
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        for (const row of doomed) {
+          deleteEmbeddingsForChunkStmt.run(row.sessionId, row.seqFrom, row.seqTo);
+          deleteChunkByIdStmt.run(row.chunkId);
+        }
+        db.exec('COMMIT');
+      } catch (error) {
+        db.exec('ROLLBACK');
+        throw error;
+      }
+      return doomed.length > 0;
     },
     listIndexedSessionIds: () => {
       const rows = listIndexedSessionIdsStmt.all() as Array<{ sessionId?: unknown }>;

@@ -1,5 +1,6 @@
 import {
-  openSqliteDatabaseSync,
+  openProtectedSqliteDatabaseSync,
+  protectSqliteDatabaseFilesSync,
   resolveSqliteSupportedValueBatchSize,
   type SqliteDatabaseSync,
 } from '../persistence/sqliteSync';
@@ -45,6 +46,7 @@ export type SummaryShardIndexDbHandle = Readonly<{
     keywords: ReadonlyArray<string>;
     entities: ReadonlyArray<string>;
     decisions: ReadonlyArray<string>;
+    policyKey?: string;
   }>) => void;
   search: (args: Readonly<{
     query: string;
@@ -56,6 +58,13 @@ export type SummaryShardIndexDbHandle = Readonly<{
   getLatestShardSeqTo: (args: Readonly<{ sessionId: string }>) => number;
   /** Every Session id this index currently retains derived rows or progress for. */
   listIndexedSessionIds: () => readonly string[];
+  pruneSessionArtifacts: (args: Readonly<{
+    sessionId: string;
+    policyKey: string;
+    minSeq?: number;
+    createdAtCutoffMs?: number;
+  }>) => boolean;
+  rewindSessionCursor: (args: Readonly<{ sessionId: string; lane: 'hints' | 'deep'; seq: number }>) => void;
   getSessionCursors: (args: Readonly<{ sessionId: string; nowMs: number }>) => Readonly<{
     lastObservedSeq: number;
     lastHintedSeq: number;
@@ -106,12 +115,8 @@ function intOrZero(value: unknown): number {
   return nullableInt(value) ?? 0;
 }
 
-/**
- * Bumped to 4 when summary terms moved to the canonical Unicode-aware
- * tokenizer: v3 term rows were produced by an ASCII-only tokenizer and cannot
- * be matched by current queries.
- */
-const SUMMARY_INDEX_SCHEMA_VERSION = 4;
+/** v4 rebuilt Unicode terms; v5 adds canonical memory-policy provenance. */
+const SUMMARY_INDEX_SCHEMA_VERSION = 5;
 
 function applyConnectionPragmas(db: SqliteDatabaseSync): void {
   db.exec(`PRAGMA journal_mode=WAL;`);
@@ -155,6 +160,7 @@ function ensureSchemaTables(db: SqliteDatabaseSync): void {
       keywordsText TEXT NOT NULL,
       entitiesText TEXT NOT NULL,
       decisionsText TEXT NOT NULL,
+      policyKey TEXT NOT NULL DEFAULT '',
       UNIQUE (sessionId, seqFrom, seqTo)
     );
   `);
@@ -189,22 +195,35 @@ function migrateV1ToV2(db: SqliteDatabaseSync): void {
  * without discarding shards or replaying session cursors from the server.
  */
 function rebuildSummaryTerms(db: SqliteDatabaseSync): void {
-  const shards = db
-    .prepare(`SELECT shardId, summary, keywordsText, entitiesText, decisionsText FROM summary_shards;`)
-    .all() as any[];
+  const selectShardsPageStmt = db.prepare(`
+    SELECT shardId, summary, keywordsText, entitiesText, decisionsText
+    FROM summary_shards
+    WHERE shardId > ?
+    ORDER BY shardId ASC
+    LIMIT ?;
+  `);
   const insertTermStmt = db.prepare(`INSERT OR IGNORE INTO summary_terms (term, shardId) VALUES (?, ?);`);
   db.exec('BEGIN IMMEDIATE');
   try {
     db.exec('DELETE FROM summary_terms;');
-    for (const shard of shards) {
-      const shardId = Number(shard?.shardId);
-      if (!Number.isFinite(shardId)) continue;
-      const source = [shard?.summary, shard?.keywordsText, shard?.entitiesText, shard?.decisionsText]
-        .map((part) => String(part ?? ''))
-        .join(' ');
-      for (const term of tokenizeMemoryText(source)) {
-        insertTermStmt.run(term, shardId);
+    let afterShardId = 0;
+    while (true) {
+      const shards = selectShardsPageStmt.all(afterShardId, 250) as any[];
+      if (shards.length === 0) break;
+      for (const shard of shards) {
+        const shardId = Number(shard?.shardId);
+        if (!Number.isFinite(shardId)) continue;
+        const source = [shard?.summary, shard?.keywordsText, shard?.entitiesText, shard?.decisionsText]
+          .map((part) => String(part ?? ''))
+          .join(' ');
+        for (const term of tokenizeMemoryText(source)) {
+          insertTermStmt.run(term, shardId);
+        }
       }
+      const nextAfterShardId = Number(shards.at(-1)?.shardId);
+      if (!Number.isFinite(nextAfterShardId) || nextAfterShardId <= afterShardId) break;
+      afterShardId = nextAfterShardId;
+      if (shards.length < 250) break;
     }
     db.exec('COMMIT');
   } catch (error) {
@@ -223,16 +242,23 @@ function ensureSchema(db: SqliteDatabaseSync): void {
 
   if (userVersion === 1) migrateV1ToV2(db);
   ensureSchemaTables(db);
+  if (userVersion > 0 && userVersion < 5) {
+    const columns = db.prepare(`PRAGMA table_info(summary_shards)`).all() as Array<{ name?: unknown }>;
+    if (!columns.some((column) => column.name === 'policyKey')) {
+      db.exec(`ALTER TABLE summary_shards ADD COLUMN policyKey TEXT NOT NULL DEFAULT '';`);
+    }
+  }
   ensureMemoryIndexQueueSchema(db);
 
   if (userVersion === SUMMARY_INDEX_SCHEMA_VERSION) return;
-  if (userVersion > 0) rebuildSummaryTerms(db);
+  if (userVersion > 0 && userVersion < 4) rebuildSummaryTerms(db);
   db.exec(`PRAGMA user_version=${SUMMARY_INDEX_SCHEMA_VERSION}`);
 }
 
 export function openSummaryShardIndexDb(args: Readonly<{ dbPath: string }>): SummaryShardIndexDbHandle {
-  const db = openSqliteDatabaseSync(args.dbPath);
+  const db = openProtectedSqliteDatabaseSync(args.dbPath);
   ensureSchema(db);
+  protectSqliteDatabaseFilesSync(args.dbPath);
 
   const insertStmt = db.prepare(`
     INSERT OR IGNORE INTO summary_shards (
@@ -246,6 +272,7 @@ export function openSummaryShardIndexDb(args: Readonly<{ dbPath: string }>): Sum
       keywordsText,
       entitiesText,
       decisionsText
+      , policyKey
     ) VALUES (
       NULL,
       ?,
@@ -256,7 +283,7 @@ export function openSummaryShardIndexDb(args: Readonly<{ dbPath: string }>): Sum
       ?,
       ?,
       ?,
-      ?
+      ?, ?
     );
   `);
   const insertTermStmt = db.prepare(`INSERT OR IGNORE INTO summary_terms (term, shardId) VALUES (?, ?);`);
@@ -399,6 +426,13 @@ export function openSummaryShardIndexDb(args: Readonly<{ dbPath: string }>): Sum
   const deleteSessionShardsStmt = db.prepare(`DELETE FROM summary_shards WHERE sessionId = ?;`);
   const deleteSessionCursorStmt = db.prepare(`DELETE FROM session_cursors WHERE sessionId = ?;`);
   const deleteSessionIndexStateStmt = db.prepare(`DELETE FROM memory_session_index_state WHERE sessionId = ?;`);
+  const pruneSessionArtifactsStmt = db.prepare(`
+    DELETE FROM summary_shards
+    WHERE sessionId = ?
+      AND (policyKey <> ? OR seqFrom < ? OR createdAtFromMs < ?);
+  `);
+  const rewindHintCursorStmt = db.prepare(`UPDATE session_cursors SET lastHintedSeq = MIN(lastHintedSeq, ?), updatedAtMs = ? WHERE sessionId = ?;`);
+  const rewindDeepCursorStmt = db.prepare(`UPDATE session_cursors SET lastDeepIndexedSeq = MIN(lastDeepIndexedSeq, ?), updatedAtMs = ? WHERE sessionId = ?;`);
   const queueDb = createMemoryIndexQueueDb(db);
 
   return {
@@ -419,6 +453,7 @@ export function openSummaryShardIndexDb(args: Readonly<{ dbPath: string }>): Sum
         keywordsText,
         entitiesText,
         decisionsText,
+        String(shard.policyKey ?? ''),
       );
       if (!res || typeof (res as any).changes !== 'number' || (res as any).changes <= 0) {
         return;
@@ -694,6 +729,23 @@ export function openSummaryShardIndexDb(args: Readonly<{ dbPath: string }>): Sum
         if (id) out.push(id);
       }
       return out;
+    },
+    pruneSessionArtifacts: ({ sessionId, policyKey, minSeq, createdAtCutoffMs }) => {
+      const id = String(sessionId ?? '').trim();
+      if (!id) return false;
+      const result = pruneSessionArtifactsStmt.run(
+        id,
+        String(policyKey ?? ''),
+        Math.max(0, Math.trunc(minSeq ?? 0)),
+        Math.max(0, Math.trunc(createdAtCutoffMs ?? 0)),
+      );
+      return Number((result as { changes?: unknown } | undefined)?.changes ?? 0) > 0;
+    },
+    rewindSessionCursor: ({ sessionId, lane, seq }) => {
+      const id = String(sessionId ?? '').trim();
+      if (!id) return;
+      const value = Math.max(0, Math.trunc(seq));
+      (lane === 'hints' ? rewindHintCursorStmt : rewindDeepCursorStmt).run(value, Date.now(), id);
     },
     deleteSessionIndexData: ({ sessionId }) => {
       const id = String(sessionId ?? '').trim();

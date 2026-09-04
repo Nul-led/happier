@@ -3,7 +3,9 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   SessionServerStartIngressRequestV1Schema,
   type MachineLiveStreamFrameV1,
+  type WorkspaceSyncStatusV1,
 } from '@happier-dev/protocol';
+import type { DaemonState } from '@/api/types';
 
 import type { MachineLiveStreamCaptureAdapter } from '../peer/mediation/stream/captureAdapter';
 import { createMachineLiveStreamCaptureRegistry } from '../peer/mediation/stream/captureRegistry';
@@ -146,7 +148,8 @@ describe('createDaemonMachineBootstrapRuntime', () => {
   });
 
   it('constructs workspace sync from the registered machine identity before publishing the machine client', async () => {
-    const machineSyncClient = vi.fn(() => ({}));
+    const updateDaemonState = vi.fn(async (_updater: (state: DaemonState | null) => DaemonState) => {});
+    const machineSyncClient = vi.fn(() => ({ updateDaemonState }));
     const handoffAdapter = {
       prepare: vi.fn(),
       finalize: vi.fn(),
@@ -158,10 +161,26 @@ describe('createDaemonMachineBootstrapRuntime', () => {
       deleteConflictLoserAtTarget: vi.fn(),
       readFileAtTarget: vi.fn(),
     } as never;
-    const createWorkspaceSyncRuntime = vi.fn(async () => ({
-      handoffAdapter,
-      workspaceSync,
-    }));
+    const createWorkspaceSyncRuntime = vi.fn(async ({ machineId, onStatusPublished }: Readonly<{
+      machineId: string;
+      onStatusPublished(status: WorkspaceSyncStatusV1): void;
+    }>) => {
+      onStatusPublished({
+        relationshipId: 'relationship_1',
+        controllerMachineId: machineId,
+        state: 'watching',
+        alphaPath: '/alpha',
+        betaPath: '/beta',
+        mode: 'keep_synced',
+        changedFiles: 0,
+        conflictCount: 0,
+        lastSuccessfulSyncAtMs: null,
+      });
+      return {
+        handoffAdapter,
+        workspaceSync,
+      };
+    });
     const runtime = createDaemonMachineBootstrapRuntime(createBaseRuntimeParams({
       api: { machineSyncClient } as never,
       workspaceSyncHandoffAdapter: undefined,
@@ -180,7 +199,10 @@ describe('createDaemonMachineBootstrapRuntime', () => {
 
     await runtime.createConnectedApiMachine(machine);
 
-    expect(createWorkspaceSyncRuntime).toHaveBeenCalledWith({ machineId: 'registered-machine' });
+    expect(createWorkspaceSyncRuntime).toHaveBeenCalledWith({
+      machineId: 'registered-machine',
+      onStatusPublished: expect.any(Function),
+    });
     expect(machineSyncClient).toHaveBeenCalledWith(
       machine,
       expect.any(Object),
@@ -189,6 +211,25 @@ describe('createDaemonMachineBootstrapRuntime', () => {
         workspaceSync,
       }),
     );
+    await vi.waitFor(() => expect(updateDaemonState).toHaveBeenCalledOnce());
+    const update = updateDaemonState.mock.calls[0]?.[0];
+    expect(update?.(null)).toEqual({
+      status: 'running',
+      workspaceSync: {
+        v: 1,
+        status: {
+          relationshipId: 'relationship_1',
+          controllerMachineId: 'registered-machine',
+          state: 'watching',
+          alphaPath: '/alpha',
+          betaPath: '/beta',
+          mode: 'keep_synced',
+          changedFiles: 0,
+          conflictCount: 0,
+          lastSuccessfulSyncAtMs: null,
+        },
+      },
+    });
   });
 
   it('forwards the daemon-owned inventory snapshot reader without creating a second scanner', () => {

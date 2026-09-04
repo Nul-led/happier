@@ -9,10 +9,9 @@ import {
   type MutagenEngineArtifactTarget,
 } from '@happier-dev/cli-common/firstPartyRuntime';
 import type { PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
-import type { WorkspaceSyncCopyOnceV1, WorkspaceSyncRelationshipV1 } from '@happier-dev/protocol';
+import type { WorkspaceSyncCopyOnceV1, WorkspaceSyncRelationshipV1, WorkspaceSyncStatusV1 } from '@happier-dev/protocol';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { chmod, mkdir } from 'node:fs/promises';
-import type { Duplex } from 'node:stream';
 
 import {
   getActiveAccountSettingsSnapshot,
@@ -23,6 +22,7 @@ import {
 import {
   WorkspaceSyncController,
   type WorkspaceSyncLocalAgentStreamOpen,
+  type WorkspaceSyncOwnedLocalAgent,
   type WorkspaceSyncResolvedRef,
   type WorkspaceSyncTargetConflictDelete,
   type WorkspaceSyncTargetFileRead,
@@ -49,6 +49,7 @@ import {
 } from '@/workspaces/sync/workspaceSyncSidecarLifecycle';
 import type { ManagedWorkspaceSync, WorkspaceSyncRelationshipPreparation } from '@/workspaces/sync/workspaceSyncTypes';
 import type { WorkspaceSyncRelationshipOwner } from '@/workspaces/sync/workspaceSyncRelationshipOwner';
+import type { Duplex } from 'node:stream';
 
 type InstalledPaths = Readonly<{ currentPath: string; resolvedCurrentPath: string | null }>;
 type ArtifactPaths = Readonly<{ managerPath: string; agentPath: string }>;
@@ -60,10 +61,11 @@ export type LaunchWorkspaceSyncLocalAgent = (input: Readonly<{
   args: readonly string[];
   signal?: AbortSignal;
   environment?: never;
-}>) => Promise<Duplex>;
+}>) => Promise<WorkspaceSyncOwnedLocalAgent>;
 
 export type DaemonWorkspaceSyncRuntimeDependencies = Readonly<{
   daemonDataRoot: string;
+  localServerId: string;
   localMachineId: string;
   releaseChannel: PublicReleaseRingId;
   resolveWorkspaceRef(id: string): WorkspaceSyncResolvedRef | null | Promise<WorkspaceSyncResolvedRef | null>;
@@ -81,6 +83,7 @@ export type DaemonWorkspaceSyncRuntimeDependencies = Readonly<{
   createBroker: WorkspaceSyncSidecarLifecycleDependencies['createBroker'];
   spawnSidecar: SpawnWorkspaceSyncSidecar;
   launchLocalAgent: LaunchWorkspaceSyncLocalAgent;
+  stopRetainedNativeProcesses?: () => Promise<void>;
   openMachineCarrierTunnel?: WorkspaceSyncMachineTunnelOpen;
   handoffRelationshipController?: Pick<ManagedWorkspaceSync, 'flush'>;
   relationshipOwner?: Pick<WorkspaceSyncRelationshipOwner, 'materializeEndpoints' | 'prepareCreate'>;
@@ -103,6 +106,7 @@ export type DaemonWorkspaceSyncRuntimeDependencies = Readonly<{
    * before every state-touching entry point.
    */
   assertLegacyStateAvailable?: () => void;
+  onStatusPublished?: (status: WorkspaceSyncStatusV1) => void;
 }>;
 
 export type DaemonWorkspaceSyncRuntime = Readonly<{
@@ -221,6 +225,7 @@ export function createDaemonWorkspaceSyncRuntime(
   controller = new WorkspaceSyncController({
     adapter,
     lifecycle,
+    localServerId: dependencies.localServerId,
     localMachineId: dependencies.localMachineId,
     resolveWorkspaceRef: dependencies.resolveWorkspaceRef,
     rootOwnershipManager: dependencies.rootOwnershipManager,
@@ -239,6 +244,7 @@ export function createDaemonWorkspaceSyncRuntime(
     ...(dependencies.deleteConflictLoserAtTarget ? { deleteConflictLoserAtTarget: dependencies.deleteConflictLoserAtTarget } : {}),
     ...(dependencies.readFileAtTarget ? { readFileAtTarget: dependencies.readFileAtTarget } : {}),
     ...(dependencies.assertLegacyStateAvailable ? { assertLegacyStateAvailable: dependencies.assertLegacyStateAvailable } : {}),
+    ...(dependencies.onStatusPublished ? { onStatusPublished: dependencies.onStatusPublished } : {}),
   });
   const handoffAdapter = createWorkspaceSyncHandoffAdapter({
     sync: controller,
@@ -315,9 +321,22 @@ export function createDaemonWorkspaceSyncRuntime(
       unsubscribe?.();
       unsubscribe = null;
       await settingsTail.catch(() => undefined);
-      await controller.shutdown();
+      const cleanupResults = await Promise.allSettled([
+        controller.shutdown(),
+        dependencies.stopRetainedNativeProcesses?.() ?? Promise.resolve(),
+      ]);
+      const cleanupFailures = cleanupResults.flatMap((result) => (
+        result.status === 'rejected' ? [result.reason] : []
+      ));
+      if (cleanupFailures.length === 1) throw cleanupFailures[0];
+      if (cleanupFailures.length > 1) {
+        throw new AggregateError(cleanupFailures, 'Daemon workspace sync runtime cleanup failed');
+      }
       started = false;
-    })();
+    })().catch((error: unknown) => {
+      stopPromise = null;
+      throw error;
+    });
     return stopPromise;
   };
 

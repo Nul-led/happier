@@ -1,4 +1,9 @@
-import type { AgentExecutionTargetV1, BackendTargetRefV2, SessionOwnerMetadataV1 } from '@happier-dev/protocol';
+import {
+  readLegacyConfiguredAcpBackendId,
+  type AgentExecutionTargetV1,
+  type BackendTargetRefV2,
+  type SessionOwnerMetadataV1,
+} from '@happier-dev/protocol';
 import type { SessionAttachFilePayload } from '@/agent/runtime/sessionAttachPayload';
 import type { CatalogAgentId } from '@/agent/catalog/ids';
 import { isCatalogAgentId } from '@/agent/catalog/resolution';
@@ -82,14 +87,12 @@ function resolveBackendTargetFromLocalHandoffOverlay(metadata: Record<string, un
     return null;
   }
 
-  if (agentId.startsWith('acp:')) {
-    const backendId = agentId.slice(4).trim();
-    return backendId
-      ? resolveConcreteCompatBackendTargetRefs({
-          kind: 'configuredAcpBackend',
-          backendId,
-        })?.backendTargetV2 ?? null
-      : null;
+  const configuredBackendId = readLegacyConfiguredAcpBackendId(agentId);
+  if (configuredBackendId) {
+    return resolveConcreteCompatBackendTargetRefs({
+      kind: 'configuredAcpBackend',
+      backendId: configuredBackendId,
+    })?.backendTargetV2 ?? null;
   }
 
   if (isConcreteBuiltInCatalogAgentId(agentId)) {

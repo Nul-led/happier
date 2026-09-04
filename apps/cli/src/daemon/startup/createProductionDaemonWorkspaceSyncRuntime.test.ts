@@ -20,7 +20,6 @@ const contentPolicyInput = {
   selection: 'all_files' as const,
   extraIgnorePatterns: [],
   extraIncludePatterns: [],
-  includeGitDirectory: false,
 };
 const contentPolicy = {
   ...contentPolicyInput,
@@ -69,7 +68,18 @@ function settingsSnapshot(): ActiveAccountSettingsSnapshot {
 describe('createProductionDaemonWorkspaceSyncRuntime', () => {
   it('composes one daemon-owned runtime and keeps it available after a transient engine start failure', async () => {
     type ProductionInput = Parameters<typeof createProductionDaemonWorkspaceSyncRuntime>[0];
-    const controller = Object.freeze({ marker: 'controller' });
+    const controller = Object.freeze({
+      marker: 'controller',
+      withAuthorizedSourceSeedExport: vi.fn(async (
+        _request: Readonly<{ operationId: string }>,
+        exportSource: (sourcePath: string) => Promise<unknown>,
+      ) => await exportSource('/work/source')),
+      withSourceSeedAuthorization: vi.fn(async (
+        _operation: Readonly<{ operationId: string }>,
+        _handles: readonly unknown[],
+        action: () => Promise<unknown>,
+      ) => await action()),
+    });
     const handoffAdapter = Object.freeze({ marker: 'handoff' });
     const runtimeStartError = Object.assign(new Error('artifact unavailable'), { code: 'engine_unavailable' });
     const runtime = {
@@ -194,6 +204,10 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
       commit: async () => undefined,
       abort: async () => undefined,
     }));
+    const prepareSourceSeedExport = vi.fn(async () => ({
+      payloadSource: { marker: 'payload' },
+      onDemandScope: { marker: 'scope' },
+    }));
     const activeServerDir = join('/happier-home', 'servers', 'server-1');
     const inspectLegacyState = vi.fn(async () => ({
       status: 'absent',
@@ -217,6 +231,7 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
       inspectLegacyState,
       materializeSeedExport,
       materializeLocalSeed,
+      prepareSourceSeedExport,
       warn,
     } as unknown as ProductionDaemonWorkspaceSyncFactories;
 
@@ -233,18 +248,20 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
     const remoteMaterialize = createTargetAuthority.mock.calls[0]![0].bootstrap?.materializeRemoteSeed;
     await remoteMaterialize?.({
       operationId: 'rel-1', sourceMachineId: 'machine-b', sourceWorkspaceRefId: 'workspace-beta',
-      canonicalRoot: '/work/alpha', contentSelection: 'all_files',
+      canonicalRoot: '/work/alpha', contentPolicy,
       materializationReceiptPath: '/work/.alpha.happier-materialization.json',
       originalTargetExists: false,
     });
-    expect(openMachineCarrierTunnel.mock.calls.map(([request]) => request.operationId)).toEqual([
-      'rel-1', 'rel-1:blob:one', 'rel-1:blob:two',
+    expect(openMachineCarrierTunnel.mock.calls.map(([request]) => request.flow)).toEqual([
+      'file_transfer', 'file_transfer', 'file_transfer',
     ]);
+    expect(openMachineCarrierTunnel.mock.calls.every(([request]) => !('operationId' in request))).toBe(true);
     expect(requestDirectTransferPayloadFile).toHaveBeenCalledTimes(3);
     for (const [request] of requestDirectTransferPayloadFile.mock.calls) {
       expect(request.endpointCandidates).toHaveLength(1);
       expect(new URL(request.endpointCandidates[0]!.url).hostname).toBe('127.0.0.1');
-      expect(new URL(request.endpointCandidates[0]!.url).port).not.toBe('9999');
+      expect(new URL(request.endpointCandidates[0]!.url).port).toBe('48123');
+      expect(request.fetchFn).toEqual(expect.any(Function));
     }
 
     expect(inspectLegacyState).toHaveBeenCalledOnce();
@@ -295,6 +312,7 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
       openMachineCarrierTunnel,
     });
     await expect(daemonRuntimeInput.resolveWorkspaceRef('workspace-alpha')).resolves.toEqual({
+      serverId: 'server-1',
       machineId: 'machine-a',
       rootPath: '/work/alpha',
     });
@@ -333,7 +351,7 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
       operationId: 'local-op',
       sourcePath: '/work/alpha',
       canonicalRoot: '/work/beta',
-      contentSelection: 'all_files',
+      contentPolicy,
       materializationReceiptPath: '/work/.beta.happier-materialization.json',
       originalTargetExists: false,
     });
@@ -341,6 +359,55 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
       operationId: 'local-op',
       sourcePath: '/work/alpha',
       targetPath: '/work/beta',
+      // `all_files` opts out of Git selection, so the seed must not silently
+      // narrow to Git's ignore rules.
+      workspaceTransfer: {
+        includeIgnoredMode: 'exclude',
+        ignoredIncludeGlobs: [],
+        includeAllIgnored: true,
+        extraIgnorePatterns: [],
+      },
+    }));
+
+    // A Git-selected policy carries the paths the user explicitly opted back in
+    // past Git's ignore rules through to the existing SCM enumeration owner.
+    const gitPolicyInput = {
+      v: 1 as const,
+      selection: 'git_worktree' as const,
+      extraIgnorePatterns: ['coverage/**'],
+      extraIncludePatterns: ['dist/**', 'packages/app/.env.local'],
+    };
+    const gitPolicy = { ...gitPolicyInput, policyDigest: computeWorkspaceSyncPolicyDigest(gitPolicyInput) };
+    await targetAuthorityInput.bootstrap?.materializeLocalSeed?.({
+      operationId: 'local-op-git',
+      sourcePath: '/work/alpha',
+      canonicalRoot: '/work/beta',
+      contentPolicy: gitPolicy,
+      materializationReceiptPath: '/work/.beta.happier-materialization.json',
+      originalTargetExists: false,
+    });
+    expect(materializeLocalSeed).toHaveBeenLastCalledWith(expect.objectContaining({
+      workspaceTransfer: {
+        includeIgnoredMode: 'include_selected',
+        ignoredIncludeGlobs: ['dist/**', 'packages/app/.env.local'],
+        extraIgnorePatterns: ['coverage/**'],
+      },
+    }));
+
+    await targetAuthorityInput.prepareSourceSeedExport?.({
+      operationId: 'seed-op-git',
+      sourceWorkspaceRefId: 'workspace-alpha',
+      targetMachineId: 'machine-b',
+      contentPolicy: gitPolicy,
+    });
+    expect(prepareSourceSeedExport).toHaveBeenLastCalledWith(expect.objectContaining({
+      operationId: 'seed-op-git',
+      sourcePath: '/work/source',
+      workspaceTransfer: {
+        includeIgnoredMode: 'include_selected',
+        ignoredIncludeGlobs: ['dist/**', 'packages/app/.env.local'],
+        extraIgnorePatterns: ['coverage/**'],
+      },
     }));
     await targetAuthorityInput.callMachineRpc({
       machineId: 'machine-b',
@@ -416,6 +483,10 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
     expect(unsubscribeSettings).toHaveBeenCalledOnce();
     expect(runtime.stop).toHaveBeenCalledOnce();
     expect(targetAuthority.releaseAllRetainedBootstraps).toHaveBeenCalledOnce();
+
+    await expect(production.stop()).resolves.toBeUndefined();
+    expect(runtime.stop).toHaveBeenCalledTimes(2);
+    expect(targetAuthority.releaseAllRetainedBootstraps).toHaveBeenCalledTimes(2);
   });
 
   describe('retired legacy-state gate', () => {

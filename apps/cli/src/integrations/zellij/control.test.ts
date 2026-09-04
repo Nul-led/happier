@@ -112,6 +112,16 @@ describe('createZellijTerminalControlPort', () => {
     expect(rec.writes.map((w) => w.text)).toEqual(['\t']);
   });
 
+  it('sends selection arrows as terminal escape sequences', async () => {
+    const rec = recordingActions();
+    const port = makePort(rec);
+
+    await port.sendSpecialKey('ArrowUp');
+    await port.sendSpecialKey('ArrowDown');
+
+    expect(rec.writes.map((write) => write.text)).toEqual(['\u001b[A', '\u001b[B']);
+  });
+
   it('captures the FULL pane via dump-screen, preserving the styled raw alongside the stripped text (ported S-8)', async () => {
     const esc = String.fromCharCode(0x1b);
     const rawDump = `${esc}[2mtop${esc}[0m\nmiddle\nbottom  \n`;

@@ -1,4 +1,10 @@
 import { createRequire } from 'node:module';
+import { dirname, isAbsolute } from 'node:path';
+
+import {
+  ensureProtectedLocalStateDirectorySync,
+  ensureProtectedLocalStateFileSync,
+} from '@/utils/fs/protectedLocalState';
 
 export type SqliteStatementSync = Readonly<{
   get: (...params: readonly unknown[]) => unknown;
@@ -55,4 +61,28 @@ export function openSqliteDatabaseSync(filePath: string): SqliteDatabaseSync {
   }
 
   return new (ctor as new (path: string) => SqliteDatabaseSync)(filePath);
+}
+
+export function protectSqliteDatabaseFilesSync(filePath: string): void {
+  if (!isAbsolute(filePath)) {
+    throw new Error('Protected SQLite state requires an absolute file path');
+  }
+  const options = { authority: 'owned' as const };
+  ensureProtectedLocalStateDirectorySync(dirname(filePath), options);
+  ensureProtectedLocalStateFileSync(filePath, options);
+  ensureProtectedLocalStateFileSync(`${filePath}-wal`, options);
+  ensureProtectedLocalStateFileSync(`${filePath}-shm`, options);
+}
+
+/**
+ * Opens an owner-managed plaintext SQLite database under the protected local
+ * state contract. Callers that enable WAL then call
+ * `protectSqliteDatabaseFilesSync` after connection setup and before writing
+ * sensitive rows; later sidecar recreation inherits from the protected root.
+ */
+export function openProtectedSqliteDatabaseSync(filePath: string): SqliteDatabaseSync {
+  protectSqliteDatabaseFilesSync(filePath);
+  const db = openSqliteDatabaseSync(filePath);
+  protectSqliteDatabaseFilesSync(filePath);
+  return db;
 }

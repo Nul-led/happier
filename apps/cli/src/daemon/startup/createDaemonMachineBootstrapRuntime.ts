@@ -5,7 +5,7 @@ import type {
 } from '@/api/apiMachine';
 import type { DaemonState } from '@/api/types';
 import type { ConnectedServiceQuotasLoopHandle } from '../connectedServices/quotas/startConnectedServiceQuotasLoop';
-import type { MachineLiveStreamControlLeaseV1 } from '@happier-dev/protocol';
+import type { MachineLiveStreamControlLeaseV1, WorkspaceSyncStatusV1 } from '@happier-dev/protocol';
 import { logger } from '@/ui/logger';
 import { startAutomationWorker, type AutomationWorkerHandle } from '../automation/automationWorker';
 import { startMemoryWorker, type MemoryWorkerHandle } from '../memory/memoryWorker';
@@ -64,6 +64,7 @@ export function createDaemonMachineBootstrapRuntime(
     workspaceSync?: ApiMachineClientLifecycleDependencies['workspaceSync'];
     createWorkspaceSyncRuntime?: (input: Readonly<{
       machineId: string;
+      onStatusPublished(status: WorkspaceSyncStatusV1): void;
     }>) => Promise<Readonly<{
       handoffAdapter: WorkspaceSyncHandoffAdapter;
       workspaceSync: NonNullable<ApiMachineClientLifecycleDependencies['workspaceSync']>;
@@ -130,6 +131,25 @@ export function createDaemonMachineBootstrapRuntime(
   }>,
 ): BootstrapRuntime {
   let connectedApiMachine: ApiMachineClient | null = null;
+  const pendingWorkspaceSyncStatuses = new Map<string, WorkspaceSyncStatusV1>();
+  let workspaceSyncPublicationTail = Promise.resolve();
+  const publishWorkspaceSyncStatus = (status: WorkspaceSyncStatusV1): void => {
+    pendingWorkspaceSyncStatuses.set(status.relationshipId, status);
+    workspaceSyncPublicationTail = workspaceSyncPublicationTail.catch(() => undefined).then(async () => {
+      const apiMachine = connectedApiMachine;
+      if (!apiMachine || params.isShuttingDown()) return;
+      const next = pendingWorkspaceSyncStatuses.get(status.relationshipId);
+      if (!next) return;
+      await apiMachine.updateDaemonState((state) => ({
+        ...(state ?? { status: 'running' as const }),
+        workspaceSync: { v: 1 as const, status: next },
+      }));
+      if (pendingWorkspaceSyncStatuses.get(status.relationshipId) === next) {
+        pendingWorkspaceSyncStatuses.delete(status.relationshipId);
+      }
+    });
+    void workspaceSyncPublicationTail.catch(() => undefined);
+  };
   let workspaceSyncService: ApiMachineClientLifecycleDependencies['workspaceSync'];
   return {
     cliVersion: packageJson.version,
@@ -161,7 +181,10 @@ export function createDaemonMachineBootstrapRuntime(
     createConnectedApiMachine: async (registeredMachine) => {
       if (params.diagnosticSubsystemGates.disableMachineSync) return null;
       const workspaceRuntime = params.createWorkspaceSyncRuntime
-        ? await params.createWorkspaceSyncRuntime({ machineId: registeredMachine.id })
+        ? await params.createWorkspaceSyncRuntime({
+            machineId: registeredMachine.id,
+            onStatusPublished: publishWorkspaceSyncStatus,
+          })
         : null;
       const workspaceSyncHandoffAdapter = workspaceRuntime?.handoffAdapter
         ?? params.workspaceSyncHandoffAdapter;
@@ -182,6 +205,7 @@ export function createDaemonMachineBootstrapRuntime(
             ...(workspaceSync ? { workspaceSync } : {}),
       });
       connectedApiMachine = apiMachine;
+      for (const status of pendingWorkspaceSyncStatuses.values()) publishWorkspaceSyncStatus(status);
       params.prepareApiMachineForSessions?.(apiMachine);
       return apiMachine;
     },

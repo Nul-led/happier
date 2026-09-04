@@ -76,7 +76,17 @@ describe('memoryWorker retained removal while disabled', () => {
 
   async function startSeededWorker() {
     vi.doMock('@/session/transport/http/sessionsHttp', () => ({
-      fetchSessionsPage: vi.fn(async () => ({ sessions: [], nextCursor: null, hasNext: false })),
+      // Cursor-reset reconciliation now uses the canonical paged visible-
+      // Session inventory rather than one request per retained id. Keep the
+      // still-authorized Session in that source so this fixture exercises
+      // selective revocation instead of declaring the whole Account empty.
+      fetchSessionsPage: vi.fn(async ({ archivedOnly }: { archivedOnly?: boolean }) => ({
+        sessions: archivedOnly
+          ? []
+          : [{ id: 'kept', seq: 2, createdAt: 1, updatedAt: 1 }],
+        nextCursor: null,
+        hasNext: false,
+      })),
       fetchSessionById: vi.fn(async ({ sessionId }: { sessionId: string }) => (
         sessionId === 'kept' ? { id: sessionId } : null
       )),

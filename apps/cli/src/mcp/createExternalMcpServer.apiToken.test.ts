@@ -84,7 +84,10 @@ describe('createExternalMcpServer with an API token', () => {
       pluginToolCatalog,
     });
 
-    expect(boundary.createCliActionExecutorFromCredentials).toHaveBeenCalledWith({ credentials });
+    expect(boundary.createCliActionExecutorFromCredentials).toHaveBeenCalledWith({
+      credentials,
+      serverApiUrl: expect.any(String),
+    });
     expect(boundary.createCliActionExecutorHarness).not.toHaveBeenCalled();
     expect(boundary.registeredTools).toEqual(expect.objectContaining({
       pluginToolCatalog: [],

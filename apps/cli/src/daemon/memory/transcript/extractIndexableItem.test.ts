@@ -190,4 +190,33 @@ describe('extractMemoryIndexableTranscriptItem', () => {
     expect(toolCall!.text).not.toContain('printf');
     expect(toolCall!.text).not.toContain('x'.repeat(20));
   });
+
+  it('admits redacted bounded tool output only when explicitly enabled', () => {
+    const row = {
+      seq: 6,
+      createdAt: 6,
+      messageRole: 'agent' as const,
+      content: {
+        t: 'plain' as const,
+        v: {
+          role: 'agent',
+          content: {
+            type: 'acp',
+            agentId: 'codex',
+            data: { type: 'tool-result', callId: 'call-1', output: 'result '.repeat(200) },
+          },
+        },
+      },
+    };
+    expect(extractMemoryIndexableTranscriptItem({ sessionId: 'sess-1', row, index: 0, ctx })).toBeNull();
+    const included = extractMemoryIndexableTranscriptItem({
+      sessionId: 'sess-1',
+      row,
+      index: 0,
+      ctx,
+      contentPolicy: { includeToolOutputs: true },
+    });
+    expect(included).toEqual(expect.objectContaining({ kind: 'tool_summary', role: 'assistant' }));
+    expect(included!.text.length).toBeLessThanOrEqual(500);
+  });
 });

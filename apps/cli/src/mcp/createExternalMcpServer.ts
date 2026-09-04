@@ -17,7 +17,16 @@ import { createCliActionExecutorHarness } from '@/session/actions/createCliActio
 import { createCliActionExecutorFromCredentials } from '@/session/actions/createCliActionExecutorFromCredentials';
 import { resolveSessionEncryptionContextFromCredentials } from '@/session/transport/encryption/sessionEncryptionContext';
 import { createDaemonPluginActionExecutor } from '@/session/actions/createDaemonPluginActionExecutor';
+import {
+  requestDaemonPluginActionExecution,
+  type DaemonControlRequestOptions,
+} from '@/daemon/controlClient';
 import type { ProjectedPluginToolCatalogEntry } from '@/plugins/runtime/toolCatalog';
+import { createAccountServerActionDeps } from '@/api/accountServerActionDeps';
+import {
+  resolveServerHttpBaseUrl,
+  runWithServerHttpBaseUrl,
+} from '@/api/client/serverHttpBaseUrl';
 
 function normalizeId(raw: unknown): string {
   return String(raw ?? '').trim();
@@ -33,7 +42,14 @@ export function createExternalMcpServer(params: Readonly<{
   credentials: StoredCredentials;
   defaultSessionId?: string | null;
   pluginToolCatalog?: readonly ProjectedPluginToolCatalogEntry[];
+  /**
+   * `undefined` preserves the ordinary ambient daemon lifecycle owner. A
+   * concrete target pins an explicit Home; `null` means that Home has no live
+   * daemon and must never fall back to another lifecycle scope.
+   */
+  daemonControlTarget?: DaemonControlRequestOptions['target'] | null;
 }>): Readonly<{ mcp: McpServer; toolNames: string[] }> {
+  const serverHttpBaseUrl = resolveServerHttpBaseUrl();
   const toolSurface = 'mcp' as const;
   const usesApiToken = params.credentials.credentialProvenance === 'api_token';
   // A PAT has no Account E2EE material. Keep its MCP presentation narrowed to
@@ -48,7 +64,10 @@ export function createExternalMcpServer(params: Readonly<{
 
   let defaultSessionId: string | null = normalizeId(params.defaultSessionId) || null;
   const executor = usesApiToken
-    ? createCliActionExecutorFromCredentials({ credentials: params.credentials })
+    ? createCliActionExecutorFromCredentials({
+        credentials: params.credentials,
+        serverApiUrl: serverHttpBaseUrl,
+      })
     : (() => {
         const ctx = resolveSessionEncryptionContextFromCredentials(params.credentials);
         const cryptoContext = ctx
@@ -62,6 +81,10 @@ export function createExternalMcpServer(params: Readonly<{
             sessionId: 'cli-global',
           },
           {
+            ...createAccountServerActionDeps({
+              token: params.credentials.token,
+              serverHttpBaseUrl,
+            }),
             sessionTargetPrimarySet: async ({ sessionId }) => {
               const normalized = typeof sessionId === 'string' && sessionId.trim().length > 0 ? sessionId.trim() : null;
               defaultSessionId = normalized;
@@ -75,7 +98,36 @@ export function createExternalMcpServer(params: Readonly<{
             },
           },
         );
-        return createDaemonPluginActionExecutor({ base: baseExecutor });
+        const pinnedBaseExecutor = {
+          execute: async (...args: Parameters<typeof baseExecutor.execute>) =>
+            await runWithServerHttpBaseUrl(
+              serverHttpBaseUrl,
+              async () => await baseExecutor.execute(...args),
+            ),
+        };
+        const daemonControlTarget = params.daemonControlTarget;
+        const requestPluginActionExecution = daemonControlTarget === undefined
+          ? undefined
+          : daemonControlTarget
+            ? async (
+                request: Parameters<typeof requestDaemonPluginActionExecution>[0],
+                options?: Readonly<{ signal?: AbortSignal }>,
+              ) => await requestDaemonPluginActionExecution(request, {
+                ...options,
+                target: daemonControlTarget,
+              })
+            : async () => ({
+                matched: true as const,
+                result: {
+                  ok: false as const,
+                  errorCode: 'daemon_unavailable',
+                  error: 'daemon_unavailable',
+                },
+              });
+        return createDaemonPluginActionExecutor({
+          base: pinnedBaseExecutor,
+          ...(requestPluginActionExecution ? { requestPluginActionExecution } : {}),
+        });
       })();
 
   const mcp = new McpServer({

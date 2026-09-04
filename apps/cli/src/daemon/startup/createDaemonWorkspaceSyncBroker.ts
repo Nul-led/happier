@@ -48,7 +48,9 @@ export async function createDaemonWorkspaceSyncBroker(
 ): Promise<WorkspaceSyncSidecarBroker> {
   const listen = input.listenBroker ?? listenWorkspaceSyncBroker;
   const broker = await listen({
-    socketPath: join(input.brokerDir, 'control.sock'),
+    // Every daemon launch owns a fresh endpoint. A path left by another
+    // process is never unlinked merely because this launch wants to bind.
+    socketPath: join(input.brokerDir, `control-${input.brokerInstanceId}.sock`),
     brokerInstanceId: input.brokerInstanceId,
     launchNonce: input.launchNonce,
     launchSecret: input.launchSecret,
