@@ -729,11 +729,19 @@ function createNativeAgentTerminalHostScope(params: Readonly<{
                 throw error;
             }
             try {
+                const terminal = buildTerminalMetadataFromHostHandle(handle);
+                const attachmentId = terminal?.controlServiceabilityV1?.attachmentId;
+                logger.debug('[native-agent] Publishing attached terminal-host metadata', {
+                    sessionId: params.session.sessionId,
+                    attachmentId,
+                    mode: terminal?.mode,
+                    tmuxTarget: terminal?.tmux?.target,
+                });
                 let updatedMetadata: Metadata | null = null;
                 await params.session.updateMetadata((metadata) => {
                     updatedMetadata = {
                         ...metadata,
-                        terminal: buildTerminalMetadataFromHostHandle(handle),
+                        terminal,
                     };
                     return updatedMetadata;
                 });
@@ -743,10 +751,22 @@ function createNativeAgentTerminalHostScope(params: Readonly<{
                         metadata: updatedMetadata,
                     });
                 }
+                logger.debug('[native-agent] Published attached terminal-host metadata', {
+                    sessionId: params.session.sessionId,
+                    attachmentId,
+                    mode: terminal?.mode,
+                    tmuxTarget: terminal?.tmux?.target,
+                });
             } catch (error) {
-                logger.debug(
+                logger.warn(
                     '[native-agent] Failed to publish attached terminal-host metadata (non-fatal)',
-                    error,
+                    {
+                        sessionId: params.session.sessionId,
+                        attachmentId: handle.attachmentId,
+                        hostKind: handle.kind,
+                        sessionName: handle.sessionName,
+                        error,
+                    },
                 );
             }
             return handle;
