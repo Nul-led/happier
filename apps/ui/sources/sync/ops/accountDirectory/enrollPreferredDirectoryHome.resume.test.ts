@@ -8,6 +8,7 @@ import type { AccountDirectoryHomeEntryV1, HomeLoginAssertionV1 } from '@/sync/a
 import {
     enrollPreferredDirectoryHome,
     cancelPendingPreferredHomeEnrollment,
+    finalizePreferredHomeEnrollmentEntryIntent,
     getPendingPreferredHomeEnrollment,
     resumePendingPreferredHomeEnrollment,
 } from './enrollPreferredDirectoryHome';
@@ -17,11 +18,29 @@ const createServerFetchAtEndpointMock = vi.hoisted(() => vi.fn());
 const irohReleaseMock = vi.hoisted(() => vi.fn(async () => {}));
 const acquireIrohHomeRuntimeOriginMock = vi.hoisted(() => vi.fn<(input: unknown) => Promise<{
     leaseId: string;
+    key: string;
+    remoteHostId: string;
+    channelMode: 'loopback-port';
+    purpose: 'home';
+    status: 'ready';
+    startedAt: string;
+    homeServerIdentityId: string;
+    carrier: 'iroh';
+    observedPath: 'direct';
     runtimeOrigin: string;
     endpointId: string;
     release: () => Promise<void>;
 }>>(async () => ({
     leaseId: 'lease-home-b',
+    key: 'srv_home_b',
+    remoteHostId: 'srv_home_b',
+    channelMode: 'loopback-port',
+    purpose: 'home',
+    status: 'ready',
+    startedAt: new Date().toISOString(),
+    homeServerIdentityId: 'srv_home_b',
+    carrier: 'iroh',
+    observedPath: 'direct',
     runtimeOrigin: 'http://127.0.0.1:45991',
     endpointId: 'a'.repeat(64),
     release: irohReleaseMock,
@@ -60,9 +79,11 @@ const adoptHomeProfileMock = vi.hoisted(() => vi.fn<(...args: unknown[]) => Prom
 const preflightHomeProfileAdoptionMock = vi.hoisted(() => vi.fn<(...args: unknown[]) => {
     canonicalServerUrl: string;
     serverIdentityId: string;
+    credentialWrite: 'required';
 }>(() => ({
     canonicalServerUrl: 'https://home-b.test',
     serverIdentityId: 'srv_home_b',
+    credentialWrite: 'required',
 })));
 const reconcileServerProfileHomeConnectionDescriptorMock = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<{
     kind: 'applied';
@@ -98,7 +119,8 @@ const getAccountServiceEndpointSnapshotMock = vi.hoisted(() => vi.fn((): {
     serverIdentityId: 'srv_dir_1',
     source: 'user',
 })));
-vi.mock('@/sync/domains/server/serverProfiles', () => ({
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(),
     adoptHomeProfile: (...args: unknown[]) => adoptHomeProfileMock(...args),
     preflightHomeProfileAdoption: (...args: unknown[]) => preflightHomeProfileAdoptionMock(...args),
     reconcileServerProfileHomeConnectionDescriptor: (...args: unknown[]) => reconcileServerProfileHomeConnectionDescriptorMock(...args),
@@ -112,12 +134,6 @@ vi.mock('@/sync/domains/server/serverProfiles', () => ({
     resolveSelectedAccountServiceEndpoint: () => getAccountServiceEndpointSnapshotMock() ?? ({
         url: 'https://api.happier.dev', source: 'default' as const,
     }),
-    // Lane 04 owns the closed digest-bound authorization; its rejection behavior is proven by the
-    // production-caller suite against the real owner. Here it is a transparent scope holder.
-    withHomeCredentialWriteAuthorization: async <T,>(
-        authorization: unknown,
-        run: (authorization: unknown) => Promise<T>,
-    ): Promise<T> => await run(authorization),
 }));
 vi.mock('@/sync/domains/server/activeServerSwitch', () => ({
     setActiveServerAndSwitch: (...args: unknown[]) => setActiveServerAndSwitchMock(...args),
@@ -204,9 +220,10 @@ function makeSession(
             error: null,
             reconciliation: { kind: 'not_run' },
         },
-        requestLoginAssertion: async () => ({
+        requestLoginAssertion: async (_homeServerIdentityId: string, clientBoxPublicKeyBase64: string) => ({
             ...ASSERTION,
             credentialDestinationDigestBase64Url: createHomeCredentialDestinationDigestV1(home.connectionDescriptor),
+            clientBoxPublicKeyBase64,
         }),
     };
 }
@@ -215,7 +232,10 @@ function makeCountedSession(): Readonly<{
     session: Parameters<typeof enrollPreferredDirectoryHome>[0];
     requestLoginAssertion: ReturnType<typeof vi.fn>;
 }> {
-    const requestLoginAssertion = vi.fn(async () => ({ ...ASSERTION }));
+    const requestLoginAssertion = vi.fn(async (_homeServerIdentityId: string, clientBoxPublicKeyBase64: string) => ({
+        ...ASSERTION,
+        clientBoxPublicKeyBase64,
+    }));
     return {
         session: { ...makeSession(), requestLoginAssertion },
         requestLoginAssertion,
@@ -229,7 +249,7 @@ describe('enrollPreferredDirectoryHome requester continuation', () => {
 
     beforeEach(() => {
         createServerFetchAtEndpointMock.mockImplementation(() => async (path: string, ...args: unknown[]) => {
-            if (path === '/v1/features') {
+            if (path === '/v1/features' || path === '/v1/features/authenticated') {
                 return json(200, {
                     features: {},
                     capabilities: { serverIdentity: { serverIdentityId: 'srv_home_b' } },
@@ -250,6 +270,43 @@ describe('enrollPreferredDirectoryHome requester continuation', () => {
             },
         });
         buildHomeConnectionDescriptorForProfileMock.mockReturnValue(HOME_B.connectionDescriptor);
+    });
+
+    it('does not apply a late enter intent after its initiating attempt is cancelled', async () => {
+        await expect(finalizePreferredHomeEnrollmentEntryIntent(
+            'srv_home_b',
+            'enter_preferred_home',
+            'https://directory.test\u0000srv_dir_1',
+            () => true,
+        )).resolves.toBe('superseded');
+
+        expect(setActiveServerAndSwitchMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects an internally inconsistent Directory before requesting a Home assertion', async () => {
+        const { session, requestLoginAssertion } = makeCountedSession();
+        const duplicatePreferred = {
+            ...HOME_B,
+            homeServerIdentityId: 'srv_home_c',
+            canonicalServerUrl: 'https://home-c.test',
+            connectionDescriptor: {
+                ...HOME_B.connectionDescriptor,
+                homeServerIdentityId: 'srv_home_c',
+                canonicalServerUrl: 'https://home-c.test',
+                endpoints: [{ kind: 'https' as const, url: 'https://home-c.test' }],
+            },
+        };
+        const inconsistentSession = {
+            ...session,
+            snapshot: {
+                ...session.snapshot,
+                homes: [HOME_B, duplicatePreferred],
+            },
+        };
+
+        await expect(enrollPreferredDirectoryHome(inconsistentSession, CONNECT_SERVICE_ENTRY))
+            .resolves.toMatchObject({ kind: 'failed' });
+        expect(requestLoginAssertion).not.toHaveBeenCalled();
     });
 
     afterEach(async () => {
@@ -282,6 +339,7 @@ describe('enrollPreferredDirectoryHome requester continuation', () => {
 
         const enrollment = await enrollPreferredDirectoryHome(makeSession({
             ...HOME_B,
+            canonicalServerUrl: 'http://localhost:3010',
             connectionDescriptor: {
                 ...HOME_B.connectionDescriptor,
                 canonicalServerUrl: 'http://localhost:3010',
@@ -728,6 +786,15 @@ describe('enrollPreferredDirectoryHome requester continuation', () => {
         const next = await enrollPreferredDirectoryHome({
             ...replacement.session,
             serviceKey: 'https://other-directory.test\u0000srv_dir_2',
+            snapshot: {
+                ...replacement.session.snapshot,
+                endpoint: 'https://other-directory.test',
+            },
+            requestLoginAssertion: vi.fn(async (_homeServerIdentityId: string, clientBoxPublicKeyBase64: string) => ({
+                ...ASSERTION,
+                issuerServerIdentityId: 'srv_dir_2',
+                clientBoxPublicKeyBase64,
+            })),
         }, CONNECT_SERVICE_ENTRY);
 
         expect(next).toMatchObject({
@@ -735,7 +802,6 @@ describe('enrollPreferredDirectoryHome requester continuation', () => {
             approvalId: 'approval-other-service',
         });
         expect(retainedService.requestLoginAssertion).toHaveBeenCalledTimes(1);
-        expect(replacement.requestLoginAssertion).toHaveBeenCalledTimes(1);
         expect(getPendingPreferredHomeEnrollment()).toMatchObject({
             serviceKey: 'https://other-directory.test\u0000srv_dir_2',
         });

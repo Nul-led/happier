@@ -20,9 +20,9 @@ import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import {
     areServerProfileIdentifiersEquivalent,
     getServerProfileLegacyServerIds,
-    getServerProfileById,
     resolveServerProfileForPortableIdentity,
 } from '@/sync/domains/server/serverProfiles';
+import { resolvePortableServerIdentityForRoutingId } from '@/sync/domains/server/resolvePortableServerIdentityForRoutingId';
 import { serverFetch, type ExpectedActiveServerFetchBasis } from '@/sync/http/client';
 import {
     machinePluginSecretDelete,
@@ -79,8 +79,7 @@ function encodePluginId(pluginId: string): string {
 export function resolveScopedPluginSettingsServerIdentity(
     serverId: string | null | undefined,
 ): string | null {
-    const profile = getServerProfileById(String(serverId ?? '').trim());
-    return profile?.serverIdentityId?.trim() || null;
+    return resolvePortableServerIdentityForRoutingId(serverId);
 }
 
 /**

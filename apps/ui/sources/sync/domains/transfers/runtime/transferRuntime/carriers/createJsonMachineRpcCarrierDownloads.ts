@@ -6,10 +6,11 @@ import { downloadBulkJsonPayloadViaServerRelay } from '../plumbing/downloadBulkJ
 import { downloadBulkJsonPayloadViaMachineRpc } from './downloadBulkJsonPayloadViaMachineRpc';
 import { downloadJsonPayloadWithCarrierFallbacks } from './downloadJsonPayloadWithCarrierFallbacks';
 import {
-    isIrohMachineCarrierRoute,
+    MACHINE_CARRIER_TRANSPORT_FAILED_ERROR_CODE,
     resolveMachineCarrierRoute,
     type MachineCarrierRoute,
 } from '../plumbing/machineCarrierHttpLease';
+import { resolveMachineCarrierTransferFlow } from '../routing/machineCarrierTransferFlow';
 
 type JsonDownloadInitSuccess = Readonly<{
     success: true;
@@ -92,7 +93,7 @@ export async function downloadJsonPayloadViaMachineTransferCarriers<
             return machineRoute.kind === 'iroh_peer' ? await machineRoute.acquire({
                 operationId,
                 maxBytes,
-                flow: 'file_transfer',
+                flow: resolveMachineCarrierTransferFlow(params.directExportRequest),
                 signal: params.signal ?? undefined,
             })
                 : null;
@@ -102,14 +103,11 @@ export async function downloadJsonPayloadViaMachineTransferCarriers<
     try {
         directResult = await downloadViaDirectExport();
     } catch {
-        if (isIrohMachineCarrierRoute(machineRoute)) {
-            return { ok: false as const, error: 'The direct machine connection was interrupted. Retry the transfer.', errorCode: 'machine_carrier_transport_failed' };
-        }
         directResult = { ok: false as const, error: 'Direct export unavailable' };
     }
     if (directResult.ok) return directResult;
-    if (isIrohMachineCarrierRoute(machineRoute)) {
-        return { ok: false as const, error: 'The direct machine connection was interrupted. Retry the transfer.', errorCode: 'machine_carrier_transport_failed' };
+    if (directResult.errorCode === MACHINE_CARRIER_TRANSPORT_FAILED_ERROR_CODE) {
+        return directResult;
     }
     return await downloadJsonPayloadWithCarrierFallbacks({
         downloadViaDirectExport: async () => directResult,

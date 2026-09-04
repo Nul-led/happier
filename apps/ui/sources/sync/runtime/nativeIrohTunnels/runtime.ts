@@ -7,7 +7,7 @@ import {
 
 import { IROH_HOME_TUNNEL_INVALID_ENDPOINT_ERROR, IROH_HOME_TUNNEL_STALE_FOCUS_ERROR } from './fallback';
 import { releaseRetainedIrohMachineHttpLeases } from './machineHttpLifecycle';
-import { createIrohHomeTunnelSupervisor, type IrohHomeTunnelSupervisor, type IrohNativeLifecycleModule } from './supervisor';
+import { createIrohHomeTunnelSupervisor, IROH_HOME_TUNNEL_DISPOSED_ERROR, type IrohHomeTunnelSupervisor, type IrohNativeLifecycleModule } from './supervisor';
 import type {
     IrohHomeTunnelAcquireInput,
     IrohHomeTunnelRequest,
@@ -38,6 +38,15 @@ export function createIrohHomeTunnelRuntime(params: Readonly<{
     const supervisor = params.createSupervisor?.() ?? createIrohHomeTunnelSupervisor({ native: params.native });
     const publicationsByLeaseId = new Map<string, PublishedIrohHomeLease>();
     const recoveryListeners = new Set<(event: IrohHomeTunnelRecoveryRequired) => void>();
+    /**
+     * Disposal closes this runtime's admission synchronously when it begins:
+     * new acquisition calls are refused, starts admitted before disposal began
+     * settle and have their late handles released instead of published, and
+     * the still-published singleton accepts no work. A failed disposal reopens
+     * admission because this same instance stays the live owner for its
+     * documented cleanup retry.
+     */
+    let disposed = false;
 
     function notifyRecoveryRequired(event: IrohHomeTunnelRecoveryRequired): void {
         for (const listener of recoveryListeners) listener(event);
@@ -57,11 +66,11 @@ export function createIrohHomeTunnelRuntime(params: Readonly<{
             });
             return;
         }
-        if (event.type === 'degraded' || event.type === 'closed' || event.type === 'error') {
+        if (event.type === 'degraded' || event.type === 'closed') {
             if (published) {
                 releaseActiveServerRuntimeOrigin({ target: published.target, leaseId: event.lease.leaseId });
             }
-            if (event.type === 'closed' || event.type === 'error') {
+            if (event.type === 'closed') {
                 notifyRecoveryRequired({
                     leaseId: event.lease.leaseId,
                     homeServerIdentityId: event.lease.homeServerIdentityId,
@@ -116,6 +125,7 @@ export function createIrohHomeTunnelRuntime(params: Readonly<{
     async function acquireHomeRuntimeOrigin(
         input: IrohHomeTunnelAcquireInput,
     ): Promise<IrohHomeRuntimeOriginLease> {
+        if (disposed) throw new Error(IROH_HOME_TUNNEL_DISPOSED_ERROR);
         validateAcquireInput(input);
         const request: IrohHomeTunnelRequest = {
             // The reusable transport lease is scoped to the Home identity, not
@@ -128,10 +138,16 @@ export function createIrohHomeTunnelRuntime(params: Readonly<{
             policy: input.policy ?? DEFAULT_IROH_RELAY_POLICY,
             ...(input.endpoint.relayUrls ? { relayUrls: input.endpoint.relayUrls } : {}),
             ...(input.endpoint.directAddresses ? { directAddresses: input.endpoint.directAddresses } : {}),
-            ...(input.descriptorRevision === undefined ? {} : { descriptorRevision: input.descriptorRevision }),
             verification: input.verification,
         };
         const lease = await supervisor.ensureTunnel(request);
+        if (disposed) {
+            // Disposal began while this admitted start was settling. The late
+            // handle is released instead of returned; a failed stop stays owned
+            // by the supervisor for its disposal retry.
+            await supervisor.releaseTunnel(lease.leaseId).catch(() => undefined);
+            throw new Error(IROH_HOME_TUNNEL_DISPOSED_ERROR);
+        }
         const runtimeOrigin = lease.localUrl?.trim() ?? '';
         if (!runtimeOrigin) {
             await supervisor.releaseTunnel(lease.leaseId);
@@ -162,6 +178,7 @@ export function createIrohHomeTunnelRuntime(params: Readonly<{
         acquireHomeRuntimeOrigin,
 
         async ensureHomeTunnel(input) {
+            if (disposed) throw new Error(IROH_HOME_TUNNEL_DISPOSED_ERROR);
             const target = captureActiveServerRuntimeTarget();
             // A lease belonging to the prior Home/generation is released as part of this switch.
             await releaseStalePublicationLeases(target);
@@ -231,16 +248,24 @@ export function createIrohHomeTunnelRuntime(params: Readonly<{
         releaseActiveHomeTunnels,
 
         async dispose() {
-            for (const [leaseId, published] of publicationsByLeaseId) {
-                releaseActiveServerRuntimeOrigin({ target: published.target, leaseId });
+            disposed = true;
+            try {
+                for (const [leaseId, published] of publicationsByLeaseId) {
+                    releaseActiveServerRuntimeOrigin({ target: published.target, leaseId });
+                }
+                // The supervisor is the sole owner of every native handle,
+                // including acquisitions that failed before returning a lease.
+                await supervisor.dispose();
+                publicationsByLeaseId.clear();
+                unsubscribeLifecycle();
+                unsubscribeLifecycle = () => undefined;
+                recoveryListeners.clear();
+            } catch (error) {
+                // A failed disposal keeps this runtime as the live owner for
+                // its documented cleanup retry, so admission reopens.
+                disposed = false;
+                throw error;
             }
-            // The supervisor is the sole owner of every native handle,
-            // including acquisitions that failed before returning a lease.
-            await supervisor.dispose();
-            publicationsByLeaseId.clear();
-            unsubscribeLifecycle();
-            unsubscribeLifecycle = () => undefined;
-            recoveryListeners.clear();
         },
 
         async releaseLeasesForStaleTargets() {
@@ -299,7 +324,6 @@ export function createIrohHomeTunnelRuntime(params: Readonly<{
         },
 
         listTunnels: () => supervisor.listTunnels(),
-        readDiagnostics: () => supervisor.readDiagnostics(),
     };
 }
 
@@ -348,9 +372,4 @@ export function subscribeIrohHomeTunnelRecoveryRequired(
     listener: (event: IrohHomeTunnelRecoveryRequired) => void,
 ): () => void {
     return getIrohHomeTunnelRuntime().subscribeRecoveryRequired(listener);
-}
-
-/** Reads existing diagnostics without constructing the native runtime singleton. */
-export function readIrohHomeTransportDiagnostics() {
-    return singletonRuntime?.readDiagnostics() ?? [];
 }

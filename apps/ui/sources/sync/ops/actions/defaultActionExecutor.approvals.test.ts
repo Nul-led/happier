@@ -462,7 +462,7 @@ describe('createDefaultActionExecutor approvals', () => {
 
         const res = await executor.execute(
             'session.permission.respond' as any,
-            { sessionId: 's1', requestId: 'req-1', decision: 'deny' },
+            { sessionId: 's1', requestId: 'req-1', turnId: 'turn-1', decision: 'deny' },
             { surface: 'ui' },
         );
 
@@ -475,7 +475,7 @@ describe('createDefaultActionExecutor approvals', () => {
             sessionId: 's1',
             serverId: 'srv-main',
             method: RPC_METHODS.SESSION_PERMISSION_RESPOND,
-            payload: { id: 'req-1', approved: false },
+            payload: { id: 'req-1', turnId: 'turn-1', approved: false },
         });
     });
 

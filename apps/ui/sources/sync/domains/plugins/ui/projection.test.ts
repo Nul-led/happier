@@ -215,6 +215,7 @@ function createProjection(): PluginProjectionV2 {
                         pluginId: 'acme.preview',
                         contributionKind: 'searchProvider',
                         descriptorId: 'entries',
+                        identity: { pluginId: 'acme.preview', localId: 'entries' },
                         action: { pluginId: 'acme.preview', localId: 'entries/search-v1' },
                     },
                     'searchProvider:acme.preview:foreign': {
@@ -222,6 +223,7 @@ function createProjection(): PluginProjectionV2 {
                         pluginId: 'acme.preview',
                         contributionKind: 'searchProvider',
                         descriptorId: 'foreign',
+                        identity: { pluginId: 'acme.preview', localId: 'foreign' },
                         action: { pluginId: 'other.plugin', localId: 'search' },
                     },
                     'hostedWeb:acme.preview:preview-web': {
@@ -657,6 +659,9 @@ describe('plugin UI projection normalization', () => {
             display: { developerFallback: 'Review' },
             availability: { state: 'available', reason: 'available', diagnostics: [] },
         });
+        if (generatedEntry.contributionKind !== 'surfacePlacement') {
+            throw new Error('generated surface placement is required');
+        }
         if (!generatedEntry.binding) throw new Error('generated surface binding is required');
         entries['surfacePlacement:acme.generated:review'] = generatedEntry;
 

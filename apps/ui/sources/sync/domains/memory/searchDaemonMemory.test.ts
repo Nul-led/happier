@@ -30,6 +30,7 @@ describe('searchDaemonMemory', () => {
         const { searchDaemonMemory } = await import('./searchDaemonMemory');
         const result = await searchDaemonMemory({
             serverId: 'server-a',
+            accountId: 'account-a',
             machineId: 'machine-a',
             query: ' vector cache ',
             scope: { type: 'global' },
@@ -40,6 +41,7 @@ describe('searchDaemonMemory', () => {
 
         expect(machineRpcWithServerScopeMock).toHaveBeenCalledWith({
             serverId: 'server-a',
+            accountId: 'account-a',
             machineId: 'machine-a',
             method: RPC_METHODS.DAEMON_MEMORY_SEARCH,
             payload: {
@@ -50,6 +52,7 @@ describe('searchDaemonMemory', () => {
                 maxResults: 20,
             },
             timeoutMs: 1500,
+            preferScoped: true,
         });
         expect(result).toEqual({
             v: 1,
@@ -74,6 +77,7 @@ describe('searchDaemonMemory', () => {
         const { searchDaemonMemory } = await import('./searchDaemonMemory');
         const result = await searchDaemonMemory({
             serverId: 'server-a',
+            accountId: 'account-a',
             machineId: 'machine-a',
             query: 'vector cache',
             scope: { type: 'global' },
@@ -96,6 +100,7 @@ describe('searchDaemonMemory', () => {
         const { searchDaemonMemory } = await import('./searchDaemonMemory');
         await expect(searchDaemonMemory({
             serverId: 'server-a',
+            accountId: 'account-a',
             machineId: 'machine-a',
             query: 'vector cache',
             scope: { type: 'global' },
@@ -129,6 +134,7 @@ describe('searchDaemonMemory', () => {
         const { searchDaemonMemory } = await import('./searchDaemonMemory');
         const result = await searchDaemonMemory({
             serverId: 'server-a',
+            accountId: 'account-a',
             machineId: 'machine-a',
             query: 'vector cache',
             scope: { type: 'global' },
@@ -153,6 +159,7 @@ describe('searchDaemonMemory', () => {
         const { searchDaemonMemory } = await import('./searchDaemonMemory');
         await searchDaemonMemory({
             serverId: 'server-a',
+            accountId: 'account-a',
             machineId: 'machine-a',
             query: 'vector cache',
             scope: { type: 'global' },
@@ -172,6 +179,7 @@ describe('searchDaemonMemory', () => {
         const { searchDaemonMemory } = await import('./searchDaemonMemory');
         await expect(searchDaemonMemory({
             serverId: 'server-a',
+            accountId: 'account-a',
             machineId: 'machine-a',
             query: 'vector cache',
             scope: { type: 'global' },

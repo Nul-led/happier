@@ -12,10 +12,11 @@ import type {
     LoopbackTunnelSupervisorOptions,
 } from './types';
 
-const DEFAULT_FAILURE_CODES: LoopbackTunnelFailureCodes = {
+const DEFAULT_FAILURE_CODES: Required<LoopbackTunnelFailureCodes> = {
     suspended: 'loopback_tunnel_suspended',
     probeFailed: 'loopback_tunnel_probe_failed',
     staleGeneration: 'loopback_tunnel_stale_generation',
+    disposed: 'loopback_tunnel_disposed',
 };
 
 /**
@@ -34,11 +35,19 @@ export function createLoopbackTunnelSupervisor<
         foregroundLimitation: input.platformLimitations?.foreground ?? null,
         suspendedLimitation: input.platformLimitations?.suspended ?? null,
     });
-    const failureCodes: LoopbackTunnelFailureCodes = {
+    const failureCodes: Required<LoopbackTunnelFailureCodes> = {
         suspended: input.failureCodes?.suspended ?? DEFAULT_FAILURE_CODES.suspended,
         probeFailed: input.failureCodes?.probeFailed ?? DEFAULT_FAILURE_CODES.probeFailed,
         staleGeneration: input.failureCodes?.staleGeneration ?? DEFAULT_FAILURE_CODES.staleGeneration,
+        disposed: input.failureCodes?.disposed ?? DEFAULT_FAILURE_CODES.disposed,
     };
+    /**
+     * Acquisition admission closes synchronously when disposal begins (A9
+     * lifecycle closure). Starts already admitted keep settling through the
+     * disposal pass; a failed disposal reopens admission because the same
+     * owner stays live for its documented retry.
+     */
+    let admissionClosed = false;
     const pending = new Map<string, { promise: Promise<Lease>; referenceCount: number }>();
     const nativeSubscriptions = new Map<string, () => void>();
     const listeners = new Set<(event: LoopbackTunnelLifecycleEvent<Lease>) => void>();
@@ -61,15 +70,15 @@ export function createLoopbackTunnelSupervisor<
                 ? 'degraded'
                 : event.type === 'closed'
                     ? 'stopped'
-                    : 'failed';
+                    : stored.lease.status;
         const projected = { ...nextLease, status } as Lease;
         store.put(key, { ...stored, lease: projected });
         const lifecycleEvent: LoopbackTunnelLifecycleEvent<Lease> = { ...event, lease: projected };
         for (const listener of listeners) listener(lifecycleEvent);
-        if (event.type === 'closed' || event.type === 'error') {
-            // Observation is terminal for this native handle. The existing
-            // supervisor performs the one teardown; reconnect/retry remains in
-            // its established ensure/foreground paths.
+        if (event.type === 'closed') {
+            // Only authoritative native closure is terminal for this handle.
+            // An `error` event reports a failed status observation; the adapter
+            // continues polling and may still observe a later ready/path fact.
             removeNativeSubscription(nativeTunnelId);
             void detachStoppedNativeTunnel(key).catch(() => {
                 const current = store.getByKey(key);
@@ -135,29 +144,42 @@ export function createLoopbackTunnelSupervisor<
      * stored so the same owner can retry them on a later disposal attempt.
      */
     async function dispose(): Promise<void> {
-        await Promise.allSettled([...pending.values()].map(({ promise }) => promise));
-        const errors: unknown[] = [];
-        for (const lease of store.snapshot().leases) {
-            const stored = store.getByKey(lease.key);
-            if (!stored) continue;
-            if (stored.nativeTunnelId) {
-                removeNativeSubscription(stored.nativeTunnelId);
-                try {
-                    await input.adapter.stopLoopbackTunnel(stored.nativeTunnelId);
-                } catch (error) {
-                    store.updateStatus(stored.lease.leaseId, 'failed');
-                    errors.push(error);
-                    continue;
+        // Admission shuts synchronously before the first await, so no start can
+        // be admitted after disposal begins. Starts admitted before this point
+        // settle below, and every handle they produced is stopped by this same
+        // disposal pass rather than outliving the supervisor.
+        admissionClosed = true;
+        try {
+            await Promise.allSettled([...pending.values()].map(({ promise }) => promise));
+            const errors: unknown[] = [];
+            for (const lease of store.snapshot().leases) {
+                const stored = store.getByKey(lease.key);
+                if (!stored) continue;
+                if (stored.nativeTunnelId) {
+                    removeNativeSubscription(stored.nativeTunnelId);
+                    try {
+                        await input.adapter.stopLoopbackTunnel(stored.nativeTunnelId);
+                    } catch (error) {
+                        store.updateStatus(stored.lease.leaseId, 'failed');
+                        errors.push(error);
+                        continue;
+                    }
                 }
+                store.deleteByKey(lease.key);
             }
-            store.deleteByKey(lease.key);
+            if (errors.length === 1) throw errors[0];
+            if (errors.length > 1) throw new AggregateError(errors, 'Failed to dispose every loopback tunnel.');
+        } catch (error) {
+            // A failed disposal keeps this supervisor as the live owner for its
+            // documented retry, so acquisition admission reopens.
+            admissionClosed = false;
+            throw error;
         }
-        if (errors.length === 1) throw errors[0];
-        if (errors.length > 1) throw new AggregateError(errors, 'Failed to dispose every loopback tunnel.');
     }
 
     return {
         async ensureTunnel(request) {
+            if (admissionClosed) throw new Error(failureCodes.disposed);
             if (store.isSuspended()) throw new Error(failureCodes.suspended);
             const key = input.buildKey(request);
             const inFlight = pending.get(key);

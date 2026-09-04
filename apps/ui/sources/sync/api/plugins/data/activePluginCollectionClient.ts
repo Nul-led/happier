@@ -226,6 +226,7 @@ export type ActivePluginCollectionClientForContractRefOutcomeV1<
 > =
     | Readonly<{
         status: 'ready';
+        access: 'readOnly' | 'writable';
         contract: NormalizedPluginAccountCollectionContractV1;
         client: ActivePluginCollectionClientV1<TValue>;
     }>
@@ -699,9 +700,11 @@ export async function createActivePluginCollectionClientForContractRef<
         }
         return {
             status: 'ready',
+            access: result.data.access,
             contract: result.data.contract,
             client: createActivePluginCollectionClient<TValue>({
                 contract: result.data.contract,
+                access: result.data.access,
                 accountLifetime: input.accountLifetime,
             }),
         };
@@ -720,6 +723,7 @@ export function createActivePluginCollectionClient<
     TValue extends PluginAccountCollectionValue<PluginAccountCollectionDefinition> = PluginAccountCollectionValue<PluginAccountCollectionDefinition>,
 >(params: Readonly<{
     contract: NormalizedPluginAccountCollectionContractV1;
+    access?: 'readOnly' | 'writable';
     /** A resolved facade retains this existing scope instead of recapturing globally. */
     accountLifetime?: ActiveServerAccountScopeLifetime;
 }>): ActivePluginCollectionClientV1<TValue> {
@@ -732,6 +736,12 @@ export function createActivePluginCollectionClient<
         const request = PluginCollectionGetRequestV1Schema.safeParse({
             pluginId: params.contract.pluginId,
             collectionId: params.contract.collectionId,
+            readerContext: {
+                pluginId: params.contract.pluginId,
+                collectionId: params.contract.collectionId,
+                schemaVersion: params.contract.schemaVersion,
+                contractDigest: params.contract.contractDigest,
+            },
             rowId,
         });
         if (!request.success) return rejected('collection_query_invalid');
@@ -776,6 +786,12 @@ export function createActivePluginCollectionClient<
         const request = PluginCollectionQueryRequestV1Schema.safeParse({
             pluginId: params.contract.pluginId,
             collectionId: params.contract.collectionId,
+            readerContext: {
+                pluginId: params.contract.pluginId,
+                collectionId: params.contract.collectionId,
+                schemaVersion: params.contract.schemaVersion,
+                contractDigest: params.contract.contractDigest,
+            },
             ...input,
         });
         if (!request.success) return rejected('collection_query_invalid');
@@ -866,6 +882,7 @@ export function createActivePluginCollectionClient<
         operations: readonly ActivePluginCollectionMutationInputV1<TValue>[],
         options?: ActivePluginCollectionOperationOptionsV1,
     ): Promise<ActivePluginCollectionMutationOutcomeV1> => {
+        if (params.access === 'readOnly') return unavailable('writer-contract-unavailable');
         if (
             operations.length < 1
             || operations.length > PLUGIN_COLLECTION_LIMITS_V1.maximumMutationBatchRows
@@ -913,6 +930,7 @@ export function createActivePluginCollectionClient<
         expectedRevision: number,
         options?: ActivePluginCollectionOperationOptionsV1,
     ): Promise<ActivePluginCollectionForgetOutcomeV1> => {
+        if (params.access === 'readOnly') return unavailable('writer-contract-unavailable');
         const body = PluginCollectionForgetRequestV1Schema.safeParse({
             pluginId: params.contract.pluginId,
             collectionId: params.contract.collectionId,

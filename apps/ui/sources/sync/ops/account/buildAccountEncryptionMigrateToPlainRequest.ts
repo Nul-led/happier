@@ -1,5 +1,5 @@
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
-import { deriveSettingsSecretsKeySet, unsealSecretsDeepWithKeys } from '@/sync/encryption/secretSettings';
+import { deriveSettingsSecretsKeySet, unsealSecretsDeepWithKeysForPlainStorage } from '@/sync/encryption/secretSettings';
 import { stripLocalOnlyAccountSettings } from '@/sync/domains/settings/localOnlyAccountSettings';
 import type { Settings } from '@/sync/domains/settings/settings';
 import { normalizeVoiceSettingsServerDelta } from '@/sync/domains/settings/voiceSettingsPersistence';
@@ -83,7 +83,7 @@ export async function buildAccountEncryptionMigrateToPlainRequest(params: Readon
   const settingsForServer = normalizeVoiceSettingsServerDelta(
     stripLocalOnlyAccountSettings(params.settings),
   );
-  const plainSettings = unsealSecretsDeepWithKeys(settingsForServer, settingsSecretsReadKeys);
+  const plainSettings = unsealSecretsDeepWithKeysForPlainStorage(settingsForServer, settingsSecretsReadKeys);
 
   const connectedServices = await (async () => {
     const qualifiedAccounts = params.qualifiedConnectedAccounts ?? [];

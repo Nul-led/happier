@@ -1,7 +1,9 @@
-import type {
-  ActionExecuteResult,
-  ActionExecutorContext,
-  HandoffWorkspaceActionV1,
+import {
+  SessionHandoffActionResultV1Schema,
+  type ActionExecuteResult,
+  type ActionExecutorContext,
+  type HandoffWorkspaceActionV1,
+  type SessionHandoffActionResultV1,
 } from '@happier-dev/protocol';
 
 type ExecuteAction = (actionId: 'session.handoff', input: unknown, context?: ActionExecutorContext) => Promise<ActionExecuteResult>;
@@ -13,26 +15,17 @@ type ExecuteSessionHandoffActionArgs = Readonly<{
   targetPath?: string;
   targetSessionStorageMode?: 'direct' | 'persisted';
   workspaceAction?: HandoffWorkspaceActionV1;
-  workspaceSyncSourceWorkspaceRefId?: string;
-  workspaceSyncTargetWorkspaceRefId?: string;
-  workspaceSyncSettingsVersion?: number;
   context: ActionExecutorContext;
 }>;
 
 export type ExecuteSessionHandoffActionResult =
-  | Readonly<{ ok: true; handoffId: string }>
+  | Readonly<{ ok: true; result: SessionHandoffActionResultV1 }>
   | Readonly<{ ok: false; error: string; recovery?: unknown }>;
 
 function normalizeNonEmptyString(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
-}
-
-function readRecord(value: unknown): Readonly<Record<string, unknown>> | null {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? value as Readonly<Record<string, unknown>>
-    : null;
 }
 
 export async function executeSessionHandoffAction(
@@ -46,15 +39,6 @@ export async function executeSessionHandoffAction(
       ...(args.targetPath ? { targetPath: args.targetPath } : {}),
       ...(args.targetSessionStorageMode ? { targetSessionStorageMode: args.targetSessionStorageMode } : {}),
       ...(args.workspaceAction ? { workspaceAction: args.workspaceAction } : {}),
-      ...(args.workspaceSyncSourceWorkspaceRefId
-        ? { workspaceSyncSourceWorkspaceRefId: args.workspaceSyncSourceWorkspaceRefId }
-        : {}),
-      ...(args.workspaceSyncTargetWorkspaceRefId
-        ? { workspaceSyncTargetWorkspaceRefId: args.workspaceSyncTargetWorkspaceRefId }
-        : {}),
-      ...(args.workspaceSyncSettingsVersion === undefined
-        ? {}
-        : { workspaceSyncSettingsVersion: args.workspaceSyncSettingsVersion }),
     },
     args.context,
   );
@@ -62,22 +46,8 @@ export async function executeSessionHandoffAction(
     return { ok: false, error: normalizeNonEmptyString(actionResult.error) ?? 'failed_to_start_session_handoff' };
   }
 
-  const handoffResult = readRecord(actionResult.result);
-  if (handoffResult?.ok !== true) {
-    return {
-      ok: false,
-      error:
-        normalizeNonEmptyString(handoffResult?.errorMessage)
-        ?? normalizeNonEmptyString(handoffResult?.error)
-        ?? 'failed_to_start_session_handoff',
-      ...(handoffResult?.recovery ? { recovery: handoffResult.recovery } : {}),
-    };
-  }
-
-  const handoffId = normalizeNonEmptyString(handoffResult?.handoffId);
-  if (!handoffId) {
-    return { ok: false, error: 'failed_to_start_session_handoff' };
-  }
-
-  return { ok: true, handoffId };
+  const terminalResult = SessionHandoffActionResultV1Schema.safeParse(actionResult.result);
+  return terminalResult.success
+    ? { ok: true, result: terminalResult.data }
+    : { ok: false, error: 'unsupported_session_handoff_result' };
 }

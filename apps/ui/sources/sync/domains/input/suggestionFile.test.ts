@@ -4,8 +4,26 @@ const machineRipgrepMock = vi.fn();
 const machineFilesystemListDirectoryMock = vi.fn();
 const resolveWorkspaceTargetForSessionMock = vi.fn();
 
-vi.mock('@/sync/ops/machineRipgrep', () => ({
-    machineRipgrep: (...args: unknown[]) => machineRipgrepMock(...args),
+vi.mock('@/sync/ops/machineWorkspaceFileList', () => ({
+    machineWorkspaceFileList: async (...args: unknown[]) => {
+        const response = await machineRipgrepMock(...args) as Readonly<{
+            ok?: boolean;
+            success?: boolean;
+            paths?: string[];
+            stdout?: string;
+        }>;
+        if (typeof response?.ok === 'boolean') return response;
+        if (response?.success === true) {
+            const requestedLimit = (args[1] as Readonly<{ limit?: number }> | undefined)?.limit;
+            const allPaths = String(response.stdout ?? '').split('\n').filter(Boolean);
+            return {
+                ok: true,
+                paths: typeof requestedLimit === 'number' ? allPaths.slice(0, requestedLimit) : allPaths,
+                truncated: typeof requestedLimit === 'number' && allPaths.length > requestedLimit,
+            };
+        }
+        return { ok: false, errorCode: 'ripgrep_unavailable' };
+    },
 }));
 
 vi.mock('@/sync/ops/machineFileBrowser', () => ({
@@ -132,9 +150,8 @@ describe('searchFiles', () => {
 
         // Ensure we actually attempted a targeted ripgrep request.
         expect(machineRipgrepMock.mock.calls.length).toBeGreaterThanOrEqual(2);
-        const secondArgs = machineRipgrepMock.mock.calls[1]?.[1] as string[] | undefined;
-        expect(secondArgs).toContain('--files');
-        expect(secondArgs).toContain('--iglob');
+        const secondInput = machineRipgrepMock.mock.calls[1]?.[1] as Readonly<{ query?: string }> | undefined;
+        expect(secondInput?.query).toBe('publish-github-release');
     });
 
     /**
@@ -148,9 +165,9 @@ describe('searchFiles', () => {
         const scopeOtherFolder = { serverId: 'server', machineId: 'm1', rootPath: '/other' } as const;
         const scopeOtherMachine = { serverId: 'server', machineId: 'm2', rootPath: '/repo' } as const;
 
-        machineRipgrepMock.mockImplementation(async (_machineId: string, _args: string[], cwd: string) => ({
+        machineRipgrepMock.mockImplementation(async (_machineId: string, input: Readonly<{ rootPath: string }>) => ({
             success: true,
-            stdout: cwd === '/repo' ? 'README.md\nsrc/index.ts\n' : 'OTHER.md\n',
+            stdout: input.rootPath === '/repo' ? 'README.md\nsrc/index.ts\n' : 'OTHER.md\n',
             stderr: '',
             exitCode: 0,
         }));
@@ -176,7 +193,7 @@ describe('searchFiles', () => {
         // The same folder path on a different machine is likewise a different index.
         await searchFiles(scopeOtherMachine, '', { limit: 10 });
         expect(machineRipgrepMock).toHaveBeenCalledTimes(3);
-        expect(machineRipgrepMock.mock.calls.map((call) => [call[0], call[2]])).toEqual([
+        expect(machineRipgrepMock.mock.calls.map((call) => [call[0], (call[1] as Readonly<{ rootPath: string }>).rootPath])).toEqual([
             ['m1', '/repo'],
             ['m1', '/other'],
             ['m2', '/repo'],

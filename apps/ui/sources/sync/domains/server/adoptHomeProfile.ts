@@ -1,6 +1,14 @@
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { TokenStorage } from '@/auth/storage/tokenStorage';
 import {
+    createHomeCredentialDestinationDigestV1,
+    createHomeCredentialDestinationV1,
+    HomeConnectionDescriptorV1Schema,
+    isHomeCredentialDestinationAllowedV1,
+    type HomeConnectionDescriptorV1,
+    type HomeCredentialDestinationSelectionV1,
+} from '@happier-dev/protocol';
+import {
     adoptHomeProfile,
     getServerProfileById,
     listServerProfiles,
@@ -13,7 +21,53 @@ type HomeProfileAdoptionInput = Parameters<typeof adoptHomeProfile>[0];
 export type AdoptHomeProfileWithCredentialsInput = HomeProfileAdoptionInput & Readonly<{
     credentials: AuthCredentials;
     shouldCancel?: () => boolean;
+    credentialWriteAuthorization?: HomeProfileCredentialWriteAuthorizationV1;
 }>;
+
+/**
+ * Short-lived proof that Account-Service enrollment redeemed a Home assertion through one
+ * destination covered by the assertion's signed Directory descriptor. It authorizes only the
+ * credential write; the profile remains advisory until authenticated Home features establish it.
+ */
+export type HomeProfileCredentialWriteAuthorizationV1 = Readonly<{
+    kind: 'assertion_destination_binding_v1';
+    descriptor: HomeConnectionDescriptorV1;
+    credentialDestinationDigestBase64Url: string;
+    selectedDestination: HomeCredentialDestinationSelectionV1;
+}>;
+
+const issuedCredentialWriteAuthorizations = new WeakSet<object>();
+
+/**
+ * Issues an owner-custodied, one-shot authorization after validating the assertion's canonical
+ * destination projection. Structural lookalikes are rejected by the adoption owner at runtime.
+ */
+export function createHomeProfileCredentialWriteAuthorization(
+    input: Omit<HomeProfileCredentialWriteAuthorizationV1, 'kind'>,
+): HomeProfileCredentialWriteAuthorizationV1 | null {
+    const descriptor = HomeConnectionDescriptorV1Schema.safeParse(input.descriptor);
+    if (!descriptor.success) return null;
+    try {
+        if (
+            createHomeCredentialDestinationDigestV1(descriptor.data)
+            !== input.credentialDestinationDigestBase64Url
+            || !isHomeCredentialDestinationAllowedV1(
+                createHomeCredentialDestinationV1(descriptor.data),
+                input.selectedDestination,
+            )
+        ) return null;
+    } catch {
+        return null;
+    }
+    const authorization = Object.freeze({
+        kind: 'assertion_destination_binding_v1' as const,
+        descriptor: descriptor.data,
+        credentialDestinationDigestBase64Url: input.credentialDestinationDigestBase64Url,
+        selectedDestination: input.selectedDestination,
+    });
+    issuedCredentialWriteAuthorizations.add(authorization);
+    return authorization;
+}
 
 export type HomeProfileCredentialRollbackOutcome =
     | Readonly<{ kind: 'succeeded' }>
@@ -40,9 +94,9 @@ export class HomeProfileAdoptionPartialCommitError extends Error {
 }
 
 /**
- * Directory descriptors are discovery hints, not credential-routing authority.
- * A credential can be stored only after this exact Home has been observed through
- * a current identity-bound Home connection and upgraded out of advisory-only state.
+ * Directory descriptors are discovery hints, not credential-routing authority. A credential can
+ * be stored only after this exact Home has been observed through a current identity-bound Home
+ * connection, or through the one-shot assertion-destination authorization issued by this owner.
  */
 export class HomeProfileAdoptionRequiresCurrentObservationError extends Error {
     readonly code = 'home_profile_adoption_requires_current_observation' as const;
@@ -53,6 +107,30 @@ export class HomeProfileAdoptionRequiresCurrentObservationError extends Error {
     ) {
         super('Home credentials require a current identity-bound Home observation');
         this.name = 'HomeProfileAdoptionRequiresCurrentObservationError';
+    }
+}
+
+function authorizesAdvisoryCredentialWrite(
+    input: AdoptHomeProfileWithCredentialsInput,
+): boolean {
+    const authorization = input.credentialWriteAuthorization;
+    if (!authorization || authorization.kind !== 'assertion_destination_binding_v1') return false;
+    if (!issuedCredentialWriteAuthorizations.delete(authorization)) return false;
+    const inputDescriptor = HomeConnectionDescriptorV1Schema.safeParse(input.descriptor);
+    const authorizedDescriptor = HomeConnectionDescriptorV1Schema.safeParse(authorization.descriptor);
+    if (!inputDescriptor.success || !authorizedDescriptor.success) return false;
+    if (JSON.stringify(inputDescriptor.data) !== JSON.stringify(authorizedDescriptor.data)) return false;
+    try {
+        if (
+            createHomeCredentialDestinationDigestV1(authorizedDescriptor.data)
+            !== authorization.credentialDestinationDigestBase64Url
+        ) return false;
+        return isHomeCredentialDestinationAllowedV1(
+            createHomeCredentialDestinationV1(authorizedDescriptor.data),
+            authorization.selectedDestination,
+        );
+    } catch {
+        return false;
     }
 }
 
@@ -188,13 +266,13 @@ export async function adoptHomeProfileWithCredentials(
         ...(input.descriptorAuthority !== undefined
             ? { descriptorAuthority: input.descriptorAuthority }
             : {}),
-        ...(input.credentialWriteAuthorization !== undefined
-            ? { credentialWriteAuthorization: input.credentialWriteAuthorization }
-            : {}),
     } satisfies Parameters<typeof preflightHomeProfileAdoption>[0];
     const target = preflightHomeProfileAdoption(adoption);
     if (!target.serverIdentityId) throw new Error('Credentialed Home adoption requires a stable identity');
-    if (target.credentialWrite === 'requiresCurrentObservation') {
+    if (
+        target.credentialWrite === 'requiresCurrentObservation'
+        && !authorizesAdvisoryCredentialWrite(input)
+    ) {
         throw new HomeProfileAdoptionRequiresCurrentObservationError(
             target.canonicalServerUrl,
             target.serverIdentityId,

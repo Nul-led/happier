@@ -29,7 +29,36 @@ describe('native Iroh Home transport diagnostics projection', () => {
             },
             lastTransitionAtMs: 10,
         });
+        expect(snapshot.current).toBeUndefined();
         expect(JSON.stringify(snapshot)).not.toContain('secret');
+    });
+
+    it('bounds copied relay details without truncating the reported applied configuration', () => {
+        const relayUrls = Array.from(
+            { length: 17 },
+            (_, index) => `https://relay-${index}.example.test`,
+        );
+        const directAddresses = Array.from(
+            { length: 300 },
+            (_, index) => `192.0.2.${index % 255}:${4_000 + index}`,
+        );
+
+        const snapshot = createInitialIrohHomeTransportDiagnostics({
+            homeServerIdentityId: 'home_large_configuration',
+            remoteEndpointId: 'a'.repeat(64),
+            policy: 'automatic',
+            relayUrls,
+            directAddresses,
+            atMs: 10,
+        });
+
+        expect(snapshot.effectiveConfiguration).toEqual({
+            policy: 'automatic',
+            relayUrls: relayUrls.slice(0, 16),
+            relayUrlCount: 17,
+            relayUrlsTruncated: true,
+            directAddressCount: 300,
+        });
     });
 
     it('distinguishes current observations from last-known facts after degradation', () => {
@@ -41,15 +70,11 @@ describe('native Iroh Home transport diagnostics projection', () => {
         });
         const ready = projectIrohHomeTransportDiagnosticsEvent(initial, {
             type: 'ready',
-            tunnelHandle: 'lease_1',
-            status: 'ready',
             observedPath: 'direct',
             atMs: 20,
         });
         const degraded = projectIrohHomeTransportDiagnosticsEvent(ready, {
             type: 'degraded',
-            tunnelHandle: 'lease_1',
-            status: 'degraded',
             errorCode: 'transport_timeout',
             atMs: 30,
         });
@@ -72,8 +97,6 @@ describe('native Iroh Home transport diagnostics projection', () => {
         });
         const ready = projectIrohHomeTransportDiagnosticsEvent(initial, {
             type: 'ready',
-            tunnelHandle: 'lease_1',
-            status: 'ready',
             observedPath: 'unknown',
             atMs: 20,
         });
@@ -112,22 +135,14 @@ describe('native Iroh Home transport diagnostics projection', () => {
             verification: { kind: 'enrollment' },
         });
 
-        expect(supervisor.readDiagnostics()[0]).toMatchObject({
+        expect(readIrohHomeTransportDiagnostics().find(
+            (entry) => entry.homeServerIdentityId === 'home_1',
+        )).toMatchObject({
             state: 'connected',
             remoteEndpointId: 'endpoint_1',
             effectiveConfiguration: { policy: 'automatic', relayUrls: ['https://relay.example.test'] },
             current: { carrier: 'iroh' },
         });
-        expect(readIrohHomeTransportDiagnostics().find(
-            (entry) => entry.homeServerIdentityId === 'home_1',
-        )).toMatchObject({
-            remoteEndpointId: 'endpoint_1',
-            current: { carrier: 'iroh' },
-        });
     });
 
-    it('reads an empty projection without constructing the singleton runtime', async () => {
-        const { readIrohHomeTransportDiagnostics } = await import('./runtime');
-        expect(readIrohHomeTransportDiagnostics()).toEqual([]);
-    });
 });

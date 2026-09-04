@@ -25,7 +25,7 @@ import {
 } from '../endpointClient';
 import { createBrowserIrohHomeHttpRequester } from '../homeTunnelHttp';
 import type { BrowserIrohHostDecision } from '../hostEligibility';
-import { publishIrohHomeTransportDiagnostics } from '@/sync/runtime/irohHomeTransportDiagnostics';
+import { createIrohHomeTransportDiagnosticsPublisher } from '@/sync/runtime/irohHomeTransportDiagnostics';
 import {
     createInitialIrohHomeTransportDiagnostics,
     projectIrohHomeTransportDiagnosticsEvent,
@@ -89,7 +89,12 @@ function createCarrier(params: Readonly<{
         directAddresses: [],
         atMs: Date.now(),
     });
-    publishIrohHomeTransportDiagnostics(diagnostics);
+    const diagnosticsPublisher = createIrohHomeTransportDiagnosticsPublisher({
+        producerId: 'browser-home-carrier',
+        leaseId: lease.leaseId,
+        homeServerIdentityId: params.homeServerIdentityId,
+    });
+    diagnosticsPublisher.publish(diagnostics);
 
     const openStream = async (signal?: AbortSignal): Promise<BrowserIrohStream> => {
         try {
@@ -104,7 +109,7 @@ function createCarrier(params: Readonly<{
                 observedPath: stream.observedPath === 'relay' ? 'relay' : 'unknown',
                 atMs: Date.now(),
             });
-            publishIrohHomeTransportDiagnostics(diagnostics);
+            diagnosticsPublisher.publish(diagnostics);
             return stream;
         } catch (error) {
             diagnostics = projectIrohHomeTransportDiagnosticsFailure(diagnostics, {
@@ -114,7 +119,7 @@ function createCarrier(params: Readonly<{
                 message: error instanceof Error ? error.message : undefined,
                 atMs: Date.now(),
             });
-            publishIrohHomeTransportDiagnostics(diagnostics);
+            diagnosticsPublisher.publish(diagnostics);
             throw error;
         }
     };
@@ -134,7 +139,7 @@ function createCarrier(params: Readonly<{
             type: 'closed',
             atMs: Date.now(),
         });
-        publishIrohHomeTransportDiagnostics(diagnostics);
+        diagnosticsPublisher.release(diagnostics);
     });
 
     return {

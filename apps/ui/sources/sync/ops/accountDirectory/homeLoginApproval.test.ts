@@ -68,6 +68,7 @@ const adoptHomeProfileMock = vi.hoisted(() => vi.fn<(...args: unknown[]) => Prom
 const preflightHomeProfileAdoptionMock = vi.hoisted(() => vi.fn<(...args: unknown[]) => {
     canonicalServerUrl: string;
     serverIdentityId: string;
+    credentialWrite: 'required' | 'preserveExisting' | 'requiresCurrentObservation';
 }>((...args: unknown[]) => {
     const adoption = (args[0] ?? {}) as {
         descriptor?: { canonicalServerUrl?: string; homeServerIdentityId?: string };
@@ -75,6 +76,7 @@ const preflightHomeProfileAdoptionMock = vi.hoisted(() => vi.fn<(...args: unknow
     return {
         canonicalServerUrl: adoption.descriptor?.canonicalServerUrl ?? 'https://home-b.test',
         serverIdentityId: adoption.descriptor?.homeServerIdentityId ?? 'srv_home_b',
+        credentialWrite: 'required',
     };
 }));
 const reconcileServerProfileHomeConnectionDescriptorMock = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<
@@ -133,33 +135,30 @@ const getAccountServiceEndpointSnapshotMock = vi.hoisted(() => vi.fn((): {
 const setActiveServerAndSwitchMock = vi.hoisted(() => vi.fn(async () => 'switched' as const));
 
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
-    adoptHomeProfile: (...args: unknown[]) => adoptHomeProfileMock(...args),
-    preflightHomeProfileAdoption: (...args: unknown[]) => preflightHomeProfileAdoptionMock(...args),
-    reconcileServerProfileHomeConnectionDescriptor: (...args: unknown[]) => reconcileServerProfileHomeConnectionDescriptorMock(...args),
-    buildHomeConnectionDescriptorForProfile: (...args: unknown[]) => buildHomeConnectionDescriptorForProfileMock(...args),
-    resolveServerProfileForPortableIdentity: (...args: unknown[]) => resolveServerProfileForPortableIdentityMock(...args),
-    resolveServerProfileScopeId: (...args: unknown[]) => resolveServerProfileScopeIdMock(...args),
+    adoptHomeProfile: adoptHomeProfileMock,
+    preflightHomeProfileAdoption: preflightHomeProfileAdoptionMock,
+    reconcileServerProfileHomeConnectionDescriptor: reconcileServerProfileHomeConnectionDescriptorMock,
+    buildHomeConnectionDescriptorForProfile: buildHomeConnectionDescriptorForProfileMock,
+    resolveServerProfileForPortableIdentity: resolveServerProfileForPortableIdentityMock,
+    resolveServerProfileScopeId: resolveServerProfileScopeIdMock,
     getAccountServiceEndpointSnapshot: () => getAccountServiceEndpointSnapshotMock(),
     resolveSelectedAccountServiceEndpoint: () => getAccountServiceEndpointSnapshotMock() ?? ({
         url: 'https://api.happier.dev', source: 'default' as const,
     }),
-    // Lane 04 owns the closed digest-bound authorization; its rejection behavior is proven by the
-    // production-caller suite against the real owner. Here it is a transparent scope holder.
-    withHomeCredentialWriteAuthorization: async <T,>(
-        authorization: unknown,
-        run: (authorization: unknown) => Promise<T>,
-    ): Promise<T> => await run(authorization),
 }));
 
 vi.mock('@/sync/domains/server/activeServerSwitch', () => ({
-    setActiveServerAndSwitch: (...args: unknown[]) => setActiveServerAndSwitchMock(...args),
+    setActiveServerAndSwitch: setActiveServerAndSwitchMock,
 }));
 
 vi.mock('@/sync/domains/server/selection/serverSelectionScope', () => ({
     resolveRoutineServerSelectionScope: () => 'tab' as const,
 }));
 
-vi.mock('@/utils/platform/desktopHost', () => ({ isDesktopHost: () => false }));
+vi.mock('@/utils/platform/desktopHost', () => ({
+    desktopHostKind: () => 'tauri' as const,
+    isDesktopHost: () => true,
+}));
 
 const directoryCredentialStorageMock = vi.hoisted(() => ({
     get: vi.fn(async () => ({ token: 'directory-oauth-token' })),
@@ -252,7 +251,7 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
 
     beforeEach(() => {
         createServerFetchAtEndpointMock.mockImplementation(() => (async (path: string, ...args: unknown[]) => {
-            if (path === '/v1/features') {
+            if (path === '/v1/features' || path === '/v1/features/authenticated') {
                 return json(200, {
                     features: {},
                     capabilities: { serverIdentity: { serverIdentityId: 'srv_home_b' } },
@@ -348,7 +347,7 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
         );
     });
 
-    it('keeps first-contact routing advisory after a matching destination-bound observation', async () => {
+    it('rejects a conflicting authenticated descriptor before credential persistence', async () => {
         const keyPair = sodium.crypto_box_keypair();
         const advisoryHome = {
             ...HOME_B,
@@ -366,6 +365,14 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
                 advisoryHome.connectionDescriptor,
             ),
         };
+        const authenticatedDescriptor = {
+            ...HOME_B.connectionDescriptor,
+            revision: 100,
+            endpoints: [{
+                kind: 'iroh' as const,
+                endpointId: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            }],
+        };
         createServerFetchAtEndpointMock.mockImplementation(() => (async (path: string, ...args: unknown[]) => {
             if (path === '/v1/features') {
                 return json(200, {
@@ -375,6 +382,13 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
                         ...advisoryHome.connectionDescriptor,
                         revision: 100,
                     },
+                });
+            }
+            if (path === '/v1/features/authenticated') {
+                return json(200, {
+                    features: {},
+                    capabilities: { serverIdentity: { serverIdentityId: 'srv_home_b' } },
+                    homeConnectionDescriptor: authenticatedDescriptor,
                 });
             }
             return await endpointFetchMock(path, ...args);
@@ -389,31 +403,26 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
             issuedAtMs: Date.now() - 500,
             expiresAtMs: Date.now() + 120_000,
         }));
+        preflightHomeProfileAdoptionMock.mockReturnValueOnce({
+            canonicalServerUrl: 'https://home-b.test',
+            serverIdentityId: 'srv_home_b',
+            credentialWrite: 'preserveExisting',
+        });
 
         await expect(continueHomeLoginEnrollment({
             home: advisoryHome,
             clientSecretKey: keyPair.privateKey,
             assertion,
-        })).resolves.toEqual({ kind: 'enrolled', homeServerIdentityId: 'srv_home_b' });
+        })).resolves.toEqual({ kind: 'failed' });
 
         expect(createServerFetchAtEndpointMock).toHaveBeenCalledWith(expect.objectContaining({
             endpointUrl: 'https://directory-advisory-route.test',
         }));
-        expect(preflightHomeProfileAdoptionMock).toHaveBeenCalledWith(expect.objectContaining({
-            descriptor: advisoryHome.connectionDescriptor,
-            descriptorAuthority: 'advisory',
-        }));
-        expect(setCredentialsForServerUrlMock).toHaveBeenCalledWith(
-            'https://directory-advisory-route.test',
-            { serverId: 'srv_home_b' },
-            { token: 'home-selected-token' },
-        );
-        expect(adoptHomeProfileMock).toHaveBeenCalledWith(expect.objectContaining({
-            descriptor: advisoryHome.connectionDescriptor,
-            descriptorAuthority: 'advisory',
-        }));
         expect(reconcileServerProfileHomeConnectionDescriptorMock).not.toHaveBeenCalled();
-        expect(buildHomeConnectionDescriptorForProfileMock).not.toHaveBeenCalled();
+        expect(endpointFetchMock).toHaveBeenCalledOnce();
+        expect(preflightHomeProfileAdoptionMock).not.toHaveBeenCalled();
+        expect(setCredentialsForServerUrlMock).not.toHaveBeenCalled();
+        expect(adoptHomeProfileMock).not.toHaveBeenCalled();
     });
 
     it('rejects an assertion whose signed destination does not match the exact Directory entry before transport', async () => {
@@ -463,7 +472,7 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
         expect(directoryCredentialStorageMock.remove).not.toHaveBeenCalled();
 
         createServerFetchAtEndpointMock.mockImplementation(() => (async (path: string, ...args: unknown[]) => {
-            if (path === '/v1/features') {
+            if (path === '/v1/features' || path === '/v1/features/authenticated') {
                 return json(200, {
                     features: {},
                     capabilities: { serverIdentity: { serverIdentityId: 'srv_home_b' } },
@@ -497,7 +506,7 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
             releaseObservation = resolve;
         });
         createServerFetchAtEndpointMock.mockImplementation(() => (async (path: string, ...args: unknown[]) => {
-            if (path === '/v1/features') {
+            if (path === '/v1/features' || path === '/v1/features/authenticated') {
                 await observationGate;
                 return json(503, { error: 'temporarily_unavailable' });
             }
@@ -694,6 +703,8 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
         const endpointId = 'a'.repeat(64);
         acquireIrohHomeRuntimeOriginMock.mockResolvedValueOnce({
             leaseId: 'lease-home-b',
+            status: 'ready',
+            homeServerIdentityId: 'srv_home_b',
             runtimeOrigin: 'http://127.0.0.1:45991',
             endpointId,
             release: irohReleaseMock,
@@ -706,8 +717,9 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
                 endpoints: [{ kind: 'iroh' as const, endpointId }],
             },
         };
+        buildHomeConnectionDescriptorForProfileMock.mockReturnValueOnce(home.connectionDescriptor);
         createServerFetchAtEndpointMock.mockImplementation(() => (async (path: string, ...args: unknown[]) => {
-            if (path === '/v1/features') {
+            if (path === '/v1/features' || path === '/v1/features/authenticated') {
                 return json(200, {
                     features: {},
                     capabilities: { serverIdentity: { serverIdentityId: 'srv_home_b' } },
@@ -760,6 +772,8 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
         const acquisition = {
             finish: null as ((lease: {
                 leaseId: string;
+                status: 'ready';
+                homeServerIdentityId: string;
                 runtimeOrigin: string;
                 endpointId: string;
                 release: typeof irohReleaseMock;
@@ -780,6 +794,8 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
         cancelled = true;
         acquisition.finish?.({
             leaseId: 'lease-cancelled-after-acquire',
+            status: 'ready',
+            homeServerIdentityId: 'srv_home_b',
             runtimeOrigin: 'http://127.0.0.1:45991',
             endpointId: 'a'.repeat(64),
             release: irohReleaseMock,
@@ -810,6 +826,41 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
 
         expect(result).toEqual({ kind: 'failed' });
         expect(adoptHomeProfileMock).not.toHaveBeenCalled();
+    });
+
+    it('does not persist a Home credential when authenticated descriptor observation is unavailable', async () => {
+        const keyPair = sodium.crypto_box_keypair();
+        createServerFetchAtEndpointMock.mockImplementation(() => (async (path: string, ...args: unknown[]) => {
+            if (path === '/v1/features') {
+                return json(200, {
+                    features: {},
+                    capabilities: { serverIdentity: { serverIdentityId: 'srv_home_b' } },
+                    homeConnectionDescriptor: HOME_B.connectionDescriptor,
+                });
+            }
+            if (path === '/v1/features/authenticated') return json(503, { error: 'temporarily_unavailable' });
+            return await endpointFetchMock(path, ...args);
+        }) as typeof endpointFetchMock);
+        endpointFetchMock.mockResolvedValueOnce(json(200, {
+            v: 1,
+            homeServerIdentityId: 'srv_home_b',
+            sealedHomeTokenBase64Url: sealCredentialPayload('home-b-stored-token', keyPair.publicKey),
+            issuedAtMs: Date.now() - 500,
+            expiresAtMs: Date.now() + 120_000,
+        }));
+
+        const result = await continueHomeLoginEnrollment({
+            home: HOME_B,
+            clientSecretKey: keyPair.privateKey,
+            assertion: ASSERTION,
+        });
+        expect(result).toMatchObject({
+            kind: 'transport_unavailable',
+            reason: 'home_observation_unavailable',
+        });
+        expect(setCredentialsForServerUrlMock).not.toHaveBeenCalled();
+        expect(adoptHomeProfileMock).not.toHaveBeenCalled();
+        expect(reconcileServerProfileHomeConnectionDescriptorMock).not.toHaveBeenCalled();
     });
 
     it('preserves target and rollback uncertainty for a partial credential/adoption commit', async () => {
@@ -958,11 +1009,11 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
 
     it('single-flights concurrent resume calls for one retained initial attempt', async () => {
         const keyPair = sodium.crypto_box_keypair();
-        let releaseRedemption: (() => void) | null = null;
+        const redemption = { release: null as (() => void) | null };
         endpointFetchMock
             .mockResolvedValueOnce(json(503, { error: 'home_unavailable' }))
             .mockImplementationOnce(async () => {
-                await new Promise<void>((resolve) => { releaseRedemption = resolve; });
+                await new Promise<void>((resolve) => { redemption.release = resolve; });
                 return json(202, {
                     v: 1,
                     outcome: 'approval_required',
@@ -986,7 +1037,7 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
         const secondResume = result.resume();
         expect(secondResume).toBe(firstResume);
         await vi.waitFor(() => expect(endpointFetchMock).toHaveBeenCalledTimes(2));
-        releaseRedemption?.();
+        redemption.release?.();
         await expect(firstResume).resolves.toMatchObject({
             kind: 'approval_required',
             approvalId: 'approval-single-flight',
@@ -1172,7 +1223,13 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
         vi.spyOn(sodium, 'crypto_box_keypair').mockReturnValueOnce(keyPair);
 
         // Assertion request against the Account Service endpoint.
-        endpointFetchMock.mockResolvedValueOnce(json(200, { ...ASSERTION }));
+        endpointFetchMock.mockImplementationOnce(async (_path: string, init: RequestInit) => {
+            const request = JSON.parse(String(init.body)) as { clientBoxPublicKeyBase64: string };
+            return json(200, {
+                ...ASSERTION,
+                clientBoxPublicKeyBase64: request.clientBoxPublicKeyBase64,
+            });
+        });
         // First redemption: approval required.
         endpointFetchMock.mockResolvedValueOnce(json(202, {
             v: 1,
@@ -1189,7 +1246,7 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
             snapshot: {
                 endpoint: 'https://directory.test',
                 status: 'ready' as const,
-                homes: [HOME_B],
+                homes: [{ ...HOME_B, preferred: true }],
                 preferredHomeServerIdentityId: 'srv_home_b',
                 refreshedAtMs: Date.now(),
                 error: null,
@@ -1245,7 +1302,7 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
             snapshot: {
                 endpoint: 'https://directory.test',
                 status: 'ready' as const,
-                homes: [HOME_B],
+                homes: [{ ...HOME_B, preferred: true }],
                 preferredHomeServerIdentityId: HOME_B.homeServerIdentityId,
                 refreshedAtMs: Date.now(),
                 error: null,
@@ -1253,7 +1310,11 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
             },
             requestLoginAssertion: async (_homeServerIdentityId: string, clientBoxPublicKeyBase64: string) => {
                 assertionRequests.push(serviceKey);
-                return { ...ASSERTION, clientBoxPublicKeyBase64 };
+                return {
+                    ...ASSERTION,
+                    issuerServerIdentityId: serviceKey.slice(serviceKey.lastIndexOf('\u0000') + 1),
+                    clientBoxPublicKeyBase64,
+                };
             },
         });
         endpointFetchMock

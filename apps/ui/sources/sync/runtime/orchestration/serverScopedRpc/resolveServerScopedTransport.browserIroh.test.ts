@@ -8,16 +8,38 @@ const acquireNativeOriginSpy = vi.fn();
 const FIRST_ENDPOINT_ID = 'a'.repeat(64);
 const SECOND_ENDPOINT_ID = 'b'.repeat(64);
 
-function carrierFor(leaseId: string, endpointId: string) {
+function carrierFor(leaseId: string, homeServerIdentityId: string, endpointId: string) {
     return {
         leaseId,
-        homeServerIdentityId: `identity-${leaseId}`,
+        homeServerIdentityId,
         endpointId,
         appliedRelayUrls: ['https://relay.happier.test/'],
         readObservedPath: () => 'relay' as const,
         request: async () => new Response(null, { status: 200 }),
         createWebSocket: () => ({}),
         release: vi.fn(async () => {}),
+    };
+}
+
+function homeDescriptor(
+    identity: string,
+    canonicalServerUrl: string,
+    endpointId: string,
+    options: Readonly<{ relayUrls?: readonly string[]; httpsUrl?: string }> = {},
+) {
+    return {
+        v: 1 as const,
+        homeServerIdentityId: identity,
+        canonicalServerUrl,
+        revision: 1,
+        endpoints: [
+            {
+                kind: 'iroh' as const,
+                endpointId,
+                ...(options.relayUrls ? { relayUrls: [...options.relayUrls] } : {}),
+            },
+            ...(options.httpsUrl ? [{ kind: 'https' as const, url: options.httpsUrl }] : []),
+        ],
     };
 }
 
@@ -33,8 +55,8 @@ function mockHost(browserHost: boolean): void {
         >();
         return { ...actual, acquireBrowserIrohHomeCarrier: acquireBrowserCarrierSpy };
     });
-    vi.doMock('@/sync/runtime/nativeIrohTunnels', async (importOriginal) => {
-        const actual = await importOriginal<typeof import('@/sync/runtime/nativeIrohTunnels')>();
+    vi.doMock('@/sync/runtime/nativeIrohTunnels/runtime', async (importOriginal) => {
+        const actual = await importOriginal<typeof import('@/sync/runtime/nativeIrohTunnels/runtime')>();
         return { ...actual, acquireIrohHomeRuntimeOrigin: acquireNativeOriginSpy };
     });
 }
@@ -51,23 +73,31 @@ describe('resolveServerScopedTransport on a browser host', () => {
         vi.resetModules();
         mockHost(true);
         acquireBrowserCarrierSpy
-            .mockResolvedValueOnce(carrierFor('lease-1', FIRST_ENDPOINT_ID))
-            .mockResolvedValueOnce(carrierFor('lease-2', SECOND_ENDPOINT_ID));
+            .mockResolvedValueOnce(carrierFor('lease-1', 'srv_first', FIRST_ENDPOINT_ID))
+            .mockResolvedValueOnce(carrierFor('lease-2', 'srv_second', SECOND_ENDPOINT_ID));
 
         const { resolveServerScopedTransport } = await import('./resolveServerScopedTransport');
         const first = await resolveServerScopedTransport({
             profile: {
                 serverUrl: 'https://first.example.test',
-                serverIdentityId: 'srv_first',
-                irohEndpoint: { endpointId: FIRST_ENDPOINT_ID, relayUrls: ['https://relay.happier.test/'] },
+                homeConnectionDescriptor: homeDescriptor(
+                    'srv_first',
+                    'https://first.example.test',
+                    FIRST_ENDPOINT_ID,
+                    { relayUrls: ['https://relay.happier.test/'] },
+                ),
             },
             credentials: { token: 'first-token' },
         });
         const second = await resolveServerScopedTransport({
             profile: {
                 serverUrl: 'https://second.example.test',
-                serverIdentityId: 'srv_second',
-                irohEndpoint: { endpointId: SECOND_ENDPOINT_ID, relayUrls: ['https://relay.happier.test/'] },
+                homeConnectionDescriptor: homeDescriptor(
+                    'srv_second',
+                    'https://second.example.test',
+                    SECOND_ENDPOINT_ID,
+                    { relayUrls: ['https://relay.happier.test/'] },
+                ),
             },
             credentials: { token: 'second-token' },
         });
@@ -91,9 +121,15 @@ describe('resolveServerScopedTransport on a browser host', () => {
         const resolved = await resolveServerScopedTransport({
             profile: {
                 serverUrl: 'https://first.example.test',
-                publicServerUrl: 'https://public.example.test',
-                serverIdentityId: 'srv_first',
-                irohEndpoint: { endpointId: FIRST_ENDPOINT_ID, relayUrls: ['https://relay.happier.test/'] },
+                homeConnectionDescriptor: homeDescriptor(
+                    'srv_first',
+                    'https://first.example.test',
+                    FIRST_ENDPOINT_ID,
+                    {
+                        relayUrls: ['https://relay.happier.test/'],
+                        httpsUrl: 'https://public.example.test',
+                    },
+                ),
             },
             credentials: { token: 'first-token' },
         });
@@ -113,10 +149,13 @@ describe('resolveServerScopedTransport on a browser host', () => {
         await expect(resolveServerScopedTransport({
             profile: {
                 serverUrl: 'https://first.example.test',
-                serverIdentityId: 'srv_first',
                 // A browser has no direct transport, so an endpoint published
                 // without relays is unreachable from here.
-                irohEndpoint: { endpointId: FIRST_ENDPOINT_ID },
+                homeConnectionDescriptor: homeDescriptor(
+                    'srv_first',
+                    'https://first.example.test',
+                    FIRST_ENDPOINT_ID,
+                ),
             },
             credentials: { token: 'first-token' },
         })).rejects.toBeInstanceOf(ServerScopedTransportUnavailableError);
@@ -129,7 +168,13 @@ describe('resolveServerScopedTransport on a browser host', () => {
         mockHost(false);
         acquireNativeOriginSpy.mockResolvedValue({
             leaseId: 'native-lease-1',
+            localUrl: 'http://127.0.0.1:46101',
             runtimeOrigin: 'http://127.0.0.1:46101',
+            homeServerIdentityId: 'srv_first',
+            endpointId: FIRST_ENDPOINT_ID,
+            carrier: 'iroh',
+            observedPath: 'direct',
+            status: 'ready',
             release: vi.fn(async () => {}),
         });
 
@@ -137,8 +182,12 @@ describe('resolveServerScopedTransport on a browser host', () => {
         const resolved = await resolveServerScopedTransport({
             profile: {
                 serverUrl: 'https://first.example.test',
-                serverIdentityId: 'srv_first',
-                irohEndpoint: { endpointId: FIRST_ENDPOINT_ID, relayUrls: ['https://relay.happier.test/'] },
+                homeConnectionDescriptor: homeDescriptor(
+                    'srv_first',
+                    'https://first.example.test',
+                    FIRST_ENDPOINT_ID,
+                    { relayUrls: ['https://relay.happier.test/'] },
+                ),
             },
             credentials: { token: 'first-token' },
         });
@@ -152,14 +201,21 @@ describe('resolveServerScopedTransport on a browser host', () => {
         vi.resetModules();
         mockHost(true);
         const release = vi.fn(async () => {}).mockRejectedValueOnce(new Error('release failed'));
-        acquireBrowserCarrierSpy.mockResolvedValueOnce({ ...carrierFor('lease-1', FIRST_ENDPOINT_ID), release });
+        acquireBrowserCarrierSpy.mockResolvedValueOnce({
+            ...carrierFor('lease-1', 'srv_first', FIRST_ENDPOINT_ID),
+            release,
+        });
 
         const { resolveServerScopedTransport } = await import('./resolveServerScopedTransport');
         const resolved = await resolveServerScopedTransport({
             profile: {
                 serverUrl: 'https://first.example.test',
-                serverIdentityId: 'srv_first',
-                irohEndpoint: { endpointId: FIRST_ENDPOINT_ID, relayUrls: ['https://relay.happier.test/'] },
+                homeConnectionDescriptor: homeDescriptor(
+                    'srv_first',
+                    'https://first.example.test',
+                    FIRST_ENDPOINT_ID,
+                    { relayUrls: ['https://relay.happier.test/'] },
+                ),
             },
             credentials: { token: 'first-token' },
         });

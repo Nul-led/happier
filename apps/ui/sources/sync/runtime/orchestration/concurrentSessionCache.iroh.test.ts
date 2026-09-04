@@ -23,8 +23,17 @@ type ProfileFixture = Readonly<{
     name: string;
     serverUrl: string;
     serverIdentityId?: string;
-    irohEndpoint?: Readonly<{ endpointId: string; relayUrls?: readonly string[] }>;
-    connectionDescriptorRevision?: number;
+    homeConnectionDescriptor?: Readonly<{
+        v: 1;
+        homeServerIdentityId: string;
+        canonicalServerUrl: string;
+        revision: number;
+        endpoints: readonly Readonly<{
+            kind: 'iroh';
+            endpointId: string;
+            relayUrls?: readonly string[];
+        }>[];
+    }>;
 }>;
 
 const profileListeners = new Set<(generation: number) => void>();
@@ -101,11 +110,17 @@ async function configureHarness(params: Readonly<{
             name: 'Home B',
             serverUrl: 'https://home-b.example.test',
             serverIdentityId: 'srv_home_b',
-            irohEndpoint: {
-                endpointId: 'b'.repeat(64),
-                relayUrls: ['https://relay.example.test'],
+            homeConnectionDescriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_home_b',
+                canonicalServerUrl: 'https://home-b.example.test',
+                revision: 7,
+                endpoints: [{
+                    kind: 'iroh',
+                    endpointId: 'b'.repeat(64),
+                    relayUrls: ['https://relay.example.test'],
+                }],
             },
-            connectionDescriptorRevision: 7,
         },
         ...(params.additionalProfiles ?? []),
     ];
@@ -154,6 +169,21 @@ async function configureHarness(params: Readonly<{
             };
         },
     }));
+    // The canonical carrier policy imports these owner modules directly. Mock
+    // the native boundary at the same module seams rather than bypassing the
+    // policy with a mock of acquireEligibleHomeCarrier itself.
+    vi.doMock('@/sync/runtime/nativeIrohTunnels/runtime', () => ({
+        acquireIrohHomeRuntimeOrigin: (input: IrohRuntimeOriginAcquireInput) => acquireIrohHomeRuntimeOriginSpy(input),
+    }));
+    vi.doMock('@/sync/runtime/nativeIrohTunnels/fallback', () => ({
+        classifyIrohHomeTunnelSwitchFailure: (error: unknown) => {
+            const message = error instanceof Error ? error.message : '';
+            return {
+                fallbackAllowed: message.includes('health-unavailable'),
+                failureClass: message.includes('identity-mismatch') ? 'identity-auth' : 'carrier-unavailable',
+            };
+        },
+    }));
     vi.doMock('@/sync/runtime/nativeSshTunnels/runtime', () => ({
         startNativeSshTunnelRuntimeAppStateLifecycle: vi.fn(),
     }));
@@ -194,6 +224,10 @@ async function configureHarness(params: Readonly<{
         isTokenOnlyAuthCredentials: () => false,
     }));
     vi.doMock('@/sync/domains/server/serverProfiles', () => createServerProfilesModuleMock({
+        // Supply the canonical testkit lookup owner as well as the raw list
+        // override below. Explicit authenticated feature refresh resolves the
+        // same secondary profile by stable identity after transport acquisition.
+        listServerProfiles: () => profiles,
         overrides: {
             listServerProfiles: () => profiles as never,
             loadHomeViewState: () => null,
@@ -244,6 +278,10 @@ async function configureHarness(params: Readonly<{
             headers: { 'content-type': 'application/json' },
         });
     });
+    const { resetServerFeaturesClientForTests } = await import(
+        '@/sync/api/capabilities/serverFeaturesClient'
+    );
+    resetServerFeaturesClientForTests();
 
     const { storage } = await import('@/sync/domains/state/storageStore');
     const { settingsDefaults } = await import('@/sync/domains/settings/settings');
@@ -311,10 +349,10 @@ describe('concurrent session cache Iroh Home routing', () => {
         expect(acquireIrohHomeRuntimeOriginSpy).toHaveBeenCalledWith({
             homeServerIdentityId: 'srv_home_b',
             endpoint: {
+                kind: 'iroh',
                 endpointId: 'b'.repeat(64),
                 relayUrls: ['https://relay.example.test'],
             },
-            descriptorRevision: 7,
             canonicalServerUrl: 'https://home-b.example.test',
             verification: { kind: 'authenticated', token: 'token-b' },
         });
@@ -327,6 +365,9 @@ describe('concurrent session cache Iroh Home routing', () => {
         expect(ioSpy).toHaveBeenCalledWith(
             'http://127.0.0.1:45991',
             expect.objectContaining({ transports: ['websocket'] }),
+        );
+        expect(fetchedUrls, `events=${JSON.stringify(events)}`).toContain(
+            'http://127.0.0.1:45991/v1/features/authenticated',
         );
         expect(events.indexOf('acquire')).toBeLessThan(events.findIndex((event) => event.startsWith('reachability:')));
         expect(events.indexOf('acquire')).toBeLessThan(events.findIndex((event) => event.startsWith('http:')));

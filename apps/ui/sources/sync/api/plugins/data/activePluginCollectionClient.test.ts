@@ -245,7 +245,7 @@ async function loadCrossAccountLifetimeHarness() {
             });
         }
         if (path === '/v1/plugins/data/contract') {
-            return new Response(JSON.stringify({ contract }), {
+            return new Response(JSON.stringify({ access: 'writable', contract }), {
                 status: 200,
                 headers: { 'Content-Type': 'application/json' },
             });
@@ -374,7 +374,7 @@ describe('active Account Collection direct client', () => {
     it('resolves an exact release-admitted contract through scoped Account authority before CAS', async () => {
         const harness = await loadClient({
             responseForDataPath: (path) => path === '/v1/plugins/data/contract'
-                ? new Response(JSON.stringify({ contract }), {
+                ? new Response(JSON.stringify({ access: 'writable', contract }), {
                     status: 200,
                     headers: { 'Content-Type': 'application/json' },
                 })
@@ -439,6 +439,40 @@ describe('active Account Collection direct client', () => {
         });
     });
 
+    it('keeps a compatible retained contract read-only', async () => {
+        const oldContract = { ...contract, schemaVersion: 1, contractDigest: 'B'.repeat(43) };
+        const harness = await loadClient({
+            responseForDataPath: (path) => path === '/v1/plugins/data/contract'
+                ? new Response(JSON.stringify({ access: 'readOnly', contract: oldContract }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' },
+                })
+                : new Response(JSON.stringify({ rows: [], changeCursor: 9 }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' },
+                }),
+        });
+        const resolved = await harness.createActivePluginCollectionClientForContractRef({
+            ref: {
+                pluginId: oldContract.pluginId,
+                collectionId: oldContract.collectionId,
+                schemaVersion: oldContract.schemaVersion,
+                contractDigest: oldContract.contractDigest,
+            },
+        });
+        expect(resolved).toMatchObject({ status: 'ready', access: 'readOnly' });
+        if (resolved.status !== 'ready') throw new Error('Expected a read-only collection client.');
+
+        await expect(resolved.client.query({ indexId: 'by-status', order: 'asc' }))
+            .resolves.toMatchObject({ status: 'ready', rows: [] });
+        await expect(resolved.client.mutate([{
+            kind: 'put',
+            expectedRevision: 'absent',
+            value: { id: 'channel-old', status: 'enabled', title: 'No write' },
+        }])).resolves.toEqual({ status: 'unavailable', reason: 'writer-contract-unavailable' });
+        expect(harness.transport).not.toHaveBeenCalledWith('/v1/plugins/data/mutate', expect.anything());
+    });
+
     it('rejects a persisted scalar-root contract before creating a direct row client', async () => {
         const invalidContract = {
             pluginId: contract.pluginId,
@@ -455,7 +489,7 @@ describe('active Account Collection direct client', () => {
         };
         const harness = await loadClient({
             responseForDataPath: (path) => path === '/v1/plugins/data/contract'
-                ? new Response(JSON.stringify({ contract: invalidContract }), {
+                ? new Response(JSON.stringify({ access: 'writable', contract: invalidContract }), {
                     status: 200,
                     headers: { 'Content-Type': 'application/json' },
                 })
@@ -545,6 +579,12 @@ describe('active Account Collection direct client', () => {
         expect(JSON.parse(String(queryCall?.[1]?.body))).toEqual({
             pluginId: 'example.channels',
             collectionId: 'channel-state',
+            readerContext: {
+                pluginId: contract.pluginId,
+                collectionId: contract.collectionId,
+                schemaVersion: contract.schemaVersion,
+                contractDigest: contract.contractDigest,
+            },
             indexId: 'by-status',
             prefix: ['enabled'],
             order: 'asc',

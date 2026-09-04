@@ -3,6 +3,8 @@ import { RpcError } from '@happier-dev/protocol/rpcErrors';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createEncryptedTransferChunkEnvelope } from './transferChunkEncryption';
+import { createBufferedTransferDestination } from '../carriers/createBufferedTransferDestination';
+import { downloadBulkPayloadViaDirectExportToDestination } from './directTransferExportDownload';
 
 const callGuardedMachineRpcWithPolicyMock = vi.hoisted(() => vi.fn());
 const runtimeFetchMock = vi.hoisted(() => vi.fn());
@@ -190,6 +192,131 @@ describe('directTransferExportDownload', () => {
             'http://127.0.0.1:46001/machine-transfers/direct/browser-transfer-1/open?grant=kept',
             'http://127.0.0.1:46001/machine-transfers/direct/browser-transfer-1/chunks/0?grant=kept',
         ]);
+        expect(release).toHaveBeenCalledTimes(1);
+    });
+
+    it('owns the terminal selected-Iroh result after a browser export request fails', async () => {
+        callGuardedMachineRpcWithPolicyMock.mockResolvedValueOnce({
+            success: true,
+            transferId: 'browser-transfer-failed',
+            sizeBytes: 1,
+            name: 'failed.bin',
+            expiresAt: 5_000,
+            endpointCandidates: [{
+                kind: 'http',
+                url: 'http://127.0.0.1:46001/machine-transfers/direct/browser-transfer-failed',
+                expiresAt: 5_000,
+            }],
+        });
+        const release = vi.fn(async () => undefined);
+        const destination = createBufferedTransferDestination(1);
+
+        const result = await downloadBulkPayloadViaDirectExportToDestination({
+            machineId: 'machine-1',
+            serverId: 'server-a',
+            request: {
+                t: 'workspace_file_download_v1',
+                workingDirectory: '/repo',
+                path: 'failed.bin',
+                asZip: false,
+            },
+            destination: destination.destination,
+            acquirePreparedCarrier: async () => ({
+                kind: 'browser_stream',
+                request: async () => { throw new Error('selected Iroh stream failed'); },
+                release,
+            }),
+        });
+
+        expect(result).toEqual({
+            ok: false,
+            error: 'The direct machine connection was interrupted. Retry the transfer.',
+            errorCode: 'machine_carrier_transport_failed',
+        });
+        expect(release).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps standard-route null and untyped acquisition failures eligible for fallback', async () => {
+        const prepare = {
+            success: true,
+            transferId: 'standard-transfer-failed',
+            sizeBytes: 1,
+            name: 'failed.bin',
+            expiresAt: 5_000,
+            endpointCandidates: [{
+                kind: 'http',
+                url: 'http://127.0.0.1:46001/machine-transfers/direct/standard-transfer-failed',
+                expiresAt: 5_000,
+            }],
+        } as const;
+        callGuardedMachineRpcWithPolicyMock.mockResolvedValue(prepare);
+        runtimeFetchMock.mockRejectedValue(new Error('direct endpoint unavailable'));
+        const destination = createBufferedTransferDestination(1);
+
+        const nullCarrier = await downloadBulkPayloadViaDirectExportToDestination({
+            machineId: 'machine-1',
+            request: {
+                t: 'workspace_file_download_v1',
+                workingDirectory: '/repo',
+                path: 'failed.bin',
+                asZip: false,
+            },
+            destination: destination.destination,
+            acquirePreparedCarrier: async () => null,
+        });
+        const untypedAcquisitionFailure = await downloadBulkPayloadViaDirectExportToDestination({
+            machineId: 'machine-1',
+            request: {
+                t: 'workspace_file_download_v1',
+                workingDirectory: '/repo',
+                path: 'failed.bin',
+                asZip: false,
+            },
+            destination: destination.destination,
+            acquirePreparedCarrier: async () => { throw new Error('route resolution unavailable'); },
+        });
+
+        expect(nullCarrier).toEqual({ ok: false, error: 'Direct export download unavailable' });
+        expect(untypedAcquisitionFailure).toEqual({ ok: false, error: 'route resolution unavailable' });
+    });
+
+    it('owns the terminal selected-Iroh result for JSON exports too', async () => {
+        callGuardedMachineRpcWithPolicyMock.mockResolvedValueOnce({
+            success: true,
+            transferId: 'browser-json-failed',
+            sizeBytes: 1,
+            expiresAt: 5_000,
+            endpointCandidates: [{
+                kind: 'http',
+                url: 'http://127.0.0.1:46001/machine-transfers/direct/browser-json-failed',
+                expiresAt: 5_000,
+            }],
+        });
+        const release = vi.fn(async () => undefined);
+
+        const { downloadBulkJsonPayloadViaDirectExport } = await import('./directTransferExportDownload');
+        const result = await downloadBulkJsonPayloadViaDirectExport({
+            machineId: 'machine-1',
+            serverId: 'server-a',
+            request: {
+                t: 'prompt_asset_download_v1',
+                assetTypeId: 'agents.skill',
+                scope: 'user',
+                externalRef: { name: 'failed' },
+            },
+            parsePayload: (value) => value,
+            acquirePreparedCarrier: async () => ({
+                kind: 'browser_stream',
+                request: async () => { throw new Error('selected Iroh stream failed'); },
+                release,
+            }),
+        });
+
+        expect(result).toEqual({
+            ok: false,
+            error: 'The direct machine connection was interrupted. Retry the transfer.',
+            errorCode: 'machine_carrier_transport_failed',
+        });
         expect(release).toHaveBeenCalledTimes(1);
     });
 
@@ -505,7 +632,7 @@ describe('directTransferExportDownload', () => {
         expect(new TextDecoder().decode(Buffer.concat(writes.map((chunk) => Buffer.from(chunk))))).toBe('hello');
     });
 
-    it('reinitializes a cleaned destination before trying the next safe candidate', async () => {
+    it('treats a manifest mismatch as terminal instead of trying the next candidate', async () => {
         const badPayload = new TextEncoder().encode('bad');
         const goodPayload = new TextEncoder().encode('good');
         const goodManifestHash = await createManifestHash(goodPayload);
@@ -591,15 +718,12 @@ describe('directTransferExportDownload', () => {
                 cleanup,
             },
             onInit,
-        })).resolves.toEqual({
-            ok: true,
-            name: 'payload.txt',
-            sizeBytes: goodPayload.byteLength,
-        });
+        })).resolves.toEqual({ ok: false, error: 'Direct export download unavailable' });
 
-        expect(onInit).toHaveBeenCalledTimes(2);
+        expect(runtimeFetchMock).toHaveBeenCalledTimes(2);
+        expect(onInit).toHaveBeenCalledTimes(1);
         expect(cleanup).toHaveBeenCalledTimes(1);
-        expect(new TextDecoder().decode(Buffer.concat(writes.map((chunk) => Buffer.from(chunk))))).toBe('good');
+        expect(writes).toEqual([]);
     });
 
     it('cleans up the destination and returns an error when the init callback throws', async () => {
@@ -1218,6 +1342,45 @@ describe('directTransferExportDownload', () => {
         expect(runtimeFetchMock).toHaveBeenCalledTimes(3);
     });
 
+    it('treats an authentication response as terminal instead of trying the next destination endpoint', async () => {
+        callGuardedMachineRpcWithPolicyMock.mockResolvedValueOnce({
+            success: true,
+            transferId: 'transfer-open-auth',
+            expiresAt: 5_000,
+            endpointCandidates: [
+                {
+                    kind: 'https',
+                    url: 'https://first.example/machine-transfers/direct/transfer-open-auth',
+                    authorizationToken: 'token-bad',
+                    expiresAt: 5_000,
+                },
+                {
+                    kind: 'https',
+                    url: 'https://second.example/machine-transfers/direct/transfer-open-auth',
+                    authorizationToken: 'token-unused',
+                    expiresAt: 5_000,
+                },
+            ],
+        });
+        runtimeFetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'unauthorized' }), {
+            status: 401,
+            headers: { 'content-type': 'application/json' },
+        }));
+
+        const { downloadBulkJsonPayloadViaDirectExport } = await import('./directTransferExportDownload');
+        await expect(downloadBulkJsonPayloadViaDirectExport({
+            machineId: 'machine-1',
+            request: {
+                t: 'prompt_asset_download_v1',
+                assetTypeId: 'agents.skill',
+                scope: 'user',
+                externalRef: { skillName: 'auth-terminal' },
+            },
+            parsePayload: (value) => value,
+        })).resolves.toEqual({ ok: false, error: 'Direct export download unavailable' });
+        expect(runtimeFetchMock).toHaveBeenCalledTimes(1);
+    });
+
     it.each([
         ['non-positive', '{"transferId":"transfer-invalid-count","manifestHash":"sha256:none","totalChunks":0}'],
         ['fractional', '{"transferId":"transfer-invalid-count","manifestHash":"sha256:none","totalChunks":1.5}'],
@@ -1564,7 +1727,7 @@ describe('directTransferExportDownload', () => {
         }
     });
 
-    it('rejects a resource-exhausting chunk count within the JSON byte budget before requesting chunks', async () => {
+    it('derives the admitted chunk count from the JSON byte budget instead of a fixed one-million limit', async () => {
         callGuardedMachineRpcWithPolicyMock.mockResolvedValueOnce({
             success: true,
             transferId: 'transfer-max-count',
@@ -1584,6 +1747,10 @@ describe('directTransferExportDownload', () => {
             status: 200,
             headers: { 'content-type': 'application/json' },
         }));
+        runtimeFetchMock.mockResolvedValueOnce(new Response('{}', {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        }));
 
         const { downloadBulkJsonPayloadViaDirectExport } = await import('./directTransferExportDownload');
         const result = await downloadBulkJsonPayloadViaDirectExport({
@@ -1598,6 +1765,6 @@ describe('directTransferExportDownload', () => {
         });
 
         expect(result).toEqual({ ok: false, error: 'Direct export download unavailable' });
-        expect(runtimeFetchMock).toHaveBeenCalledTimes(1);
+        expect(runtimeFetchMock).toHaveBeenCalledTimes(2);
     });
 });

@@ -32,6 +32,7 @@ const fetchAndApplySessionsSpy = vi.hoisted(() => vi.fn(async (_params: FetchAnd
     hasNext: false,
     nextCursor: null,
 })));
+let syncUnderTest: any = null;
 
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -98,19 +99,20 @@ describe('sync archived session fetch server-scope guards', () => {
         fetchAndApplySessionsSpy.mockReset();
     });
 
-    afterEach(async () => {
+    afterEach(() => {
         // vi.resetModules() creates a fresh Sync singleton for the next case, but
         // it does not retire timers/listeners owned by the previous singleton.
         // Retire that Account/server lifetime before dropping the module so a
         // deferred archived fetch cannot publish into the next test.
-        const { sync } = await import('./sync');
-        (sync as any).resetServerScopedRuntimeState();
-        (sync as any).credentials = undefined;
+        syncUnderTest?.resetServerScopedRuntimeState();
+        if (syncUnderTest) syncUnderTest.credentials = undefined;
+        syncUnderTest = null;
     });
 
     it('passes a scope guard and suppresses stale archived apply callbacks after a server switch', async () => {
         const { upsertAndActivateServer } = await import('@/sync/domains/server/serverRuntime');
         const { sync } = await import('./sync');
+        syncUnderTest = sync;
 
         upsertAndActivateServer({ serverUrl: 'http://localhost:53288', scope: 'tab' });
 
@@ -150,6 +152,7 @@ describe('sync archived session fetch server-scope guards', () => {
     it('replays an archived sessions fetch requested before credentials are restored', async () => {
         const { upsertAndActivateServer } = await import('@/sync/domains/server/serverRuntime');
         const { sync } = await import('./sync');
+        syncUnderTest = sync;
 
         upsertAndActivateServer({ serverUrl: 'http://localhost:53288', scope: 'tab' });
 
@@ -178,6 +181,7 @@ describe('sync archived session fetch server-scope guards', () => {
     it('retires a credential-less archived retry at the server Account reset owner', async () => {
         const { upsertAndActivateServer } = await import('@/sync/domains/server/serverRuntime');
         const { sync } = await import('./sync');
+        syncUnderTest = sync;
 
         upsertAndActivateServer({ serverUrl: 'http://localhost:53288', scope: 'tab' });
         await (sync as any).fetchArchivedSessions();
@@ -195,6 +199,7 @@ describe('sync archived session fetch server-scope guards', () => {
     it('replays an archived sessions fetch aborted by an active server switch', async () => {
         const { upsertAndActivateServer } = await import('@/sync/domains/server/serverRuntime');
         const { sync } = await import('./sync');
+        syncUnderTest = sync;
         const encryption = {
             anonID: 'anon-test',
             configureAesBatchConcurrencyLimit: () => {},
@@ -232,6 +237,7 @@ describe('sync archived session fetch server-scope guards', () => {
     it('pages the archived listing to its bounded endpoint cursor for client-side metadata search', async () => {
         const { upsertAndActivateServer } = await import('@/sync/domains/server/serverRuntime');
         const { sync } = await import('./sync');
+        syncUnderTest = sync;
 
         upsertAndActivateServer({ serverUrl: 'http://localhost:53288', scope: 'tab' });
         (sync as any).credentials = { token: 'hdr.eyJzdWIiOiJ0ZXN0In0.sig', secret: 'secret' };
@@ -257,5 +263,43 @@ describe('sync archived session fetch server-scope guards', () => {
         expect(fetchAndApplySessionsSpy.mock.calls.every(([params]) => (
             params.sessionListPath === '/v2/sessions/archived'
         ))).toBe(true);
+    });
+
+    it('pages both current and archived listings to exhaustion for typed metadata discovery', async () => {
+        const { upsertAndActivateServer } = await import('@/sync/domains/server/serverRuntime');
+        const { sync } = await import('./sync');
+        syncUnderTest = sync;
+
+        upsertAndActivateServer({ serverUrl: 'http://localhost:53288', scope: 'tab' });
+        (sync as any).credentials = { token: 'hdr.eyJzdWIiOiJ0ZXN0In0.sig', secret: 'secret' };
+        (sync as any).encryption = {
+            decryptEncryptionKey: async () => null,
+            initializeSessions: async () => {},
+            getSessionEncryption: () => null,
+        };
+        (sync as any).sessionDataKeys = new Map<string, Uint8Array>();
+        fetchAndApplySessionsSpy.mockReset();
+        fetchAndApplySessionsSpy.mockImplementation(async (params: FetchAndApplySessionsCall) => {
+            if (params.sessionListPath === '/v2/sessions/archived') {
+                return params.sessionListCursor === 'archived-page-2'
+                    ? { hasNext: false, nextCursor: null }
+                    : { hasNext: true, nextCursor: 'archived-page-2' };
+            }
+            return params.sessionListCursor === 'current-page-2'
+                ? { hasNext: false, nextCursor: null }
+                : { hasNext: true, nextCursor: 'current-page-2' };
+        });
+
+        await (sync as any).fetchAllSessionMetadata();
+
+        expect(fetchAndApplySessionsSpy.mock.calls.map(([params]) => [
+            params.sessionListPath ?? '/v2/sessions',
+            params.sessionListCursor ?? null,
+        ])).toEqual([
+            ['/v2/sessions', null],
+            ['/v2/sessions', 'current-page-2'],
+            ['/v2/sessions/archived', null],
+            ['/v2/sessions/archived', 'archived-page-2'],
+        ]);
     });
 });

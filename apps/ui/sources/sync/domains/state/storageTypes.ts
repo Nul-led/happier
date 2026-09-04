@@ -412,6 +412,7 @@ const AgentStateObjectSchema = z.object({
         source: z.string().optional(),
         arguments: z.any(),
         createdAt: z.number().nullish(),
+        turnId: z.string().trim().min(1).optional(),
         pushNotifiedAt: z.number().optional(),
         /**
          * Optional provider-provided permission suggestions for this request.

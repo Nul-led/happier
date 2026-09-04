@@ -103,3 +103,29 @@ export function resolveWorkspaceSyncErrorTranslationKey(value: unknown): Workspa
             return 'workspaceSync.error.needsAttention';
     }
 }
+
+export type WorkspaceSyncRelationshipStateLabelKey =
+    | WorkspaceSyncStateTranslationKey
+    | 'workspaceSync.state.engineUnavailable'
+    | 'workspaceSync.state.loading';
+
+/**
+ * One presentation for the relationship human state. Daemon status is the
+ * live execution owner and wins whenever it carries a readable state; the
+ * durable `enabled` bit is only the pause intent, so a retained disabled
+ * relationship without live status reads as Paused — resumable — never as
+ * the terminal Stopped.
+ */
+export function resolveWorkspaceSyncRelationshipStateLabel(input: Readonly<{
+    enabled: boolean;
+    statusState: unknown;
+    errorCode: unknown;
+    statusPhaseHasError: boolean;
+}>): WorkspaceSyncRelationshipStateLabelKey {
+    if (input.errorCode === 'engine_unavailable') return 'workspaceSync.state.engineUnavailable';
+    if (input.statusPhaseHasError) return 'workspaceSync.state.controllerUnavailable';
+    const statusStateKey = resolveWorkspaceSyncStateTranslationKey(input.statusState);
+    if (statusStateKey) return statusStateKey;
+    if (!input.enabled) return 'workspaceSync.state.paused';
+    return 'workspaceSync.state.loading';
+}

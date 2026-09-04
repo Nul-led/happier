@@ -64,7 +64,9 @@ async function renderProviderHook() {
     return renderHook(() => useMemorySearchProvider());
 }
 
-async function renderScopedProviderHook(target: Readonly<{ serverId?: string | null; machineId?: string | null }>) {
+async function renderScopedProviderHook(target:
+    | Readonly<{ kind: 'none' }>
+    | Readonly<{ kind: 'exact'; serverId: string; machineId?: string | null }>) {
     const { useMemorySearchProvider } = await import('./useMemorySearchProvider');
     return renderHook(() => useMemorySearchProvider(target));
 }
@@ -167,7 +169,7 @@ describe('useMemorySearchProvider', () => {
     it('does not daemon-fallback across servers for an explicit Home-only target', async () => {
         setReadyHomeCapability({ enabled: false, reason: 'indexing' });
 
-        const hook = await renderScopedProviderHook({ serverId: 'srv_home_b', machineId: null });
+        const hook = await renderScopedProviderHook({ kind: 'exact', serverId: 'srv_home_b', machineId: null });
 
         expect(hook.getCurrent()).toEqual({
             provider: 'home',
@@ -176,6 +178,34 @@ describe('useMemorySearchProvider', () => {
             daemonTarget: null,
             queryAvailable: false,
             unavailableReason: 'home_indexing',
+        });
+    });
+
+    it('fails closed for an explicit scope with no Home or machine target', async () => {
+        setReadyHomeCapability({ enabled: true });
+
+        const hook = await renderScopedProviderHook({ kind: 'none' });
+
+        expect(hook.getCurrent()).toEqual({
+            provider: null,
+            homeServerId: null,
+            homeReadiness: null,
+            daemonTarget: null,
+            queryAvailable: false,
+            unavailableReason: null,
+        });
+    });
+
+    it('uses the selected usable daemon only when it belongs to an exact server-only target', async () => {
+        setReadyHomeCapability({ enabled: false, reason: 'indexing' });
+        daemonTargetState.target = { serverId: 'srv_home_b', machineId: 'machine_b' };
+
+        const hook = await renderScopedProviderHook({ kind: 'exact', serverId: 'srv_home_b' });
+
+        expect(hook.getCurrent()).toMatchObject({
+            provider: 'daemon',
+            daemonTarget: { serverId: 'srv_home_b', machineId: 'machine_b' },
+            queryAvailable: true,
         });
     });
 
@@ -209,6 +239,22 @@ describe('useMemorySearchProvider', () => {
                 unavailableReason: null,
             });
         }
+    });
+
+    it('preserves an unknown Home readiness reason when no daemon target can answer', async () => {
+        daemonTargetState.target = null;
+        setReadyHomeCapability({ enabled: true, unsupported: true });
+
+        const hook = await renderProviderHook();
+
+        expect(hook.getCurrent()).toEqual({
+            provider: 'home',
+            homeServerId: 'srv_home',
+            homeReadiness: 'unknown',
+            daemonTarget: null,
+            queryAvailable: false,
+            unavailableReason: 'home_unknown',
+        });
     });
 
     it('stays on daemon when no focused Home target resolves', async () => {

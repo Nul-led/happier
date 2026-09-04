@@ -21,6 +21,7 @@ import {
     resolveServerProfileScopeId,
     subscribeServerProfiles,
 } from '@/sync/domains/server/serverProfiles';
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import {
     loadEffectiveHomeViewState,
     subscribeEffectiveHomeViewState,
@@ -58,7 +59,7 @@ import {
     type ManagedConnectionTransport,
     type TransportDisconnectEvent,
 } from '@happier-dev/connection-supervisor';
-import type { IrohEndpointDescriptorV1 } from '@happier-dev/protocol';
+import type { HomeConnectionDescriptorV1 } from '@happier-dev/protocol';
 import {
     reportServerAuthFailed,
     reportServerUnreachable,
@@ -91,17 +92,15 @@ import {
     startPushTokenReconciliation,
     stopPushTokenReconciliation,
 } from '@/sync/engine/account/syncAccount';
+import { refreshAuthenticatedServerFeaturesSnapshot } from '@/sync/api/capabilities/serverFeaturesClient';
 
 type ConcurrentTarget = Readonly<{
     id: string;
     serverUrl: string;
     serverName: string;
-    homeServerIdentityId?: string;
-    irohEndpoint?: IrohEndpointDescriptorV1;
-    irohDescriptorRevision?: number;
+    homeConnectionDescriptor?: HomeConnectionDescriptorV1;
     irohConfigKey?: string;
     canonicalServerUrl?: string;
-    publicServerUrl?: string | null;
 }>;
 
 type ConcurrentSelectionSettings = ServerSelectionSettingsLike;
@@ -243,10 +242,8 @@ export function resolveConcurrentTargets(params: Readonly<{
         name: string;
         serverIdentityId?: string | null;
         legacyServerIds?: readonly string[];
-        irohEndpoint?: IrohEndpointDescriptorV1;
-        connectionDescriptorRevision?: number;
+        homeConnectionDescriptor?: HomeConnectionDescriptorV1;
         canonicalServerUrl?: string | null;
-        publicServerUrl?: string | null;
     }>>;
     settings: ConcurrentSelectionSettings;
 }>): ConcurrentTarget[] {
@@ -277,20 +274,11 @@ export function resolveConcurrentTargets(params: Readonly<{
             serverUrl,
             serverName: String(profile.name ?? scopeId).trim() || scopeId,
             ...(profile.canonicalServerUrl ? { canonicalServerUrl: serverUrl } : {}),
-            ...(profile.serverIdentityId?.trim() && profile.irohEndpoint
+            ...(profile.homeConnectionDescriptor
                 ? {
-                    homeServerIdentityId: profile.serverIdentityId.trim(),
-                    irohEndpoint: profile.irohEndpoint,
-                    ...(profile.connectionDescriptorRevision === undefined
-                        ? {}
-                        : { irohDescriptorRevision: profile.connectionDescriptorRevision }),
-                    irohConfigKey: JSON.stringify({
-                    homeServerIdentityId: profile.serverIdentityId.trim(),
-                    endpoint: profile.irohEndpoint,
-                    descriptorRevision: profile.connectionDescriptorRevision ?? null,
-                    }),
+                    homeConnectionDescriptor: profile.homeConnectionDescriptor,
+                    irohConfigKey: JSON.stringify(profile.homeConnectionDescriptor),
                     canonicalServerUrl: serverUrl,
-                    publicServerUrl: profile.publicServerUrl ?? null,
                 }
                 : {}),
         });
@@ -992,15 +980,14 @@ async function acquireConcurrentHomeTransport(
 ): Promise<ResolvedServerScopedTransport> {
     // Reuse the existing single AppState owner for every native loopback
     // carrier; concurrent Homes do not create a second lifecycle mount.
-    if (target.irohEndpoint) startNativeSshTunnelRuntimeAppStateLifecycle();
+    if (target.homeConnectionDescriptor?.endpoints.some((endpoint) => endpoint.kind === 'iroh')) {
+        startNativeSshTunnelRuntimeAppStateLifecycle();
+    }
     return await resolveServerScopedTransport({
         profile: {
             serverUrl: target.serverUrl,
             canonicalServerUrl: target.canonicalServerUrl ?? target.serverUrl,
-            publicServerUrl: target.publicServerUrl ?? null,
-            serverIdentityId: target.homeServerIdentityId,
-            irohEndpoint: target.irohEndpoint,
-            connectionDescriptorRevision: target.irohDescriptorRevision,
+            homeConnectionDescriptor: target.homeConnectionDescriptor,
         },
         credentials,
     });
@@ -1010,6 +997,9 @@ async function reconcileConcurrentServers(requestRevision: number): Promise<void
     if (!started || requestRevision !== reconcileRequestRevision) return;
     const profiles = listServerProfiles();
     const activeServerId = getAppliedActiveServerId();
+    const stagedActiveServerId = normalizeServerId(getActiveServerSnapshot().serverId);
+    const hasUnappliedStagedTarget = stagedActiveServerId
+        && !areServerProfileIdentifiersEquivalent(stagedActiveServerId, activeServerId);
     const selectionSettings = readConcurrentSelectionSettings();
     const targets = resolveConcurrentTargets({
         activeServerId,
@@ -1019,13 +1009,14 @@ async function reconcileConcurrentServers(requestRevision: number): Promise<void
             name: profile.name,
             serverIdentityId: profile.serverIdentityId,
             legacyServerIds: profile.legacyServerIds,
-            irohEndpoint: profile.irohEndpoint,
-            connectionDescriptorRevision: profile.connectionDescriptorRevision,
+            homeConnectionDescriptor: profile.homeConnectionDescriptor,
             canonicalServerUrl: profile.canonicalServerUrl,
-            publicServerUrl: profile.publicServerUrl,
         })),
         settings: selectionSettings,
-    }).filter((target) => !areServerProfileIdentifiersEquivalent(target.id, applyingActiveServerId));
+    }).filter((target) => (
+        !areServerProfileIdentifiersEquivalent(target.id, applyingActiveServerId)
+        && (!hasUnappliedStagedTarget || !areServerProfileIdentifiersEquivalent(target.id, stagedActiveServerId))
+    ));
 
     const desiredById = new Map(targets.map((target) => [target.id, target]));
 
@@ -1110,6 +1101,19 @@ async function reconcileConcurrentServers(requestRevision: number): Promise<void
             // Construction rollback is exact and local; a later reconciliation
             // retries this Home without poisoning other secondary runtimes.
             continue;
+        }
+        // Reconcile the complete descriptor through this secondary Home's
+        // already-authenticated scoped carrier. Public capability discovery is
+        // privacy-reduced and cannot establish a new canonical generation.
+        await refreshAuthenticatedServerFeaturesSnapshot({
+            credentials,
+            force: true,
+            serverId: target.id,
+            scopedTransport: irohLease,
+        });
+        if (!started || requestRevision !== reconcileRequestRevision) {
+            stopManagedServer(next.id);
+            return;
         }
         queueRefresh(next);
     }

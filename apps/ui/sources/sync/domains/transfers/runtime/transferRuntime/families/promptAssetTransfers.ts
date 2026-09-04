@@ -35,10 +35,11 @@ import {
     type TransferFinalizeRecoveryFailure,
 } from '../plumbing/directTransferFinalizeRecovery';
 import {
-    isIrohMachineCarrierRoute,
+    MACHINE_CARRIER_TRANSPORT_FAILED_ERROR_CODE,
     resolveMachineCarrierRoute,
     type MachineCarrierRoute,
 } from '../plumbing/machineCarrierHttpLease';
+import { resolveMachineCarrierTransferFlow } from '../routing/machineCarrierTransferFlow';
 
 type MachinePromptAssetsTransferOpts = Readonly<{
     serverId?: string | null;
@@ -232,6 +233,11 @@ export async function uploadDaemonPromptAsset(
     let machineRoute: MachineCarrierRoute | null = null;
 
     if (preparedPayload.ok) {
+        const directImportRequest = {
+            t: 'prompt_asset_upload_v1',
+            workingDirectory: '/',
+            sizeBytes: preparedPayload.encodedPayload.byteLength,
+        } as const;
         const directImportResult = await uploadBulkPayloadFromFileViaDirectImport<PromptAssetMutationResponseV1>({
             machineId,
             serverId: opts?.serverId,
@@ -240,11 +246,7 @@ export async function uploadDaemonPromptAsset(
                 readBytes: async (offset, length) => preparedPayload.encodedPayload.subarray(offset, offset + length),
                 close: async () => {},
             },
-            request: {
-                t: 'prompt_asset_upload_v1',
-                workingDirectory: '/',
-                sizeBytes: preparedPayload.encodedPayload.byteLength,
-            } as const,
+            request: directImportRequest,
             parseFinalizeResponse: (response) => {
                 const parsed = PromptAssetMutationResponseV1Schema.safeParse(response.finalized.result);
                 return parsed.success ? parsed.data : null;
@@ -255,7 +257,7 @@ export async function uploadDaemonPromptAsset(
                 return machineRoute.kind === 'iroh_peer' ? await machineRoute.acquire({
                     operationId,
                     maxBytes,
-                    flow: 'file_transfer',
+                    flow: resolveMachineCarrierTransferFlow(directImportRequest),
                 }) : null;
             },
         });
@@ -269,18 +271,12 @@ export async function uploadDaemonPromptAsset(
         if (
             directImportResult.errorCode === DIRECT_IMPORT_CLEANUP_FAILED_ERROR_CODE
             || isDirectImportTerminalFinalizeErrorCode(directImportResult.errorCode)
+            || directImportResult.errorCode === MACHINE_CARRIER_TRANSPORT_FAILED_ERROR_CODE
         ) {
             return {
                 ok: false,
                 errorCode: 'internal_error',
                 error: directImportResult.error,
-            };
-        }
-        if (isIrohMachineCarrierRoute(machineRoute)) {
-            return {
-                ok: false,
-                errorCode: 'internal_error',
-                error: 'The direct machine connection was interrupted. Retry the transfer.',
             };
         }
     }

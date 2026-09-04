@@ -120,10 +120,6 @@ function createFakeEndpointClient(options: Readonly<{
             };
             return lease;
         },
-        configureRelays: async (relayUrls) => ({
-            endpointId: 'local-browser-endpoint',
-            appliedRelayUrls: [...relayUrls],
-        }),
         status: async () => ({
             state: 'ready',
             endpointId: 'local-browser-endpoint',
@@ -131,7 +127,6 @@ function createFakeEndpointClient(options: Readonly<{
             leaseCount: leaseSequence,
         }),
         releaseAll: async () => {},
-        clearApplicationData: async () => {},
         close: () => {},
     };
 
@@ -264,13 +259,15 @@ describe('browser Iroh Home carrier acquisition', () => {
         )).toMatchObject({
             remoteEndpointId: HOME_ENDPOINT_ID,
             state: 'connecting',
-            current: { carrier: 'iroh' },
             effectiveConfiguration: {
                 policy: 'automatic',
                 relayUrls: ['https://relay.happier.test'],
                 directAddressCount: 0,
             },
         });
+        expect(readIrohHomeTransportDiagnostics().find(
+            (entry) => entry.homeServerIdentityId === 'home-identity',
+        )?.current).toBeUndefined();
         await carrier.request(`${CANONICAL_URL}/v1/auth/ping`, { method: 'GET' });
         expect(carrier.readObservedPath()).toBe('relay');
         expect(readIrohHomeTransportDiagnostics().find(
@@ -389,8 +386,13 @@ describe('browser Iroh Home carrier tab singleton', () => {
             }
         }
         vi.stubGlobal('SharedWorker', RecordingSharedWorker);
-        vi.stubGlobal('location', { href: 'https://app.example.test/home' });
-        vi.stubGlobal('indexedDB', {});
+        // The packaged client resolves assets from `location.origin` (the
+        // deployment base), never from the navigation `href` — so the stub
+        // must describe the real browser surface: both are always present.
+        vi.stubGlobal('location', {
+            origin: 'https://app.example.test',
+            href: 'https://app.example.test/home',
+        });
         vi.resetModules();
         try {
             // Fresh tab: fresh runtime singleton and fresh endpoint-client

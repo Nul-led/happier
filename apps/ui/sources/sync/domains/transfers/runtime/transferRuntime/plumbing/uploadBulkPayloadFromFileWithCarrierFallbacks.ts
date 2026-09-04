@@ -14,11 +14,11 @@ import {
     uploadBulkPayloadFromFile,
 } from './uploadBulkPayloadFromFile';
 import {
-    isIrohMachineCarrierRoute,
-    MACHINE_CARRIER_INTERRUPTED_TRANSFER_ERROR,
+    MACHINE_CARRIER_TRANSPORT_FAILED_ERROR_CODE,
     resolveMachineCarrierRoute,
     type MachineCarrierRoute,
 } from './machineCarrierHttpLease';
+import { resolveMachineCarrierTransferFlow } from '../routing/machineCarrierTransferFlow';
 
 type UploadResponse = Readonly<{ success: boolean; error?: string }>;
 
@@ -80,9 +80,7 @@ export async function uploadBulkPayloadFromFileWithCarrierFallbacks<
                     return machineRoute.kind === 'iroh_peer' ? await machineRoute.acquire({
                         operationId,
                         maxBytes,
-                        flow: params.directImportRequest.t === 'session_attachment_upload_v1'
-                            ? 'attachment_transfer'
-                            : 'file_transfer',
+                        flow: resolveMachineCarrierTransferFlow(params.directImportRequest),
                         signal: params.signal ?? undefined,
                     })
                         : null;
@@ -102,16 +100,9 @@ export async function uploadBulkPayloadFromFileWithCarrierFallbacks<
         if (
             directFailureErrorCode === DIRECT_IMPORT_CLEANUP_FAILED_ERROR_CODE
             || isDirectImportTerminalFinalizeErrorCode(directFailureErrorCode)
+            || directFailureErrorCode === MACHINE_CARRIER_TRANSPORT_FAILED_ERROR_CODE
         ) {
             return directResult;
-        }
-
-        if (isIrohMachineCarrierRoute(machineRoute)) {
-            return {
-                success: false,
-                error: MACHINE_CARRIER_INTERRUPTED_TRANSFER_ERROR,
-                errorCode: 'machine_carrier_transport_failed',
-            };
         }
 
         return await uploadBulkPayloadFromFile<TResponse | BulkTransferFailureResponse>({

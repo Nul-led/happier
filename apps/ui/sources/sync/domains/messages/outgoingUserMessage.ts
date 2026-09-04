@@ -10,11 +10,10 @@ import { nowServerMs } from '@/sync/runtime/time';
 import type { RawRecord } from '@/sync/typesRaw';
 import type { SessionMessageHostAdmissionOrigin } from '@/sync/domains/session/input/types';
 import {
+    buildTrustedHostSessionInputAdmissionV1,
     projectSessionMessageModelSelectionToLegacyModelV1,
     SESSION_INPUT_REQUEST_META_KEY,
     SESSION_MESSAGE_PROVENANCE_META_KEY,
-    SessionInputRequestV1Schema,
-    SessionMessageProvenanceV1Schema,
     stripSessionInputProtectedMeta,
     withSessionMessageModelSelectionV1,
     type SentFrom,
@@ -67,18 +66,10 @@ function stripOutgoingUserMessageProtectedMeta(
 }
 
 function buildHostAdmissionMeta(origin: SessionMessageHostAdmissionOrigin | undefined): Record<string, unknown> {
-    if (origin !== 'voice') return {};
+    const admission = buildTrustedHostSessionInputAdmissionV1(origin === 'voice' ? 'voice' : 'ui');
     return {
-        [SESSION_MESSAGE_PROVENANCE_META_KEY]: SessionMessageProvenanceV1Schema.parse({
-            v: 1,
-            kind: 'voice',
-        }),
-        [SESSION_INPUT_REQUEST_META_KEY]: SessionInputRequestV1Schema.parse({
-            v: 1,
-            producer: 'voiceInput',
-            caller: { kind: 'host' },
-            permission: {},
-        }),
+        [SESSION_MESSAGE_PROVENANCE_META_KEY]: admission.provenance,
+        [SESSION_INPUT_REQUEST_META_KEY]: admission.request,
     };
 }
 

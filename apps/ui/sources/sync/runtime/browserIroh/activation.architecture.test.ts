@@ -48,13 +48,11 @@ const APPROVED_LAZY_CONSUMER_ENTRY_POINTS = [
  * browser that never adopts an Iroh Home.
  */
 const APPROVED_CONSUMERS = [
-    // Enrollment resolves the QR/Directory descriptor's exact Home transport
-    // before a profile or focused Home exists. It consumes the same cheap
-    // browser carrier seam; it is not another transport decision owner.
-    'auth/enrollment/homeEnrollmentTransport.ts',
+    // Focused, scoped, and enrollment Home lifecycles all consume this one
+    // narrow carrier policy. It alone reaches the cheap browser carrier seam;
+    // callers retain only their distinct publication/proof/release duties.
+    'sync/runtime/homeCarrierPolicy.ts',
     'sync/domains/transfers/runtime/transferRuntime/plumbing/machineCarrierHttpLease.ts',
-    'sync/runtime/orchestration/connectionManager.ts',
-    'sync/runtime/orchestration/serverScopedRpc/resolveServerScopedTransport.ts',
 ];
 
 function stripComments(text: string): string {
@@ -128,9 +126,9 @@ describe('sync/runtime/browserIroh activation boundary', () => {
     });
 
     it('has exactly one SharedWorker host: nothing outside the owner constructs one', () => {
-        // One persistent endpoint per browser application/profile lives in the
-        // owner's SharedWorker. A second construction site would be a second
-        // endpoint host — the split the amendment forbids.
+        // One endpoint for the lifetime of the live SharedWorker serves every
+        // connected tab. A second construction site would be a second endpoint
+        // host — the split the amendment forbids.
         const constructors = collectSourceFiles(SOURCES_DIR)
             .filter((file) => !file.startsWith(OWNER_DIR))
             .filter((file) => stripComments(readFileSync(file, 'utf8')).includes('new SharedWorker('))

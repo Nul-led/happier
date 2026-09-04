@@ -18,8 +18,7 @@ import { desktopHostKind } from '@/utils/platform/desktopHost';
 export type BrowserIrohHostIneligibility =
     | 'not_web'
     | 'desktop_host'
-    | 'shared_worker_unsupported'
-    | 'indexed_db_unsupported';
+    | 'shared_worker_unsupported';
 
 export type BrowserIrohHostDecision =
     | Readonly<{ eligible: true }>
@@ -31,14 +30,12 @@ export type BrowserIrohHostDecision =
  */
 export type BrowserIrohHostCapabilities = Readonly<{
     hasSharedWorker: boolean;
-    hasIndexedDb: boolean;
 }>;
 
 export function readBrowserIrohHostCapabilities(): BrowserIrohHostCapabilities {
     const scope = globalThis as Record<string, unknown>;
     return {
         hasSharedWorker: typeof scope.SharedWorker === 'function',
-        hasIndexedDb: typeof scope.indexedDB === 'object' && scope.indexedDB !== null,
     };
 }
 
@@ -51,16 +48,11 @@ export function resolveBrowserIrohHostDecision(
     if (desktopHostKind() !== null) {
         return { eligible: false, reason: 'desktop_host' };
     }
-    // A single endpoint per browser profile is the contract, not an aspiration:
-    // without SharedWorker there is no place to hold it that outlives one tab,
-    // so the carrier is unavailable rather than silently per-tab.
+    // A single endpoint per live browser worker is the contract, not an
+    // aspiration: without SharedWorker there is no place to share one endpoint
+    // across tabs, so the carrier is unavailable rather than silently per-tab.
     if (!capabilities.hasSharedWorker) {
         return { eligible: false, reason: 'shared_worker_unsupported' };
-    }
-    // The endpoint seed must survive reload, and IndexedDB is the only
-    // device-local store the owner's worker global can reach.
-    if (!capabilities.hasIndexedDb) {
-        return { eligible: false, reason: 'indexed_db_unsupported' };
     }
     return { eligible: true };
 }

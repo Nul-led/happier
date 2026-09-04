@@ -53,6 +53,7 @@ export type MachineRpcDirectRouteResolution =
 
 export type MachineRpcWithPeerMediationRouteParams<A> = Readonly<{
     serverId?: string | null;
+    accountId?: string | null;
     machineId: string;
     method: string;
     payload: A;
@@ -67,6 +68,7 @@ export type MachineRpcWithPeerMediationRouteParams<A> = Readonly<{
     signal?: AbortSignal;
     resolveDirectRoute: (input: Readonly<{
         serverId?: string | null;
+        accountId?: string | null;
         machineId: string;
         method: string;
     }>) => Promise<MachineRpcDirectRouteResolution>;
@@ -78,6 +80,7 @@ export type MachineRpcWithPeerMediationRouteParams<A> = Readonly<{
     }>) => Promise<PeerMachineRpcDirectResponseV1 | PeerMachineRpcDirectResponseV2>;
     serverFallback: (input: Readonly<{
         serverId?: string | null;
+        accountId?: string | null;
         machineId: string;
         method: string;
         payload: A;
@@ -89,6 +92,8 @@ export type MachineRpcWithPeerMediationRouteParams<A> = Readonly<{
     resolveRelayFallback?: (input: Readonly<{
         method: string;
         reasonCode: string;
+        serverId?: string | null;
+        accountId?: string | null;
         policy: Pick<MachineRpcRoutePolicyV1, 'relayFallback'>;
     }>) => MachineRpcRelayFallbackDecision | Promise<MachineRpcRelayFallbackDecision>;
     recordReceipt?: (receipt: Readonly<Record<string, unknown>>) => void;
@@ -137,6 +142,8 @@ async function useServerFallback<R, A>(
         const decision = await (params.resolveRelayFallback?.({
             method: params.method,
             reasonCode,
+            serverId: params.serverId,
+            accountId: params.accountId,
             policy,
         }) ?? resolveMachineRpcRelayFallbackDecision({
             policy,
@@ -158,6 +165,7 @@ async function useServerFallback<R, A>(
     }
     return await params.serverFallback({
         serverId: params.serverId,
+        accountId: params.accountId,
         machineId: params.machineId,
         method: params.method,
         payload: params.payload,
@@ -182,6 +190,7 @@ export async function machineRpcWithPeerMediationRoute<R, A>(
     const requestId = params.createRequestId?.() ?? createRequestId();
     const route = await params.resolveDirectRoute({
         serverId: params.serverId,
+        accountId: params.accountId,
         machineId: params.machineId,
         method: params.method,
     });

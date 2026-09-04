@@ -118,6 +118,17 @@ type EndpointRequestContext = Readonly<{
     signal?: AbortSignal;
 }>;
 
+function assertActiveRequestContextCurrent(context: EndpointRequestContext): void {
+    if (!context.active) return;
+    const current = getActiveServerSnapshot();
+    if (
+        current.serverId !== context.serverId
+        || current.generation !== context.generation
+    ) {
+        throw new StaleServerGenerationError();
+    }
+}
+
 const MUTATING_HTTP_METHODS: ReadonlySet<string> = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 function resolveRequestTimeoutMs(method: string, optionTimeoutMs: number | undefined): number {
@@ -313,12 +324,15 @@ async function requestAtEndpoint(
         const credentials = context.credentials !== undefined
             ? context.credentials
             : context.useStoredCredentials
-                ? context.active
-                    ? await TokenStorage.getCredentials()
-                    : await TokenStorage.getCredentialsForServerUrl(
-                        context.endpointUrl,
-                        context.serverId ? { serverId: context.serverId } : {},
-                    )
+                // The request context captures its Home before any await. Resolve the
+                // credential against that same identity/URL even for the active wrapper:
+                // a web tab selection can change independently of a stale device-scoped
+                // runtime snapshot, and the targetless accessor would then attach the new
+                // Home's bearer to the old Home's origin.
+                ? await TokenStorage.getCredentialsForServerUrl(
+                    context.endpointUrl,
+                    context.serverId ? { serverId: context.serverId } : {},
+                )
                 : null;
         if (!credentials?.token) {
             rejectedFirstKeyBearerByServer.delete(
@@ -482,7 +496,8 @@ async function requestAtEndpoint(
     }
     const retryMode: 'default' | 'none' = options.retry ?? 'default';
     const isActiveOrigin =
-        !isCrossOrigin
+        context.active
+        && !isCrossOrigin
         && !!absoluteRequestUrl
         && !!activeServerUrl;
     const endpointSupervisor =
@@ -626,6 +641,7 @@ async function requestAtEndpoint(
                             serverId: context.serverId,
                             serverUrl: context.endpointUrl,
                         });
+                    assertActiveRequestContextCurrent(context);
                     if (guard.kind !== 'allowed') {
                         const marked =
                             await markAccountEncryptionFirstKeyRejectedCredential({
@@ -633,6 +649,7 @@ async function requestAtEndpoint(
                                     guard.recovery,
                                 token: usedToken,
                             });
+                        assertActiveRequestContextCurrent(context);
                         if (
                             marked.kind
                             !== 'recorded'
@@ -671,6 +688,9 @@ async function requestAtEndpoint(
                                     context.serverId,
                                 serverUrl:
                                     context.endpointUrl,
+                                ...(context.generation === undefined
+                                    ? {}
+                                    : { generation: context.generation }),
                                 recovery:
                                     marked.recovery,
                             });
@@ -696,6 +716,9 @@ async function requestAtEndpoint(
                     kind: 'credentials_removed',
                     serverId: context.serverId,
                     serverUrl: context.endpointUrl,
+                    ...(context.generation === undefined
+                        ? {}
+                        : { generation: context.generation }),
                 });
             }
 
@@ -709,12 +732,10 @@ async function requestAtEndpoint(
             // request and must not be replaced from storage.
             if (!context.useStoredCredentials) break;
             try {
-                const fresh = context.active
-                    ? await TokenStorage.getCredentials()
-                    : await TokenStorage.getCredentialsForServerUrl(
-                        context.endpointUrl,
-                        context.serverId ? { serverId: context.serverId } : {},
-                    );
+                const fresh = await TokenStorage.getCredentialsForServerUrl(
+                    context.endpointUrl,
+                    context.serverId ? { serverId: context.serverId } : {},
+                );
                 const freshToken = fresh?.token ?? null;
                 if (freshToken && freshToken !== usedToken) {
                     usedToken = freshToken;

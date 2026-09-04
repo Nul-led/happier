@@ -158,7 +158,6 @@ export function buildWorkspaceContentPolicy(args: Readonly<{
         extraIncludePatterns: args.includeIgnoredMode === 'include_selected'
             ? [...args.ignoredIncludeGlobs]
             : [],
-        includeGitDirectory: false,
     };
     return {
         ...base,

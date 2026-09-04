@@ -2,7 +2,36 @@
  * Operations barrel (split by domain)
  */
 
-export * from './ops/machines';
+export {
+    completeMachineSpawnAttemptCustody,
+    completePendingMachineSpawnAttemptCustodyForSession,
+    machineResolveSpawnSessionByNonce,
+    machineResolveSpawnSessionByNonceUntilSettled,
+    machineStopDaemon,
+    machineStopSession,
+    machineBash,
+    machineCreateDirectory,
+    machinePreviewEnv,
+    machineCollectBugReportDiagnostics,
+    machineGetBugReportLogTail,
+    machineReadSessionLogTail,
+    machineUpdateMetadata,
+} from './ops/machines';
+export type {
+    MachineSpawnAttemptCustody,
+    MachineSpawnNewSessionResult,
+    MachineResolveSpawnSessionByNonceResult,
+    MachineStopSessionResult,
+    MachineBashRequest,
+    EnvPreviewSecretsPolicy,
+    PreviewEnvSensitivitySource,
+    PreviewEnvValue,
+    PreviewEnvResponse,
+    MachinePreviewEnvResult,
+    BugReportCollectDiagnosticsResult,
+    BugReportLogTailResult,
+    MachineReadSessionLogTailResult,
+} from './ops/machines';
 export * from './ops/machineAccount';
 export * from './ops/capabilities';
 export * from './ops/sessions';

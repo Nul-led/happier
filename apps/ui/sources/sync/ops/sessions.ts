@@ -106,6 +106,7 @@ export {
 // Permission operation types
 interface SessionPermissionRequest {
     id: string;
+    turnId?: string;
     approved: boolean;
     reason?: string;
     mode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan';
@@ -124,6 +125,18 @@ interface SessionPermissionRequest {
      * When present, the agent can complete the tool call without requiring a follow-up user message.
      */
     answers?: StructuredQuestionAnswersV1;
+}
+
+function resolveSessionPermissionTurnId(
+    sessionId: string,
+    requestId: string,
+    explicitTurnId?: string,
+): string | undefined {
+    const candidate = explicitTurnId
+        ?? storage.getState().sessions[sessionId]?.agentState?.requests?.[requestId]?.turnId;
+    return typeof candidate === 'string' && candidate.trim().length > 0
+        ? candidate.trim()
+        : undefined;
 }
 
 // Mode change operation types
@@ -804,10 +817,12 @@ export async function sessionAllow(
     mode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan',
     allowedTools?: string[],
     decision?: 'approved' | 'approved_for_session' | 'approved_execpolicy_amendment',
-    execPolicyAmendment?: { command: string[] }
+    execPolicyAmendment?: { command: string[] },
+    turnId?: string,
 ): Promise<void> {
     const request: SessionPermissionRequest = {
         id,
+        turnId: resolveSessionPermissionTurnId(sessionId, id, turnId),
         approved: true,
         mode,
         allowedTools,
@@ -835,10 +850,12 @@ export async function sessionAllowWithPermissionUpdates(
         allowedTools?: string[];
         decision?: 'approved' | 'approved_for_session' | 'approved_execpolicy_amendment';
         updatedPermissions: unknown;
+        turnId?: string;
     }>,
 ): Promise<void> {
     const request: SessionPermissionRequest = {
         id,
+        turnId: resolveSessionPermissionTurnId(sessionId, id, params.turnId),
         approved: true,
         mode: params.mode,
         allowedTools: params.allowedTools,
@@ -884,8 +901,17 @@ export async function sessionDeny(
     allowedTools?: string[],
     decision?: 'denied' | 'abort',
     reason?: string,
+    turnId?: string,
 ): Promise<void> {
-    const request: SessionPermissionRequest = { id, approved: false, mode, allowedTools, decision, reason };
+    const request: SessionPermissionRequest = {
+        id,
+        turnId: resolveSessionPermissionTurnId(sessionId, id, turnId),
+        approved: false,
+        mode,
+        allowedTools,
+        decision,
+        reason,
+    };
     await sessionRpcWithPreferredSessionScope<void, SessionPermissionRequest>({
         sessionId,
         method: RPC_METHODS.SESSION_PERMISSION_RESPOND,

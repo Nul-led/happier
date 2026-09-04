@@ -46,6 +46,16 @@ export function subscribeWorkspaceSyncConflicts(scope: WorkspaceSyncStatusScope,
     return () => entry.listeners.delete(listener);
 }
 
+export function invalidateWorkspaceSyncConflicts(scope: WorkspaceSyncStatusScope): void {
+    const entry = entryFor(scope);
+    if (entry.inFlight) return;
+    if (entry.listeners.size > 0) {
+        void refreshWorkspaceSyncConflicts(scope).catch(() => undefined);
+        return;
+    }
+    publish(entry, { phase: 'idle', list: entry.snapshot.list, error: null });
+}
+
 export function refreshWorkspaceSyncConflicts(scope: WorkspaceSyncStatusScope): Promise<WorkspaceSyncConflictListV1> {
     const entry = entryFor(scope);
     if (entry.inFlight) return entry.inFlight;

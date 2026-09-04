@@ -63,7 +63,10 @@ export class LocalSettingsSecretUnavailableError extends Error {
   }
 }
 
-function hasUnsealedSecretValue(input: unknown): boolean {
+function hasSecretValueMatching(
+  input: unknown,
+  predicate: (value: Readonly<Record<string, unknown>>) => boolean,
+): boolean {
   if (!input || typeof input !== 'object') return false;
   const pending: object[] = [input as object];
   const seen = new WeakSet<object>();
@@ -73,11 +76,8 @@ function hasUnsealedSecretValue(input: unknown): boolean {
     if (seen.has(current)) continue;
     seen.add(current);
 
-    if (
-      !Array.isArray(current)
-      && (current as Record<string, unknown>)._isSecretValue === true
-      && typeof (current as Record<string, unknown>).value === 'string'
-    ) {
+    const record = Array.isArray(current) ? null : current as Record<string, unknown>;
+    if (record?._isSecretValue === true && predicate(record)) {
       return true;
     }
 
@@ -89,6 +89,20 @@ function hasUnsealedSecretValue(input: unknown): boolean {
   }
 
   return false;
+}
+
+function hasUnsealedSecretValue(input: unknown): boolean {
+  return hasSecretValueMatching(input, (value) => typeof value.value === 'string');
+}
+
+function hasSecretValueUnsafeForPlainStorage(input: unknown): boolean {
+  return hasSecretValueMatching(input, (value) => {
+    const parsed = SecretStringV1Schema.safeParse(value);
+    return !parsed.success
+      || typeof parsed.data.value !== 'string'
+      || parsed.data.value.trim().length === 0
+      || parsed.data.encryptedValue !== undefined;
+  });
 }
 
 export function assertNoUnsealedSettingsSecretValues(input: unknown): void {
@@ -121,4 +135,15 @@ export function unsealSecretsDeepWithKeys<T>(
   keys: ReadonlyArray<Uint8Array | null | undefined>,
 ): T {
   return unsealSecretsDeepWithKeysV1(input, keys);
+}
+
+export function unsealSecretsDeepWithKeysForPlainStorage<T>(
+  input: T,
+  keys: ReadonlyArray<Uint8Array | null | undefined>,
+): T {
+  const unsealed = unsealSecretsDeepWithKeysV1(input, keys);
+  if (hasSecretValueUnsafeForPlainStorage(unsealed)) {
+    throw new LocalSettingsSecretUnavailableError();
+  }
+  return unsealed;
 }

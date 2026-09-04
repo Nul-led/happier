@@ -120,6 +120,20 @@ async function readLease(
 }
 
 let desktopAvailability: boolean | null = null;
+let desktopAvailabilityProbe: Promise<boolean> | null = null;
+const desktopAvailabilityListeners = new Set<() => void>();
+
+function publishDesktopAvailability(available: boolean): void {
+    const changed = desktopAvailability !== available;
+    desktopAvailability = available;
+    if (!changed) return;
+    for (const listener of desktopAvailabilityListeners) listener();
+}
+
+export function subscribeIrohMachineHttpLifecycleAvailability(listener: () => void): () => void {
+    desktopAvailabilityListeners.add(listener);
+    return () => desktopAvailabilityListeners.delete(listener);
+}
 
 export function isIrohMachineHttpLifecycleAvailable(): boolean {
     if (desktopHostKind() !== null) return desktopAvailability === true;
@@ -134,15 +148,22 @@ export function isIrohMachineHttpLifecycleAvailable(): boolean {
 /** Probes the real loaded host/native boundary before route selection. */
 export async function probeIrohMachineHttpLifecycleAvailability(): Promise<boolean> {
     if (desktopHostKind() === null) return isIrohMachineHttpLifecycleAvailable();
-    try {
-        const value = await invokeDesktopHost<unknown>('iroh_get_availability');
-        desktopAvailability = typeof value === 'object'
-            && value !== null
-            && (value as Record<string, unknown>).available === true;
-    } catch {
-        desktopAvailability = false;
-    }
-    return desktopAvailability;
+    desktopAvailabilityProbe ??= (async () => {
+        let available = false;
+        try {
+            const value = await invokeDesktopHost<unknown>('iroh_get_availability');
+            available = typeof value === 'object'
+                && value !== null
+                && (value as Record<string, unknown>).available === true;
+        } catch {
+            available = false;
+        }
+        publishDesktopAvailability(available);
+        return available;
+    })().finally(() => {
+        desktopAvailabilityProbe = null;
+    });
+    return await desktopAvailabilityProbe;
 }
 
 async function requireMobileModule(): Promise<NativeIrohModule> {

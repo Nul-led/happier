@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { resetRuntimeFetch } from './client';
+import { resetRuntimeFetch } from '@/utils/system/runtimeFetch';
 
 type WaitForServerReachable = typeof import(
     '@/sync/runtime/connectivity/serverReachabilitySupervisorPool'
@@ -18,6 +18,42 @@ afterEach(() => {
 });
 
 describe('serverFetch runtime fetch override', () => {
+    it('reads credentials for the captured active Home instead of a later tab selection', async () => {
+        const getCredentials = vi.fn(async () => ({ token: 'token-for-later-tab-home' }));
+        const getCredentialsForServerUrl = vi.fn(async () => ({ token: 'token-for-captured-home' }));
+        vi.doMock('@/sync/domains/server/serverRuntime', () => ({
+            getActiveServerSnapshot: () => ({
+                serverId: 'server-a',
+                serverUrl: 'https://home-a.example.test',
+                kind: 'custom',
+                generation: 1,
+            }),
+            getActiveServerHomeCarrier: () => null,
+        }));
+        vi.doMock('@/auth/storage/tokenStorage', () => ({
+            TokenStorage: {
+                getCredentials,
+                getCredentialsForServerUrl,
+                classifyPendingExternalAuthFirstKeyRejectedCredential: vi.fn(async () => ({ kind: 'allowed' })),
+                invalidateCredentialsTokenForServerUrl: vi.fn(async () => false),
+            },
+        }));
+
+        const overrideFetch = vi.fn<RuntimeFetch>(async () => new Response(null, { status: 200 }));
+        const client = await import('./client');
+        client.setRuntimeFetch(overrideFetch);
+
+        await client.serverFetch('/v1/features', undefined, { retry: 'none' });
+
+        expect(getCredentialsForServerUrl).toHaveBeenCalledWith(
+            'https://home-a.example.test',
+            { serverId: 'server-a' },
+        );
+        expect(getCredentials).not.toHaveBeenCalled();
+        const sentHeaders = new Headers(overrideFetch.mock.calls[0]?.[1]?.headers);
+        expect(sentHeaders.get('Authorization')).toBe('Bearer token-for-captured-home');
+    });
+
     it('uses the configured runtime fetch implementation instead of global fetch', async () => {
         vi.doMock('@/sync/domains/server/serverRuntime', () => ({
             getActiveServerSnapshot: () => ({
@@ -26,10 +62,12 @@ describe('serverFetch runtime fetch override', () => {
                 kind: 'custom',
                 generation: 1,
             }),
+            getActiveServerHomeCarrier: () => null,
         }));
         vi.doMock('@/auth/storage/tokenStorage', () => ({
             TokenStorage: {
                 getCredentials: vi.fn(async () => null),
+                getCredentialsForServerUrl: vi.fn(async () => null),
                 invalidateCredentialsTokenForServerUrl: vi.fn(async () => false),
             },
         }));

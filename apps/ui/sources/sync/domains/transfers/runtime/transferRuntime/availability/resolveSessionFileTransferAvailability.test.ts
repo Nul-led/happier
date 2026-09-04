@@ -3,6 +3,47 @@ import { describe, expect, it } from 'vitest';
 import { FeaturesResponseSchema } from '@happier-dev/protocol';
 
 describe('resolveSessionFileTransferAvailability', () => {
+    it('keeps browser file controls enabled when a relay-reachable Iroh endpoint is usable without the native lifecycle', async () => {
+        const { resolveSessionFileTransferAvailability } = await import('./resolveSessionFileTransferAvailability');
+        const serverFeatures = FeaturesResponseSchema.parse({
+            features: {
+                machines: {
+                    enabled: true,
+                    transfer: {
+                        enabled: true,
+                        directPeer: { enabled: true },
+                        serverRouted: { enabled: false },
+                    },
+                },
+            },
+            capabilities: {},
+        });
+
+        const result = resolveSessionFileTransferAvailability({
+            sessionAvailable: true,
+            machineTargetAvailable: true,
+            serverFeatures,
+            machineCarrierHost: { kind: 'browser' },
+            machineRpcDirectRoute: { status: 'unknown' },
+            machineDaemonState: {
+                peerMediation: {
+                    iroh: {
+                        endpoint: {
+                            endpointId: 'a'.repeat(64),
+                            relayUrls: ['https://relay.example.test'],
+                        },
+                    },
+                },
+            },
+        });
+
+        expect(result.available).toBe(true);
+        expect(result.decision).toMatchObject({
+            kind: 'selected',
+            preferredRouteKind: 'iroh_peer',
+        });
+    });
+
     it('routes predecessor lan_http-only state to relay without selecting direct peer', async () => {
         const { resolveSessionFileTransferAvailability } = await import('./resolveSessionFileTransferAvailability');
         const serverFeatures = FeaturesResponseSchema.parse({

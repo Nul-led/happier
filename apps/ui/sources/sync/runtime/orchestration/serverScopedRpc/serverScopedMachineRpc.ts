@@ -210,6 +210,7 @@ async function machineRpcWithServerTransport<R, A>(params: ServerScopedMachineRp
     const policyPreferScoped = guarded && !allowDirect;
     const initialPreferScoped = params.preferScoped === true || policyPreferScoped;
     const requestedServerId = normalizeId(params.serverId);
+    const requestedAccountId = normalizeId(params.accountId);
     const activeServerId = normalizeId(getActiveServerSnapshot().serverId);
     let exactIssuanceAttempted = false;
     const onIssued = params.onIssued
@@ -225,7 +226,7 @@ async function machineRpcWithServerTransport<R, A>(params: ServerScopedMachineRp
             method: params.method,
             timeoutMs: configuredTimeoutMs,
         });
-        const preferScoped = options?.forceScoped === true || initialPreferScoped;
+        const preferScoped = options?.forceScoped === true || initialPreferScoped || Boolean(requestedAccountId);
         const requestedScopedContext = preferScoped
             || Boolean(requestedServerId && !areServerProfileIdentifiersEquivalent(requestedServerId, activeServerId));
         const context = await timeoutBudget.runWithinTimeout(
@@ -234,6 +235,7 @@ async function machineRpcWithServerTransport<R, A>(params: ServerScopedMachineRp
                 await resolveServerScopedContext({
                     machineId: params.machineId,
                     serverId: params.serverId,
+                    ...(requestedAccountId ? { accountId: requestedAccountId } : {}),
                     forceScoped: preferScoped,
                     timeoutMs,
                 }),
@@ -450,6 +452,7 @@ export async function machineRpcWithServerScope<R, A>(params: ServerScopedMachin
         params.signal,
         async () => await machineRpcWithPeerMediationRoute<R, A>({
             serverId: params.serverId,
+            accountId: params.accountId,
             machineId: params.machineId,
             method: params.method,
             payload: params.payload,
@@ -468,7 +471,7 @@ export async function machineRpcWithServerScope<R, A>(params: ServerScopedMachin
             recordReceipt: recordMachineRpcPeerMediationReceipt,
             resolveRelayFallback: async (input) => await resolveProductionMachineRpcRelayFallbackForServer({
                 policy: input.policy,
-                serverId: params.serverId,
+                serverId: input.serverId,
                 timeoutMs: params.timeoutMs,
             }),
             serverFallback: async (fallbackInput) => await machineRpcWithServerTransport<R, A>({
@@ -476,6 +479,7 @@ export async function machineRpcWithServerScope<R, A>(params: ServerScopedMachin
                 method: fallbackInput.method,
                 payload: fallbackInput.payload,
                 serverId: fallbackInput.serverId,
+                accountId: fallbackInput.accountId,
                 timeoutMs: fallbackInput.timeoutMs,
                 authorization: fallbackInput.authorization,
                 preferScoped: params.preferScoped,

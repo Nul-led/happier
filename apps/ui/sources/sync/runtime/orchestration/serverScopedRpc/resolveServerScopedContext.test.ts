@@ -167,4 +167,22 @@ describe('resolveServerScopedContext', () => {
             encryption: fakeEncryption,
         }));
     });
+
+    it('fails closed when scoped credentials belong to a different Account than requested', async () => {
+        getActiveServerSnapshotSpy.mockReturnValue({
+            serverId: 'server-a',
+            serverUrl: 'https://server-a.example.test',
+            generation: 1,
+        });
+        getCredentialsSpy.mockResolvedValue({ token: tokenForSub('account-b'), secret: 'secret-b' });
+
+        const { resolveServerScopedContext } = await import('./resolveServerScopedContext');
+        await expect(resolveServerScopedContext({
+            machineId: 'machine-1',
+            serverId: 'server-a',
+            accountId: 'account-a',
+            forceScoped: true,
+        })).rejects.toThrow('do not match requested Account');
+        expect(createEncryptionSpy).not.toHaveBeenCalled();
+    });
 });

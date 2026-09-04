@@ -266,4 +266,38 @@ describe('downloadJsonPayloadViaMachineTransferCarriers', () => {
             },
         }));
     });
+
+    it('does not fall back after the direct export owner reports a terminal selected-Iroh failure', async () => {
+        directExportDownloadMock.mockReset();
+        relayJsonDownloadMock.mockReset();
+        machineRpcWithServerScopeMock.mockReset();
+        directExportDownloadMock.mockResolvedValueOnce({
+            ok: false,
+            error: 'The direct machine connection was interrupted. Retry the transfer.',
+            errorCode: 'machine_carrier_transport_failed',
+        });
+
+        const { downloadJsonPayloadViaMachineTransferCarriers } = await import('./createJsonMachineRpcCarrierDownloads');
+        const result = await downloadJsonPayloadViaMachineTransferCarriers({
+            machineId: 'machine-1',
+            serverId: 'server-a',
+            preferScoped: true,
+            payloadWithRecipient: (recipientPublicKeyBase64: string) => ({ recipientPublicKeyBase64 }),
+            initMethod: RPC_METHODS.DAEMON_PROMPT_ASSETS_DOWNLOAD_INIT,
+            chunkMethod: RPC_METHODS.DAEMON_PROMPT_ASSETS_DOWNLOAD_CHUNK,
+            finalizeMethod: RPC_METHODS.DAEMON_PROMPT_ASSETS_DOWNLOAD_FINALIZE,
+            abortMethod: RPC_METHODS.DAEMON_PROMPT_ASSETS_DOWNLOAD_ABORT,
+            directExportRequest: {
+                t: 'prompt_asset_download_v1',
+                assetTypeId: 'agents.skill',
+                scope: 'user',
+                externalRef: { name: 'skill-a' },
+            },
+            parsePayload: (value) => value as { ok: true },
+        });
+
+        expect(result).toMatchObject({ ok: false, errorCode: 'machine_carrier_transport_failed' });
+        expect(relayJsonDownloadMock).not.toHaveBeenCalled();
+        expect(machineRpcWithServerScopeMock).not.toHaveBeenCalled();
+    });
 });

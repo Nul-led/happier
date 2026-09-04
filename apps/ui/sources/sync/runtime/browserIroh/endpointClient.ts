@@ -74,17 +74,13 @@ export type BrowserIrohStream = Readonly<{
 
 export type BrowserIrohEndpointClient = Readonly<{
     acquireLease: (relayUrls: readonly string[]) => Promise<BrowserIrohLease>;
-    configureRelays: (
-        relayUrls: readonly string[],
-    ) => Promise<Readonly<{ endpointId: string; appliedRelayUrls: readonly string[] }>>;
     status: () => Promise<BrowserIrohEndpointStatus>;
     /** Releases every lease this tab holds. Siblings keep theirs. */
     releaseAll: () => Promise<void>;
-    clearApplicationData: () => Promise<void>;
     /**
      * Disposes this tab's client: the page-lifecycle listener is detached and
-     * never reattached. It does not release anything on its own — `releaseAll`
-     * and `clearApplicationData` remain the explicit, awaited, truthful paths.
+     * never reattached. It does not release anything on its own; `releaseAll`
+     * remains the explicit, awaited lease-release path.
      */
     close: () => void;
 }>;
@@ -108,6 +104,10 @@ function newRequestId(): string {
         return cryptoRandomUUID.call(globalThis.crypto);
     }
     return `request-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function abortReason(signal: AbortSignal): unknown {
+    return signal.reason ?? Object.assign(new Error('Browser Iroh request was aborted'), { name: 'AbortError' });
 }
 
 /**
@@ -137,10 +137,24 @@ export function connectPackagedBrowserIrohWorker(base: string): BrowserIrohWorke
     };
 }
 
-/** The document base URL the packaged assets are resolved against. */
-function documentBaseUrl(): string {
-    const location = (globalThis as { location?: { href?: string } }).location;
-    return String(location?.href ?? '');
+/**
+ * The deployment base URL the packaged assets resolve from: the app origin
+ * plus the web output's configured base path. Expo inlines its supported
+ * subpath setting (`experiments.baseUrl`) as `EXPO_BASE_URL` at build time —
+ * the same base the router itself uses — so a deployment hosted under a
+ * subpath resolves its own packaged assets too.
+ *
+ * The current navigation URL is deliberately not consulted (Lane 06 amendment
+ * A9): a nested route, a deep reload, or any pushState navigation is location
+ * state, not deployment state, and must never move the packaged worker's URL.
+ */
+function deploymentBaseUrl(): string {
+    const origin = (globalThis as { location?: { origin?: unknown } }).location?.origin;
+    if (typeof origin !== 'string' || origin.length === 0) {
+        return '';
+    }
+    const basePath = String(process.env.EXPO_BASE_URL ?? '').trim().replace(/^\/+|\/+$/u, '');
+    return basePath === '' ? origin : `${origin}/${basePath}`;
 }
 
 /** The tab's one packaged client; `null` until a caller first asks for it. */
@@ -156,11 +170,11 @@ let packagedTabClient: BrowserIrohEndpointClient | null = null;
  *
  * Carrier and transfer releases free their own leases and streams but never
  * close this client: the page-lifecycle release attached on connect and an
- * explicit `clearApplicationData` remain the whole-client lifecycle owners.
+ * explicit lease release remains the whole-client lifecycle owner.
  */
 export function resolvePackagedBrowserIrohEndpointClient(): BrowserIrohEndpointClient {
     packagedTabClient ??= createBrowserIrohEndpointClient(
-        () => connectPackagedBrowserIrohWorker(documentBaseUrl()),
+        () => connectPackagedBrowserIrohWorker(deploymentBaseUrl()),
     );
     return packagedTabClient;
 }
@@ -210,13 +224,28 @@ export function createBrowserIrohEndpointClient(
         connected.port.addEventListener('message', (event) => {
             const reply = parseBrowserIrohWorkerReply(event.data);
             if (reply === null) return;
-            pending.get(reply.requestId)?.(reply);
+            const resolve = pending.get(reply.requestId);
+            if (resolve !== undefined) {
+                resolve(reply);
+                return;
+            }
+            if (reply.kind === 'streamOpened') {
+                // An abort can remove the waiter after the worker completed
+                // but before this queued reply reaches the tab. Return that
+                // opaque handle through the same owner instead of leaking it.
+                connected.port.postMessage({
+                    v: 1,
+                    kind: 'closeStream',
+                    requestId: newRequestId(),
+                    streamId: reply.streamId,
+                } satisfies BrowserIrohClientCommand);
+            }
         });
         connected.onFailure(fail);
         connected.port.start?.();
         connection = connected;
-        // The worker outlives this page, so the leases this tab is about to
-        // take have to be handed back when the page ends. Attaching here keeps
+        // The worker can remain live for sibling contexts after this page ends,
+        // so this tab's leases have to be handed back. Attaching here keeps
         // the "nothing until a caller asks" rule: an unused client listens to
         // nothing.
         if (!closed) {
@@ -240,8 +269,8 @@ export function createBrowserIrohEndpointClient(
         }
         const active = ensureConnection();
         const requestId = newRequestId();
-        if (signal?.aborted) throw signal.reason;
-        let detachAbort: (() => void) | null = null;
+        if (signal?.aborted) throw abortReason(signal);
+        let detachAbort: () => void = () => undefined;
         const reply = new Promise<BrowserIrohWorkerReply>((resolve, reject) => {
             pending.set(requestId, resolve);
             if (signal) {
@@ -253,7 +282,7 @@ export function createBrowserIrohEndpointClient(
                         requestId: newRequestId(),
                         targetRequestId: requestId,
                     } satisfies BrowserIrohClientCommand);
-                    reject(signal.reason);
+                    reject(abortReason(signal));
                 };
                 signal.addEventListener('abort', onAbort, { once: true });
                 detachAbort = () => signal.removeEventListener('abort', onAbort);
@@ -263,7 +292,7 @@ export function createBrowserIrohEndpointClient(
         try {
             return await reply;
         } finally {
-            detachAbort?.();
+            detachAbort();
             pending.delete(requestId);
         }
     }
@@ -361,21 +390,6 @@ export function createBrowserIrohEndpointClient(
             };
         },
 
-        configureRelays: async (relayUrls) => {
-            const configured = requireReply(
-                await send((requestId) => ({
-                    v: 1,
-                    kind: 'configureRelays',
-                    requestId,
-                    relayUrls: [...relayUrls],
-                })),
-                'relaysConfigured',
-            );
-            return {
-                endpointId: configured.endpointId,
-                appliedRelayUrls: configured.appliedRelayUrls,
-            };
-        },
 
         status: async () =>
             requireReply(await send((requestId) => ({ v: 1, kind: 'status', requestId })), 'status')
@@ -385,13 +399,6 @@ export function createBrowserIrohEndpointClient(
             requireReply(
                 await send((requestId) => ({ v: 1, kind: 'releaseClient', requestId })),
                 'released',
-            );
-        },
-
-        clearApplicationData: async () => {
-            requireReply(
-                await send((requestId) => ({ v: 1, kind: 'clearApplicationData', requestId })),
-                'cleared',
             );
         },
 

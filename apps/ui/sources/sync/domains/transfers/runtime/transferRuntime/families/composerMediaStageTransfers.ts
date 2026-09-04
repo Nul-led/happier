@@ -28,11 +28,12 @@ import { createBufferedTransferDestination } from '../carriers/createBufferedTra
 import { downloadBulkPayloadViaMachineRpcToDestination } from '../carriers/downloadBulkPayloadViaMachineRpcToDestination';
 import { downloadBulkPayloadViaDirectExportToDestination } from '../plumbing/directTransferExportDownload';
 import {
-    isIrohMachineCarrierRoute,
     MACHINE_CARRIER_INTERRUPTED_TRANSFER_ERROR,
+    MACHINE_CARRIER_TRANSPORT_FAILED_ERROR_CODE,
     resolveMachineCarrierRoute,
     type MachineCarrierRoute,
 } from '../plumbing/machineCarrierHttpLease';
+import { resolveMachineCarrierTransferFlow } from '../routing/machineCarrierTransferFlow';
 
 type TransferFailureResponse = Readonly<{ success: false; error: string; errorCode?: string }>;
 type ComposerMediaStageUploadInitResponse =
@@ -258,15 +259,16 @@ export async function inspectComposerContent(
     const expectedSizeBytes = resolveInspectionRange(handle.data, request.data);
     const buffered = createBufferedTransferDestination(request.data.maxBytes);
     let machineRoute: MachineCarrierRoute | null = null;
+    const directExportRequest = {
+        t: 'composer_media_stage_inspect_v1',
+        handle: handle.data,
+        offset: request.data.offset,
+        maxBytes: request.data.maxBytes,
+    } as const;
     const direct = await downloadBulkPayloadViaDirectExportToDestination({
         machineId: handle.data.executionTarget.machineId,
         serverId: handle.data.executionTarget.serverId,
-        request: {
-            t: 'composer_media_stage_inspect_v1',
-            handle: handle.data,
-            offset: request.data.offset,
-            maxBytes: request.data.maxBytes,
-        },
+        request: directExportRequest,
         destination: buffered.destination,
         onInit: async (init) => (
             init.name === handle.data.name && init.sizeBytes === expectedSizeBytes
@@ -282,7 +284,7 @@ export async function inspectComposerContent(
             return machineRoute.kind === 'iroh_peer'
                 ? await machineRoute.acquire({
                     operationId,
-                    flow: 'attachment_transfer',
+                    flow: resolveMachineCarrierTransferFlow(directExportRequest),
                     maxBytes,
                     signal: options?.signal ?? undefined,
                 })
@@ -299,9 +301,9 @@ export async function inspectComposerContent(
             ? { success: true, result: result.data }
             : transferFailure('Composer media inspection returned an invalid range');
     }
-    if (isIrohMachineCarrierRoute(machineRoute)) {
+    if (direct.errorCode === MACHINE_CARRIER_TRANSPORT_FAILED_ERROR_CODE) {
         buffered.reset();
-        return transferFailure(MACHINE_CARRIER_INTERRUPTED_TRANSFER_ERROR, 'machine_carrier_transport_failed');
+        return transferFailure(MACHINE_CARRIER_INTERRUPTED_TRANSFER_ERROR, MACHINE_CARRIER_TRANSPORT_FAILED_ERROR_CODE);
     }
     buffered.reset();
     const transferClient = createWorkspaceFileTransferRpcCaller({

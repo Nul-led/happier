@@ -8,6 +8,8 @@ import { loadSyncTuning } from '@/sync/runtime/syncTuning';
 
 import { fetchAndApplyAutomationRuns, fetchAndApplyAutomations } from './syncAutomations';
 
+type ApplyAutomations = Parameters<typeof fetchAndApplyAutomations>[0]['applyAutomations'];
+
 const listAutomationDefinitionsMock = vi.hoisted(() => vi.fn());
 const listAutomationDefinitionRunsMock = vi.hoisted(() => vi.fn());
 const isRuntimeFeatureEnabledMock = vi.hoisted(() => vi.fn());
@@ -119,7 +121,7 @@ describe('fetchAndApplyAutomations', () => {
     });
 
     it('applies content-free summaries and refreshes already-loaded Event runs through the current API', async () => {
-        const applyAutomations = vi.fn(() => null);
+        const applyAutomations = vi.fn<ApplyAutomations>(() => null);
         const refreshAutomationRunsWindow = vi.fn();
 
         await fetchAndApplyAutomations({
@@ -150,7 +152,7 @@ describe('fetchAndApplyAutomations', () => {
     });
 
     it('does not turn a list refresh into a private direct-detail fanout', async () => {
-        const applyAutomations = vi.fn(() => null);
+        const applyAutomations = vi.fn<ApplyAutomations>(() => null);
 
         await fetchAndApplyAutomations({
             credentials: { accessToken: 'token' } as any,
@@ -164,7 +166,7 @@ describe('fetchAndApplyAutomations', () => {
     });
 
     it('refreshes already-loaded run lists through the shared request-concurrency owner', async () => {
-        const applyAutomations = vi.fn(() => null);
+        const applyAutomations = vi.fn<ApplyAutomations>(() => null);
         const refreshAutomationRunsWindow = vi.fn();
         const loadedAutomationRunIds = Array.from({ length: 20 }, (_unused, index) => `event-${index + 1}`);
         listAutomationDefinitionsMock.mockResolvedValue({
@@ -198,7 +200,7 @@ describe('fetchAndApplyAutomations', () => {
     });
 
     it('drops fetched automations when the captured sync scope is stale before apply', async () => {
-        const applyAutomations = vi.fn(() => null);
+        const applyAutomations = vi.fn<ApplyAutomations>(() => null);
         const refreshAutomationRunsWindow = vi.fn();
 
         await fetchAndApplyAutomations({
@@ -219,7 +221,7 @@ describe('fetchAndApplyAutomations', () => {
             automations: [{ ...eventSummary, id: 'event-2' }],
             nextCursor: 'cursor-2',
         });
-        const applyAutomations = vi.fn(() => null);
+        const applyAutomations = vi.fn<ApplyAutomations>(() => null);
         const appendAutomations = vi.fn(() => true);
 
         await fetchAndApplyAutomations({
@@ -253,7 +255,7 @@ describe('fetchAndApplyAutomations', () => {
                 nextCursor: null,
             };
         });
-        const applyAutomations = vi.fn(() => null);
+        const applyAutomations = vi.fn<ApplyAutomations>(() => null);
         const appendAutomations = vi.fn(() => true);
 
         await fetchAndApplyAutomations({

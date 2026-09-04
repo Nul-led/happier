@@ -9,7 +9,7 @@ import {
     subscribeToRuntimeActiveChange,
 } from '@/utils/runtime/isRuntimeActive';
 
-export type AccountDirectoryActivePollingOutcome = 'success' | 'transient';
+export type AccountDirectoryActivePollingOutcome = 'completed' | 'backoff';
 type PollingCallback = () =>
     | AccountDirectoryActivePollingOutcome
     | Promise<AccountDirectoryActivePollingOutcome>;
@@ -18,7 +18,7 @@ const callbacks = new Set<PollingCallback>();
 let pollingTimeout: ReturnType<typeof setTimeout> | null = null;
 let stopListening: (() => void) | null = null;
 let pollDueAtMs = 0;
-let transientFailureCount = 0;
+let backoffAttemptCount = 0;
 let pollRunning = false;
 
 function stopScheduler(): void {
@@ -27,13 +27,13 @@ function stopScheduler(): void {
     stopListening?.();
     stopListening = null;
     pollDueAtMs = 0;
-    transientFailureCount = 0;
+    backoffAttemptCount = 0;
 }
 
 function nextDelayMs(): number {
-    return transientFailureCount === 0
+    return backoffAttemptCount === 0
         ? ENROLLMENT_POLL_IDLE_DELAY_MS
-        : enrollmentPollingBackoffMs(transientFailureCount);
+        : enrollmentPollingBackoffMs(backoffAttemptCount);
 }
 
 function schedulePolling(delayMs = nextDelayMs()): void {
@@ -55,11 +55,11 @@ async function runPollingCallbacks(): Promise<void> {
             try {
                 return await callback();
             } catch {
-                return 'transient';
+                return 'backoff';
             }
         }));
-        transientFailureCount = outcomes.includes('transient')
-            ? transientFailureCount + 1
+        backoffAttemptCount = outcomes.includes('backoff')
+            ? backoffAttemptCount + 1
             : 0;
     } finally {
         pollRunning = false;

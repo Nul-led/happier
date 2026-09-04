@@ -65,7 +65,7 @@ import type {
     ScmWorktreeRemoveRequest,
     ScmWorktreeRemoveResponse,
 } from '@happier-dev/protocol';
-import { SCM_OPERATION_ERROR_CODES } from '@happier-dev/protocol';
+import { SCM_OPERATION_ERROR_CODES, ScmLogListResponseSchema } from '@happier-dev/protocol';
 import { isRpcMethodNotAvailableError, isRpcMethodNotFoundError, type RpcErrorCarrier } from '@happier-dev/protocol/rpcErrors';
 import { RPC_ERROR_MESSAGES, RPC_METHODS } from '@happier-dev/protocol/rpc';
 
@@ -80,7 +80,11 @@ import { getFirstPartyScmBackendLegacyLocalId } from '@/scm/registry/firstPartyS
 const SCM_UNSUPPORTED_RESPONSE_ERROR = 'SCM_UNSUPPORTED_RESPONSE_ERROR';
 const SCM_DIFF_COMMIT_TIMEOUT_MS = 120_000;
 
-export type MachineScmCallOptions = Readonly<{ serverId?: string | null; signal?: AbortSignal }>;
+export type MachineScmCallOptions = Readonly<{
+    serverId?: string | null;
+    accountId?: string | null;
+    signal?: AbortSignal;
+}>;
 
 function resolveScmRpcTimeoutMs(method: string): number | undefined {
     if (method === RPC_METHODS.SCM_DIFF_COMMIT) {
@@ -189,6 +193,7 @@ export async function runMachineScmRpc<
         method,
         payload: payload as R,
         ...(options?.serverId ? { serverId: options.serverId } : {}),
+        ...(options?.accountId ? { accountId: options.accountId } : {}),
         ...(options?.signal ? { signal: options.signal } : {}),
         timeoutMs,
     });
@@ -209,7 +214,8 @@ async function callMachineScm<
     } catch (error) {
         // A caller-cancelled search must reach the caller as an abort so it can discard the
         // request silently — not be reclassified as a backend failure, which would present
-        // offline truth for a query the user simply left. Same discipline as `machineRipgrep`.
+        // offline truth for a query the user simply left. This matches the typed
+        // workspace-file adapter's cancellation discipline.
         if (options?.signal?.aborted) {
             throw error;
         }
@@ -278,7 +284,13 @@ export async function machineScmLogList(
     request: ScmLogListRequest,
     options?: MachineScmCallOptions,
 ): Promise<ScmLogListResponse> {
-    return await callMachineScm<ScmLogListResponse, ScmLogListRequest>(machineId, RPC_METHODS.SCM_LOG_LIST, request, options);
+    const response = await callMachineScm<ScmLogListResponse, ScmLogListRequest>(
+        machineId,
+        RPC_METHODS.SCM_LOG_LIST,
+        request,
+        options,
+    );
+    return ScmLogListResponseSchema.parse(response);
 }
 
 export async function machineScmCommitBackout(

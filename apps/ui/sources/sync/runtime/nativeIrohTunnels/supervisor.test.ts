@@ -2,9 +2,17 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createIrohHomeTunnelSupervisor } from './supervisor';
 import type { IrohHomeTunnelRequest } from './types';
+import { readIrohHomeTransportDiagnostics } from '@/sync/runtime/irohHomeTransportDiagnostics';
 
-function homeIdentity(index: number): string {
-    return `srv_home_${String(index).padStart(3, '0')}`;
+function homeIdentity(scope: string, index: number): string {
+    return `srv_${scope}_${String(index).padStart(3, '0')}`;
+}
+
+function readScopeDiagnostics(scope: string) {
+    const prefix = `srv_${scope}_`;
+    return readIrohHomeTransportDiagnostics().filter(
+        (entry) => entry.homeServerIdentityId.startsWith(prefix),
+    );
 }
 
 function makeRequest(homeServerIdentityId: string): IrohHomeTunnelRequest {
@@ -52,44 +60,47 @@ describe('Iroh Home transport diagnostics retention', () => {
 
     it('retains diagnostics for every Home holding an active lease, past the inactive history bound', async () => {
         const supervisor = createSupervisorUnderTest();
+        const scope = 'active';
         const activeHomes = 70;
         for (let index = 0; index < activeHomes; index += 1) {
-            await supervisor.ensureTunnel(makeRequest(homeIdentity(index)));
+            await supervisor.ensureTunnel(makeRequest(homeIdentity(scope, index)));
         }
 
-        const diagnostics = supervisor.readDiagnostics();
+        const diagnostics = readScopeDiagnostics(scope);
         expect(diagnostics).toHaveLength(activeHomes);
         // The first (oldest transition) Home still holds a live lease and must
         // never be evicted to make room for a newer one.
-        expect(diagnostics.map((entry) => entry.homeServerIdentityId)).toContain(homeIdentity(0));
+        expect(diagnostics.map((entry) => entry.homeServerIdentityId)).toContain(homeIdentity(scope, 0));
         expect(diagnostics.every((entry) => entry.state === 'connected')).toBe(true);
     });
 
     it('bounds inactive Home history while keeping the most recent inactive entries', async () => {
         const supervisor = createSupervisorUnderTest();
+        const scope = 'inactive';
         const releasedHomes = 80;
         for (let index = 0; index < releasedHomes; index += 1) {
-            const lease = await supervisor.ensureTunnel(makeRequest(homeIdentity(index)));
+            const lease = await supervisor.ensureTunnel(makeRequest(homeIdentity(scope, index)));
             await supervisor.releaseTunnel(lease.leaseId);
         }
 
-        const diagnostics = supervisor.readDiagnostics();
+        const diagnostics = readScopeDiagnostics(scope);
         expect(diagnostics.length).toBeLessThanOrEqual(64);
         expect(diagnostics.length).toBeGreaterThan(0);
         const retained = diagnostics.map((entry) => entry.homeServerIdentityId);
-        expect(retained).toContain(homeIdentity(releasedHomes - 1));
-        expect(retained).not.toContain(homeIdentity(0));
+        expect(retained).toContain(homeIdentity(scope, releasedHomes - 1));
+        expect(retained).not.toContain(homeIdentity(scope, 0));
     });
 
     it('ages a Home fact through the existing release lifecycle and keeps its proven last-known path', async () => {
         const supervisor = createSupervisorUnderTest();
-        const lease = await supervisor.ensureTunnel(makeRequest(homeIdentity(1)));
-        expect(supervisor.readDiagnostics()[0]?.state).toBe('connected');
+        const scope = 'release';
+        const lease = await supervisor.ensureTunnel(makeRequest(homeIdentity(scope, 1)));
+        expect(readScopeDiagnostics(scope)[0]?.state).toBe('connected');
 
         await supervisor.releaseTunnel(lease.leaseId);
 
-        const [released] = supervisor.readDiagnostics();
-        expect(released?.homeServerIdentityId).toBe(homeIdentity(1));
+        const [released] = readScopeDiagnostics(scope);
+        expect(released?.homeServerIdentityId).toBe(homeIdentity(scope, 1));
         expect(released?.state).toBe('disconnected');
         expect(released?.current).toBeUndefined();
         expect(released?.lastKnown).toEqual({ carrier: 'iroh', observedPath: 'direct' });
@@ -97,25 +108,34 @@ describe('Iroh Home transport diagnostics retention', () => {
 
     it('ages every owned Home fact when the runtime is disposed', async () => {
         const supervisor = createSupervisorUnderTest();
-        await supervisor.ensureTunnel(makeRequest(homeIdentity(1)));
-        await supervisor.ensureTunnel(makeRequest(homeIdentity(2)));
+        const scope = 'dispose';
+        await supervisor.ensureTunnel(makeRequest(homeIdentity(scope, 1)));
+        await supervisor.ensureTunnel(makeRequest(homeIdentity(scope, 2)));
 
         await supervisor.dispose();
 
-        const diagnostics = supervisor.readDiagnostics();
-        expect(diagnostics.map((entry) => entry.homeServerIdentityId)).toEqual([homeIdentity(1), homeIdentity(2)]);
+        const diagnostics = readScopeDiagnostics(scope);
+        expect(diagnostics.map((entry) => entry.homeServerIdentityId)).toEqual([
+            homeIdentity(scope, 1),
+            homeIdentity(scope, 2),
+        ]);
         expect(diagnostics.every((entry) => entry.state === 'disconnected')).toBe(true);
         expect(diagnostics.every((entry) => entry.current === undefined)).toBe(true);
     });
 
-    it('keeps native custody owned when a rejected start could not release its lease, and retries it at disposal', async () => {
-        const releaseHomeTunnel = vi.fn(async () => { throw new Error('native release failed'); });
+    it('reports a failed retained-custody retry and clears custody only after a later disposal succeeds', async () => {
+        const releaseAttempts = new Map<string, number>();
+        const releaseHomeTunnel = vi.fn(async (leaseId: string) => {
+            const attempts = (releaseAttempts.get(leaseId) ?? 0) + 1;
+            releaseAttempts.set(leaseId, attempts);
+            if (attempts <= 3) throw new Error(`native release failed: ${leaseId}`);
+        });
         const supervisor = createIrohHomeTunnelSupervisor({
             native: {
                 // A misrouted native result: the lease is bound to another Home,
                 // so the adapter fails closed and must clean the lease up.
                 ensureHomeTunnel: vi.fn(async (input: { endpointId: string }) => ({
-                    leaseId: 'native-lease-mismatched',
+                    leaseId: `native-lease-${input.endpointId}`,
                     homeServerIdentityId: 'srv_home_other',
                     homeEndpointId: input.endpointId,
                     runtimeOrigin: 'http://127.0.0.1:45001',
@@ -128,33 +148,45 @@ describe('Iroh Home transport diagnostics retention', () => {
             probe: async () => ({ ok: true }),
         });
 
-        await expect(supervisor.ensureTunnel(makeRequest(homeIdentity(1))))
+        await expect(supervisor.ensureTunnel(makeRequest(homeIdentity('custody', 1))))
+            .rejects.toMatchObject({ code: 'identity_mismatch' });
+        await expect(supervisor.ensureTunnel(makeRequest(homeIdentity('custody', 2))))
             .rejects.toMatchObject({ code: 'identity_mismatch' });
         // Immediate cleanup plus one retry at the failed start's terminal
         // boundary; the still-unreleased lease stays owned rather than orphaned.
-        expect(releaseHomeTunnel.mock.calls).toHaveLength(2);
+        expect([...releaseAttempts.values()]).toEqual([2, 2]);
+
+        await expect(supervisor.dispose()).rejects.toThrow('Failed to dispose every Iroh Home tunnel.');
+
+        expect([...releaseAttempts.values()]).toEqual([3, 3]);
 
         await supervisor.dispose();
+        expect([...releaseAttempts.values()]).toEqual([4, 4]);
 
-        expect(releaseHomeTunnel.mock.calls).toHaveLength(3);
-        expect(releaseHomeTunnel).toHaveBeenCalledWith('native-lease-mismatched');
+        // Successful cleanup removed the adapter from retained custody.
+        await supervisor.dispose();
+        expect([...releaseAttempts.values()]).toEqual([4, 4]);
     });
 
     it('keeps each read Home-scoped when a non-focused Home is released', async () => {
         const supervisor = createSupervisorUnderTest();
-        const focused = await supervisor.ensureTunnel(makeRequest(homeIdentity(1)));
-        const secondary = await supervisor.ensureTunnel(makeRequest(homeIdentity(2)));
+        const scope = 'scoped';
+        const focused = await supervisor.ensureTunnel(makeRequest(homeIdentity(scope, 1)));
+        const secondary = await supervisor.ensureTunnel(makeRequest(homeIdentity(scope, 2)));
 
         await supervisor.releaseTunnel(secondary.leaseId);
 
-        const diagnostics = supervisor.readDiagnostics();
-        expect(diagnostics.map((entry) => entry.homeServerIdentityId)).toEqual([homeIdentity(1), homeIdentity(2)]);
+        const diagnostics = readScopeDiagnostics(scope);
+        expect(diagnostics.map((entry) => entry.homeServerIdentityId)).toEqual([
+            homeIdentity(scope, 1),
+            homeIdentity(scope, 2),
+        ]);
         expect(diagnostics[0]?.state).toBe('connected');
-        expect(diagnostics[0]?.remoteEndpointId).toBe(`endpoint-${homeIdentity(1)}`);
+        expect(diagnostics[0]?.remoteEndpointId).toBe(`endpoint-${homeIdentity(scope, 1)}`);
         expect(diagnostics[1]?.state).toBe('disconnected');
-        expect(diagnostics[1]?.remoteEndpointId).toBe(`endpoint-${homeIdentity(2)}`);
+        expect(diagnostics[1]?.remoteEndpointId).toBe(`endpoint-${homeIdentity(scope, 2)}`);
 
         await supervisor.releaseTunnel(focused.leaseId);
-        expect(supervisor.readDiagnostics().every((entry) => entry.state === 'disconnected')).toBe(true);
+        expect(readScopeDiagnostics(scope).every((entry) => entry.state === 'disconnected')).toBe(true);
     });
 });

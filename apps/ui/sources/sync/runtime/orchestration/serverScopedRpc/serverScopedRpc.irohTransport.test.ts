@@ -30,9 +30,13 @@ function buildIrohOnlyProfile(overrides: Record<string, unknown> = {}): ServerPr
         createdAt: 0,
         updatedAt: 0,
         lastUsedAt: 0,
-        irohEndpoint: { endpointId: 'ep-home-b', relayUrls: ['https://relay.example.test'] },
-        connectionDescriptorRevision: 3,
-        publicServerUrl: null,
+        homeConnectionDescriptor: {
+            v: 1,
+            homeServerIdentityId: 'srv_home_b',
+            canonicalServerUrl: 'http://127.0.0.1:3010',
+            revision: 3,
+            endpoints: [{ kind: 'iroh', endpointId: 'ep-home-b', relayUrls: ['https://relay.example.test'] }],
+        },
         ...overrides,
     } as ServerProfileRecord;
 }
@@ -77,8 +81,8 @@ vi.mock('@/sync/domains/server/serverRuntime', () => ({
     getActiveServerSnapshot: (...args: unknown[]) => getActiveServerSnapshotSpy(...args),
 }));
 
-vi.mock('@/sync/runtime/nativeIrohTunnels', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('@/sync/runtime/nativeIrohTunnels')>();
+vi.mock('@/sync/runtime/nativeIrohTunnels/runtime', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/sync/runtime/nativeIrohTunnels/runtime')>();
     return {
         ...actual,
         acquireIrohHomeRuntimeOrigin: (...args: unknown[]) => acquireIrohSpy(...args),
@@ -200,8 +204,7 @@ describe('scoped transport authority for non-focused Iroh Homes', () => {
         if (context.scope !== 'scoped') return;
         expect(acquireIrohSpy).toHaveBeenCalledWith({
             homeServerIdentityId: 'srv_home_b',
-            endpoint: { endpointId: 'ep-home-b', relayUrls: ['https://relay.example.test'] },
-            descriptorRevision: 3,
+            endpoint: { kind: 'iroh', endpointId: 'ep-home-b', relayUrls: ['https://relay.example.test'] },
             canonicalServerUrl: 'http://127.0.0.1:3010',
             verification: { kind: 'authenticated', token: TOKEN_B },
         });
@@ -247,7 +250,16 @@ describe('scoped transport authority for non-focused Iroh Homes', () => {
 
     it('falls back to a descriptor-proven independent HTTPS endpoint after pure Iroh unavailability', async () => {
         irohProfile = buildIrohOnlyProfile({
-            publicServerUrl: ' HTTPS://Home-B.Example.test:443/api///?token=secret#fragment ',
+            homeConnectionDescriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_home_b',
+                canonicalServerUrl: 'http://127.0.0.1:3010',
+                revision: 3,
+                endpoints: [
+                    { kind: 'iroh', endpointId: 'ep-home-b', relayUrls: ['https://relay.example.test'] },
+                    { kind: 'https', url: ' HTTPS://Home-B.Example.test:443/api///?token=secret#fragment ' },
+                ],
+            },
         });
         getActiveServerSnapshotSpy.mockReturnValue({
             serverId: 'srv_home_a',
@@ -386,12 +398,7 @@ describe('scoped transport authority for non-focused Iroh Homes', () => {
                         machineId: 'machine-b',
                         flowKind: 'bounded_transfer',
                         routeKind: 'iroh_peer',
-                        scope: {
-                            kind: 'bounded_transfer',
-                            mode: 'single',
-                            transferId: 'transfer-1',
-                            maxBytes: 1024,
-                        },
+                        scope: { kind: 'bounded_transfer', mode: 'carrier' },
                         iat: 1_000,
                         exp: 301_000,
                         aud: 'happier-daemon-route-grant',
@@ -401,7 +408,7 @@ describe('scoped transport authority for non-focused Iroh Homes', () => {
                         iroh: {
                             initiator: { kind: 'account_client', endpointId: clientEndpointId },
                             target: { machineId: 'machine-b', endpointId: machineEndpointId },
-                            operationKind: 'file_transfer',
+                            operationKind: 'finite_transfer',
                         },
                     },
                     signature: {
@@ -437,16 +444,11 @@ describe('scoped transport authority for non-focused Iroh Homes', () => {
                 routeKind: 'iroh_peer',
                 endpointFingerprint: machineEndpointId,
                 ttlMs: 300_000,
-                scope: {
-                    kind: 'bounded_transfer',
-                    mode: 'single',
-                    transferId: 'transfer-1',
-                    maxBytes: 1024,
-                },
+                scope: { kind: 'bounded_transfer', mode: 'carrier' },
                 iroh: {
                     initiator: { kind: 'account_client', endpointId: clientEndpointId },
                     target: { machineId: 'machine-b', endpointId: machineEndpointId },
-                    operationKind: 'file_transfer',
+                    operationKind: 'finite_transfer',
                 },
             },
             timeoutMs: 5_000,

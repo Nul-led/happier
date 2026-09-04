@@ -179,6 +179,77 @@ describe('provider-neutral loopback tunnel supervisor', () => {
         expect(supervisor.listTunnels().leases).toEqual([]);
     });
 
+    it('closes admission synchronously when disposal begins, settles admitted starts, and releases their late handles', async () => {
+        const { createLoopbackTunnelSupervisor } = await import('./supervisor');
+        let resolveStart: ((value: { nativeTunnelId: string; localPort: number }) => void) | undefined;
+        const startLoopbackTunnel = vi.fn(() => new Promise<{ nativeTunnelId: string; localPort: number }>((resolve) => {
+            resolveStart = resolve;
+        }));
+        const stopLoopbackTunnel = vi.fn(async () => undefined);
+        const supervisor = createLoopbackTunnelSupervisor<Request, LoopbackTunnelLease>({
+            adapter: { startLoopbackTunnel, stopLoopbackTunnel },
+            probe: vi.fn(async () => ({ ok: true as const })),
+            buildKey: () => 'home-key',
+            createLease: createLeaseFactory(),
+        });
+
+        const admitted = supervisor.ensureTunnel(createRequest());
+        await vi.waitFor(() => expect(resolveStart).toBeTypeOf('function'));
+
+        const disposal = supervisor.dispose();
+
+        // Admission is already closed while disposal is still settling the
+        // admitted start: no second native start may begin.
+        expect(startLoopbackTunnel).toHaveBeenCalledTimes(1);
+        await expect(supervisor.ensureTunnel(createRequest())).rejects.toThrow('loopback_tunnel_disposed');
+        expect(startLoopbackTunnel).toHaveBeenCalledTimes(1);
+
+        // The admitted start settles, and the same disposal pass releases the
+        // handle it produced instead of leaving it owned by a dead supervisor.
+        resolveStart?.({ nativeTunnelId: 'native-late', localPort: 49154 });
+        await expect(admitted).resolves.toEqual(expect.objectContaining({ leaseId: 'loopback:home-key' }));
+        await disposal;
+        expect(stopLoopbackTunnel).toHaveBeenCalledWith('native-late');
+        expect(supervisor.listTunnels().leases).toEqual([]);
+
+        // A disposed supervisor cannot restart native work.
+        await expect(supervisor.ensureTunnel(createRequest())).rejects.toThrow('loopback_tunnel_disposed');
+        expect(startLoopbackTunnel).toHaveBeenCalledTimes(1);
+    });
+
+    it('reopens admission when disposal fails so the same owner keeps supervising, then closes it on success', async () => {
+        const { createLoopbackTunnelSupervisor } = await import('./supervisor');
+        const stopLoopbackTunnel = vi.fn(async () => undefined)
+            .mockRejectedValueOnce(new Error('native_stop_failed'));
+        const supervisor = createLoopbackTunnelSupervisor<Request, LoopbackTunnelLease>({
+            adapter: {
+                startLoopbackTunnel: vi.fn(async () => ({ nativeTunnelId: 'native-1', localPort: 49152 })),
+                stopLoopbackTunnel,
+            },
+            probe: vi.fn(async () => ({ ok: true as const })),
+            buildKey: () => 'home-key',
+            createLease: createLeaseFactory(),
+        });
+        const lease = await supervisor.ensureTunnel(createRequest());
+
+        await expect(supervisor.dispose()).rejects.toThrow('native_stop_failed');
+        // The failed stop stays owned by the same supervisor, which remains the
+        // live owner; acquisition admission is available again for its retry.
+        expect(supervisor.listTunnels().leases).toEqual([
+            expect.objectContaining({ leaseId: 'loopback:home-key', status: 'failed' }),
+        ]);
+        const reacquired = await supervisor.ensureTunnel(createRequest());
+        expect(reacquired.leaseId).toBe(lease.leaseId);
+
+        // A successful disposal is terminal: the handle is released once more
+        // and the supervisor accepts no further work.
+        await supervisor.dispose();
+        expect(stopLoopbackTunnel).toHaveBeenCalledTimes(3);
+        expect(stopLoopbackTunnel).toHaveBeenLastCalledWith('native-1');
+        expect(supervisor.listTunnels().leases).toEqual([]);
+        await expect(supervisor.ensureTunnel(createRequest())).rejects.toThrow('loopback_tunnel_disposed');
+    });
+
     it('applies consumer failure codes, probe diagnostics, and platform limitation configuration', async () => {
         const { createLoopbackTunnelSupervisor } = await import('./supervisor');
         const supervisor = createLoopbackTunnelSupervisor<Request, LoopbackTunnelLease>({
@@ -319,6 +390,74 @@ describe('provider-neutral loopback tunnel supervisor', () => {
         expect(observed).toEqual(expect.arrayContaining([
             expect.objectContaining({ type: 'closed', lease: expect.objectContaining({ leaseId: lease.leaseId }), errorCode: 'transport_closed' }),
         ]));
+    });
+
+    it('keeps supervising after a transient native status-read error until authoritative closure', async () => {
+        const { createLoopbackTunnelSupervisor } = await import('./supervisor');
+        let nativeListener: ((event: {
+            type: 'ready' | 'path_changed' | 'degraded' | 'closed' | 'error';
+            tunnelHandle: string;
+            status: 'ready' | 'degraded' | 'closed' | 'error';
+            observedPath?: string;
+            errorCode?: string;
+            atMs: number;
+        }) => void) | null = null;
+        const stopLoopbackTunnel = vi.fn(async () => undefined);
+        const unsubscribeNative = vi.fn();
+        const supervisor = createLoopbackTunnelSupervisor<Request, LoopbackTunnelLease>({
+            adapter: {
+                startLoopbackTunnel: vi.fn(async () => ({ nativeTunnelId: 'native-1', localPort: 49152 })),
+                stopLoopbackTunnel,
+                subscribeLoopbackTunnelEvents: (_nativeTunnelId, listener) => {
+                    nativeListener = listener;
+                    return unsubscribeNative;
+                },
+            },
+            probe: vi.fn(async () => ({ ok: true as const })),
+            buildKey: () => 'home-key',
+            createLease: createLeaseFactory(),
+        });
+        const observed: unknown[] = [];
+        supervisor.subscribe((event) => observed.push(event));
+        const lease = await supervisor.ensureTunnel(createRequest());
+
+        nativeListener?.({
+            type: 'error',
+            tunnelHandle: 'native-1',
+            status: 'error',
+            errorCode: 'status_observation_failed',
+            atMs: 10,
+        });
+
+        expect(supervisor.listTunnels().leases[0]).toEqual(expect.objectContaining({
+            leaseId: lease.leaseId,
+            status: 'ready',
+        }));
+        expect(stopLoopbackTunnel).not.toHaveBeenCalled();
+        expect(unsubscribeNative).not.toHaveBeenCalled();
+
+        nativeListener?.({
+            type: 'path_changed',
+            tunnelHandle: 'native-1',
+            status: 'ready',
+            observedPath: 'relay',
+            atMs: 11,
+        });
+        expect(observed).toEqual(expect.arrayContaining([
+            expect.objectContaining({ type: 'error', errorCode: 'status_observation_failed' }),
+            expect.objectContaining({ type: 'path_changed', observedPath: 'relay' }),
+        ]));
+
+        nativeListener?.({
+            type: 'closed',
+            tunnelHandle: 'native-1',
+            status: 'closed',
+            errorCode: 'transport_closed',
+            atMs: 12,
+        });
+        await vi.waitFor(() => expect(stopLoopbackTunnel).toHaveBeenCalledTimes(1));
+        expect(unsubscribeNative).toHaveBeenCalledTimes(1);
+        expect(supervisor.listTunnels().leases[0]?.status).toBe('stopped');
     });
 
     it('stops native observation while suspended and resubscribes only after the foreground probe succeeds', async () => {

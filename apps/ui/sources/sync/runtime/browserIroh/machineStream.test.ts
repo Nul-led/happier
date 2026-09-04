@@ -17,19 +17,6 @@ import { createBrowserIrohWorkerConnectionHandler, type BrowserIrohMessagePort }
 const RELAY = 'https://relay.happier.test';
 const TARGET = 'endpoint-machine-target';
 
-function createMemoryKeyStore() {
-    let stored: Uint8Array | null = null;
-    return {
-        read: async () => stored,
-        write: async (value: Uint8Array) => {
-            stored = new Uint8Array(value);
-        },
-        clear: async () => {
-            stored = null;
-        },
-    };
-}
-
 /** Records every open the owner issues to the endpoint binding. */
 function createRecordingBinding() {
     const opens: { endpointId: string; streamKind: string; relayUrls: readonly string[] }[] = [];
@@ -58,7 +45,6 @@ function createRecordingBinding() {
 function createOwner() {
     const binding = createRecordingBinding();
     const owner = createBrowserIrohSharedEndpointOwner({
-        keyStore: createMemoryKeyStore(),
         randomBytes: (length) => new Uint8Array(length).fill(7),
         bindEndpoint: async () => binding.handle,
     });
@@ -117,7 +103,13 @@ describe('sync/runtime/browserIroh machine stream foundation', () => {
             async close(): Promise<void> {}
         }
         const binder = createBrowserIrohWasmBinder(async () => ({
-            module: { default: async () => 'initialized', HappierBrowserIrohProbe: FakeProbe },
+            module: {
+                default: async () => 'initialized',
+                HappierBrowserIrohProbe: FakeProbe,
+                HappierBrowserIrohOpenCancellation: class {
+                    cancel(): void {}
+                },
+            },
             wasmUrl: 'wasm-url',
         }));
         const handle = await binder({ secretKey: new Uint8Array(32).fill(9), relayUrls: [RELAY] });

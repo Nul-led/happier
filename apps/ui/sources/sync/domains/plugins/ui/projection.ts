@@ -29,6 +29,7 @@ import {
     PluginUiResolvedSemanticCommandV1Schema,
     PluginUiDestinationBindingV1Schema,
     PluginUiInlineSurfaceBindingV1Schema,
+    PluginUiQualifiedActionReferenceV1Schema,
     PluginUiSurfaceBindingV1Schema,
     PluginUiDestinationReferenceV1Schema,
     type PluginUiDestinationBindingV1,
@@ -76,6 +77,7 @@ export type PluginUiSearchProviderProjection = UnknownRecord & Readonly<{
     pluginId: string;
     contributionKind: 'searchProvider';
     descriptorId: string;
+    identity: PluginContributionIdentityV1;
     action: PluginContributionIdentityV1;
 }>;
 
@@ -444,15 +446,21 @@ function resolveSearchProvider(entry: UnknownRecord): PluginUiSearchProviderProj
     const id = readString(entry.id);
     const pluginId = readString(entry.pluginId);
     const descriptorId = readString(entry.descriptorId);
-    const action = PluginContributionIdentityV1Schema.safeParse(entry.action);
-    if (id === null || pluginId === null || descriptorId === null || !action.success) return null;
-    if (action.data.pluginId !== pluginId) return null;
+    const identity = PluginContributionIdentityV1Schema.safeParse(entry.identity);
+    const action = PluginUiQualifiedActionReferenceV1Schema.safeParse(entry.action);
+    if (id === null || pluginId === null || descriptorId === null || !identity.success || !action.success) return null;
+    if (
+        id !== `searchProvider:${pluginId}:${descriptorId}`
+        || identity.data.pluginId !== pluginId
+        || identity.data.localId !== descriptorId
+        || action.data.pluginId !== pluginId
+    ) return null;
     return Object.freeze({
-        ...entry,
         id,
         pluginId,
         contributionKind: 'searchProvider' as const,
         descriptorId,
+        identity: identity.data,
         action: action.data,
     });
 }

@@ -88,6 +88,7 @@ import {
 import { buildSessionListRenderableFromSession } from '@/sync/domains/session/listing/sessionListRenderable';
 import { buildSessionOrganizationProjection } from '@/sync/domains/session/organization';
 import { createSessionListOrganizationSnapshotRequest } from '@/sync/engine/sessions/sessionListOrganizationSnapshotRequest';
+import { exhaustSessionListPages } from '@/sync/engine/sessions/exhaustSessionListPages';
 import {
     fetchAndApplySessionFolderAssignments,
     fetchAndApplySessionOrganizationSnapshot,
@@ -479,6 +480,7 @@ import { socketEmitWithAckFallback } from './engine/socket/socketEmitWithAckFall
 import { publishPermissionModeToMetadata as publishPermissionModeToMetadataEngine } from './state/permissionModePublish';
 import { publishAcpSessionModeOverrideToMetadata as publishAcpSessionModeOverrideToMetadataEngine } from './state/acpSessionModeOverridePublish';
 import { publishAcpConfigOptionOverrideToMetadata as publishAcpConfigOptionOverrideToMetadataEngine, type AcpConfigOptionOverrideValueId } from './state/acpConfigOptionOverridePublish';
+import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
 import { isRpcMethodNotFoundResult, RPC_ERROR_CODES, SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { isRpcMethodNotAvailableError, isRpcMethodNotFoundError, readRpcErrorCode } from '@/sync/runtime/rpcErrors';
 import { MessageAckResponseSchema, type MessageAckResponse } from '@happier-dev/protocol/updates';
@@ -1153,6 +1155,7 @@ class Sync {
     private fetchMoreArchivedSessionsInFlight: Promise<void> | null = null;
     private fetchArchivedSessionsInFlight: Promise<void> | null = null;
     private fetchAllArchivedSessionsInFlight: Promise<void> | null = null;
+    private fetchAllSessionMetadataInFlight: Promise<void> | null = null;
     private archivedSessionListNextCursor: string | null = null;
     private archivedSessionListHasMore = false;
     private archivedSessionsFetchPendingUntilReady = false;
@@ -2290,6 +2293,7 @@ class Sync {
     }
 
     private resetServerScopedRuntimeState = () => {
+        this.automationRunTraversalTokensByAutomationId.clear();
         this.changesCatchUpQueuedAfterResume = false;
         this.postSubscriptionChangesCatchUpPending = false;
         this.sessionDraftSyncEnabled = false;
@@ -2370,6 +2374,7 @@ class Sync {
         this.fetchMoreArchivedSessionsInFlight = null;
         this.fetchArchivedSessionsInFlight = null;
         this.fetchAllArchivedSessionsInFlight = null;
+        this.fetchAllSessionMetadataInFlight = null;
         this.archivedSessionListNextCursor = null;
         this.archivedSessionListHasMore = false;
         this.archivedSessionsFetchPendingUntilReady = false;
@@ -2471,13 +2476,15 @@ class Sync {
         }));
     };
 
-    public async switchServer(credentials: AuthCredentials): Promise<void> {
+    public async switchServer(credentials: AuthCredentials, target?: SyncServerTarget): Promise<void> {
         const encryption = isTokenOnlyAuthCredentials(credentials)
             ? null
             : await createEncryptionFromAuthCredentials(credentials);
 
+        assertSyncServerTargetCurrent(target);
+
         this.resetServerScopedRuntimeState();
-        apiSocket.initialize({ endpoint: getActiveServerSnapshot().serverUrl, token: credentials.token }, encryption);
+        apiSocket.initialize(buildSyncSocketConfig(credentials, target), encryption);
         await this.restore(credentials, encryption);
     }
 
@@ -5191,21 +5198,46 @@ class Sync {
     public fetchAllArchivedSessions = async (): Promise<void> => {
         if (this.fetchAllArchivedSessionsInFlight) return this.fetchAllArchivedSessionsInFlight;
         const generation = this.serverScopeGeneration;
-        const promise = (async () => {
-            await this.fetchArchivedSessions();
-            while (
-                this.serverScopeGeneration === generation
-                && this.archivedSessionListHasMore
-                && this.archivedSessionListNextCursor
-            ) {
-                await this.fetchMoreArchivedSessions();
-            }
-        })().finally(() => {
+        const promise = exhaustSessionListPages({
+            fetchFirstPage: this.fetchArchivedSessions,
+            hasNextPage: () => this.archivedSessionListHasMore && Boolean(this.archivedSessionListNextCursor),
+            fetchNextPage: this.fetchMoreArchivedSessions,
+            shouldContinue: () => this.serverScopeGeneration === generation,
+        }).finally(() => {
             if (this.fetchAllArchivedSessionsInFlight === promise) {
                 this.fetchAllArchivedSessionsInFlight = null;
             }
         });
         this.fetchAllArchivedSessionsInFlight = promise;
+        return promise;
+    }
+
+    /**
+     * Completes both canonical Session list cursors for client-side metadata
+     * discovery. Session metadata can be encrypted, so the server cannot apply
+     * the user's text query; callers therefore exhaust the existing bounded
+     * list routes once and let the canonical local matcher search their normal
+     * projections. Account/server replacement retires the loop through the
+     * incumbent generation guard.
+     */
+    public fetchAllSessionMetadata = async (): Promise<void> => {
+        if (this.fetchAllSessionMetadataInFlight) return this.fetchAllSessionMetadataInFlight;
+        const generation = this.serverScopeGeneration;
+        const promise = (async () => {
+            await exhaustSessionListPages({
+                fetchFirstPage: async () => { await this.fetchSessions(); },
+                hasNextPage: () => this.sessionListHasMore && Boolean(this.sessionListNextCursor),
+                fetchNextPage: this.fetchMoreSessions,
+                shouldContinue: () => this.serverScopeGeneration === generation,
+            });
+            if (this.serverScopeGeneration !== generation) return;
+            await this.fetchAllArchivedSessions();
+        })().finally(() => {
+            if (this.fetchAllSessionMetadataInFlight === promise) {
+                this.fetchAllSessionMetadataInFlight = null;
+            }
+        });
+        this.fetchAllSessionMetadataInFlight = promise;
         return promise;
     }
 
@@ -5877,6 +5909,9 @@ class Sync {
             appendAutomationRuns: (id, expectedCursor, traversalToken, runs, nextCursor) =>
                 storage.getState().appendAutomationRuns(id, expectedCursor, traversalToken, runs, nextCursor),
         });
+        if (!shouldContinue()) {
+            return { nextCursor: result.nextCursor };
+        }
         if (cursor && this.automationRunTraversalTokensByAutomationId.get(automationId) !== expectedTraversalToken) {
             return { nextCursor: result.nextCursor };
         }
@@ -5927,7 +5962,15 @@ class Sync {
             throw new Error('Not authenticated');
         }
         const shouldContinue = this.createServerScopeGuard();
+        const currentBeforeRequest = storage.getState().automations[automationId] ?? null;
         const updated = await pauseAutomationDefinition(this.credentials, automationId);
+        if (!shouldContinue()) {
+            throw new Error('Automation server-account scope changed');
+        }
+        const currentAfterRequest = storage.getState().automations[automationId] ?? null;
+        if (currentAfterRequest && currentAfterRequest !== currentBeforeRequest) {
+            return currentAfterRequest;
+        }
         return this.projectAndUpsertAutomationDefinition(updated, shouldContinue, { replaceEqualRevision: true });
     }
 
@@ -5936,7 +5979,15 @@ class Sync {
             throw new Error('Not authenticated');
         }
         const shouldContinue = this.createServerScopeGuard();
+        const currentBeforeRequest = storage.getState().automations[automationId] ?? null;
         const updated = await resumeAutomationDefinition(this.credentials, automationId);
+        if (!shouldContinue()) {
+            throw new Error('Automation server-account scope changed');
+        }
+        const currentAfterRequest = storage.getState().automations[automationId] ?? null;
+        if (currentAfterRequest && currentAfterRequest !== currentBeforeRequest) {
+            return currentAfterRequest;
+        }
         return this.projectAndUpsertAutomationDefinition(updated, shouldContinue, { replaceEqualRevision: true });
     }
 
@@ -6808,11 +6859,18 @@ class Sync {
               // catch-up reads only deltas and cannot recover the initial window, leaving the
               // reader with the blank list that a target jump appears to fix.
               if (!hasLoadedMessages || !hasMaterializedMessages) {
-                  const didApplyCurrentAuthority = await this.fetchExternalSessionMessages(sessionId, externalSessionLink);
+                  const fetchInitialAuthorityWindow = () =>
+                      this.fetchExternalSessionMessages(sessionId, externalSessionLink);
+                  const didApplyCurrentAuthority = await (hasLoadedMessages
+                      ? this.withSessionCatchUpNewer(sessionId, fetchInitialAuthorityWindow)
+                      : fetchInitialAuthorityWindow());
                   if (didApplyCurrentAuthority) {
                       this.transcriptAuthorityKeyBySessionId.set(sessionId, authorityKey);
                       this.externalSessionTranscriptFenceAuthorityKeyBySessionId.delete(sessionId);
                       storage.getState().setSessionTranscriptLoadIssue(sessionId, null);
+                      if (hasExplicitTailProbe) {
+                          this.explicitSessionTailProbeIds.delete(sessionId);
+                      }
                   }
                   return;
               }
@@ -6848,7 +6906,11 @@ class Sync {
               )
           ) {
               if (!hasLoadedMessages || !hasMaterializedMessages || previousAuthorityKey !== authorityKey) {
-                  const didCommit = await this.replaceWithServerTranscript(session, transcriptAuthority);
+                  const replaceAuthorityWindow = () =>
+                      this.replaceWithServerTranscript(session, transcriptAuthority);
+                  const didCommit = await (hasLoadedMessages
+                      ? this.withSessionCatchUpNewer(sessionId, replaceAuthorityWindow)
+                      : replaceAuthorityWindow());
                   if (didCommit) {
                       storage.getState().setSessionTranscriptLoadIssue(sessionId, null);
                   }
@@ -6857,11 +6919,12 @@ class Sync {
               return;
           }
 
-          // A previous interrupted open can leave a non-empty session hint with a loaded,
-          // zero-row cache. Treat that as cold so catch-up does not preserve the blank projection.
-          if (!hasLoadedMessages || (!hasMaterializedMessages && sessionSeqHint > 0)) {
+          // A previous empty or interrupted open can leave a non-empty session hint with a loaded,
+          // zero-row cache. Recover with a snapshot so catch-up does not preserve the blank projection.
+          const needsSnapshotLoad = !hasLoadedMessages || (!hasMaterializedMessages && sessionSeqHint > 0);
+          if (needsSnapshotLoad) {
               this.deferredForwardLoadingSessions.delete(sessionId);
-              await fetchAndApplyMessages({
+              const fetchSnapshot = () => fetchAndApplyMessages({
                   sessionId,
                   sessionEncryptionMode,
                   getSessionEncryption: (id) => this.encryption?.getSessionEncryption(id) ?? null,
@@ -6877,6 +6940,15 @@ class Sync {
                   ...this.getMessageDecryptBatchOptions(),
                   log,
               });
+              // A loaded zero-row transcript is warm state, not a first-ever load. When the
+              // session shell now reports durable activity, this snapshot is the on-open catch-up
+              // operation and must share the same canonical signal as every other newer repair.
+              await (hasLoadedMessages
+                  ? this.withSessionCatchUpNewer(sessionId, fetchSnapshot)
+                  : fetchSnapshot());
+              if (hasExplicitTailProbe) {
+                  this.explicitSessionTailProbeIds.delete(sessionId);
+              }
               return;
           }
 
@@ -8890,6 +8962,8 @@ class Sync {
                         planned,
                         credentials: this.credentials,
                         isSessionMessagesLoaded: (sessionId) => storage.getState().sessionMessages[sessionId]?.isLoaded === true,
+                        shouldCatchUpSessionMessages: (sessionId) =>
+                            resolveSessionLiveConsumption(sessionId).isFullContentConsumer,
                         getSessionMaterializedMaxSeq: (sessionId) => this.sessionMaterializedMaxSeqById[sessionId] ?? 0,
                         publishPluginCollectionChanges: (changes) => {
                             publishActivePluginCollectionUiQueryChanges(changes);
@@ -9826,30 +9900,66 @@ class Sync {
 // Global singleton instance
 export const sync = new Sync();
 
+export type SyncServerTarget = Readonly<{
+    serverId: string;
+    serverUrl: string;
+    generation: number;
+    runtimeOrigin?: string;
+    carrier?: 'https' | 'iroh';
+    homeCarrier?: HomeCarrier | null;
+}>;
+
+function assertSyncServerTargetCurrent(target: SyncServerTarget | undefined): void {
+    if (!target) return;
+    const current = getActiveServerSnapshot();
+    if (
+        current.serverId !== target.serverId
+        || current.serverUrl !== target.serverUrl
+        || current.generation !== target.generation
+    ) {
+        throw new Error('Active Home changed while preparing its authenticated Sync runtime');
+    }
+}
+
+function buildSyncSocketConfig(credentials: AuthCredentials, target?: SyncServerTarget) {
+    const snapshot = target ?? getActiveServerSnapshot();
+    return {
+        endpoint: snapshot.serverUrl,
+        token: credentials.token,
+        ...(target ? {
+            serverId: target.serverId,
+            generation: target.generation,
+            ...(target.runtimeOrigin ? { runtimeOrigin: target.runtimeOrigin } : {}),
+            ...(target.carrier ? { carrier: target.carrier } : {}),
+            ...(target.homeCarrier !== undefined ? { homeCarrier: target.homeCarrier } : {}),
+        } : {}),
+    };
+}
+
 //
 // Init sequence
 //
 
 let isInitialized = false;
-export async function syncCreate(credentials: AuthCredentials) {
+export async function syncCreate(credentials: AuthCredentials, target?: SyncServerTarget) {
     if (isInitialized) {
         console.warn('Sync already initialized: ignoring');
         return;
     }
     isInitialized = true;
-    await syncInit(credentials, false);
+    await syncInit(credentials, false, target);
 }
 
-export async function syncRestore(credentials: AuthCredentials) {
+export async function syncRestore(credentials: AuthCredentials, target?: SyncServerTarget) {
     if (isInitialized) {
         console.warn('Sync already initialized: ignoring');
         return;
     }
     isInitialized = true;
-    await syncInit(credentials, true);
+    await syncInit(credentials, true, target);
 }
 
-export async function syncSwitchServer(credentials: AuthCredentials | null): Promise<void> {
+export async function syncSwitchServer(credentials: AuthCredentials | null, target?: SyncServerTarget): Promise<void> {
     if (!credentials) {
         if (isInitialized) {
             sync.disconnectServer();
@@ -9859,22 +9969,24 @@ export async function syncSwitchServer(credentials: AuthCredentials | null): Pro
     }
 
     if (!isInitialized) {
-        await syncCreate(credentials);
+        await syncCreate(credentials, target);
         return;
     }
 
-    await sync.switchServer(credentials);
+    await sync.switchServer(credentials, target);
 }
 
-async function syncInit(credentials: AuthCredentials, restore: boolean) {
+async function syncInit(credentials: AuthCredentials, restore: boolean, target?: SyncServerTarget) {
 
     // Initialize sync engine
     const encryption = isTokenOnlyAuthCredentials(credentials)
         ? null
         : await createEncryptionFromAuthCredentials(credentials);
 
+    assertSyncServerTargetCurrent(target);
+
     // Initialize socket connection
-    apiSocket.initialize({ endpoint: getActiveServerSnapshot().serverUrl, token: credentials.token }, encryption);
+    apiSocket.initialize(buildSyncSocketConfig(credentials, target), encryption);
 
     // Wire socket status to storage
     apiSocket.onStatusChange((status) => {

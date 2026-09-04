@@ -26,6 +26,7 @@ import {
 } from '../../domains/state/machineDisplayWarmCacheWriter';
 import { areSessionValuesDeepEqual } from './areStoredSessionsEqual';
 import { areStoredMachinesEqual, hasMachineDaemonStateAdvanced } from './areStoredMachinesEqual';
+import { applyWorkspaceSyncRuntimeEvent } from '../../domains/sessionHandoff/applyWorkspaceSyncRuntimeEvent';
 
 import type { StoreGet, StoreSet } from './_shared';
 
@@ -187,6 +188,21 @@ export function createMachinesDomain<S extends MachinesDomain & MachinesDomainDe
                     : state.machineListStatusByServerId;
 
                 const scopedMachines = sourceServerId ? machineListByServerId[sourceServerId] : null;
+                const scopedMachinesWithAdvancedDaemonState = normalizedMachines.filter((machine) => (
+                    hasMachineDaemonStateAdvanced(
+                        Array.isArray(currentScopedMachines)
+                            ? currentScopedMachines.find((current) => current.id === machine.id)
+                            : undefined,
+                        machine,
+                    )
+                ));
+                for (const machine of scopedMachinesWithAdvancedDaemonState) {
+                    applyWorkspaceSyncRuntimeEvent({
+                        serverId: sourceServerId,
+                        machineId: machine.id,
+                        event: machine.daemonState?.workspaceSync,
+                    });
+                }
                 if (!shouldUpdateActiveProjection && sourceServerId && Array.isArray(scopedMachines)) {
                     scheduleMachineListDisplayWarmCacheSave({
                         serverId: sourceServerId,

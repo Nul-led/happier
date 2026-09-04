@@ -7,7 +7,10 @@ import {
 } from '@happier-dev/protocol';
 
 import { serverFetch } from '@/sync/http/client';
-import { runWithSessionRequestAuthorityForServerAccountScope } from '@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope';
+import {
+    createSessionRequestWithServerScope,
+    runWithSessionRequestAuthorityForServerAccountScope,
+} from '@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope';
 import { createServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import { applyMemorySearchSessionEligibility } from './applyMemorySearchSessionEligibility';
 
@@ -25,6 +28,21 @@ function createHomeMemorySearchAbortError(): Error {
     const error = new Error('Personal Home search was cancelled');
     error.name = 'AbortError';
     return error;
+}
+
+/** Rebuilds the selected Personal Home's derived search index from canonical transcript rows. */
+export async function rebuildHomeSearchIndex(args: Readonly<{ serverId: string }>): Promise<void> {
+    const serverId = args.serverId.trim();
+    if (!serverId) throw new Error('Rebuilding Home search requires an explicit Home target.');
+    const request = createSessionRequestWithServerScope({
+        serverId,
+        preferScoped: true,
+        activeRequest: async (path, init) => await serverFetch(path, init),
+    });
+    const response = await request('/v1/home/search/rebuild', { method: 'POST' });
+    if (!response.ok) {
+        throw new Error(`Home search could not be rebuilt (status ${response.status}).`);
+    }
 }
 
 export async function searchHomeMemory(args: Readonly<{

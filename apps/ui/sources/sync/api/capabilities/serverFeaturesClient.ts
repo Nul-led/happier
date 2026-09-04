@@ -1,5 +1,7 @@
-import type { AuthCredentials, FeaturesResponse as ServerFeatures } from '@happier-dev/protocol';
+import type { FeaturesResponse as ServerFeatures } from '@happier-dev/protocol';
 import { AsyncTtlCache } from '@happier-dev/protocol';
+
+import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 
 import * as serverHttp from '@/sync/http/client';
 import {
@@ -14,11 +16,12 @@ import {
     reconcileServerProfileHomeConnectionDescriptor,
     setServerProfileIdentityForUrl,
 } from '@/sync/domains/server/serverProfiles';
-import { parseServerFeatures } from './serverFeaturesParse';
+import { decodeServerFeaturesResponse } from './serverFeaturesParse';
 import { runtimeFetchWithServerReachability } from '@/sync/runtime/connectivity/serverReachabilityRuntimeFetch';
 import { normalizeBaseUrl } from './probeAuthenticatedServerAuthPingEndpoint';
 import { recordAccountStoredContentServerRequirements } from '@/sync/http/accountStoredContentCompatibility';
 import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
+import type { ResolvedServerScopedTransport } from '@/sync/runtime/orchestration/serverScopedRpc/resolveServerScopedTransport';
 
 const TTL_READY_MS = 10 * 60 * 1000;
 const TTL_UNSUPPORTED_ENDPOINT_MISSING_MS = 60 * 60 * 1000;
@@ -169,8 +172,9 @@ function getEndpointCacheKey(
     endpointUrl: string,
     runtimeOrigin: string,
     homeCarrier?: HomeCarrier,
+    expectedServerIdentityId?: string,
 ): string {
-    return `endpoint:${endpointUrl}\u0000runtime:${runtimeOrigin}\u0000carrier:${homeCarrier?.endpointId ?? 'url'}`;
+    return `endpoint:${endpointUrl}\u0000identity:${expectedServerIdentityId ?? 'unknown'}\u0000runtime:${runtimeOrigin}\u0000carrier:${homeCarrier?.endpointId ?? 'url'}`;
 }
 
 function normalizeExplicitEndpointUrl(raw: unknown): string {
@@ -217,6 +221,43 @@ function isAbortErrorLike(error: unknown): boolean {
     return 'name' in error && (error as { name?: unknown }).name === 'AbortError';
 }
 
+async function resolveExplicitServerFeatureTransport(params: Readonly<{
+    serverId: string;
+    profile: NonNullable<ReturnType<typeof getServerProfileById>>;
+    credentials?: AuthCredentials;
+}>): Promise<ResolvedServerScopedTransport | null> {
+    // Profiles remain stable identity/routing input only. Runtime transport is
+    // acquired from the existing server-scoped authority for the duration of
+    // this request and is never written back to the profile.
+    if (!params.profile.serverIdentityId || !params.profile.homeConnectionDescriptor) return null;
+
+    const credentials = params.credentials ?? await import('@/auth/storage/tokenStorage')
+        .then(async ({ TokenStorage }) => await TokenStorage.getCredentialsForServerUrl(
+            params.profile.serverUrl,
+            { serverId: params.serverId },
+        ));
+    if (!credentials) return null;
+
+    // Keep this import lazy: the native Iroh verification probe itself uses
+    // this feature client at its explicit endpoint seam. Loading the scoped
+    // transport owner only after this module is initialized avoids turning
+    // that valid runtime composition into an eager module cycle.
+    const { resolveServerScopedTransport } = await import(
+        '@/sync/runtime/orchestration/serverScopedRpc/resolveServerScopedTransport'
+    );
+    return await resolveServerScopedTransport({
+        profile: params.profile,
+        credentials,
+    });
+}
+
+async function drainExplicitServerFeatureTransportReleaseCustody(): Promise<void> {
+    const { drainRetainedServerScopedTransportReleases } = await import(
+        '@/sync/runtime/orchestration/serverScopedRpc/resolveServerScopedTransport'
+    );
+    await drainRetainedServerScopedTransportReleases();
+}
+
 async function getServerFeaturesSnapshotWithRetry(
     params: {
         timeoutMs?: number;
@@ -224,6 +265,7 @@ async function getServerFeaturesSnapshotWithRetry(
         serverId?: string;
         projection?: ActiveFeatureProjection;
         credentials?: AuthCredentials;
+        scopedTransport?: ResolvedServerScopedTransport;
     } | undefined,
     remainingSwitchAbortRetries: number,
 ): Promise<ServerFeaturesSnapshot> {
@@ -243,9 +285,21 @@ async function getServerFeaturesSnapshotWithRetry(
     const isExplicitServerRequest = requestedServerId.length > 0
         && !areServerProfileIdentifiersEquivalent(requestedServerId, activeSnapshot.serverId);
     const explicitServerId = isExplicitServerRequest ? resolveServerProfileScopeIdForIdentifier(requestedServerId) : '';
-    const explicitServerUrl = isExplicitServerRequest
-        ? normalizeBaseUrl(getServerProfileById(explicitServerId)?.serverUrl ?? '')
+    const explicitServerProfile = isExplicitServerRequest
+        ? getServerProfileById(explicitServerId)
         : null;
+    const explicitServerUrl = isExplicitServerRequest
+        ? normalizeBaseUrl(explicitServerProfile?.serverUrl ?? '')
+        : null;
+
+    // A previous explicit probe can finish its feature response before its
+    // request-scoped transport release rejects. Retry that retained cleanup at
+    // the next explicit Iroh operation boundary, before a cached feature result
+    // can bypass transport ownership entirely. A repeated cleanup failure stays
+    // retained and does not invalidate an otherwise valid cached observation.
+    if (isExplicitServerRequest && explicitServerProfile?.irohEndpoint) {
+        await drainExplicitServerFeatureTransportReleaseCustody();
+    }
 
     const cachedEntry = projectionCache.get(cacheKey);
     const cached = cachedEntry?.kind === 'success' ? cachedEntry.value : null;
@@ -289,6 +343,7 @@ async function getServerFeaturesSnapshotWithRetry(
         while (true) {
             const controller = new AbortController();
             const timer = setTimeout(() => controller.abort(), timeoutMs);
+            let releaseExplicitTransport: (() => Promise<void>) | null = null;
 
             try {
                 let response: Response;
@@ -301,26 +356,102 @@ async function getServerFeaturesSnapshotWithRetry(
                         serverUrl: probedServerUrl,
                         requirements: undefined,
                     });
-                    response = isExplicitServerRequest
-                        ? await runtimeFetchWithServerReachability({
-                            serverUrl: explicitServerUrl!,
-                            token: null,
-                            url: joinBaseAndPath(explicitServerUrl!, '/v1/features'),
-                            init: {
-                                method: 'GET',
-                                signal: controller.signal,
-                            },
-                            timeoutMs,
-                        })
-                        : projection === 'authenticated'
+                    if (isExplicitServerRequest) {
+                        const transport = params?.scopedTransport ?? (explicitServerProfile
+                            ? await resolveExplicitServerFeatureTransport({
+                                serverId: explicitServerId,
+                                profile: explicitServerProfile,
+                                credentials: params?.credentials,
+                            })
+                            : null);
+                        if (transport) {
+                            // A caller-supplied scoped transport belongs to that
+                            // secondary runtime. Only request-local acquisitions
+                            // are released by the feature client.
+                            if (!params?.scopedTransport) {
+                                releaseExplicitTransport = transport.release;
+                            }
+                            const request = serverHttp.createServerFetchAtEndpoint({
+                                endpointUrl: transport.canonicalServerUrl,
+                                runtimeOrigin: transport.runtimeOrigin,
+                                ...(transport.homeCarrier ? { homeCarrier: transport.homeCarrier } : {}),
+                                serverId: explicitServerId,
+                                ...(projection === 'public'
+                                    ? { credentials: null }
+                                    : params?.credentials
+                                        ? { credentials: params.credentials }
+                                        : {}),
+                            });
+                            response = await request(
+                                projection === 'authenticated' ? '/v1/features/authenticated' : '/v1/features',
+                                {
+                                    method: 'GET',
+                                    signal: controller.signal,
+                                },
+                                { includeAuth: projection === 'authenticated', retry: 'none' },
+                            );
+                            if (projection === 'authenticated') {
+                                if (isEndpointMissing(response.status)) {
+                                    response = await request(
+                                        '/v1/features',
+                                        {
+                                            method: 'GET',
+                                            signal: controller.signal,
+                                        },
+                                        { includeAuth: false, retry: 'none' },
+                                    );
+                                } else if (response.ok) {
+                                    descriptorObservation = 'exact';
+                                }
+                            }
+                        } else {
+                            response = await runtimeFetchWithServerReachability({
+                                serverUrl: explicitServerUrl!,
+                                token: null,
+                                url: joinBaseAndPath(
+                                    explicitServerUrl!,
+                                    projection === 'authenticated' ? '/v1/features/authenticated' : '/v1/features',
+                                ),
+                                init: {
+                                    method: 'GET',
+                                    signal: controller.signal,
+                                    ...(projection === 'authenticated' && params?.credentials?.token
+                                        ? { headers: { Authorization: `Bearer ${params.credentials.token}` } }
+                                        : {}),
+                                },
+                                timeoutMs,
+                            });
+                            if (projection === 'authenticated') {
+                                if (isEndpointMissing(response.status)) {
+                                    response = await runtimeFetchWithServerReachability({
+                                        serverUrl: explicitServerUrl!,
+                                        token: null,
+                                        url: joinBaseAndPath(explicitServerUrl!, '/v1/features'),
+                                        init: {
+                                            method: 'GET',
+                                            signal: controller.signal,
+                                        },
+                                        timeoutMs,
+                                    });
+                                } else if (response.ok) {
+                                    descriptorObservation = 'exact';
+                                }
+                            }
+                        }
+                    } else {
+                        response = projection === 'authenticated'
                             ? await serverHttp.createServerFetchAtEndpoint({
-                                endpointUrl: activeSnapshot.serverUrl,
-                                runtimeOrigin: activeSnapshot.runtimeOrigin,
+                                endpointUrl: params?.scopedTransport?.canonicalServerUrl
+                                    ?? activeSnapshot.serverUrl,
+                                runtimeOrigin: params?.scopedTransport?.runtimeOrigin
+                                    ?? activeSnapshot.runtimeOrigin,
                                 // An ingress-less Home has no URL a platform fetch
                                 // can reach; discovery uses the same carrier the
                                 // requests do, while the canonical URL stays the
                                 // cache and profile key.
-                                ...(readActiveHomeCarrier() ?? {}),
+                                ...(params?.scopedTransport?.homeCarrier
+                                    ? { homeCarrier: params.scopedTransport.homeCarrier }
+                                    : (readActiveHomeCarrier() ?? {})),
                                 serverId: activeSnapshot.serverId,
                                 credentials: params?.credentials,
                             })(
@@ -340,12 +471,17 @@ async function getServerFeaturesSnapshotWithRetry(
                                 // Public discovery must remain usable before a Home credential exists.
                                 { includeAuth: false, retry: 'none' },
                             );
+                    }
                     if (!isExplicitServerRequest && projection === 'authenticated') {
                         if (isEndpointMissing(response.status)) {
                             response = await serverHttp.createServerFetchAtEndpoint({
-                                endpointUrl: activeSnapshot.serverUrl,
-                                runtimeOrigin: activeSnapshot.runtimeOrigin,
-                                ...(readActiveHomeCarrier() ?? {}),
+                                endpointUrl: params?.scopedTransport?.canonicalServerUrl
+                                    ?? activeSnapshot.serverUrl,
+                                runtimeOrigin: params?.scopedTransport?.runtimeOrigin
+                                    ?? activeSnapshot.runtimeOrigin,
+                                ...(params?.scopedTransport?.homeCarrier
+                                    ? { homeCarrier: params.scopedTransport.homeCarrier }
+                                    : (readActiveHomeCarrier() ?? {})),
                                 serverId: activeSnapshot.serverId,
                                 credentials: params?.credentials,
                             })(
@@ -424,16 +560,7 @@ async function getServerFeaturesSnapshotWithRetry(
                     return value;
                 }
 
-                let payload: unknown;
-                try {
-                    payload = await response.json();
-                } catch {
-                    const value: ServerFeaturesSnapshot = { status: 'unsupported', reason: 'invalid_payload' };
-                    writeActiveProjectionSnapshot(projection, cacheKey, value, getCacheTtlMs(value));
-                    return value;
-                }
-
-                const parsed = parseServerFeatures(payload);
+                const parsed = await decodeServerFeaturesResponse(response);
                 if (!parsed) {
                     const value: ServerFeaturesSnapshot = { status: 'unsupported', reason: 'invalid_payload' };
                     writeActiveProjectionSnapshot(projection, cacheKey, value, getCacheTtlMs(value));
@@ -470,7 +597,11 @@ async function getServerFeaturesSnapshotWithRetry(
                     }
                 }
 
-                const value: ServerFeaturesSnapshot = { status: 'ready', features: parsed };
+                const value: ServerFeaturesSnapshot = {
+                    status: 'ready',
+                    features: parsed,
+                    serverIdentityId,
+                };
                 recordAccountStoredContentServerRequirements({
                     serverUrl: isExplicitServerRequest
                         ? explicitServerUrl!
@@ -494,6 +625,7 @@ async function getServerFeaturesSnapshotWithRetry(
                 return value;
             } finally {
                 clearTimeout(timer);
+                if (releaseExplicitTransport) await releaseExplicitTransport();
             }
         }
     });
@@ -516,6 +648,9 @@ export async function refreshAuthenticatedServerFeaturesSnapshot(params: {
     credentials: AuthCredentials;
     timeoutMs?: number;
     force?: boolean;
+    serverId?: string;
+    /** Existing secondary-runtime transport; ownership remains with the caller. */
+    scopedTransport?: ResolvedServerScopedTransport;
 }): Promise<ServerFeaturesSnapshot> {
     return await getServerFeaturesSnapshotWithRetry({
         ...params,
@@ -571,7 +706,7 @@ export type ProbeServerFeaturesAtUrlOptions = Readonly<{
     /** Stable profile/identity hint used only for credential/reachability scoping. */
     serverId?: string;
     /** Request-only transport origin (for example an Iroh loopback origin). */
-    runtimeOrigin?: string;
+    runtimeOrigin?: string | null;
     /** Semantic browser Iroh carrier, where a loopback runtime origin cannot exist. */
     homeCarrier?: HomeCarrier;
     /** Caller cancellation; it never changes focused-server state. */
@@ -622,7 +757,12 @@ export async function probeServerFeaturesAtUrl(
     const input = normalizeProbeServerFeaturesArgs(endpointOrInput, options);
     const endpointUrl = normalizeExplicitEndpointUrl(input.endpointUrl);
     const runtimeOrigin = resolveEffectiveProbeRuntimeOrigin(endpointUrl, input.runtimeOrigin);
-    const cacheKey = getEndpointCacheKey(endpointUrl, runtimeOrigin, input.homeCarrier);
+    const cacheKey = getEndpointCacheKey(
+        endpointUrl,
+        runtimeOrigin,
+        input.homeCarrier,
+        String(input.serverId ?? '').trim() || undefined,
+    );
     const force = input.force ?? false;
     const timeoutMs = typeof input.timeoutMs === 'number' && Number.isFinite(input.timeoutMs)
         ? Math.max(0, Math.trunc(input.timeoutMs))
@@ -718,16 +858,7 @@ export async function probeServerFeaturesAtUrl(
                 return value;
             }
 
-            let payload: unknown;
-            try {
-                payload = await response.json();
-            } catch {
-                const value: ServerFeaturesSnapshot = { status: 'unsupported', reason: 'invalid_payload' };
-                writeEndpointServerFeaturesSnapshot(cacheKey, value, getCacheTtlMs(value));
-                return value;
-            }
-
-            const parsed = parseServerFeatures(payload);
+            const parsed = await decodeServerFeaturesResponse(response);
             if (!parsed) {
                 const value: ServerFeaturesSnapshot = { status: 'unsupported', reason: 'invalid_payload' };
                 writeEndpointServerFeaturesSnapshot(cacheKey, value, getCacheTtlMs(value));

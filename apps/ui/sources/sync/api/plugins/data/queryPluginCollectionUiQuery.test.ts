@@ -27,6 +27,12 @@ const descriptor: NormalizedPluginCollectionUiQueryDescriptorV1 = {
 const request: PluginCollectionUiQueryRequestV1 = {
     pluginId: 'example.tasks',
     collectionId: 'tasks',
+    readerContext: {
+        pluginId: 'example.tasks',
+        collectionId: 'tasks',
+        schemaVersion: 1,
+        contractDigest: 'a'.repeat(43),
+    },
     uiQueryId: 'open',
     parameters: { status: 'open' },
 };
@@ -137,8 +143,8 @@ describe('queryActivePluginCollectionUiQuery', () => {
         expect(path).toBe('/v1/plugins/data/ui-query');
         expect(init).toMatchObject({
             method: 'POST',
-            body: JSON.stringify(request),
         });
+        expect(JSON.parse(String(init.body))).toEqual(request);
         expect(new Headers(init.headers).get(
             ACCOUNT_STORED_CONTENT_COMPATIBILITY_HTTP_HEADER,
         )).toBe(String(ACCOUNT_STORED_CONTENT_PLUGIN_DATA_PROTOCOL_VERSION));

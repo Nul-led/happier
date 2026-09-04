@@ -50,6 +50,9 @@ const runAutomationDefinitionNow = vi.hoisted(() => vi.fn());
 const getAutomationSettings = vi.hoisted(() => vi.fn());
 const updateAutomationSettings = vi.hoisted(() => vi.fn());
 const clearAutomationRunHistory = vi.hoisted(() => vi.fn());
+const pauseAutomationDefinition = vi.hoisted(() => vi.fn());
+const resumeAutomationDefinition = vi.hoisted(() => vi.fn());
+const fetchAndApplyAutomationRuns = vi.hoisted(() => vi.fn());
 vi.mock('./domains/scope/activeServerAccountScope', () => ({
     getActiveServerAccountScope: () => null,
     captureActiveServerAccountScopeLifetime: () => null,
@@ -117,8 +120,15 @@ vi.mock('./api/automations/apiAutomations', async (importOriginal) => {
         getAutomationSettings,
         updateAutomationSettings,
         clearAutomationRunHistory,
+        pauseAutomationDefinition,
+        resumeAutomationDefinition,
     };
 });
+
+vi.mock('./engine/automations/syncAutomations', async (importOriginal) => ({
+    ...await importOriginal<typeof import('./engine/automations/syncAutomations')>(),
+    fetchAndApplyAutomationRuns,
+}));
 
 import { sync } from './sync';
 import { storage } from './domains/state/storage';
@@ -126,6 +136,7 @@ import { storage } from './domains/state/storage';
 /** Test-only view of the incumbent owner; production code never exposes this seam. */
 type SyncResetOwnerTestSeam = {
     serverScopeGeneration: number;
+    automationRunTraversalTokensByAutomationId: Map<string, number>;
     resetServerScopedRuntimeState(): void;
     projectAndUpsertAutomationDefinition(
         detail: AutomationDefinitionDetail,
@@ -142,6 +153,8 @@ type SyncResetOwnerTestSeam = {
     updateAutomationSettings(input: AutomationV3Settings): Promise<AutomationV3Settings>;
     clearAutomationRunHistory(automationId: string): Promise<unknown>;
     fetchAutomationRuns(automationId: string, limit?: number, cursor?: string): Promise<unknown>;
+    pauseAutomation(automationId: string): Promise<unknown>;
+    resumeAutomation(automationId: string): Promise<unknown>;
 };
 
 function eventDetail(templateVersion: number): AutomationDefinitionDetail {
@@ -205,7 +218,7 @@ const eventRunDetail = AutomationV3RunDetailSchema.parse({
         triggerId: '11111111-1111-4111-8111-111111111111',
         triggerRevision: 2,
         triggerKind: 'pluginEvent',
-        occurrenceKey: 'occurrence-event-owner',
+        occurrenceKey: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
         occurredAt: 1,
         evidence: {
             eventRef: { pluginId: 'happier.scm.github', localId: 'push' },
@@ -565,6 +578,67 @@ describe('Sync Server/Account lifetime reset boundary', () => {
             owner.credentials = previousCredentials;
             owner.serverScopeGeneration = previousGeneration;
             fetchRuns.mockRestore();
+        }
+    });
+
+    it('does not install an equal-version pause response over newer canonical socket truth', async () => {
+        const owner = sync as unknown as SyncResetOwnerTestSeam;
+        const credentials: AuthCredentials = { token: 'token-automation-pause-race', secret: 'secret-automation-pause-race' };
+        const previousCredentials = owner.credentials;
+        const initialDetail = eventDetail(4);
+        const initial = createAutomationDefinitionFromDetail(initialDetail);
+        storage.getState().upsertAutomation(initial);
+        let resolvePause: (value: AutomationDefinitionDetail) => void = () => {
+            throw new Error('Pause race promise did not initialize');
+        };
+        pauseAutomationDefinition.mockReset();
+        pauseAutomationDefinition.mockReturnValue(new Promise<AutomationDefinitionDetail>((resolve) => {
+            resolvePause = resolve;
+        }));
+        owner.credentials = credentials;
+
+        try {
+            const operation = owner.pauseAutomation(initial.id);
+            const socketCurrent = createAutomationDefinitionFromDetail({
+                ...initialDetail,
+                name: 'Current socket truth',
+                updatedAt: initialDetail.updatedAt + 1,
+            });
+            storage.getState().upsertAutomation(socketCurrent);
+            resolvePause({ ...initialDetail, enabled: false });
+
+            await expect(operation).resolves.toBe(socketCurrent);
+            expect(storage.getState().automations[initial.id]).toBe(socketCurrent);
+        } finally {
+            owner.credentials = previousCredentials;
+        }
+    });
+
+    it('clears Account-scoped Run traversal tokens and rejects a late prior-Account token mutation', async () => {
+        const owner = sync as unknown as SyncResetOwnerTestSeam;
+        const credentials: AuthCredentials = { token: 'token-automation-run-page', secret: 'secret-automation-run-page' };
+        const previousCredentials = owner.credentials;
+        let resolvePage: (value: { nextCursor: string | null; traversalToken: number | null }) => void = () => {
+            throw new Error('Run page promise did not initialize');
+        };
+        fetchAndApplyAutomationRuns.mockReset();
+        fetchAndApplyAutomationRuns.mockReturnValue(new Promise((resolve) => {
+            resolvePage = resolve;
+        }));
+        owner.credentials = credentials;
+        owner.automationRunTraversalTokensByAutomationId.set('shared-automation-id', 41);
+
+        try {
+            const operation = owner.fetchAutomationRuns('shared-automation-id', 20, 'account-a-cursor');
+            owner.resetServerScopedRuntimeState();
+            expect(owner.automationRunTraversalTokensByAutomationId.has('shared-automation-id')).toBe(false);
+
+            resolvePage({ nextCursor: 'late-account-a-cursor', traversalToken: 42 });
+            await operation;
+
+            expect(owner.automationRunTraversalTokensByAutomationId.has('shared-automation-id')).toBe(false);
+        } finally {
+            owner.credentials = previousCredentials;
         }
     });
 

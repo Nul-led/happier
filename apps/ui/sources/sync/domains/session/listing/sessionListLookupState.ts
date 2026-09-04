@@ -529,6 +529,28 @@ export function resolveSessionListPreferredServerIdFromState(
     const normalizedSessionId = normalizeTrimmedString(sessionId);
     if (!normalizedSessionId) return null;
 
+    // A bare session id is a compatibility boundary, not a globally unique
+    // identity. When more than one Home currently projects the id, callers
+    // must retain/provide the selected Home instead of choosing by cache order.
+    const candidateServerIds = new Set<string>();
+    const directCandidate = normalizeTrimmedString(state?.sessions?.[normalizedSessionId]?.serverId);
+    if (directCandidate) candidateServerIds.add(directCandidate);
+    for (const [serverId, entry] of Object.entries(state?.concurrentSessionListCacheByServerId ?? {})) {
+        if (entry?.sessions?.[normalizedSessionId]) {
+            const normalized = normalizeTrimmedString(serverId);
+            if (normalized) candidateServerIds.add(normalized);
+        }
+    }
+    if (!directCandidate && candidateServerIds.size === 0) {
+        for (const [serverId, items] of Object.entries(state?.sessionListIndexByServerId ?? {})) {
+            if (items?.some((item) => item.type === 'session' && item.sessionId === normalizedSessionId)) {
+                const normalized = normalizeTrimmedString(serverId);
+                if (normalized) candidateServerIds.add(normalized);
+            }
+        }
+    }
+    if (candidateServerIds.size > 1) return null;
+
     const cached = readMemoizedPreferredSessionListServerIdFromState(state, normalizedSessionId, normalizedFallbackServerId);
     if (cached !== undefined) {
         return cached;

@@ -20,11 +20,9 @@
  * EndpointId the caller selected from the Home descriptor, or the stream is
  * released with the upgrade request unsent.
  *
- * No extension is offered, so no aggregate message ceiling is invented here
- * either: frame-level bounds are the specification's (control frames are capped
- * at 125 bytes, an unaddressable 64-bit length is refused), and message size
- * stays bounded by the consumer's own contract, exactly as a platform
- * `WebSocket` behaves. A protocol violation resets the stream rather than
+ * No extension is offered. The framing owner applies the existing Socket.IO
+ * carrier ceiling to complete messages before they reach the consumer. A
+ * protocol violation resets the stream rather than
  * attempting a courteous close handshake with a peer already off-protocol.
  */
 
@@ -136,8 +134,6 @@ export class BrowserIrohHomeTunnelWebSocket {
     private stream: BrowserIrohStream | null = null;
     private readonly decoder = new WebSocketFrameDecoder();
     private writeChain: Promise<void> = Promise.resolve();
-    private fragmentOpcode: WebSocketOpcode | null = null;
-    private fragments: Uint8Array[] = [];
     private upgraded = false;
     private settled = false;
     private errorReported = false;
@@ -345,35 +341,7 @@ export class BrowserIrohHomeTunnelWebSocket {
     }
 
     private handleDataFrame(frame: WebSocketFrame): void {
-        if (frame.opcode === WEB_SOCKET_OPCODE.continuation) {
-            if (this.fragmentOpcode === null) {
-                throw new WebSocketProtocolError(
-                    WEB_SOCKET_CLOSE_CODE.protocolError,
-                    'Home sent a continuation frame without a started message',
-                );
-            }
-            this.fragments.push(frame.payload);
-            if (!frame.fin) return;
-            const opcode = this.fragmentOpcode;
-            const payload = this.fragments.reduce(concatBytes, new Uint8Array(0));
-            this.fragmentOpcode = null;
-            this.fragments = [];
-            this.deliver(opcode, payload);
-            return;
-        }
-
-        if (this.fragmentOpcode !== null) {
-            throw new WebSocketProtocolError(
-                WEB_SOCKET_CLOSE_CODE.protocolError,
-                'Home started a new data frame inside a fragmented message',
-            );
-        }
-        if (frame.fin) {
-            this.deliver(frame.opcode, frame.payload);
-            return;
-        }
-        this.fragmentOpcode = frame.opcode;
-        this.fragments = [frame.payload];
+        this.deliver(frame.opcode, frame.payload);
     }
 
     private deliver(opcode: WebSocketOpcode, payload: Uint8Array): void {

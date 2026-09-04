@@ -37,6 +37,7 @@ import {
 } from '@/sync/domains/server/serverProfiles';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { storage } from '@/sync/domains/state/storage';
+import { parseToken } from '@/utils/auth/parseToken';
 
 import { resolvePeerLoopbackRouteAvailability } from '../loopback/resolvePeerLoopbackRouteAvailability';
 import type { PeerLoopbackRouteAvailabilityResult } from '../loopback/resolvePeerLoopbackRouteAvailability';
@@ -358,12 +359,29 @@ function fallbackDirectResponse(
 
 export async function resolveProductionMachineRpcDirectRoute(input: Readonly<{
     serverId?: string | null;
+    accountId?: string | null;
     machineId: string;
     method: string;
     timeoutMs?: number;
 }>): Promise<MachineRpcDirectRouteResolution> {
     const server = resolveTargetServer(input.serverId);
     if (!server) return fallback('topology_unavailable');
+
+    const expectedAccountId = normalizeId(input.accountId);
+    let credentials: AuthCredentials | null = null;
+    if (expectedAccountId) {
+        credentials = await TokenStorage.getCredentialsForServerUrl(server.serverUrl, {
+            serverId: server.serverId,
+        });
+        if (!credentials) return fallback('grant_missing');
+        let credentialAccountId = '';
+        try {
+            credentialAccountId = parseToken(credentials.token);
+        } catch {
+            return fallback('grant_missing');
+        }
+        if (credentialAccountId !== expectedAccountId) return fallback('grant_missing');
+    }
 
     const serverFeatures = await getReadyServerFeatures({
         serverId: server.serverId,
@@ -375,7 +393,7 @@ export async function resolveProductionMachineRpcDirectRoute(input: Readonly<{
     });
     if (policyPreflight.kind === 'fallback') return policyPreflight;
     if (policyPreflight.kind !== 'credentials_required') return fallback('grant_invalid');
-    const credentials = await TokenStorage.getCredentialsForServerUrl(server.serverUrl, {
+    credentials ??= await TokenStorage.getCredentialsForServerUrl(server.serverUrl, {
         serverId: server.serverId,
     });
     if (!credentials) return fallback('grant_missing');

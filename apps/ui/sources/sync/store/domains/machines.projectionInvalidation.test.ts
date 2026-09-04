@@ -3,6 +3,8 @@ import { describe, expect, it, vi, afterEach } from 'vitest';
 import { createServerProfilesModuleMock } from '@/dev/testkit/mocks/serverProfiles';
 import type { Machine, MachineMetadata } from '../../domains/state/storageTypes';
 
+const applyWorkspaceSyncRuntimeEvent = vi.fn();
+
 vi.mock('react-native-mmkv', () => {
     class MMKV {
         getString() {
@@ -78,6 +80,9 @@ async function loadMachinesDomain() {
     vi.doMock('../../domains/transfers/runtime/transferRouteCache', () => ({
         invalidateCachedTransferRoutesForMachine: vi.fn(),
     }));
+    vi.doMock('../../domains/sessionHandoff/applyWorkspaceSyncRuntimeEvent', () => ({
+        applyWorkspaceSyncRuntimeEvent,
+    }));
     const { createMachinesDomain } = await import('./machines');
     const revision = await import('@/sync/ops/machineContributionRegistryProjectionRevision');
     return { createMachinesDomain, revision };
@@ -102,6 +107,59 @@ describe('machines domain: contribution projection currentness', () => {
 
         expect(revision.getMachineContributionRegistryProjectionRevision(scope)).toBe(afterFirst + 1);
         expect(revision.getMachineContributionRegistryProjectionRevision(otherScope)).toBe(otherAfterFirst);
+        expect(applyWorkspaceSyncRuntimeEvent).toHaveBeenLastCalledWith({
+            serverId: 'server_a',
+            machineId: 'm-1',
+            event: undefined,
+        });
+    });
+
+    it('routes a workspace status event through the exact Home and machine scope', async () => {
+        const { createMachinesDomain } = await loadMachinesDomain();
+        const { domain } = createHarness(createMachinesDomain);
+        const workspaceSync = {
+            v: 1,
+            status: {
+                relationshipId: 'relationship-1',
+                controllerMachineId: 'm-1',
+                state: 'paused',
+            },
+        };
+
+        domain.applyMachines([makeMachine({ daemonStateVersion: 4 })], true, { sourceServerId: 'server_a' });
+        applyWorkspaceSyncRuntimeEvent.mockClear();
+        domain.applyMachines([makeMachine({ daemonStateVersion: 5, daemonState: { workspaceSync } as any })], false, {
+            sourceServerId: 'server_a',
+        });
+
+        expect(applyWorkspaceSyncRuntimeEvent).toHaveBeenCalledExactlyOnceWith({
+            serverId: 'server_a',
+            machineId: 'm-1',
+            event: workspaceSync,
+        });
+    });
+
+    it('routes a workspace status event for a hydrated non-active Home without projecting it as active', async () => {
+        const { createMachinesDomain } = await loadMachinesDomain();
+        const { domain } = createHarness(createMachinesDomain);
+        const workspaceSync = {
+            v: 1,
+            status: {
+                relationshipId: 'relationship-2',
+                controllerMachineId: 'm-1',
+                state: 'watching',
+            },
+        };
+
+        domain.applyMachines([
+            makeMachine({ daemonStateVersion: 7, daemonState: { workspaceSync } as any }),
+        ], true, { sourceServerId: 'server_b' });
+
+        expect(applyWorkspaceSyncRuntimeEvent).toHaveBeenCalledExactlyOnceWith({
+            serverId: 'server_b',
+            machineId: 'm-1',
+            event: workspaceSync,
+        });
     });
 
     it('leaves the projection revision alone for an equal or stale daemon state', async () => {

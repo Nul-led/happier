@@ -6,6 +6,7 @@ import {
 
 import { canonicalizeServerUrl } from '@/sync/domains/server/url/serverUrlCanonical';
 import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
+import { drainRetainedHomeCarrierReleases } from '@/sync/runtime/homeCarrierPolicy';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import {
     resolveSocketIoTransportsForCarrier,
@@ -190,15 +191,6 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
     };
 
     const entriesByKey = new Map<string, PoolEntry>();
-    /**
-     * Carrier custody the pool accepted but could not hand back yet: a redundant
-     * acquisition whose release failed, or one whose acquire failed before any entry
-     * could retain it. It is owned here rather than on an entry precisely because
-     * neither case belongs to a live entry — an entry may be torn down and removed
-     * while such a release is still in flight — and `stopAll` retries whatever is
-     * still held.
-     */
-    const strandedCarrierReleases = new Set<() => Promise<void>>();
     let detachNetworkAllowedListener: (() => void) | null = null;
 
     // The pool is private in-memory custody and already retains the token on each live entry.
@@ -221,27 +213,6 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
         carrier: 'https' | 'iroh',
         homeCarrier: HomeCarrier | null,
     ) => `${buildKey(reachabilityServerUrl, token)}::${serverUrl}::${carrier}::${homeCarrier?.endpointId ?? ''}`;
-
-    /**
-     * Releases one piece of unowned carrier custody, keeping it held here when the
-     * release fails so a later `stopAll` retries it instead of leaking the lease.
-     */
-    const releaseUnownedCarrierCustody = async (release: () => Promise<void>): Promise<void> => {
-        try {
-            await release();
-        } catch (error) {
-            strandedCarrierReleases.add(release);
-            throw error;
-        }
-    };
-
-    /** Retries every still-held stranded release, claiming each so two drains cannot double-release. */
-    const drainStrandedCarrierCustody = async (): Promise<void> => {
-        for (const release of Array.from(strandedCarrierReleases)) {
-            if (!strandedCarrierReleases.delete(release)) continue;
-            await releaseUnownedCarrierCustody(release);
-        }
-    };
 
     const stopEntrySocket = (entry: PoolEntry, remove: boolean): Promise<void> => {
         entry.teardownRequested ||= remove;
@@ -397,12 +368,11 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
                 carrierCustodyTransferred = true;
             });
         } catch (error) {
-            // No entry retains this lease, so the release is settled here rather than
-            // reported as done while still pending. A failed release stays in the
-            // pool's stranded custody for `stopAll` to retry, and the acquire failure
-            // the caller is waiting on remains the error it sees.
+            // No entry retains this lease, so settle the canonical owned release
+            // here. Its Lane 06 owner retains a rejection for `stopAll` to drain;
+            // the acquire failure remains the error the caller observes.
             if (releaseCarrier && !carrierCustodyTransferred) {
-                await releaseUnownedCarrierCustody(releaseCarrier).catch((releaseError: unknown) => {
+                await releaseCarrier().catch((releaseError: unknown) => {
                     console.error('[scoped-rpc] carrier release failed after acquire failure', releaseError);
                 });
             }
@@ -453,9 +423,9 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
         }
         if (redundantCarrierRelease) {
             // Settled before this call returns, so no carrier release outlives the
-            // acquire that started it. A failure is not this acquisition's failure,
-            // but the lease stays in pool custody for `stopAll` to retry.
-            await releaseUnownedCarrierCustody(redundantCarrierRelease).catch((releaseError: unknown) => {
+            // acquire that started it. A failure is not this acquisition's failure;
+            // the canonical Lane 06 owner retains it for the next explicit drain.
+            await redundantCarrierRelease().catch((releaseError: unknown) => {
                 console.error('[scoped-rpc] redundant carrier release failed', releaseError);
             });
         }
@@ -493,7 +463,7 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
                 entry.inUseCount = 0;
                 await stopEntrySocket(entry, true);
             }),
-            drainStrandedCarrierCustody(),
+            drainRetainedHomeCarrierReleases(),
         ]);
     };
 
@@ -504,7 +474,6 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
             if (entry.idleDisconnectTimer) clearTimeout(entry.idleDisconnectTimer);
         }
         entriesByKey.clear();
-        strandedCarrierReleases.clear();
     };
 
     detachNetworkAllowedListener = deps.reachability.subscribeNetworkAllowed((allowed) => {

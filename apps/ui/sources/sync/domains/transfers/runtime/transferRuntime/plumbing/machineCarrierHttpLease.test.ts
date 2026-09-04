@@ -30,6 +30,11 @@ const boundaries = vi.hoisted(() => {
         createBrowserBinding: vi.fn(),
         createBrowserHttpConnection: vi.fn(),
         acquireBrowserStream: vi.fn(),
+        getReadyServerFeatures: vi.fn(async () => ({
+            features: {
+                machines: { transfer: { enabled: true, directPeer: { enabled: true } } },
+            },
+        })),
         getCredentials: vi.fn(),
         requestGrant: vi.fn(),
         probeNative: vi.fn(async () => true),
@@ -66,16 +71,7 @@ vi.mock('@/sync/domains/machines/peer/mediation/stream/productionRouteHttp', () 
     requestPeerRouteGrantV2: (...args: unknown[]) => boundaries.requestGrant(...args),
 }));
 vi.mock('@/sync/api/capabilities/getReadyServerFeatures', () => ({
-    getReadyServerFeatures: async () => ({
-        features: {
-            machines: {
-                transfer: {
-                    enabled: true,
-                    directPeer: { enabled: true },
-                },
-            },
-        },
-    }),
+    getReadyServerFeatures: (...args: unknown[]) => boundaries.getReadyServerFeatures(...args),
 }));
 vi.mock('@/sync/domains/scope/activeServerAccountScope', () => ({
     getActiveServerAccountScope: () => ({ serverId: 'server-a', accountId: 'account-a' }),
@@ -157,6 +153,7 @@ describe('resolveMachineCarrierRoute', () => {
         boundaries.probeNative.mockClear();
         boundaries.browserHostEligible.mockReset();
         boundaries.browserHostEligible.mockReturnValue(false);
+        boundaries.getReadyServerFeatures.mockClear();
     });
 
     it('keeps the standard route when a browser target has no configured relay', async () => {
@@ -166,13 +163,14 @@ describe('resolveMachineCarrierRoute', () => {
             kind: 'iroh_peer',
             carrierKind: 'browser_stream',
         });
+        boundaries.getReadyServerFeatures.mockClear();
         boundaries.replaceEndpoint('server-1', {
             endpointId: 'a'.repeat(64),
             directAddresses: ['127.0.0.1:48123'],
-            relayUrls: [],
         });
 
         await expect(resolveMachineCarrierRoute('machine-1', 'server-1')).resolves.toEqual({ kind: 'standard' });
+        expect(boundaries.getReadyServerFeatures).not.toHaveBeenCalled();
         expect(boundaries.acquireBrowserStream).not.toHaveBeenCalled();
     });
 
@@ -296,11 +294,11 @@ describe('acquireMachineCarrierHttpLease', () => {
             }),
             request: expect.objectContaining({
                 routeKind: 'iroh_peer',
-                scope: expect.objectContaining({ transferId: 'prepared-file-1', maxBytes: 5 }),
+                scope: { kind: 'bounded_transfer', mode: 'carrier' },
                 iroh: {
                     initiator: { kind: 'account_client', endpointId: 'b'.repeat(64) },
                     target: { machineId: 'machine-1', endpointId: 'a'.repeat(64) },
-                    operationKind: 'file_transfer',
+                    operationKind: 'finite_transfer',
                 },
             }),
         }));

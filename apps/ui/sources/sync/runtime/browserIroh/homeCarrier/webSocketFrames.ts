@@ -1,3 +1,5 @@
+import { EXTERNAL_ACTION_RELAY_REQUEST_SOCKET_MIN_BUFFER_BYTES } from '@happier-dev/protocol';
+
 /**
  * RFC 6455 framing for the browser Iroh Home carrier (Lane 06 amendment A7.3).
  *
@@ -13,6 +15,7 @@
 
 export const WEB_SOCKET_MAX_CONTROL_FRAME_PAYLOAD_BYTES = 125;
 export const WEB_SOCKET_MASK_BYTES = 4;
+export const WEB_SOCKET_MAX_MESSAGE_PAYLOAD_BYTES = EXTERNAL_ACTION_RELAY_REQUEST_SOCKET_MIN_BUFFER_BYTES;
 
 export const WEB_SOCKET_OPCODE = {
     continuation: 0x0,
@@ -110,13 +113,61 @@ function isKnownOpcode(opcode: number): opcode is WebSocketOpcode {
     return opcode === 0x0 || opcode === 0x1 || opcode === 0x2 || opcode === 0x8 || opcode === 0x9 || opcode === 0xa;
 }
 
-function concatBytes(left: Uint8Array, right: Uint8Array): Uint8Array {
-    if (left.length === 0) return right;
-    if (right.length === 0) return left;
-    const merged = new Uint8Array(left.length + right.length);
-    merged.set(left);
-    merged.set(right, left.length);
-    return merged;
+class ByteQueue {
+    private chunks: Uint8Array[] = [];
+    private headIndex = 0;
+    private headOffset = 0;
+    length = 0;
+
+    push(chunk: Uint8Array): void {
+        if (chunk.length === 0) return;
+        this.chunks.push(chunk);
+        this.length += chunk.length;
+    }
+
+    byteAt(index: number): number {
+        let remaining = this.headOffset + index;
+        for (let chunkIndex = this.headIndex; chunkIndex < this.chunks.length; chunkIndex += 1) {
+            const chunk = this.chunks[chunkIndex] as Uint8Array;
+            if (remaining < chunk.length) return chunk[remaining] as number;
+            remaining -= chunk.length;
+        }
+        throw new RangeError('WebSocket byte offset is outside buffered data');
+    }
+
+    take(length: number): Uint8Array {
+        const result = new Uint8Array(length);
+        let written = 0;
+        while (written < length) {
+            const chunk = this.chunks[this.headIndex] as Uint8Array;
+            const available = chunk.length - this.headOffset;
+            const count = Math.min(available, length - written);
+            result.set(chunk.subarray(this.headOffset, this.headOffset + count), written);
+            written += count;
+            this.headOffset += count;
+            this.length -= count;
+            if (this.headOffset === chunk.length) {
+                this.headIndex += 1;
+                this.headOffset = 0;
+            }
+        }
+        if (this.headIndex === this.chunks.length) {
+            this.chunks = [];
+            this.headIndex = 0;
+        }
+        return result;
+    }
+
+    discard(length: number): void {
+        this.take(length);
+    }
+
+    clear(): void {
+        this.chunks = [];
+        this.headIndex = 0;
+        this.headOffset = 0;
+        this.length = 0;
+    }
 }
 
 /**
@@ -129,21 +180,21 @@ function concatBytes(left: Uint8Array, right: Uint8Array): Uint8Array {
  * interoperability with a compliant Home for no safety gain.
  */
 export class WebSocketFrameDecoder {
-    private buffer = new Uint8Array(0);
+    private readonly buffer = new ByteQueue();
+    private fragmentOpcode: WebSocketOpcode | null = null;
+    private fragments: Uint8Array[] = [];
+    private fragmentBytes = 0;
 
     push(chunk: Uint8Array): WebSocketFrame[] {
-        this.buffer = concatBytes(this.buffer, chunk);
+        this.buffer.push(chunk);
         const frames: WebSocketFrame[] = [];
-        const buffer = this.buffer;
-        const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
-        let offset = 0;
-
-        for (;;) {
-            const available = buffer.length - offset;
+        try {
+          for (;;) {
+            const available = this.buffer.length;
             if (available < 2) break;
 
-            const first = buffer[offset] as number;
-            const second = buffer[offset + 1] as number;
+            const first = this.buffer.byteAt(0);
+            const second = this.buffer.byteAt(1);
 
             if ((first & 0x70) !== 0) {
                 throw new WebSocketProtocolError(
@@ -171,11 +222,12 @@ export class WebSocketFrameDecoder {
             let length = indicator;
             if (indicator === 126) {
                 if (available < 4) break;
-                length = view.getUint16(offset + 2);
+                length = (this.buffer.byteAt(2) << 8) | this.buffer.byteAt(3);
                 headerBytes = 4;
             } else if (indicator === 127) {
                 if (available < 10) break;
-                const extended = view.getBigUint64(offset + 2);
+                let extended = 0n;
+                for (let index = 2; index < 10; index += 1) extended = (extended << 8n) | BigInt(this.buffer.byteAt(index));
                 if (extended > BigInt(Number.MAX_SAFE_INTEGER)) {
                     throw new WebSocketProtocolError(
                         WEB_SOCKET_CLOSE_CODE.messageTooBig,
@@ -184,6 +236,13 @@ export class WebSocketFrameDecoder {
                 }
                 length = Number(extended);
                 headerBytes = 10;
+            }
+
+            if (!isWebSocketControlOpcode(opcode) && length > WEB_SOCKET_MAX_MESSAGE_PAYLOAD_BYTES) {
+                throw new WebSocketProtocolError(
+                    WEB_SOCKET_CLOSE_CODE.messageTooBig,
+                    `Home announced a WebSocket message above the ${WEB_SOCKET_MAX_MESSAGE_PAYLOAD_BYTES}-byte limit`,
+                );
             }
 
             if (isWebSocketControlOpcode(opcode)) {
@@ -202,12 +261,57 @@ export class WebSocketFrameDecoder {
             }
 
             if (available < headerBytes + length) break;
-            const start = offset + headerBytes;
-            frames.push({ fin, opcode, payload: buffer.slice(start, start + length) });
-            offset = start + length;
+            this.buffer.discard(headerBytes);
+            const frame = { fin, opcode, payload: this.buffer.take(length) };
+            const assembled = this.assemble(frame);
+            if (assembled !== null) frames.push(assembled);
+          }
+          return frames;
+        } catch (error) {
+            this.buffer.clear();
+            this.clearFragments();
+            throw error;
         }
+    }
 
-        this.buffer = offset === 0 ? buffer : buffer.slice(offset);
-        return frames;
+    private assemble(frame: WebSocketFrame): WebSocketFrame | null {
+        if (isWebSocketControlOpcode(frame.opcode)) return frame;
+        if (frame.opcode === WEB_SOCKET_OPCODE.continuation) {
+            if (this.fragmentOpcode === null) {
+                throw new WebSocketProtocolError(WEB_SOCKET_CLOSE_CODE.protocolError, 'Home sent a continuation frame without a started message');
+            }
+            this.retainFragment(frame.payload);
+            if (!frame.fin) return null;
+            const payload = new Uint8Array(this.fragmentBytes);
+            let offset = 0;
+            for (const fragment of this.fragments) {
+                payload.set(fragment, offset);
+                offset += fragment.length;
+            }
+            const opcode = this.fragmentOpcode;
+            this.clearFragments();
+            return { fin: true, opcode, payload };
+        }
+        if (this.fragmentOpcode !== null) {
+            throw new WebSocketProtocolError(WEB_SOCKET_CLOSE_CODE.protocolError, 'Home started a new data frame inside a fragmented message');
+        }
+        if (frame.fin) return frame;
+        this.fragmentOpcode = frame.opcode;
+        this.retainFragment(frame.payload);
+        return null;
+    }
+
+    private retainFragment(payload: Uint8Array): void {
+        if (payload.length > WEB_SOCKET_MAX_MESSAGE_PAYLOAD_BYTES - this.fragmentBytes) {
+            throw new WebSocketProtocolError(WEB_SOCKET_CLOSE_CODE.messageTooBig, `Home sent a fragmented WebSocket message above the ${WEB_SOCKET_MAX_MESSAGE_PAYLOAD_BYTES}-byte limit`);
+        }
+        this.fragments.push(payload);
+        this.fragmentBytes += payload.length;
+    }
+
+    private clearFragments(): void {
+        this.fragmentOpcode = null;
+        this.fragments = [];
+        this.fragmentBytes = 0;
     }
 }

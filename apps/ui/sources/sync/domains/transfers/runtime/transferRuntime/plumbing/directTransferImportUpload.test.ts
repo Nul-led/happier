@@ -15,7 +15,6 @@ import { resetRuntimeFetch, setRuntimeFetch } from '@/utils/system/runtimeFetch'
 import { uploadBulkPayloadFromFileViaDirectImport } from './directTransferImportUpload';
 import {
     createTransferRecipientKeyPair,
-    decryptEncryptedTransferChunkEnvelope,
 } from './transferChunkEncryption';
 
 describe('uploadBulkPayloadFromFileViaDirectImport', () => {
@@ -226,6 +225,55 @@ describe('uploadBulkPayloadFromFileViaDirectImport', () => {
                 method: 'POST',
             },
         ]);
+        expect(release).toHaveBeenCalledTimes(1);
+    });
+
+    it('owns the terminal selected-Iroh failure after a browser carrier request fails', async () => {
+        prepareImportSessionMock.mockImplementation(async ({ method }: { method: string }) => method === RPC_METHODS.DAEMON_DIRECT_TRANSFER_IMPORT_ABORT
+            ? { success: true, aborted: true }
+            : ({
+            success: true,
+            uploadId: 'browser-upload-failed',
+            destDisplayPath: '/repo/browser.bin',
+            expectedSizeBytes: 1,
+            chunkSizeBytes: 1,
+            recipientPublicKeyBase64: Buffer.alloc(32, 7).toString('base64'),
+            expiresAt: 5_000,
+            endpointCandidates: [{
+                kind: 'http',
+                url: 'http://127.0.0.1:46001/machine-transfers/direct/imports/browser-upload-failed',
+                expiresAt: 5_000,
+            }],
+        }));
+        const release = vi.fn(async () => undefined);
+
+        const result = await uploadBulkPayloadFromFileViaDirectImport({
+            machineId: 'machine-1',
+            serverId: 'server-1',
+            fileReader: {
+                sizeBytes: 1,
+                readBytes: async () => new Uint8Array([7]),
+                close: async () => undefined,
+            },
+            request: {
+                t: 'session_file_upload_v1',
+                workingDirectory: '/repo',
+                path: '/repo/browser.bin',
+                sizeBytes: 1,
+                overwrite: true,
+            },
+            acquirePreparedCarrier: async () => ({
+                kind: 'browser_stream',
+                request: async () => { throw new Error('selected Iroh stream failed'); },
+                release,
+            }),
+        });
+
+        expect(result).toEqual({
+            success: false,
+            error: 'The direct machine connection was interrupted. Retry the transfer.',
+            errorCode: 'machine_carrier_transport_failed',
+        });
         expect(release).toHaveBeenCalledTimes(1);
     });
 
@@ -540,7 +588,7 @@ describe('uploadBulkPayloadFromFileViaDirectImport', () => {
         });
     });
 
-    it('continues a partially written shared import session through the next endpoint candidate', async () => {
+    it('does not retry another endpoint after an application-level chunk rejection', async () => {
         const requests: Array<Readonly<{
             method: string;
             url: string;
@@ -647,56 +695,96 @@ describe('uploadBulkPayloadFromFileViaDirectImport', () => {
             },
         });
 
-        expect(result).toEqual({
-            success: true,
-            path: '/repo/payload.bin',
-            sizeBytes: 10,
-            sha256: 'sha256:test',
-        });
-        expect(requests).toEqual(expect.arrayContaining([
-            {
-                method: 'PUT',
-                url: 'http://127.0.0.1:46001/machine-transfers/direct/imports/upload-2/chunks/0',
-                headers: { 'content-type': 'application/json' },
-            },
-            {
-                method: 'PUT',
-                url: 'http://127.0.0.1:46001/machine-transfers/direct/imports/upload-2/chunks/1',
-                headers: { 'content-type': 'application/json' },
-            },
-            {
-                method: 'PUT',
-                url: 'http://127.0.0.1:46002/machine-transfers/direct/imports/upload-2/chunks/1',
-                headers: { 'content-type': 'application/json' },
-            },
-            {
-                method: 'POST',
-                url: 'http://127.0.0.1:46002/machine-transfers/direct/imports/upload-2/finalize',
-                headers: {},
-            },
-        ]));
-        expect(requests).not.toContainEqual({
-            method: 'PUT',
-            url: 'http://127.0.0.1:46002/machine-transfers/direct/imports/upload-2/chunks/0',
-            headers: { 'content-type': 'application/json' },
-        });
-        expect(readRanges).toEqual([[0, 5], [5, 5], [5, 5]]);
-        expect(acceptedChunkIndexes).toEqual([0, 1]);
-        const resumedEnvelope = encryptedChunkBodies.get(
+        expect(result).toMatchObject({ success: false, error: 'first-candidate-failed' });
+        expect(requests.map((request) => request.url)).toEqual([
+            'http://127.0.0.1:46001/machine-transfers/direct/imports/upload-2/chunks/0',
+            'http://127.0.0.1:46001/machine-transfers/direct/imports/upload-2/chunks/1',
+        ]);
+        expect(readRanges).toEqual([[0, 5], [5, 5]]);
+        expect(acceptedChunkIndexes).toEqual([0]);
+        expect(encryptedChunkBodies.has(
             'http://127.0.0.1:46002/machine-transfers/direct/imports/upload-2/chunks/1',
-        );
-        expect(resumedEnvelope).toBeDefined();
-        await expect(decryptEncryptedTransferChunkEnvelope({
-            transferId: 'upload-2',
-            sequence: 1,
-            payloadBase64: resumedEnvelope!.payloadBase64,
-            encryptedDataKeyEnvelopeBase64: resumedEnvelope!.encryptedDataKeyEnvelopeBase64,
-            recipientSecretKeySeed: recipientKeyPair.recipientSecretKeySeed,
-        })).resolves.toEqual(new TextEncoder().encode('world'));
-        expect(prepareImportSessionMock).toHaveBeenCalledTimes(1);
-        expect(prepareImportSessionMock).not.toHaveBeenCalledWith(expect.objectContaining({
+        )).toBe(false);
+        expect(prepareImportSessionMock).toHaveBeenCalledTimes(2);
+        expect(prepareImportSessionMock).toHaveBeenCalledWith(expect.objectContaining({
             method: RPC_METHODS.DAEMON_DIRECT_TRANSFER_IMPORT_ABORT,
         }));
+    });
+
+    it('retries a transient endpoint status through the shared direct-transfer classifier', async () => {
+        const requests: string[] = [];
+        const recipientKeyPair = createTransferRecipientKeyPair({
+            randomBytes: (length) => new Uint8Array(length).fill(8),
+        });
+        prepareImportSessionMock.mockResolvedValue({
+            success: true,
+            uploadId: 'upload-transient',
+            destDisplayPath: '/repo/payload.bin',
+            expectedSizeBytes: 5,
+            chunkSizeBytes: 5,
+            recipientPublicKeyBase64: recipientKeyPair.recipientPublicKeyBase64,
+            expiresAt: 5_000,
+            endpointCandidates: [
+                {
+                    kind: 'http',
+                    url: 'http://127.0.0.1:46001/machine-transfers/direct/imports/upload-transient',
+                    expiresAt: 5_000,
+                },
+                {
+                    kind: 'http',
+                    url: 'http://127.0.0.1:46002/machine-transfers/direct/imports/upload-transient',
+                    expiresAt: 5_000,
+                },
+            ],
+        });
+        setRuntimeFetch(async (input, init) => {
+            const url = input instanceof URL ? input.toString() : String(input);
+            requests.push(url);
+            if (url.startsWith('http://127.0.0.1:46001/')) {
+                return new Response('temporarily unavailable', { status: 503 });
+            }
+            if (url.endsWith('/chunks/0')) {
+                return new Response(JSON.stringify({ success: true }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                });
+            }
+            if (url.endsWith('/finalize')) {
+                return new Response(JSON.stringify({
+                    success: true,
+                    finalized: { success: true, path: '/repo/payload.bin', sizeBytes: 5 },
+                    sha256: 'sha256:test',
+                }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                });
+            }
+            throw new Error(`unexpected request: ${String(init?.method ?? 'GET')} ${url}`);
+        });
+
+        const result = await uploadBulkPayloadFromFileViaDirectImport({
+            machineId: 'machine-1',
+            serverId: 'server-1',
+            fileReader: {
+                sizeBytes: 5,
+                readBytes: async (offset, length) => new TextEncoder().encode('hello').slice(offset, offset + length),
+                close: async () => {},
+            },
+            request: {
+                t: 'session_file_upload_v1',
+                workingDirectory: '/repo',
+                path: '/repo/payload.bin',
+                sizeBytes: 5,
+                overwrite: true,
+            },
+        });
+
+        expect(result).toMatchObject({ success: true, path: '/repo/payload.bin', sizeBytes: 5 });
+        expect(requests).toEqual([
+            'http://127.0.0.1:46001/machine-transfers/direct/imports/upload-transient/chunks/0',
+            'http://127.0.0.1:46002/machine-transfers/direct/imports/upload-transient/chunks/0',
+            'http://127.0.0.1:46002/machine-transfers/direct/imports/upload-transient/finalize',
+        ]);
     });
 
     it('rejects invalid direct import endpoint candidates before issuing HTTP requests', async () => {

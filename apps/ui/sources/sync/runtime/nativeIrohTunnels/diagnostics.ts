@@ -29,15 +29,18 @@ function sanitizeRelayUrl(url: string): string {
 export function createInitialIrohHomeTransportDiagnostics(
     input: InitialIrohHomeTransportDiagnosticsInput,
 ): DoctorSnapshotHomeTransportDiagnostics {
+    const relayUrls = input.relayUrls ?? [];
+    const copiedRelayUrls = relayUrls.slice(0, 16).map(sanitizeRelayUrl).filter(Boolean);
     return {
         homeServerIdentityId: input.homeServerIdentityId,
         remoteEndpointId: input.remoteEndpointId,
         state: 'connecting',
-        current: { carrier: 'iroh' },
         effectiveConfiguration: {
             policy: input.policy,
-            relayUrls: (input.relayUrls ?? []).slice(0, 16).map(sanitizeRelayUrl).filter(Boolean),
-            directAddressCount: Math.min(input.directAddresses?.length ?? 0, 256),
+            relayUrls: copiedRelayUrls,
+            relayUrlCount: relayUrls.length,
+            relayUrlsTruncated: copiedRelayUrls.length < relayUrls.length,
+            directAddressCount: input.directAddresses?.length ?? 0,
         },
         lastTransitionAtMs: input.atMs,
     };
@@ -88,7 +91,9 @@ export function projectIrohHomeTransportDiagnosticsEvent(
 ): DoctorSnapshotHomeTransportDiagnostics {
     if (event.type === 'ready' || event.type === 'path_changed') {
         return projectIrohHomeTransportDiagnosticsReady(diagnostics, {
-            observedPath: event.observedPath ?? 'unknown',
+            observedPath: event.observedPath === 'direct' || event.observedPath === 'relay'
+                ? event.observedPath
+                : 'unknown',
             atMs: event.atMs,
         });
     }

@@ -15,7 +15,12 @@ import {
     type DirectTransferImportFinalizeResponse,
     type DirectTransferImportOpenRequest,
 } from './directTransferImportClient';
+import {
+    MACHINE_CARRIER_INTERRUPTED_TRANSFER_ERROR,
+    MACHINE_CARRIER_TRANSPORT_FAILED_ERROR_CODE,
+} from './machineCarrierHttpLease';
 import type { MachineCarrierHttpLease } from './machineCarrierHttpLease';
+import { isRetryableDirectTransferEndpointError } from './directTransferEndpointRetry';
 
 export type { DirectTransferImportOpenRequest } from './directTransferImportClient';
 export type {
@@ -58,7 +63,8 @@ export async function uploadBulkPayloadFromFileViaDirectImport<TResponse>(params
     let didFinalizeSession = false;
     let nextChunkIndex = 0;
     try {
-        for (const baseUrl of prepared.session.baseUrls) {
+        for (const [candidateIndex, baseUrl] of prepared.session.baseUrls.entries()) {
+            const hasMoreCandidates = candidateIndex + 1 < prepared.session.baseUrls.length;
             try {
                 let finalizeRecoveryFailure: TransferFinalizeRecoveryFailure<TResponse> | null = null;
                 const result = await uploadInChunks<
@@ -214,15 +220,21 @@ export async function uploadBulkPayloadFromFileViaDirectImport<TResponse>(params
                 ) {
                     break;
                 }
-                if (params.signal?.aborted) {
-                    break;
-                }
+                // A valid application response is authoritative for this
+                // prepared transfer. Trying another transport endpoint cannot
+                // turn authorization, protocol, or integrity rejection into a
+                // success and risks replaying work the peer already accepted.
+                break;
             } catch (error) {
                 lastFailure = {
                     success: false,
                     error: error instanceof Error ? error.message : 'Direct import upload unavailable',
                 };
-                if (params.signal?.aborted) {
+                if (
+                    params.signal?.aborted
+                    || !hasMoreCandidates
+                    || !isRetryableDirectTransferEndpointError(error)
+                ) {
                     break;
                 }
             }
@@ -249,6 +261,14 @@ export async function uploadBulkPayloadFromFileViaDirectImport<TResponse>(params
         if (cleanupFailure) {
             return cleanupFailure;
         }
+    }
+
+    if (prepared.session.releaseCarrier && !params.signal?.aborted) {
+        return {
+            success: false,
+            error: MACHINE_CARRIER_INTERRUPTED_TRANSFER_ERROR,
+            errorCode: MACHINE_CARRIER_TRANSPORT_FAILED_ERROR_CODE,
+        };
     }
 
     return lastFailure ?? {

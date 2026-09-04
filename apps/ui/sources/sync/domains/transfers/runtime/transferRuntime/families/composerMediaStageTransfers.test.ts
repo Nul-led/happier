@@ -23,7 +23,7 @@ vi.mock('../plumbing/directTransferExportDownload', () => ({
 
 vi.mock('../plumbing/machineCarrierHttpLease', () => ({
     MACHINE_CARRIER_INTERRUPTED_TRANSFER_ERROR: 'The direct machine connection was interrupted. Retry the transfer.',
-    isIrohMachineCarrierRoute: (route: { kind?: string } | null | undefined) => route?.kind === 'iroh_peer',
+    MACHINE_CARRIER_TRANSPORT_FAILED_ERROR_CODE: 'machine_carrier_transport_failed',
     resolveMachineCarrierRoute: (...args: unknown[]) => resolveMachineCarrierRouteMock(...args),
 }));
 
@@ -279,7 +279,11 @@ describe('uploadComposerMediaStageFromReader', () => {
             acquirePreparedCarrier: (prepared: { operationId: string; maxBytes: number }) => Promise<unknown>;
         }>) => {
             await input.acquirePreparedCarrier({ operationId: 'inspection-2', maxBytes: 2 });
-            return { ok: false, error: 'native tunnel closed' };
+            return {
+                ok: false,
+                error: 'The direct machine connection was interrupted. Retry the transfer.',
+                errorCode: 'machine_carrier_transport_failed',
+            };
         });
 
         const { inspectComposerContent } = await import('./composerMediaStageTransfers');

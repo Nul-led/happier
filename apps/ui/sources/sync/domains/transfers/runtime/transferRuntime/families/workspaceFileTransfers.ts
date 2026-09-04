@@ -5,8 +5,7 @@ import { resolveMachineAbsolutePath } from '@/sync/domains/fileSystem/resolveMac
 import { uploadBulkPayloadFromFileWithCarrierFallbacks } from '../plumbing/uploadBulkPayloadFromFileWithCarrierFallbacks';
 import type { TransferFinalizeRecoveryFailure } from '../plumbing/directTransferFinalizeRecovery';
 import {
-    isIrohMachineCarrierRoute,
-    MACHINE_CARRIER_INTERRUPTED_TRANSFER_ERROR,
+    MACHINE_CARRIER_TRANSPORT_FAILED_ERROR_CODE,
     resolveMachineCarrierRoute,
     type MachineCarrierRoute,
 } from '../plumbing/machineCarrierHttpLease';
@@ -16,6 +15,7 @@ import { downloadBulkPayloadViaServerRelayToDestination } from '../plumbing/down
 import { createBufferedTransferDestination } from '../carriers/createBufferedTransferDestination';
 import { downloadBulkPayloadViaMachineRpcToDestination } from '../carriers/downloadBulkPayloadViaMachineRpcToDestination';
 import { createWorkspaceFileTransferRpcCaller } from './workspaceFileTransferRpcCaller';
+import { resolveMachineCarrierTransferFlow } from '../routing/machineCarrierTransferFlow';
 
 type WorkspaceRpcFailure = Readonly<{ success: false; error: string; errorCode?: string }>;
 type TransferFailureResponse = Readonly<{ success: false; error: string; errorCode?: string }>;
@@ -252,47 +252,39 @@ export async function downloadDaemonWorkspaceFileToDestination(params: Readonly<
     const absolutePath = resolveAbsoluteWorkspacePath({ rootPath: params.rootPath, agentRootPath: params.agentRootPath, requestPath: params.request.path });
 
     let machineRoute: MachineCarrierRoute | null = null;
+    const directExportRequest = {
+        t: 'workspace_file_download_v1',
+        workingDirectory: params.rootPath,
+        path: absolutePath,
+        asZip: params.request.asZip,
+    } as const;
 
-    let directExportResult: Awaited<ReturnType<typeof downloadBulkPayloadViaDirectExportToDestination>>;
-    try {
-        directExportResult = await downloadBulkPayloadViaDirectExportToDestination({
-            machineId: params.machineId,
-            ...(typeof params.serverId === 'string' ? { serverId: params.serverId } : {}),
-            request: {
-                t: 'workspace_file_download_v1',
-                workingDirectory: params.rootPath,
-                path: absolutePath,
-                asZip: params.request.asZip,
-            },
-            destination: params.destination,
-            cleanupOnFailure: false,
-            onInit: params.onInit ?? null,
-            signal: params.signal ?? null,
-            onProgress: params.onProgress ?? null,
-            acquirePreparedCarrier: async ({ operationId, maxBytes }) => {
-                machineRoute ??= await resolveMachineCarrierRoute(params.machineId, params.serverId);
-                return machineRoute.kind === 'iroh_peer' ? await machineRoute.acquire({
-                    operationId,
-                    maxBytes,
-                    flow: 'file_transfer',
-                    signal: params.signal ?? undefined,
-                })
-                    : null;
-            },
-        });
-    } catch (error) {
-        if (isIrohMachineCarrierRoute(machineRoute)) {
-            await params.destination.cleanup();
-            return { ok: false, error: MACHINE_CARRIER_INTERRUPTED_TRANSFER_ERROR, errorCode: 'machine_carrier_transport_failed' };
-        }
-        throw error;
-    }
+    const directExportResult = await downloadBulkPayloadViaDirectExportToDestination({
+        machineId: params.machineId,
+        ...(typeof params.serverId === 'string' ? { serverId: params.serverId } : {}),
+        request: directExportRequest,
+        destination: params.destination,
+        cleanupOnFailure: false,
+        onInit: params.onInit ?? null,
+        signal: params.signal ?? null,
+        onProgress: params.onProgress ?? null,
+        acquirePreparedCarrier: async ({ operationId, maxBytes }) => {
+            machineRoute ??= await resolveMachineCarrierRoute(params.machineId, params.serverId);
+            return machineRoute.kind === 'iroh_peer' ? await machineRoute.acquire({
+                operationId,
+                maxBytes,
+                flow: resolveMachineCarrierTransferFlow(directExportRequest),
+                signal: params.signal ?? undefined,
+            })
+                : null;
+        },
+    });
     if (directExportResult.ok) {
         return directExportResult;
     }
-    if (isIrohMachineCarrierRoute(machineRoute)) {
+    if (directExportResult.errorCode === MACHINE_CARRIER_TRANSPORT_FAILED_ERROR_CODE) {
         await params.destination.cleanup();
-        return { ok: false, error: MACHINE_CARRIER_INTERRUPTED_TRANSFER_ERROR, errorCode: 'machine_carrier_transport_failed' };
+        return directExportResult;
     }
     if (params.signal?.aborted) {
         await params.destination.cleanup();
@@ -443,15 +435,16 @@ export async function downloadDaemonWorkspaceFileToBase64(params: Readonly<{
 
     const directBufferedDestination = createInlineBufferedDestination();
     let machineRoute: MachineCarrierRoute | null = null;
+    const directExportRequest = {
+        t: 'workspace_file_download_v1',
+        workingDirectory: params.rootPath,
+        path: absolutePath,
+        asZip: false,
+    } as const;
     const directExportResult = await downloadBulkPayloadViaDirectExportToDestination({
         machineId: params.machineId,
         ...(typeof params.serverId === 'string' ? { serverId: params.serverId } : {}),
-        request: {
-            t: 'workspace_file_download_v1',
-            workingDirectory: params.rootPath,
-            path: absolutePath,
-            asZip: false,
-        },
+        request: directExportRequest,
         destination: directBufferedDestination.destination,
         onInit: async (init) => {
             if (init.sizeBytes > params.maxBytes) {
@@ -467,7 +460,7 @@ export async function downloadDaemonWorkspaceFileToBase64(params: Readonly<{
             return machineRoute.kind === 'iroh_peer' ? await machineRoute.acquire({
                 operationId,
                 maxBytes,
-                flow: 'file_transfer',
+                flow: resolveMachineCarrierTransferFlow(directExportRequest),
                 signal: params.signal ?? undefined,
             }) : null;
         },
@@ -478,12 +471,8 @@ export async function downloadDaemonWorkspaceFileToBase64(params: Readonly<{
             contentBase64: directBufferedDestination.toBase64(),
         };
     }
-    if (isIrohMachineCarrierRoute(machineRoute)) {
-        return {
-            ok: false,
-            error: MACHINE_CARRIER_INTERRUPTED_TRANSFER_ERROR,
-            errorCode: 'machine_carrier_transport_failed',
-        };
+    if (directExportResult.errorCode === MACHINE_CARRIER_TRANSPORT_FAILED_ERROR_CODE) {
+        return directExportResult;
     }
 
     const transferClient = statClient;

@@ -8,6 +8,7 @@ vi.mock('@/sync/ops/workspaceSync', () => ({
 
 import {
     getWorkspaceSyncConflictSnapshot,
+    invalidateWorkspaceSyncConflicts,
     refreshWorkspaceSyncConflicts,
     resetWorkspaceSyncConflictStoreForTests,
 } from './workspaceSyncConflictStore';
@@ -43,5 +44,26 @@ describe('workspaceSyncConflictStore', () => {
             phase: 'ready',
             list: { totalCount: 2, shownCount: 1, truncatedCount: 1 },
         });
+    });
+
+    it('refreshes an observed conflict list after a controller status event and preserves the last-known list', async () => {
+        const scope = { serverId: 'server-1', relationshipId: 'relationship-1', controllerMachineId: 'machine-1' } as const;
+        listWorkspaceSyncConflicts
+            .mockResolvedValueOnce({ relationshipId: 'relationship-1', totalCount: 1, shownCount: 1, truncatedCount: 0, conflicts: [] })
+            .mockResolvedValueOnce({ relationshipId: 'relationship-1', totalCount: 0, shownCount: 0, truncatedCount: 0, conflicts: [] });
+        await refreshWorkspaceSyncConflicts(scope);
+        const unsubscribe = (await import('./workspaceSyncConflictStore')).subscribeWorkspaceSyncConflicts(scope, () => {});
+
+        invalidateWorkspaceSyncConflicts(scope);
+        expect(getWorkspaceSyncConflictSnapshot(scope)).toMatchObject({
+            phase: 'refreshing',
+            list: { totalCount: 1 },
+        });
+        await vi.waitFor(() => expect(getWorkspaceSyncConflictSnapshot(scope)).toMatchObject({
+            phase: 'ready',
+            list: { totalCount: 0 },
+        }));
+        expect(listWorkspaceSyncConflicts).toHaveBeenCalledTimes(2);
+        unsubscribe();
     });
 });

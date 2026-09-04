@@ -1,11 +1,28 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+    buildMachineAdministrationTargetRouteParams,
     isMachineAdministrationCandidateSelectable,
+    readMachineAdministrationTargetRouteParams,
     resolveMachineAdministrationTargetLabel,
     resolveMachineAdministrationTargetState,
     type MachineAdministrationCandidateV1,
 } from './targetSelection';
+
+describe('machine Administration route target', () => {
+    it('round-trips the complete portable identity and rejects machine-only or ambiguous params', () => {
+        const target = { serverIdentityId: 'srv_two', machineId: 'machine-shared' };
+        expect(readMachineAdministrationTargetRouteParams(
+            buildMachineAdministrationTargetRouteParams(target),
+        )).toEqual(target);
+        expect(readMachineAdministrationTargetRouteParams({ machineId: 'machine-shared' }))
+            .toBeNull();
+        expect(readMachineAdministrationTargetRouteParams({
+            serverIdentityId: ['srv_one', 'srv_two'],
+            machineId: 'machine-shared',
+        })).toBeNull();
+    });
+});
 
 function candidate(input: Readonly<{
     serverIdentityId: string;

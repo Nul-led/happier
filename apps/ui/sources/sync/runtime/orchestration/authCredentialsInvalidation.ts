@@ -6,6 +6,7 @@ import type {
 type AuthCredentialsInvalidationServer = Readonly<{
     serverId: string;
     serverUrl: string;
+    generation?: number;
 }>;
 
 export type AuthCredentialsInvalidationEvent =

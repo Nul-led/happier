@@ -2,6 +2,7 @@ import { resolveAgentRequestKind, type AgentRequestKind } from '@/utils/sessions
 
 export type NewPermissionRequest = Readonly<{
   requestId: string;
+  turnId?: string;
   requestKind: AgentRequestKind;
   toolName: string;
   toolArgs: unknown;
@@ -37,6 +38,9 @@ export function deriveNewAgentRequests(prevRequests: unknown, nextRequests: unkn
     if (!toolName) continue;
     results.push({
       requestId,
+      ...(typeof raw?.turnId === 'string' && raw.turnId.trim().length > 0
+        ? { turnId: raw.turnId.trim() }
+        : {}),
       requestKind: resolveAgentRequestKind({ toolName, requestKind: raw?.kind }),
       toolName,
       toolArgs: raw?.arguments,

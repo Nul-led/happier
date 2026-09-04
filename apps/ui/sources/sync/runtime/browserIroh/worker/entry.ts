@@ -8,17 +8,16 @@
  * the selected web output, never the shared source `public/` tree. Metro never
  * sees it, because nothing in `sources/**` imports it.
  *
- * One worker global per browser application/profile means one endpoint owner
- * shared by every tab. The worker's own lifetime is the browser's to decide:
- * this file starts no timer and closes nothing on its own. Terminal shutdown is
- * either the browser ending the worker global or an explicit application-data
- * clear arriving over the command boundary.
+ * One worker global means one ephemeral endpoint owner shared by every tab
+ * connected to that live worker. The worker's own lifetime is the browser's to
+ * decide: this file starts no timer and closes nothing on its own. Per-tab
+ * release drops that client's leases and streams; browser destruction of the
+ * worker global is terminal endpoint cleanup.
  *
- * The A7.3 stream commands remain a dormant transport foundation; no production
- * request, Socket.IO, QR, Account Service, or transfer consumer is activated here.
+ * Production Home HTTP, Socket.IO, and finite Machine transfers consume these
+ * stream commands through their existing application owners.
  */
 
-import { createIndexedDbBrowserIrohEndpointKeyStore } from '../indexedDbEndpointKeyStore';
 import { createBrowserIrohSharedEndpointOwner } from '../sharedEndpointOwner';
 import { createBrowserIrohWasmBinder } from '../wasmBinder';
 import {
@@ -32,7 +31,6 @@ type SharedWorkerConnectEvent = { ports: readonly BrowserIrohMessagePort[] };
 type SharedWorkerScope = {
     onconnect: ((event: SharedWorkerConnectEvent) => void) | null;
     crypto: Crypto;
-    indexedDB: IDBFactory;
 };
 
 const scope = globalThis as unknown as SharedWorkerScope;
@@ -50,7 +48,6 @@ async function loadPackagedWasmModule(): Promise<{ module: unknown; wasmUrl: str
 }
 
 const owner = createBrowserIrohSharedEndpointOwner({
-    keyStore: createIndexedDbBrowserIrohEndpointKeyStore(scope.indexedDB),
     randomBytes: (length) => scope.crypto.getRandomValues(new Uint8Array(length)),
     bindEndpoint: createBrowserIrohWasmBinder(loadPackagedWasmModule),
 });

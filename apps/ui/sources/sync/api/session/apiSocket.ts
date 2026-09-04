@@ -216,6 +216,11 @@ function buildSocketRpcCallPayload(params: Readonly<{
 export interface SyncSocketConfig {
     endpoint: string;
     token: string;
+    serverId?: string;
+    generation?: number;
+    runtimeOrigin?: string;
+    carrier?: 'https' | 'iroh';
+    homeCarrier?: import('@/sync/runtime/homeCarrier').HomeCarrier | null;
 }
 
 export interface SyncSocketState {
@@ -295,8 +300,13 @@ class ApiSocket {
         const token = this.config.token;
         const snapshot = getActiveServerSnapshot();
         const serverUrl = canonicalizeServerUrl(endpoint) || endpoint;
-        const runtimeOrigin = resolveActiveServerRuntimeOrigin(snapshot) || serverUrl;
-        const focusedProfile = getServerProfileById(snapshot.serverId);
+        const hasCapturedServerTarget = Boolean(
+            this.config.serverId && this.config.generation !== undefined,
+        );
+        const runtimeOrigin = this.config.runtimeOrigin
+            || (hasCapturedServerTarget ? null : resolveActiveServerRuntimeOrigin(snapshot))
+            || serverUrl;
+        const focusedProfile = getServerProfileById(this.config.serverId ?? snapshot.serverId);
         const hasIndependentHttpsIngress = resolveIndependentHttpsServerOrigin(
             focusedProfile?.publicServerUrl ?? '',
         ) !== null;
@@ -306,7 +316,7 @@ class ApiSocket {
         // whose verified carrier is exactly the thing without an origin.
         const awaitsVerifiedIrohOrigin = Boolean(
             focusedProfile?.irohEndpoint
-            && !snapshot.carrier
+            && !(this.config.carrier ?? (hasCapturedServerTarget ? undefined : snapshot.carrier))
             && !hasIndependentHttpsIngress,
         );
 
@@ -335,15 +345,23 @@ class ApiSocket {
 
         if (!this.runtimeOriginUnsubscribe) {
             this.runtimeOriginUnsubscribe = subscribeActiveServerRuntimeOrigin((nextSnapshot) => {
-                if (!this.config || canonicalizeServerUrl(this.config.endpoint) !== canonicalizeServerUrl(nextSnapshot.serverUrl)) return;
+                if (
+                    !this.config
+                    || (this.config.serverId && this.config.serverId !== nextSnapshot.serverId)
+                    || (this.config.generation !== undefined && this.config.generation !== nextSnapshot.generation)
+                    || canonicalizeServerUrl(this.config.endpoint) !== canonicalizeServerUrl(nextSnapshot.serverUrl)
+                ) return;
                 const nextRuntimeOrigin = resolveActiveServerRuntimeOrigin(nextSnapshot) || this.config.endpoint;
+                this.config.runtimeOrigin = nextRuntimeOrigin;
+                this.config.carrier = nextSnapshot.carrier;
+                this.config.homeCarrier = getActiveServerHomeCarrier();
                 void startServerReachabilitySupervisor({
                     serverUrl: this.config.endpoint,
                     token: this.config.token,
                     ...(canonicalizeServerUrl(nextRuntimeOrigin) === canonicalizeServerUrl(this.config.endpoint)
                         ? {}
                         : { runtimeOrigin: nextRuntimeOrigin }),
-                    homeCarrier: getActiveServerHomeCarrier(),
+                    homeCarrier: this.config.homeCarrier,
                 }).then(() => {
                     if (this.currentConnectionState.phase === 'online') this.handleReachabilityStateChange(this.currentConnectionState);
                 });
@@ -356,7 +374,9 @@ class ApiSocket {
             serverUrl,
             token,
             ...(canonicalizeServerUrl(runtimeOrigin) === canonicalizeServerUrl(serverUrl) ? {} : { runtimeOrigin }),
-            homeCarrier: getActiveServerHomeCarrier(),
+            homeCarrier: 'homeCarrier' in this.config
+                ? this.config.homeCarrier ?? null
+                : getActiveServerHomeCarrier(),
         });
     }
 
@@ -726,19 +746,32 @@ class ApiSocket {
             throw new Error('SyncSocket not initialized');
         }
         const snapshot = getActiveServerSnapshot();
+        if (
+            (this.config.serverId && this.config.serverId !== snapshot.serverId)
+            || (this.config.generation !== undefined && this.config.generation !== snapshot.generation)
+        ) {
+            throw new StaleServerGenerationError();
+        }
         const endpointComparableKey = createServerUrlComparableKey(this.config.endpoint);
         const activeServerComparableKey = createServerUrlComparableKey(snapshot.serverUrl);
         const serverLookupOptions =
             endpointComparableKey
             && activeServerComparableKey
             && endpointComparableKey === activeServerComparableKey
-            && snapshot.serverId
-                ? { serverId: snapshot.serverId }
+            && (this.config.serverId ?? snapshot.serverId)
+                ? { serverId: this.config.serverId ?? snapshot.serverId }
                 : undefined;
 
         const credentials = await TokenStorage.getCredentialsForServerUrl(this.config.endpoint, serverLookupOptions);
         if (!credentials) {
             throw new Error('No authentication credentials');
+        }
+        const afterCredentialRead = getActiveServerSnapshot();
+        if (
+            afterCredentialRead.serverId !== (this.config.serverId ?? snapshot.serverId)
+            || afterCredentialRead.generation !== (this.config.generation ?? snapshot.generation)
+        ) {
+            throw new StaleServerGenerationError();
         }
 
         const url = `${this.config.endpoint}${path}`;
@@ -756,7 +789,7 @@ class ApiSocket {
         const requestKey = canDedupe
             // Intentionally exclude `snapshot.generation` from the de-dupe key so concurrent callers still share
             // a single in-flight fetch even if the active server generation changes while bootstrapping.
-            ? `${snapshot.serverId ?? ''}:${method}:${url}:tk:${getOrCreateTokenCacheKey(credentials.token)}`
+            ? `${this.config.serverId ?? snapshot.serverId ?? ''}:${method}:${url}:tk:${getOrCreateTokenCacheKey(credentials.token)}`
             : null;
 
         let response: Response;
@@ -794,7 +827,10 @@ class ApiSocket {
         }
 
         const current = getActiveServerSnapshot();
-        if (current.generation !== snapshot.generation || current.serverId !== snapshot.serverId) {
+        if (
+            current.generation !== (this.config.generation ?? snapshot.generation)
+            || current.serverId !== (this.config.serverId ?? snapshot.serverId)
+        ) {
             throw new StaleServerGenerationError();
         }
 
@@ -824,12 +860,14 @@ class ApiSocket {
             this.config.token = newToken;
 
             const serverUrl = canonicalizeServerUrl(this.config.endpoint) || this.config.endpoint;
-            const runtimeOrigin = resolveActiveServerRuntimeOrigin(getActiveServerSnapshot()) || serverUrl;
+            const runtimeOrigin = this.config.runtimeOrigin || serverUrl;
             void startServerReachabilitySupervisor({
                 serverUrl,
                 token: newToken,
                 ...(canonicalizeServerUrl(runtimeOrigin) === canonicalizeServerUrl(serverUrl) ? {} : { runtimeOrigin }),
-                homeCarrier: getActiveServerHomeCarrier(),
+                homeCarrier: 'homeCarrier' in this.config
+                    ? this.config.homeCarrier ?? null
+                    : getActiveServerHomeCarrier(),
             });
 
             if (this.socket) {
@@ -893,11 +931,18 @@ class ApiSocket {
     private ensureSocketTransport(): void {
         if (!this.config) return;
         const snapshot = getActiveServerSnapshot();
-        const transportEndpoint = resolveActiveServerRuntimeOrigin(snapshot) || this.config.endpoint;
+        const hasCapturedServerTarget = Boolean(
+            this.config.serverId && this.config.generation !== undefined,
+        );
+        const transportEndpoint = this.config.runtimeOrigin
+            || (hasCapturedServerTarget ? null : resolveActiveServerRuntimeOrigin(snapshot))
+            || this.config.endpoint;
         // A replaced carrier is a replaced transport even when the endpoint URL
         // is unchanged — which is exactly the browser Iroh case, where the URL is
         // always the canonical Home URL — so it belongs in the identity key.
-        const homeCarrier = getActiveServerHomeCarrier();
+        const homeCarrier = 'homeCarrier' in this.config
+            ? this.config.homeCarrier ?? null
+            : getActiveServerHomeCarrier();
         const key = `${transportEndpoint}|${this.config.token}|${homeCarrier?.endpointId ?? ''}`;
         if (this.socketTransport && this.socketTransportKey === key && this.socket) {
             return;
@@ -915,14 +960,14 @@ class ApiSocket {
             endpoint: transportEndpoint,
             token: this.config.token,
             transports: resolveSocketIoTransports(),
-            carrier: snapshot.carrier,
+            carrier: this.config.carrier ?? (hasCapturedServerTarget ? undefined : snapshot.carrier),
             ...(homeCarrier ? { websocketFactory: homeCarrier.createWebSocket } : {}),
         });
         this.socket = socket;
         this.socketTransport = transport;
         this.socketTransportKey = key;
         const statusDemandTransport = registerExternalSessionStatusDemandTransport(
-            getActiveServerSnapshot().serverId,
+            this.config.serverId ?? getActiveServerSnapshot().serverId,
             (event, payload) => {
                 if (socket.connected) {
                     socket.emit(event, payload);

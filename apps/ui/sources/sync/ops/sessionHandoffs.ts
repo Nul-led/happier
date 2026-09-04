@@ -1,11 +1,16 @@
 import {
     SessionHandoffStartResponseSchema,
+    SessionHandoffActionResultV1Schema,
     SessionHandoffStatusSchema,
+    HandoffTargetReplacementPreflightResultV1Schema,
     type SessionHandoffStartResponse,
+    type SessionHandoffActionResultV1,
     type SessionHandoffStatus,
     type SessionHandoffStorageMode,
     type SessionHandoffTransportStrategy,
     type HandoffWorkspaceActionV1,
+    type HandoffTargetReplacementApprovalV1,
+    type HandoffTargetReplacementPreflightResultV1,
 } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
@@ -20,11 +25,20 @@ export type StartSessionHandoffOptions = Readonly<{
     sessionStorageMode: SessionHandoffStorageMode; targetSessionStorageMode?: SessionHandoffStorageMode;
     preferredTransportStrategies?: readonly SessionHandoffTransportStrategy[]; negotiatedTransportStrategy?: SessionHandoffTransportStrategy;
     workspaceAction?: HandoffWorkspaceActionV1;
-    workspaceSyncSourceWorkspaceRefId?: string;
-    workspaceSyncTargetWorkspaceRefId?: string;
-    workspaceSyncSettingsVersion?: number;
+    actionRequestId?: string | null;
+    handoffTargetReplacementApproval?: HandoffTargetReplacementApprovalV1 | null;
+    signal?: AbortSignal;
 }>;
-export type StartSessionHandoffResult = Readonly<{ ok: true; handoffId: string; status: SessionHandoffStartResponse['status'] | SessionHandoffStatus; endpointCandidates?: SessionHandoffStartResponse['endpointCandidates']; handoffMetadataV2?: NonNullable<SessionHandoffStartResponse['handoffMetadataV2']> }> | HandoffErrorResult;
+export type StartSessionHandoffResult = Readonly<{ ok: true; result: SessionHandoffActionResultV1 }> | HandoffErrorResult;
+
+export type PreflightSessionHandoffTargetReplacementOptions = Readonly<{
+    targetMachineId: string;
+    targetPath: string;
+    serverId: string;
+    operationId: string;
+    workspaceAction: HandoffWorkspaceActionV1;
+    signal?: AbortSignal;
+}>;
 
 function normalizeId(value: unknown): string { return typeof value === 'string' ? value.trim() : String(value ?? '').trim(); }
 
@@ -63,18 +77,14 @@ async function requestCoordinator(options: StartSessionHandoffOptions): Promise<
                 ...(options.targetPath ? { targetPath: options.targetPath } : {}),
                 ...(options.targetSessionStorageMode ? { targetSessionStorageMode: options.targetSessionStorageMode } : {}),
                 ...(options.workspaceAction ? { workspaceAction: options.workspaceAction } : {}),
+                ...(normalizeId(options.actionRequestId) ? { actionRequestId: normalizeId(options.actionRequestId) } : {}),
+                ...(options.handoffTargetReplacementApproval
+                    ? { handoffTargetReplacementApproval: options.handoffTargetReplacementApproval }
+                    : {}),
                 ...(normalizeId(options.serverId) ? { accountServerId: normalizeId(options.serverId) } : {}),
-                ...(options.workspaceSyncSourceWorkspaceRefId
-                    ? { workspaceSyncSourceWorkspaceRefId: options.workspaceSyncSourceWorkspaceRefId }
-                    : {}),
-                ...(options.workspaceSyncTargetWorkspaceRefId
-                    ? { workspaceSyncTargetWorkspaceRefId: options.workspaceSyncTargetWorkspaceRefId }
-                    : {}),
-                ...(options.workspaceSyncSettingsVersion === undefined
-                    ? {}
-                    : { workspaceSyncSettingsVersion: options.workspaceSyncSettingsVersion }),
             },
             serverId: normalizeId(options.serverId) || null,
+            ...(options.signal ? { signal: options.signal } : {}),
         });
     } catch (error) {
         return { ok: false, errorCode: 'UNEXPECTED', error: error instanceof Error ? error.message : 'Failed to start session handoff' };
@@ -84,14 +94,71 @@ async function requestCoordinator(options: StartSessionHandoffOptions): Promise<
 export function normalizeSessionHandoffStartResponse(raw: unknown): unknown { return unwrap(raw); }
 export function normalizePrepareTargetResponseCandidate(raw: unknown): Record<string, unknown> | null { return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : null; }
 
+/** Target-daemon inspection used by the Action approval corridor before the handoff starts. */
+export async function preflightSessionHandoffTargetReplacement(
+    options: PreflightSessionHandoffTargetReplacementOptions,
+): Promise<HandoffTargetReplacementPreflightResultV1> {
+    if (options.workspaceAction.kind !== 'copy_once' && options.workspaceAction.kind !== 'create_relationship') {
+        return { type: 'not_required' };
+    }
+    const machineId = normalizeId(options.targetMachineId);
+    const targetPath = normalizeId(options.targetPath);
+    const serverId = normalizeId(options.serverId);
+    const operationId = normalizeId(options.operationId);
+    if (!machineId || !targetPath || !serverId || !operationId) {
+        return { type: 'error', result: { ok: false, errorCode: 'invalid_input', error: 'invalid_input' } };
+    }
+    try {
+        return HandoffTargetReplacementPreflightResultV1Schema.parse(await machineRpcWithServerScope({
+            machineId,
+            serverId,
+            method: RPC_METHODS.DAEMON_WORKSPACE_SYNC_TARGET_REPLACEMENT_PREFLIGHT,
+            payload: {
+                v: 1,
+                serverId,
+                machineId,
+                operationId,
+                targetPath,
+                ...(options.workspaceAction.kind === 'create_relationship'
+                    && options.workspaceAction.mode === 'mirror_exactly'
+                    ? { activatesExactMirror: true }
+                    : {}),
+            },
+            ...(options.signal ? { signal: options.signal } : {}),
+        }));
+    } catch {
+        const errorCode = options.signal?.aborted ? 'cancelled' : 'target_unavailable';
+        return { type: 'error', result: { ok: false, errorCode, error: errorCode } };
+    }
+}
+
 export async function startSessionHandoff(options: StartSessionHandoffOptions): Promise<StartSessionHandoffResult> {
     const raw = unwrap(await requestCoordinator(options));
     const error = readError(raw); if (error) return error;
-    const parsed = SessionHandoffStartResponseSchema.safeParse(raw);
-    if (parsed.success) return { ok: true, handoffId: parsed.data.handoffId, status: parsed.data.status, endpointCandidates: parsed.data.endpointCandidates, ...(parsed.data.handoffMetadataV2 ? { handoffMetadataV2: parsed.data.handoffMetadataV2 } : {}) };
-    const status = SessionHandoffStatusSchema.safeParse((raw as Record<string, unknown> | null)?.status);
-    const handoffId = normalizeId((raw as Record<string, unknown> | null)?.handoffId) || (status.success ? status.data.handoffId : '');
-    return handoffId && status.success ? { ok: true, handoffId, status: status.data } : { ok: false, errorCode: 'UNEXPECTED', errorMessage: 'Unsupported session handoff response from daemon' };
+    const record = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : null;
+    const status = SessionHandoffStatusSchema.safeParse(record?.status);
+    const handoffId = normalizeId(record?.handoffId) || (status.success ? status.data.handoffId : '');
+    const terminalResult = SessionHandoffActionResultV1Schema.safeParse({
+        handoffId,
+        ...(status.success ? { status: status.data } : {}),
+        ...(record && Object.prototype.hasOwnProperty.call(record, 'workspace') ? { workspace: record.workspace } : {}),
+        ...(record && Object.prototype.hasOwnProperty.call(record, 'warning') ? { warning: record.warning } : {}),
+    });
+    if (terminalResult.success) return { ok: true, result: terminalResult.data };
+
+    // Retain parsing of the richer start response only to distinguish a
+    // genuinely valid predecessor response from malformed daemon output.
+    const legacyStart = SessionHandoffStartResponseSchema.safeParse(raw);
+    if (legacyStart.success) {
+        return {
+            ok: true,
+            result: {
+                handoffId: legacyStart.data.handoffId,
+                status: legacyStart.data.status,
+            },
+        };
+    }
+    return { ok: false, errorCode: 'UNEXPECTED', errorMessage: 'Unsupported session handoff response from daemon' };
 }
 
 export async function getSessionHandoffStatus(params: Readonly<{ machineId: string; handoffId: string; serverId?: string | null }>): Promise<Readonly<{ ok: true; status: SessionHandoffStatus }> | HandoffErrorResult> {

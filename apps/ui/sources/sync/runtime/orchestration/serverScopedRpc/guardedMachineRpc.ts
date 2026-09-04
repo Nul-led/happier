@@ -9,6 +9,7 @@ export { isGuardedMachineRpcMethod, resolveTransferPolicyAllowsMachineRpcDirect 
 export async function callGuardedMachineRpcWithPolicy<R, A>(params: Readonly<{
     machineId: string;
     serverId?: string | null;
+    accountId?: string | null;
     method: string;
     payload: A;
     timeoutMs?: number;
@@ -24,6 +25,7 @@ export async function callGuardedMachineRpcWithPolicy<R, A>(params: Readonly<{
     return await machineRpcWithServerScope<R, A>({
         machineId: params.machineId,
         serverId: params.serverId ?? undefined,
+        accountId: params.accountId ?? undefined,
         method: params.method,
         payload: params.payload,
         timeoutMs: params.timeoutMs,

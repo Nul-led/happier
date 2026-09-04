@@ -12,28 +12,38 @@ describe('resolveArchivedMemoryEligibilityControl', () => {
     it('treats an absent effective advertisement as unsupported and never claims the desired value applies', () => {
         const control = resolveArchivedMemoryEligibilityControl({
             status: status({}),
-            desiredIncludeArchivedSessions: true,
+            statusRequestState: 'resolved',
         });
 
-        expect(control).toEqual({ supported: false, value: false });
+        expect(control).toEqual({ state: 'unsupported', supported: false, value: false });
     });
 
-    it('treats a missing status as unsupported', () => {
+    it('keeps an unresolved status distinct from an old daemon that omitted the support field', () => {
         expect(resolveArchivedMemoryEligibilityControl({
             status: null,
-            desiredIncludeArchivedSessions: true,
-        })).toEqual({ supported: false, value: false });
+            statusRequestState: 'loading',
+        })).toEqual({ state: 'loading', supported: false, value: false });
+
+        expect(resolveArchivedMemoryEligibilityControl({
+            status: status({ includeArchivedSessionsEffective: true }),
+            statusRequestState: 'loading',
+        })).toEqual({ state: 'loading', supported: false, value: true });
+
+        expect(resolveArchivedMemoryEligibilityControl({
+            status: null,
+            statusRequestState: 'unreachable',
+        })).toEqual({ state: 'unreachable', supported: false, value: false });
     });
 
     it('shows the effective value the daemon actually applies rather than the desired setting', () => {
         expect(resolveArchivedMemoryEligibilityControl({
             status: status({ includeArchivedSessionsEffective: false }),
-            desiredIncludeArchivedSessions: true,
-        })).toEqual({ supported: true, value: false });
+            statusRequestState: 'resolved',
+        })).toEqual({ state: 'supported', supported: true, value: false });
 
         expect(resolveArchivedMemoryEligibilityControl({
             status: status({ includeArchivedSessionsEffective: true }),
-            desiredIncludeArchivedSessions: false,
-        })).toEqual({ supported: true, value: true });
+            statusRequestState: 'resolved',
+        })).toEqual({ state: 'supported', supported: true, value: true });
     });
 });

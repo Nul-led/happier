@@ -1,4 +1,5 @@
 import type { AccountDirectoryCapabilities } from '@happier-dev/protocol';
+import { publishAccountServiceHomeLink } from '@happier-dev/cli-common/accountService';
 import {
     isAccountDirectoryRelinkConflict,
     putHomeDirectoryLink,
@@ -36,6 +37,8 @@ export type ProvisionAuthenticatedHomeLinkInput = Readonly<{
     shouldCancel?: () => boolean;
 }>;
 
+class HomeLinkTransportUnavailableError extends Error {}
+
 /**
  * Automatic current-Home relationship provisioning for the authenticated-Home login intent.
  * Resolves the captured stable identity through the canonical profile registry, composes the
@@ -63,51 +66,74 @@ export async function provisionAuthenticatedHomeLink(
     }
     const profile = resolved.profile;
     const descriptor = buildHomeConnectionDescriptorForProfile(profile);
-    if (!descriptor) {
+    if (!descriptor || descriptor.homeServerIdentityId !== homeServerIdentityId) {
         return { kind: 'unavailable', reason: 'home_profile_unavailable' };
     }
-    const credentials = await TokenStorage.getCredentialsForServerUrl(
-        profile.serverUrl,
-        { serverId: homeServerIdentityId },
-    ).catch(() => null);
-    if (!credentials) {
-        return { kind: 'unavailable', reason: 'home_credentials_unavailable' };
-    }
-    if (input.shouldCancel?.()) return { kind: 'failed' };
-    const resolvedTransport = await resolveHomeEnrollmentTransport(descriptor, {
-        verification: { kind: 'authenticated', token: credentials.token },
+    const directoryHome = {
+        homeServerIdentityId: descriptor.homeServerIdentityId,
+        canonicalServerUrl: descriptor.canonicalServerUrl,
+        label: profile.name,
+        connectionDescriptor: descriptor,
+    };
+    const selectedIssuerIdentity = input.session.serviceKey.slice(
+        input.session.serviceKey.lastIndexOf('\u0000') + 1,
+    );
+    const result = await publishAccountServiceHomeLink({
+        home: directoryHome,
+        issuerServerIdentityId,
+        issuerSigningKeyId: input.capability.homeLoginAssertion.keyId,
+        issuerSigningPublicKeyBase64Url: input.capability.homeLoginAssertion.publicKeyBase64Url,
+        ...(input.relink !== undefined ? { relink: input.relink } : {}),
+        shouldCancel: input.shouldCancel,
+        adapters: {
+            readHomeCredential: async () => await TokenStorage.getCredentialsForServerUrl(
+                profile.serverUrl,
+                { serverId: homeServerIdentityId },
+            ).catch(() => null),
+            readAccountServiceCredential: async (identity) =>
+                identity === selectedIssuerIdentity ? input.session : null,
+            readAccountSubject: async (session) => (await session.readAccountSummary()).accountId,
+            publishLinkToHome: async ({ credential, issuerSubjectId, relink }) => {
+                const resolvedTransport = await resolveHomeEnrollmentTransport(descriptor, {
+                    verification: { kind: 'authenticated', token: credential.token },
+                });
+                if (!resolvedTransport.ok) throw new HomeLinkTransportUnavailableError();
+                try {
+                    await putHomeDirectoryLink(
+                        resolvedTransport.transport,
+                        {
+                            issuerServerIdentityId,
+                            issuerSubjectId,
+                            issuerSigningKeyId: input.capability.homeLoginAssertion.keyId,
+                            issuerSigningPublicKeyBase64Url: input.capability.homeLoginAssertion.publicKeyBase64Url,
+                        },
+                        { credentials: credential, relink },
+                    );
+                } finally {
+                    await resolvedTransport.transport.close().catch(() => {});
+                }
+            },
+            publishHomeToAccountService: async ({ home, credential: session }) => {
+                await session.putHome({
+                    homeServerIdentityId: home.homeServerIdentityId,
+                    label: home.label,
+                    connectionDescriptor: home.connectionDescriptor,
+                });
+            },
+        },
     });
-    if (!resolvedTransport.ok) {
+    if (result.kind === 'linked') return result;
+    if (result.kind === 'cancelled') return { kind: 'failed' };
+    if (result.kind === 'unavailable') {
+        return result.reason === 'home_credentials_unavailable'
+            ? { kind: 'unavailable', reason: 'home_credentials_unavailable' }
+            : { kind: 'failed' };
+    }
+    if (result.error instanceof HomeLinkTransportUnavailableError) {
         return { kind: 'unavailable', reason: 'home_transport_unavailable' };
     }
-    const transport = resolvedTransport.transport;
-    try {
-        const account = await input.session.readAccountSummary();
-        if (input.shouldCancel?.()) return { kind: 'failed' };
-        await putHomeDirectoryLink(
-            transport,
-            {
-                issuerServerIdentityId,
-                issuerSubjectId: account.accountId,
-                issuerSigningKeyId: input.capability.homeLoginAssertion.keyId,
-                issuerSigningPublicKeyBase64Url: input.capability.homeLoginAssertion.publicKeyBase64Url,
-            },
-            { credentials, relink: input.relink === true },
-        );
-        if (input.shouldCancel?.()) return { kind: 'failed' };
-        await input.session.putHome({
-            homeServerIdentityId: descriptor.homeServerIdentityId,
-            label: profile.name,
-            connectionDescriptor: descriptor,
-        });
-        if (input.shouldCancel?.()) return { kind: 'failed' };
-        return { kind: 'linked', homeServerIdentityId };
-    } catch (error) {
-        if (input.relink !== true && isAccountDirectoryRelinkConflict(error)) {
-            return { kind: 'relink_required', homeServerIdentityId };
-        }
-        return { kind: 'failed', error };
-    } finally {
-        await transport.close().catch(() => {});
+    if (input.relink !== true && isAccountDirectoryRelinkConflict(result.error)) {
+        return { kind: 'relink_required', homeServerIdentityId };
     }
+    return { kind: 'failed', error: result.error };
 }

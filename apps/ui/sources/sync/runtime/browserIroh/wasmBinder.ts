@@ -22,8 +22,16 @@ type BrowserIrohProbe = Readonly<{
     endpointId: () => string;
     appliedRelayUrls: () => string[];
     applyRelayUrls: (relayUrls: string[]) => Promise<void>;
-    openIncrementalHomeTunnelStream: (endpointId: string, relayUrls: string[]) => Promise<number>;
-    openIncrementalMachineStream: (endpointId: string, relayUrls: string[]) => Promise<number>;
+    openIncrementalHomeTunnelStream: (
+        endpointId: string,
+        relayUrls: string[],
+        cancellation: BrowserIrohOpenCancellation,
+    ) => Promise<number>;
+    openIncrementalMachineStream: (
+        endpointId: string,
+        relayUrls: string[],
+        cancellation: BrowserIrohOpenCancellation,
+    ) => Promise<number>;
     streamRemoteEndpointId: (streamHandle: number) => string;
     streamObservedPath: (streamHandle: number) => string;
     readStream: (streamHandle: number, maxBytes: number) => Promise<Uint8Array | null>;
@@ -36,11 +44,14 @@ type BrowserIrohProbe = Readonly<{
     close: () => Promise<void>;
 }>;
 
+type BrowserIrohOpenCancellation = Readonly<{ cancel: () => void }>;
+
 type BrowserIrohWasmModule = Readonly<{
     default: (input?: unknown) => Promise<unknown>;
     HappierBrowserIrohProbe: Readonly<{
         create: (secretKey: Uint8Array, relayUrls: string[]) => Promise<BrowserIrohProbe>;
     }>;
+    HappierBrowserIrohOpenCancellation: new () => BrowserIrohOpenCancellation;
 }>;
 
 export class BrowserIrohWasmBoundaryError extends Error {
@@ -80,6 +91,7 @@ export function narrowBrowserIrohWasmModule(loaded: unknown): BrowserIrohWasmMod
         (probeClass as unknown as Record<string, unknown>).create,
         'HappierBrowserIrohProbe.create',
     );
+    requireFunction(record.HappierBrowserIrohOpenCancellation, 'HappierBrowserIrohOpenCancellation');
 
     return loaded as BrowserIrohWasmModule;
 }
@@ -90,10 +102,19 @@ export function narrowBrowserIrohWasmModule(loaded: unknown): BrowserIrohWasmMod
  * would mean the packaged artifact does not match this app, so it is refused
  * rather than downgraded into a plausible-looking claim.
  */
-function narrowObservedPath(value: string): BrowserIrohObservedPath {
+function narrowEndpointId(value: unknown, owner: string): string {
+    if (typeof value !== 'string' || value.length === 0 || value.trim() !== value) {
+        throw new BrowserIrohWasmBoundaryError(
+            `Packaged browser Iroh module reported an invalid ${owner} EndpointId`,
+        );
+    }
+    return value;
+}
+
+function narrowObservedPath(value: unknown): BrowserIrohObservedPath {
     if (!isBrowserIrohObservedPath(value)) {
         throw new BrowserIrohWasmBoundaryError(
-            `Packaged browser Iroh module reported an unsupported observed path: ${value}`,
+            `Packaged browser Iroh module reported an unsupported observed path: ${String(value)}`,
         );
     }
     return value;
@@ -173,17 +194,47 @@ export function createBrowserIrohWasmBinder(
             streamKind: BrowserIrohStreamKind,
             endpointId: string,
             relayUrls: readonly string[],
+            signal?: AbortSignal,
         ): Promise<BrowserIrohEndpointStreamHandle> => {
+            const cancellation = new module.HappierBrowserIrohOpenCancellation();
+            requireFunction(cancellation.cancel, 'HappierBrowserIrohOpenCancellation#cancel');
+            const onAbort = () => cancellation.cancel();
+            if (signal?.aborted) onAbort();
+            else signal?.addEventListener('abort', onAbort, { once: true });
             // One exhaustive switch is the whole protocol decision: each kind
             // reaches its own generated operation, which is where the core's
             // ALPN constant lives. No ALPN string is ever passed across.
-            const streamHandle = await (streamKind === 'machine'
-                ? probe.openIncrementalMachineStream(endpointId, [...relayUrls])
-                : probe.openIncrementalHomeTunnelStream(endpointId, [...relayUrls]));
-            const remoteEndpointId = probe.streamRemoteEndpointId(streamHandle);
+            let streamHandle: number;
+            try {
+                streamHandle = await (streamKind === 'machine'
+                    ? probe.openIncrementalMachineStream(endpointId, [...relayUrls], cancellation)
+                    : probe.openIncrementalHomeTunnelStream(endpointId, [...relayUrls], cancellation));
+            } finally {
+                signal?.removeEventListener('abort', onAbort);
+            }
+            let remoteEndpointId: string;
+            let observedPath: BrowserIrohObservedPath;
+            try {
+                remoteEndpointId = narrowEndpointId(
+                    probe.streamRemoteEndpointId(streamHandle),
+                    'remote stream',
+                );
+                observedPath = narrowObservedPath(probe.streamObservedPath(streamHandle));
+            } catch (error) {
+                // The raw WASM handle exists, but custody cannot cross this
+                // boundary when its metadata is malformed or traps. Close it
+                // here because the SharedWorker owner never received a handle
+                // it could release. Preserve the originating boundary failure.
+                try {
+                    await probe.closeStream(streamHandle);
+                } catch {
+                    // Best-effort cleanup cannot replace the metadata failure.
+                }
+                throw error;
+            }
             return {
                 remoteEndpointId,
-                observedPath: narrowObservedPath(probe.streamObservedPath(streamHandle)),
+                observedPath,
                 read: async (maxBytes) => {
                     const bytes = await probe.readStream(streamHandle, maxBytes);
                     return bytes === null
@@ -202,14 +253,28 @@ export function createBrowserIrohWasmBinder(
                 },
             };
         };
+        let endpointId: string;
+        try {
+            endpointId = narrowEndpointId(probe.endpointId(), 'local probe');
+        } catch (error) {
+            // A created probe that cannot publish a valid identity never
+            // reaches the SharedWorker owner's custody, so this boundary must
+            // close it before propagating the original failure.
+            try {
+                await probe.close();
+            } catch {
+                // Best-effort cleanup cannot replace the identity failure.
+            }
+            throw error;
+        }
         return {
-            endpointId: probe.endpointId(),
+            endpointId,
             appliedRelayUrls: () => probe.appliedRelayUrls(),
             applyRelayUrls: async (next) => {
                 await probe.applyRelayUrls([...next]);
             },
-            openStream: async ({ streamKind, endpointId, relayUrls }) =>
-                await openStream(streamKind, endpointId, relayUrls),
+            openStream: async ({ streamKind, endpointId, relayUrls, signal }) =>
+                await openStream(streamKind, endpointId, relayUrls, signal),
             closeConnection: async ({ streamKind, endpointId }) => {
                 if (streamKind === 'machine') {
                     probe.closeMachineConnection(endpointId);

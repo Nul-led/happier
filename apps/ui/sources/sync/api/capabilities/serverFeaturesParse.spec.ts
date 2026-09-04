@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseServerFeatures } from './serverFeaturesParse';
+import {
+    SERVER_FEATURES_RESPONSE_MAX_UTF8_BYTES,
+    decodeServerFeaturesResponse,
+    parseServerFeatures,
+} from './serverFeaturesParse';
 
 function createValidFeaturesResponse() {
     return {
@@ -80,6 +84,22 @@ function createValidFeaturesResponse() {
 }
 
 describe('serverFeaturesParse', () => {
+    it('rejects an oversized response before JSON parsing', async () => {
+        const response = new Response(`{"padding":"${'x'.repeat(SERVER_FEATURES_RESPONSE_MAX_UTF8_BYTES)}"}`, {
+            headers: { 'content-type': 'application/json' },
+        });
+
+        await expect(decodeServerFeaturesResponse(response)).resolves.toBeNull();
+    });
+
+    it('decodes a valid feature response through the byte-budgeted response owner', async () => {
+        const payload = createValidFeaturesResponse();
+
+        await expect(decodeServerFeaturesResponse(new Response(JSON.stringify(payload)))).resolves.toEqual(
+            parseServerFeatures(payload),
+        );
+    });
+
     it('parses server voice support from /v1/features', () => {
         const payload = createValidFeaturesResponse();
         payload.features.voice.enabled = false;

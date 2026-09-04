@@ -48,24 +48,79 @@ function createPageLifecycleStub() {
     };
 }
 
+/**
+ * Records every packaged SharedWorker construction and answers each command
+ * with a canned error reply, so a test can observe the exact URL the tab
+ * connected to without any worker running.
+ */
+function stubRecordingSharedWorker(): {
+    constructions: { url: string }[];
+    commandsByPort: { kind: string }[][];
+} {
+    const constructions: { url: string }[] = [];
+    const commandsByPort: { kind: string }[][] = [];
+    class RecordingSharedWorker {
+        onerror: ((event: unknown) => void) | null = null;
+        readonly port: {
+            postMessage: (message: unknown) => void;
+            addEventListener: (
+                type: string,
+                listener: (event: { data: unknown }) => void,
+            ) => void;
+        };
+
+        constructor(scriptUrl: string, _options?: { type?: 'module'; name?: string }) {
+            constructions.push({ url: scriptUrl });
+            const commands: { kind: string }[] = [];
+            commandsByPort.push(commands);
+            let listener: ((event: { data: unknown }) => void) | null = null;
+            this.port = {
+                postMessage: (message) => {
+                    const command = message as { kind: string; requestId: string };
+                    commands.push({ kind: command.kind });
+                    listener?.({
+                        data: {
+                            v: 1,
+                            kind: 'error',
+                            requestId: command.requestId,
+                            code: 'endpoint_unavailable',
+                            message: 'recording stub has no endpoint',
+                        },
+                    });
+                },
+                addEventListener: (_type, attached) => {
+                    listener = attached;
+                },
+            };
+        }
+    }
+    vi.stubGlobal('SharedWorker', RecordingSharedWorker);
+    return { constructions, commandsByPort };
+}
+
 describe('sync/runtime/browserIroh/endpointClient', () => {
     it('cancels a pending stream open promptly through the existing worker request id', async () => {
         const sent: Array<Record<string, unknown>> = [];
         let receive: ((event: { data: unknown }) => void) | null = null;
+        const deliver = (data: unknown): void => {
+            const listener = receive;
+            if (listener === null) throw new Error('expected worker reply listener');
+            listener({ data });
+        };
         const connection: BrowserIrohWorkerConnection = {
             port: {
                 postMessage: (message) => {
                     const command = message as Record<string, unknown>;
                     sent.push(command);
                     if (command.kind === 'acquireLease') {
-                        queueMicrotask(() => receive?.({ data: {
+                        queueMicrotask(() => deliver({
                             v: 1,
                             kind: 'leaseAcquired',
                             requestId: command.requestId,
                             leaseId: 'lease-1',
                             endpointId: 'local-endpoint',
                             appliedRelayUrls: ['https://relay.happier.test'],
-                        } }));
+                        }));
                     }
                 },
                 addEventListener: (_type, listener) => {
@@ -96,6 +151,22 @@ describe('sync/runtime/browserIroh/endpointClient', () => {
         expect(sent).toContainEqual(expect.objectContaining({
             kind: 'cancelRequest',
             targetRequestId: openCommand.requestId,
+        }));
+
+        // The worker completed just before it observed cancellation, but its
+        // reply was queued behind the abort. The tab no longer has a waiter,
+        // so it must explicitly return this otherwise-orphaned handle.
+        deliver({
+            v: 1,
+            kind: 'streamOpened',
+            requestId: openCommand.requestId,
+            streamId: 'late-stream',
+            remoteEndpointId: 'remote-endpoint',
+            observedPath: 'relay',
+        });
+        expect(sent).toContainEqual(expect.objectContaining({
+            kind: 'closeStream',
+            streamId: 'late-stream',
         }));
 
     });
@@ -156,7 +227,7 @@ describe('sync/runtime/browserIroh/endpointClient', () => {
 
     it('releases this tab’s leases best-effort when the page goes away', async () => {
         // `pagehide` is the ordinary end of a page — reload, navigation, tab
-        // close. The worker outlives it, so the leases have to be handed back
+        // close. The worker may remain live for siblings, so leases are handed back
         // there or they stay held by a client id no port answers for. It is
         // best-effort by construction: nothing is awaited, because the page may
         // not be alive to hear the reply.
@@ -189,7 +260,7 @@ describe('sync/runtime/browserIroh/endpointClient', () => {
 
     it('fails an in-flight and a later request when the packaged worker cannot load', async () => {
         // An app built without the browser Iroh assets still looks eligible: the
-        // browser has SharedWorker and IndexedDB. The worker script 404s, the
+        // browser has SharedWorker. The worker script 404s, the
         // port never answers, and without this the caller would wait forever.
         const failListeners: ((reason: string) => void)[] = [];
         const connect = vi.fn(
@@ -220,45 +291,11 @@ describe('sync/runtime/browserIroh/endpointClient', () => {
         // `connectPackagedBrowserIrohWorker` path: constructions and posted
         // commands are recorded, and every command is answered with a canned
         // error reply so no caller hangs on a silent port.
-        const constructions: { url: string }[] = [];
-        const commandsByPort: { kind: string }[][] = [];
-        class RecordingSharedWorker {
-            onerror: ((event: unknown) => void) | null = null;
-            readonly port: {
-                postMessage: (message: unknown) => void;
-                addEventListener: (
-                    type: string,
-                    listener: (event: { data: unknown }) => void,
-                ) => void;
-            };
-
-            constructor(scriptUrl: string, _options?: { type?: 'module'; name?: string }) {
-                constructions.push({ url: scriptUrl });
-                const commands: { kind: string }[] = [];
-                commandsByPort.push(commands);
-                let listener: ((event: { data: unknown }) => void) | null = null;
-                this.port = {
-                    postMessage: (message) => {
-                        const command = message as { kind: string; requestId: string };
-                        commands.push({ kind: command.kind });
-                        listener?.({
-                            data: {
-                                v: 1,
-                                kind: 'error',
-                                requestId: command.requestId,
-                                code: 'endpoint_unavailable',
-                                message: 'recording stub has no endpoint',
-                            },
-                        });
-                    },
-                    addEventListener: (_type, attached) => {
-                        listener = attached;
-                    },
-                };
-            }
-        }
-        vi.stubGlobal('SharedWorker', RecordingSharedWorker);
-        vi.stubGlobal('location', { href: 'https://app.example.test/session' });
+        const { constructions, commandsByPort } = stubRecordingSharedWorker();
+        vi.stubGlobal('location', {
+            origin: 'https://app.example.test',
+            href: 'https://app.example.test/session',
+        });
         resetPackagedBrowserIrohEndpointClientForTests();
         try {
             // Merely resolving the singleton — like merely importing the
@@ -271,7 +308,7 @@ describe('sync/runtime/browserIroh/endpointClient', () => {
             expect(constructions).toEqual([]);
 
             // The first operation is what connects, exactly once, through the
-            // packaged asset URL resolved from the document base.
+            // packaged asset URL resolved from the deployment base.
             await expect(first.status()).rejects.toMatchObject({ name: 'BrowserIrohClientError' });
             expect(constructions).toHaveLength(1);
             expect(constructions[0]?.url).toBe(
@@ -292,6 +329,53 @@ describe('sync/runtime/browserIroh/endpointClient', () => {
             ]);
         } finally {
             vi.unstubAllGlobals();
+        }
+    });
+
+    it('resolves the packaged worker from the deployment base, not a nested navigation URL', async () => {
+        // A deep reload on a nested route is exactly where location-relative
+        // resolution breaks: `vendor/iroh/` would resolve beneath the route
+        // path and the worker script would 404. The packaged assets live at
+        // the deployment base — the app origin plus the configured web output
+        // base path — which no navigation state can move.
+        const { constructions } = stubRecordingSharedWorker();
+        vi.stubGlobal('location', {
+            origin: 'https://app.example.test',
+            href: 'https://app.example.test/servers/abc/sessions/xyz',
+        });
+        resetPackagedBrowserIrohEndpointClientForTests();
+        try {
+            const client = resolvePackagedBrowserIrohEndpointClient();
+            await expect(client.status()).rejects.toMatchObject({ name: 'BrowserIrohClientError' });
+            expect(constructions).toEqual([
+                { url: 'https://app.example.test/vendor/iroh/happier-iroh-worker.js' },
+            ]);
+        } finally {
+            vi.unstubAllGlobals();
+        }
+    });
+
+    it('resolves the packaged worker under the configured web output base path', async () => {
+        // Supported subpath hosting: Expo inlines its `experiments.baseUrl`
+        // deployment setting as `EXPO_BASE_URL`, so a build deployed at /app
+        // serves its packaged assets from /app/vendor/iroh/ — whatever route
+        // the tab happens to be on.
+        const { constructions } = stubRecordingSharedWorker();
+        vi.stubGlobal('location', {
+            origin: 'https://app.example.test',
+            href: 'https://app.example.test/app/servers/abc',
+        });
+        vi.stubEnv('EXPO_BASE_URL', '/app');
+        resetPackagedBrowserIrohEndpointClientForTests();
+        try {
+            const client = resolvePackagedBrowserIrohEndpointClient();
+            await expect(client.status()).rejects.toMatchObject({ name: 'BrowserIrohClientError' });
+            expect(constructions).toEqual([
+                { url: 'https://app.example.test/app/vendor/iroh/happier-iroh-worker.js' },
+            ]);
+        } finally {
+            vi.unstubAllGlobals();
+            vi.unstubAllEnvs();
         }
     });
 

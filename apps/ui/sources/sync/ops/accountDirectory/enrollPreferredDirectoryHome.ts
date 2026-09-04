@@ -1,6 +1,9 @@
 import { encodeBase64 } from '@/encryption/base64';
 import sodium from '@/encryption/libsodium.lib';
-import { createHomeCredentialDestinationDigestV1 } from '@happier-dev/protocol';
+import {
+    classifyAccountServiceDirectory,
+    verifyAccountServiceHomeAssertionRequest,
+} from '@happier-dev/cli-common/accountService';
 import type { AccountDirectorySession } from '@/sync/domains/accountDirectory/accountDirectorySession';
 import type { AccountServiceEntryIntent } from '@/auth/storage/tokenStorage';
 import { continueHomeLoginEnrollment, type HomeLoginContinuationResult } from './homeLoginApproval';
@@ -61,9 +64,10 @@ export async function finalizePreferredHomeEnrollmentEntryIntent(
     homeServerIdentityId: string,
     entryIntent: AccountServiceEntryIntent,
     serviceKey: string,
+    shouldCancel?: () => boolean,
 ): Promise<PreferredHomeEntryIntentOutcome> {
     if (entryIntent === 'connect_service') return 'completed';
-    if (!isSelectedAccountServiceKey(serviceKey)) return 'superseded';
+    if (shouldCancel?.() || !isSelectedAccountServiceKey(serviceKey)) return 'superseded';
     const resolvedProfile = resolveServerProfileForPortableIdentity(homeServerIdentityId);
     if (resolvedProfile.kind !== 'resolved') return 'blocked';
     try {
@@ -71,6 +75,7 @@ export async function finalizePreferredHomeEnrollmentEntryIntent(
         // switch graph into its non-focusing enrollment path. Load the single
         // canonical switch owner only for the explicit Welcome/open intent.
         const { setActiveServerAndSwitch } = await import('@/sync/domains/server/activeServerSwitch');
+        if (shouldCancel?.()) return 'superseded';
         const switched = await setActiveServerAndSwitch({
             serverId: resolveServerProfileScopeId(resolvedProfile.profile),
             scope: resolveRoutineServerSelectionScope(Platform.OS, isDesktopHost()),
@@ -186,11 +191,12 @@ export async function enrollPreferredDirectoryHome(
     if (snapshot.status !== 'ready') return { kind: 'unavailable', reason: 'directory_not_ready' };
     if (!session.supportsHomeEnrollment) return { kind: 'unavailable', reason: 'unsupported' };
 
-    const preferredIdentity = snapshot.preferredHomeServerIdentityId
-        ?? snapshot.homes.find((entry) => entry.preferred === true)?.homeServerIdentityId
-        ?? null;
-    if (!preferredIdentity) return { kind: 'unavailable', reason: 'no_preferred_home' };
-    const entry = snapshot.homes.find((candidate) => candidate.homeServerIdentityId === preferredIdentity);
+    const directory = classifyAccountServiceDirectory({
+        homes: snapshot.homes,
+        preferredHomeServerIdentityId: snapshot.preferredHomeServerIdentityId,
+    });
+    if (directory.kind === 'invalid') return { kind: 'failed' };
+    const entry = directory.preferredHome;
     if (!entry) return { kind: 'unavailable', reason: 'no_preferred_home' };
 
     const retained = pendingPreferredHomeEnrollment;
@@ -204,21 +210,23 @@ export async function enrollPreferredDirectoryHome(
     if (options.shouldCancel?.()) return { kind: 'cancelled' };
     try {
         const keyPair = sodium.crypto_box_keypair();
+        const clientBoxPublicKeyBase64 = encodeBase64(keyPair.publicKey, 'base64');
         const assertion = await session.requestLoginAssertion(entry.homeServerIdentityId,
             // The Lane 02 assertion DTO deliberately uses canonical padded
             // base64 (not base64url) for the requester box key.
-            encodeBase64(keyPair.publicKey, 'base64'),
+            clientBoxPublicKeyBase64,
         );
-        const expectedCredentialDestinationDigest = createHomeCredentialDestinationDigestV1(
-            entry.connectionDescriptor,
-        );
-        if (assertion.credentialDestinationDigestBase64Url !== expectedCredentialDestinationDigest) {
-            throw new Error('Account Service assertion targeted a different credential destination');
+        const issuerServerIdentityId = session.serviceKey.slice(session.serviceKey.lastIndexOf('\u0000') + 1);
+        const verification = verifyAccountServiceHomeAssertionRequest({
+            home: entry,
+            issuerServerIdentityId,
+            requesterPublicKeyBase64: clientBoxPublicKeyBase64,
+            assertion,
+        });
+        if (verification.kind !== 'verified') {
+            throw new Error(`Account Service assertion verification failed: ${verification.reason}`);
         }
         if (options.shouldCancel?.()) return { kind: 'cancelled' };
-        if (assertion.audienceHomeServerIdentityId !== entry.homeServerIdentityId) {
-            throw new Error('Account Service assertion targeted a different Home');
-        }
         const result = await continueHomeLoginEnrollment({
             home: entry,
             clientSecretKey: keyPair.privateKey,

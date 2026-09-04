@@ -1,8 +1,8 @@
 /**
  * The one browser Iroh endpoint and stream owner (Lane 06 amendment A7.2/A7.3).
  *
- * Exactly one live Iroh endpoint per browser application/profile, shared by
- * every client (tab) through the SharedWorker this owner runs inside. It is not
+ * Exactly one live Iroh endpoint per SharedWorker instance, shared by every
+ * connected client (tab). It is not
  * created per Home, tab, request, socket, or transfer, and adopting a second
  * Home adds that Home's relay facts to the same endpoint rather than rotating
  * the key or binding a second one.
@@ -20,10 +20,6 @@
  * transport owners and do not consume this module directly.
  */
 
-import {
-    resolvePersistentBrowserIrohEndpointKey,
-    type BrowserIrohEndpointKeyStore,
-} from './endpointKey';
 import {
     BROWSER_IROH_STREAM_CHUNK_BYTES,
     type BrowserIrohEndpointStatus,
@@ -58,6 +54,7 @@ export type BrowserIrohEndpointHandle = Readonly<{
         streamKind: BrowserIrohStreamKind;
         endpointId: string;
         relayUrls: readonly string[];
+        signal?: AbortSignal;
     }>) => Promise<BrowserIrohEndpointStreamHandle>;
     /** Releases one authenticated target+protocol connection without closing the endpoint. */
     closeConnection: (input: Readonly<{
@@ -96,15 +93,13 @@ export type BrowserIrohSharedEndpointOwner = Readonly<{
     releaseLease: (input: Readonly<{ clientId: string; leaseId: string }>) => Promise<void>;
     /** Drops every lease one client holds. Sibling clients are untouched. */
     releaseClient: (clientId: string) => Promise<void>;
-    configureRelays: (
-        relayUrls: readonly string[],
-    ) => Promise<Readonly<{ endpointId: string; appliedRelayUrls: readonly string[] }>>;
     openStream: (input: Readonly<{
         clientId: string;
         leaseId: string;
         streamKind: BrowserIrohStreamKind;
         endpointId: string;
         relayUrls: readonly string[];
+        signal?: AbortSignal;
     }>) => Promise<Readonly<{
         streamId: string;
         remoteEndpointId: string;
@@ -116,16 +111,16 @@ export type BrowserIrohSharedEndpointOwner = Readonly<{
     cancelStream: (input: Readonly<{ clientId: string; streamId: string }>) => Promise<void>;
     closeStream: (input: Readonly<{ clientId: string; streamId: string }>) => Promise<void>;
     status: () => BrowserIrohEndpointStatus;
-    clearApplicationData: () => Promise<void>;
 }>;
 
 type OwnerDependencies = Readonly<{
-    keyStore: BrowserIrohEndpointKeyStore;
     randomBytes: (length: number) => Uint8Array;
     bindEndpoint: BrowserIrohEndpointBinder;
     newLeaseId?: () => string;
     newStreamId?: () => string;
 }>;
+
+const BROWSER_IROH_ENDPOINT_KEY_BYTES = 32;
 
 type ConnectionIdentity = Readonly<{
     streamKind: BrowserIrohStreamKind;
@@ -172,27 +167,11 @@ export function createBrowserIrohSharedEndpointOwner(
     const newStreamId = dependencies.newStreamId ?? defaultStreamId;
     const leases = new Map<string, LeaseRecord>();
     const streams = new Map<string, StreamRecord>();
+    const releaseGenerationByClientId = new Map<string, number>();
 
-    let cleared = false;
     let handle: BrowserIrohEndpointHandle | null = null;
     /** The one in-flight bind. Concurrent acquires join it instead of racing. */
     let binding: Promise<BrowserIrohEndpointHandle> | null = null;
-    /**
-     * The endpoint a clear has taken custody of and has not successfully closed
-     * yet — either the live one or one whose first bind settled after the clear
-     * began. It is the handle itself, not a spent promise, because a close that
-     * failed has to be retryable: dropping the handle would leak the endpoint
-     * with no caller able to reach it again.
-     */
-    let retainedForClose: BrowserIrohEndpointHandle | null = null;
-    /** The one in-flight terminal clear. Concurrent clears join it. */
-    let clearing: Promise<void> | null = null;
-
-    function requireLive(): void {
-        if (cleared) {
-            throw new BrowserIrohOwnerError('owner_cleared');
-        }
-    }
 
     function requireLease(clientId: string, leaseId: string): LeaseRecord {
         const lease = leases.get(leaseId);
@@ -236,7 +215,7 @@ export function createBrowserIrohSharedEndpointOwner(
         // A stream that settled after its lease disappeared is the only owner
         // left able to release the connection that its open may have created.
         // Keep this same record in custody until both releases succeed.
-        if (!cleared && !leases.has(stream.leaseId)) {
+        if (!leases.has(stream.leaseId)) {
             await closeConnectionIfUnowned(stream.connection);
         }
         if (streams.get(stream.streamId) === stream) streams.delete(stream.streamId);
@@ -276,15 +255,15 @@ export function createBrowserIrohSharedEndpointOwner(
             }
         } catch (error) {
             // A failed connection release keeps this lease record as retry
-            // custody. Terminal clear owns the endpoint instead once begun.
-            if (!cleared) leases.set(record.leaseId, record);
+            // custody for the caller's next explicit release.
+            leases.set(record.leaseId, record);
             throw error;
         }
     }
 
-    async function runStreamOperation<T>(stream: StreamRecord, operation: Promise<T>): Promise<T> {
+    async function runStreamOperation<T>(stream: StreamRecord, operation: () => Promise<T>): Promise<T> {
         if (stream.cancelled) throw new BrowserIrohOwnerError('cancelled');
-        const result = await Promise.race([operation, stream.cancellation]);
+        const result = await Promise.race([operation(), stream.cancellation]);
         if (stream.cancelled || streams.get(stream.streamId) !== stream) {
             throw new BrowserIrohOwnerError('cancelled');
         }
@@ -292,8 +271,6 @@ export function createBrowserIrohSharedEndpointOwner(
     }
 
     async function ensureEndpoint(relayUrls: readonly string[]): Promise<BrowserIrohEndpointHandle> {
-        requireLive();
-
         // Relay-only carrier: a contribution with no relay facts has no path at
         // all, and ambient infrastructure is never substituted for one. This is
         // the typed surface of the core's own relay-only rule; which relay URLs
@@ -310,31 +287,23 @@ export function createBrowserIrohSharedEndpointOwner(
             // owner keeps no relay set of its own, and an entry the core
             // rejects is never persisted to poison a later valid acquisition.
             await handle.applyRelayUrls(relayUrls);
-            // A clear that began while that work was in flight ends this
-            // operation: it must not report success on a cleared owner.
-            requireLive();
             return handle;
         }
 
         if (binding === null) {
             binding = (async () => {
-                const secretKey = await resolvePersistentBrowserIrohEndpointKey(
-                    dependencies.keyStore,
-                    dependencies.randomBytes,
-                );
-                return await dependencies.bindEndpoint({ secretKey, relayUrls });
+                const secretKey = dependencies.randomBytes(BROWSER_IROH_ENDPOINT_KEY_BYTES);
+                if (!(secretKey instanceof Uint8Array) || secretKey.length !== BROWSER_IROH_ENDPOINT_KEY_BYTES) {
+                    throw new BrowserIrohOwnerError('endpoint_unavailable', 'Browser Iroh endpoint seed is unavailable');
+                }
+                try {
+                    return await dependencies.bindEndpoint({ secretKey, relayUrls });
+                } finally {
+                    secretKey.fill(0);
+                }
             })().then(
                 (bound) => {
                     binding = null;
-                    // An endpoint bound after a clear must not become live
-                    // state, and its release belongs to that clear: the handle
-                    // is handed to the clear's custody so the clear can await a
-                    // fully released endpoint — and retry it — instead of
-                    // racing a background teardown it cannot repeat.
-                    if (cleared) {
-                        retainedForClose = bound;
-                        throw new BrowserIrohOwnerError('owner_cleared');
-                    }
                     handle = bound;
                     return bound;
                 },
@@ -350,65 +319,16 @@ export function createBrowserIrohSharedEndpointOwner(
         // has to reach the endpoint. Re-applying the bind-time contribution is
         // a core-level no-op.
         await bound.applyRelayUrls(relayUrls);
-        // Same re-check as the live-handle path: work that was admitted before
-        // a clear but finishes after it never becomes a success or a lease.
-        requireLive();
         return bound;
-    }
-
-    /**
-     * One terminal-clear attempt: settle the bind, release the endpoint this
-     * clear has custody of, and delete the persistent key. Both steps are
-     * always attempted and both failures are reported separately, so a caller
-     * can tell an endpoint that would not close from a key that would not go.
-     */
-    async function runTerminalClear(): Promise<void> {
-        let teardownError: unknown = null;
-        try {
-            await closeMatchingStreams(() => true);
-            // The binding promise performs the only key write this owner ever
-            // issues, so it has to be fully settled — key persisted or rejected
-            // — before the store is cleared. Otherwise an acquire that was
-            // still minting the key would re-write the record after this clear
-            // resolved, resurrecting the identity the clear removed. No new
-            // binding can start behind this point: every later entry rejects
-            // `owner_cleared` before reaching the bind, and a bind that settles
-            // here hands its endpoint to this attempt's custody.
-            while (binding !== null) {
-                await binding.then(undefined, () => undefined);
-            }
-            const pending = retainedForClose;
-            if (pending !== null) {
-                await pending.close();
-                // Custody ends only on a close that actually succeeded.
-                retainedForClose = null;
-            }
-        } catch (error) {
-            // A failed endpoint release does not cancel the clear: the
-            // persistent key is still removed, the endpoint stays in this
-            // owner's custody for the next attempt, and the failure is reported
-            // truthfully instead of being swallowed into a completed clear.
-            teardownError = error;
-        }
-
-        try {
-            await dependencies.keyStore.clear();
-        } catch (error) {
-            if (teardownError === null) throw error;
-            throw new Error(
-                `browser Iroh clear failed at both teardown steps: ${
-                    teardownError instanceof Error ? teardownError.message : String(teardownError)
-                }; then ${error instanceof Error ? error.message : String(error)}`,
-            );
-        }
-        if (teardownError !== null) {
-            throw teardownError;
-        }
     }
 
     return {
         acquireLease: async ({ clientId, relayUrls }) => {
+            const releaseGeneration = releaseGenerationByClientId.get(clientId) ?? 0;
             const bound = await ensureEndpoint(relayUrls);
+            if ((releaseGenerationByClientId.get(clientId) ?? 0) !== releaseGeneration) {
+                throw new BrowserIrohOwnerError('cancelled');
+            }
             const leaseId = newLeaseId();
             leases.set(leaseId, { leaseId, clientId, connections: new Map() });
             return {
@@ -437,13 +357,17 @@ export function createBrowserIrohSharedEndpointOwner(
                 throw new BrowserIrohOwnerError('unknown_lease');
             }
             await releaseLeaseRecord(record);
-            // The endpoint deliberately survives its last lease. It is the
-            // browser application/profile's endpoint, not the session's: a Home
-            // logout releases leases and must not cost the endpoint or the key.
-            // SharedWorker global termination is the browser's to decide.
+            // The endpoint deliberately survives its last lease for the life
+            // of this SharedWorker. A Home logout releases leases without
+            // replacing the live worker's endpoint; worker destruction ends
+            // that ephemeral identity and a later worker mints a new one.
         },
 
         releaseClient: async (clientId) => {
+            releaseGenerationByClientId.set(
+                clientId,
+                (releaseGenerationByClientId.get(clientId) ?? 0) + 1,
+            );
             const failures: unknown[] = [];
             if ([...streams.values()].some((stream) => stream.clientId === clientId)) {
                 try {
@@ -467,22 +391,19 @@ export function createBrowserIrohSharedEndpointOwner(
             if (failures.length > 0 && stillOwned) throw failures[0];
         },
 
-        configureRelays: async (relayUrls) => {
-            const bound = await ensureEndpoint(relayUrls);
-            return { endpointId: bound.endpointId, appliedRelayUrls: bound.appliedRelayUrls() };
-        },
-
-        openStream: async ({ clientId, leaseId, streamKind, endpointId, relayUrls }) => {
+        openStream: async ({ clientId, leaseId, streamKind, endpointId, relayUrls, signal }) => {
             requireLease(clientId, leaseId);
+            if (signal?.aborted) throw new BrowserIrohOwnerError('cancelled');
             const bound = await ensureEndpoint(relayUrls);
             const lease = requireLease(clientId, leaseId);
+            if (signal?.aborted) throw new BrowserIrohOwnerError('cancelled');
             const requestedConnection = { streamKind, endpointId };
             // Claim before the asynchronous open so a sibling release cannot
             // close a shared connection underneath this admitted operation.
             // Even a failed open may have dialled before failing, so custody
             // lasts until lease release.
             lease.connections.set(connectionKey(requestedConnection), requestedConnection);
-            const opened = await bound.openStream({ streamKind, endpointId, relayUrls });
+            const opened = await bound.openStream({ streamKind, endpointId, relayUrls, signal });
             const connection = { streamKind, endpointId: opened.remoteEndpointId };
             if (
                 leases.get(leaseId) === lease
@@ -513,9 +434,22 @@ export function createBrowserIrohSharedEndpointOwner(
                 streamClosed: false,
             };
             streams.set(streamId, stream);
-            if (cleared || leases.get(leaseId)?.clientId !== clientId) {
-                await closeRecord(stream);
-                throw new BrowserIrohOwnerError(cleared ? 'owner_cleared' : 'unknown_lease');
+            if (signal?.aborted || leases.get(leaseId)?.clientId !== clientId) {
+                // Usually Rust rejects before producing a handle. If completion
+                // wins the same turn, enter normal stream custody first so a
+                // failed late close remains retryable by lease/client cleanup.
+                try {
+                    await closeRecord(stream);
+                } catch (error) {
+                    // Cancellation is already the caller-visible outcome; a
+                    // cleanup failure stays in custody without masking it. The
+                    // established clear/release paths still surface their own
+                    // cleanup failure when there was no request cancellation.
+                    if (!signal?.aborted) throw error;
+                }
+                throw new BrowserIrohOwnerError(
+                    signal?.aborted ? 'cancelled' : 'unknown_lease',
+                );
             }
             return {
                 streamId,
@@ -529,7 +463,7 @@ export function createBrowserIrohSharedEndpointOwner(
                 throw new BrowserIrohOwnerError('resource_limit');
             }
             const stream = requireStream(clientId, streamId);
-            const result = await runStreamOperation(stream, stream.handle.read(maxBytes));
+            const result = await runStreamOperation(stream, () => stream.handle.read(maxBytes));
             if (result.bytes.byteLength > maxBytes || result.bytes.byteLength > BROWSER_IROH_STREAM_CHUNK_BYTES) {
                 cancelRecord(stream);
                 throw new BrowserIrohOwnerError('resource_limit');
@@ -542,12 +476,12 @@ export function createBrowserIrohSharedEndpointOwner(
                 throw new BrowserIrohOwnerError('resource_limit');
             }
             const stream = requireStream(clientId, streamId);
-            await runStreamOperation(stream, stream.handle.write(bytes));
+            await runStreamOperation(stream, () => stream.handle.write(bytes));
         },
 
         finishStreamWrite: async ({ clientId, streamId }) => {
             const stream = requireStream(clientId, streamId);
-            await runStreamOperation(stream, stream.handle.finishWrite());
+            await runStreamOperation(stream, () => stream.handle.finishWrite());
         },
 
         cancelStream: async ({ clientId, streamId }) => {
@@ -565,43 +499,10 @@ export function createBrowserIrohSharedEndpointOwner(
         },
 
         status: () => ({
-            state: cleared ? 'cleared' : handle === null ? 'idle' : 'ready',
+            state: handle === null ? 'idle' : 'ready',
             endpointId: handle?.endpointId ?? null,
             appliedRelayUrls: handle?.appliedRelayUrls() ?? [],
             leaseCount: leases.size,
         }),
-
-        clearApplicationData: async () => {
-            // Terminal by design. A clear ends this owner's life; a later
-            // endpoint needs a fresh worker global, which is what clearing
-            // application data implies anyway. There is no half-cleared state
-            // for a caller to observe: the owner refuses every later command
-            // from this point, whether or not the teardown itself succeeds.
-            cleared = true;
-            leases.clear();
-            if (handle !== null) {
-                retainedForClose = handle;
-                handle = null;
-            }
-
-            // One attempt, however many callers ask. Tabs clear concurrently,
-            // and a caller that observed the emptied field and returned success
-            // while the real teardown was still running — or still failing —
-            // would be reporting a clear that did not happen.
-            if (clearing !== null) {
-                await clearing;
-                return;
-            }
-            const attempt = runTerminalClear();
-            clearing = attempt;
-            try {
-                await attempt;
-            } finally {
-                // Only the caller that started this attempt retires it, so a
-                // failed clear stays retryable by a later call — with the same
-                // endpoint still in custody.
-                if (clearing === attempt) clearing = null;
-            }
-        },
     };
 }

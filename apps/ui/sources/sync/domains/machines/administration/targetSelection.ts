@@ -1,4 +1,45 @@
-import type { MachineAdministrationTargetV1 } from '@happier-dev/protocol';
+import {
+    MachineAdministrationTargetV1Schema,
+    type MachineAdministrationTargetV1,
+} from '@happier-dev/protocol';
+
+type MachineAdministrationRouteParamV1 = string | readonly string[] | undefined;
+
+export type MachineAdministrationTargetRouteParamsV1 = Readonly<{
+    serverIdentityId?: MachineAdministrationRouteParamV1;
+    machineId?: MachineAdministrationRouteParamV1;
+}>;
+
+function readSingleRouteParam(value: MachineAdministrationRouteParamV1): string | null {
+    if (Array.isArray(value)) {
+        return value.length === 1 ? readSingleRouteParam(value[0]) : null;
+    }
+    return typeof value === 'string' ? value : null;
+}
+
+/**
+ * Admits only the complete Account-portable Administration identity from a
+ * route handoff. A machine id by itself can collide across servers and never
+ * carries selection authority.
+ */
+export function readMachineAdministrationTargetRouteParams(
+    params: MachineAdministrationTargetRouteParamsV1,
+): MachineAdministrationTargetV1 | null {
+    const parsed = MachineAdministrationTargetV1Schema.safeParse({
+        serverIdentityId: readSingleRouteParam(params.serverIdentityId),
+        machineId: readSingleRouteParam(params.machineId),
+    });
+    return parsed.success ? Object.freeze(parsed.data) : null;
+}
+
+export function buildMachineAdministrationTargetRouteParams(
+    target: MachineAdministrationTargetV1,
+): Readonly<{ serverIdentityId: string; machineId: string }> {
+    return Object.freeze({
+        serverIdentityId: target.serverIdentityId,
+        machineId: target.machineId,
+    });
+}
 
 export type MachineAdministrationCandidateAvailabilityV1 =
     | 'online'

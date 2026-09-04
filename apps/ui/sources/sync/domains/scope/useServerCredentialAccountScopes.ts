@@ -8,6 +8,9 @@ import {
     resolveServerProfileScopeIdForIdentifier,
 } from '@/sync/domains/server/serverProfiles';
 import { parseToken } from '@/utils/auth/parseToken';
+import { storage } from '@/sync/domains/state/storage';
+import { captureActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
+import { areServerAccountScopesEqual, createServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 
 export type ServerCredentialAccountScopeBinding = Readonly<{
     serverId: string;
@@ -29,7 +32,7 @@ export function useServerCredentialAccountScopes(
 ): ReadonlyMap<string, ServerCredentialAccountScopeBinding> {
     const profilesGeneration = useServerProfilesGeneration();
     const normalizedServerIds = [...new Set(serverIds
-        .map((serverId) => String(serverId ?? '').trim())
+        .map((serverId) => resolveServerProfileScopeIdForIdentifier(serverId))
         .filter(Boolean))].sort();
     const serverIdsKey = normalizedServerIds.join('\u0000');
     const revisionsRef = React.useRef(new Map<string, number>());
@@ -43,7 +46,8 @@ export function useServerCredentialAccountScopes(
         mountedRef.current = true;
         const trackedServerIds = new Set(normalizedServerIds);
 
-        const invalidate = (serverId: string, publish = true): number => {
+        const invalidate = (serverId: string, publish = true, clearScopedRows = false): number => {
+            if (clearScopedRows) storage.getState().clearSessionListRowsForServerScope(serverId);
             const retirements = retirementCallbacksRef.current.get(serverId);
             retirementCallbacksRef.current.delete(serverId);
             for (const retire of retirements ?? []) {
@@ -71,7 +75,7 @@ export function useServerCredentialAccountScopes(
             const profile = getServerProfileById(canonicalServerId);
             if (!profile) return;
             const credentials = await TokenStorage.getCredentialsForServerUrl(profile.serverUrl, {
-                serverId: profile.id,
+                serverId: canonicalServerId,
             });
             let accountId: string | null = null;
             try {
@@ -84,6 +88,16 @@ export function useServerCredentialAccountScopes(
                 || !mountedRef.current
                 || revisionsRef.current.get(requestedServerId) !== revision
             ) return;
+            const activeAccountScope = captureActiveServerAccountScopeLifetime()?.scope ?? null;
+            if (!activeAccountScope || !areServerAccountScopesEqual(
+                activeAccountScope,
+                createServerAccountScope(requestedServerId, accountId),
+            )) {
+                // Inactive-Home rows are an Account-scoped Search projection. No
+                // listener existed while this hook was unmounted, so clear any
+                // prior lifetime before publishing the newly resolved binding.
+                storage.getState().clearSessionListRowsForServerScope(requestedServerId);
+            }
             const binding: ServerCredentialAccountScopeBinding = Object.freeze({
                 serverId: requestedServerId,
                 accountId,
@@ -122,7 +136,7 @@ export function useServerCredentialAccountScopes(
         const unsubscribe = subscribeHomeCredentialMutations((event) => {
             for (const serverId of trackedServerIds) {
                 if (!areServerProfileIdentifiersEquivalent(event.serverId, serverId)) continue;
-                const revision = invalidate(serverId);
+                const revision = invalidate(serverId, true, true);
                 void resolveBinding(serverId, revision);
             }
         });

@@ -1,16 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
 
 describe('executeSessionHandoffAction', () => {
+  const status = { handoffId: 'handoff_1', status: 'completed' as const, phase: 'finalizing' as const, recoveryActions: [] };
+
   it('returns the handoff id when the action executor returns a successful handoff result', async () => {
     const { executeSessionHandoffAction } = await import('./executeSessionHandoffAction');
 
     const execute = vi.fn(async () => ({
       ok: true,
       result: {
-        ok: true,
         handoffId: 'handoff_1',
-        status: { handoffId: 'handoff_1', status: 'pending', phase: 'preparing', recoveryActions: [] },
-        endpointCandidates: [],
+        status,
       },
     }));
 
@@ -21,7 +21,7 @@ describe('executeSessionHandoffAction', () => {
       context: { defaultSessionId: 'sess_1', surface: 'ui', placement: 'session_info' } as any,
     });
 
-    expect(result).toEqual({ ok: true, handoffId: 'handoff_1' });
+    expect(result).toEqual({ ok: true, result: { handoffId: 'handoff_1', status } });
   });
 
   it('passes optional handoff options through to the action executor', async () => {
@@ -30,9 +30,8 @@ describe('executeSessionHandoffAction', () => {
     const execute = vi.fn(async () => ({
       ok: true,
       result: {
-        ok: true,
         handoffId: 'handoff_1',
-        status: { handoffId: 'handoff_1', status: 'pending', phase: 'preparing', recoveryActions: [] },
+        status,
       },
     }));
 
@@ -43,9 +42,6 @@ describe('executeSessionHandoffAction', () => {
       targetPath: '/home/guest/workspace',
       targetSessionStorageMode: 'persisted',
       workspaceAction: { kind: 'none' },
-      workspaceSyncSourceWorkspaceRefId: 'workspace-source',
-      workspaceSyncTargetWorkspaceRefId: 'workspace-target',
-      workspaceSyncSettingsVersion: 17,
       context: { defaultSessionId: 'sess_1', surface: 'ui', placement: 'session_info' } as any,
     });
 
@@ -57,12 +53,37 @@ describe('executeSessionHandoffAction', () => {
         targetPath: '/home/guest/workspace',
         targetSessionStorageMode: 'persisted',
         workspaceAction: { kind: 'none' },
-        workspaceSyncSourceWorkspaceRefId: 'workspace-source',
-        workspaceSyncTargetWorkspaceRefId: 'workspace-target',
-        workspaceSyncSettingsVersion: 17,
       },
       expect.anything(),
     );
+  });
+
+  it('returns the daemon-committed workspace outcome from the action result', async () => {
+    const { executeSessionHandoffAction } = await import('./executeSessionHandoffAction');
+
+    const execute = vi.fn(async () => ({
+      ok: true,
+      result: {
+        handoffId: 'handoff_1',
+        status,
+        workspace: { kind: 'relationship', relationshipId: 'relationship-1', created: false },
+      },
+    }));
+
+    await expect(executeSessionHandoffAction({
+      execute: execute as any,
+      sessionId: 'sess_1',
+      targetMachineId: 'machine_target',
+      workspaceAction: { kind: 'relationship', relationshipId: 'relationship-1', flushBeforeCommit: true },
+      context: { defaultSessionId: 'sess_1', surface: 'ui', placement: 'session_info' } as any,
+    })).resolves.toEqual({
+      ok: true,
+      result: {
+        handoffId: 'handoff_1',
+        status,
+        workspace: { kind: 'relationship', relationshipId: 'relationship-1', created: false },
+      },
+    });
   });
 
   it('returns a normalized error when the action executor rejects the request', async () => {
@@ -90,9 +111,7 @@ describe('executeSessionHandoffAction', () => {
     const execute = vi.fn(async () => ({
       ok: true,
       result: {
-        ok: true,
-        status: { handoffId: 'handoff_1', status: 'pending', phase: 'preparing', recoveryActions: [] },
-        endpointCandidates: [],
+        status,
       },
     }));
 
@@ -103,6 +122,6 @@ describe('executeSessionHandoffAction', () => {
       context: { defaultSessionId: 'sess_1', surface: 'ui', placement: 'session_info' } as any,
     });
 
-    expect(result).toEqual({ ok: false, error: 'failed_to_start_session_handoff' });
+    expect(result).toEqual({ ok: false, error: 'unsupported_session_handoff_result' });
   });
 });

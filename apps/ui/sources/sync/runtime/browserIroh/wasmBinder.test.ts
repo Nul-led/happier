@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createBrowserIrohWasmBinder } from './wasmBinder';
 
@@ -18,6 +18,24 @@ const RELAY = 'https://relay.happier.test';
 function createFakeModule() {
     const created: { seedCopy: Uint8Array }[] = [];
     const closedConnections: string[] = [];
+    const closedStreams: number[] = [];
+    const openCancellations: { cancelled: boolean }[] = [];
+    let endpointIdImpl = (): unknown => 'endpoint-fake';
+    let streamRemoteEndpointIdImpl = (_streamHandle: number): unknown => 'endpoint-remote';
+    let streamObservedPathImpl = (_streamHandle: number): unknown => 'relay';
+    let probeCloseCount = 0;
+
+    class FakeHappierBrowserIrohOpenCancellation {
+        readonly state = { cancelled: false };
+
+        constructor() {
+            openCancellations.push(this.state);
+        }
+
+        cancel(): void {
+            this.state.cancelled = true;
+        }
+    }
 
     class FakeHappierBrowserIrohProbe {
         static create(secretKey: Uint8Array, _relayUrls: string[]): Promise<unknown> {
@@ -29,7 +47,7 @@ function createFakeModule() {
         // failure here can only be about the behavior under test, not the
         // boundary check.
         endpointId(): string {
-            return 'endpoint-fake';
+            return endpointIdImpl() as string;
         }
 
         appliedRelayUrls(): string[] {
@@ -38,7 +56,12 @@ function createFakeModule() {
 
         async applyRelayUrls(_relayUrls: string[]): Promise<void> {}
 
-        async openIncrementalHomeTunnelStream(_endpointId: string, _relayUrls: string[]): Promise<number> {
+        async openIncrementalHomeTunnelStream(
+            _endpointId: string,
+            _relayUrls: string[],
+            cancellation: FakeHappierBrowserIrohOpenCancellation,
+        ): Promise<number> {
+            await vi.waitFor(() => expect(cancellation.state.cancelled).toBe(true));
             return 1;
         }
 
@@ -47,11 +70,11 @@ function createFakeModule() {
         }
 
         streamRemoteEndpointId(_streamHandle: number): string {
-            return 'endpoint-remote';
+            return streamRemoteEndpointIdImpl(_streamHandle) as string;
         }
 
         streamObservedPath(_streamHandle: number): string {
-            return 'relay';
+            return streamObservedPathImpl(_streamHandle) as string;
         }
 
         async readStream(_streamHandle: number, _maxBytes: number): Promise<Uint8Array | null> {
@@ -64,7 +87,9 @@ function createFakeModule() {
 
         cancelStream(_streamHandle: number): void {}
 
-        async closeStream(_streamHandle: number): Promise<void> {}
+        async closeStream(streamHandle: number): Promise<void> {
+            closedStreams.push(streamHandle);
+        }
 
         closeHomeTunnelConnection(endpointId: string): void {
             closedConnections.push(`home:${endpointId}`);
@@ -74,7 +99,9 @@ function createFakeModule() {
             closedConnections.push(`machine:${endpointId}`);
         }
 
-        async close(): Promise<void> {}
+        async close(): Promise<void> {
+            probeCloseCount += 1;
+        }
     }
 
     let createImpl: () => Promise<unknown> = async () => new FakeHappierBrowserIrohProbe();
@@ -82,14 +109,42 @@ function createFakeModule() {
     const module = {
         default: async () => 'initialized',
         HappierBrowserIrohProbe: FakeHappierBrowserIrohProbe,
+        HappierBrowserIrohOpenCancellation: FakeHappierBrowserIrohOpenCancellation,
     };
 
     return {
         module,
         created,
         closedConnections,
+        closedStreams,
+        openCancellations,
+        probeCloseCount: () => probeCloseCount,
         failCreateWith: (error: Error) => {
             createImpl = async () => {
+                throw error;
+            };
+        },
+        setEndpointId: (value: unknown) => {
+            endpointIdImpl = () => value;
+        },
+        failEndpointIdWith: (error: Error) => {
+            endpointIdImpl = () => {
+                throw error;
+            };
+        },
+        setStreamRemoteEndpointId: (value: unknown) => {
+            streamRemoteEndpointIdImpl = () => value;
+        },
+        failStreamRemoteEndpointIdWith: (error: Error) => {
+            streamRemoteEndpointIdImpl = () => {
+                throw error;
+            };
+        },
+        setStreamObservedPath: (value: unknown) => {
+            streamObservedPathImpl = () => value;
+        },
+        failStreamObservedPathWith: (error: Error) => {
+            streamObservedPathImpl = () => {
                 throw error;
             };
         },
@@ -162,5 +217,61 @@ describe('sync/runtime/browserIroh/wasmBinder', () => {
             'home:home-endpoint',
             'machine:machine-endpoint',
         ]);
+    });
+
+    it('propagates one aborted open to its per-operation WASM cancellation handle', async () => {
+        const fake = createFakeModule();
+        const binder = createBrowserIrohWasmBinder(async () => ({ module: fake.module, wasmUrl: 'wasm-url' }));
+        const handle = await binder({ secretKey: new Uint8Array(SEED), relayUrls: [RELAY] });
+        const controller = new AbortController();
+        const opening = handle.openStream({
+            streamKind: 'home', endpointId: 'home-endpoint', relayUrls: [RELAY], signal: controller.signal,
+        });
+
+        await vi.waitFor(() => expect(fake.openCancellations).toHaveLength(1));
+        controller.abort();
+
+        await expect(opening).resolves.toMatchObject({ remoteEndpointId: 'endpoint-remote' });
+        expect(fake.openCancellations).toEqual([{ cancelled: true }]);
+    });
+
+    it.each([
+        ['malformed remote EndpointId', (fake: ReturnType<typeof createFakeModule>) => fake.setStreamRemoteEndpointId('')],
+        [
+            'throwing remote EndpointId accessor',
+            (fake: ReturnType<typeof createFakeModule>) => fake.failStreamRemoteEndpointIdWith(new Error('remote id trap')),
+        ],
+        ['malformed observed path', (fake: ReturnType<typeof createFakeModule>) => fake.setStreamObservedPath('direct')],
+        [
+            'throwing observed path accessor',
+            (fake: ReturnType<typeof createFakeModule>) => fake.failStreamObservedPathWith(new Error('path trap')),
+        ],
+    ])('closes the raw stream when %s prevents handle publication', async (_label, arrange) => {
+        const fake = createFakeModule();
+        arrange(fake);
+        const binder = createBrowserIrohWasmBinder(async () => ({ module: fake.module, wasmUrl: 'wasm-url' }));
+        const handle = await binder({ secretKey: new Uint8Array(SEED), relayUrls: [RELAY] });
+
+        await expect(handle.openStream({
+            streamKind: 'machine', endpointId: 'machine-endpoint', relayUrls: [RELAY],
+        })).rejects.toThrow();
+
+        expect(fake.closedStreams).toEqual([2]);
+    });
+
+    it.each([
+        ['malformed endpoint id', (fake: ReturnType<typeof createFakeModule>) => fake.setEndpointId('')],
+        [
+            'throwing endpoint id accessor',
+            (fake: ReturnType<typeof createFakeModule>) => fake.failEndpointIdWith(new Error('endpoint id trap')),
+        ],
+    ])('closes the probe when %s prevents endpoint publication', async (_label, arrange) => {
+        const fake = createFakeModule();
+        arrange(fake);
+        const binder = createBrowserIrohWasmBinder(async () => ({ module: fake.module, wasmUrl: 'wasm-url' }));
+
+        await expect(binder({ secretKey: new Uint8Array(SEED), relayUrls: [RELAY] })).rejects.toThrow();
+
+        expect(fake.probeCloseCount()).toBe(1);
     });
 });

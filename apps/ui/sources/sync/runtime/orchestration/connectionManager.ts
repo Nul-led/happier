@@ -1,9 +1,9 @@
 import { TokenStorage, type AuthCredentials } from '@/auth/storage/tokenStorage';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { getServerProfileById } from '@/sync/domains/server/serverProfiles';
-import { resolveIndependentHttpsServerOrigin } from '@/sync/domains/server/url/serverUrlCanonical';
 import {
     captureActiveServerRuntimeTarget,
+    getActiveServerHomeCarrier,
     publishActiveServerRuntimeOrigin,
     releaseActiveServerRuntimeOrigin,
 } from '@/sync/domains/server/serverRuntime';
@@ -11,18 +11,14 @@ import { ServerScopedTransportUnavailableError } from './serverScopedRpc/resolve
 import { sync, syncRestore, syncSwitchServer } from '@/sync/sync';
 import { abortServerFetches } from '@/sync/http/client';
 import { getIrohHomeTunnelRuntime } from '@/sync/runtime/nativeIrohTunnels/runtime';
-import { classifyIrohHomeTunnelSwitchFailure } from '@/sync/runtime/nativeIrohTunnels/fallback';
 import {
-    acquireBrowserIrohHomeCarrier,
-    resolveBrowserIrohHomeCarrierEligibility,
-    type BrowserIrohHomeCarrier,
-} from '@/sync/runtime/browserIroh/homeCarrier/browserHomeCarrier';
-import { resolveBrowserIrohHostDecision } from '@/sync/runtime/browserIroh/hostEligibility';
-import { IrohError } from '@happier-dev/iroh-native';
-import type { IrohEndpointDescriptorV1 } from '@happier-dev/protocol';
+    acquireEligibleHomeCarrier,
+    type AcquiredHomeCarrier,
+} from '@/sync/runtime/homeCarrierPolicy';
 import { startNativeSshTunnelRuntimeAppStateLifecycle } from '@/sync/runtime/nativeSshTunnels/runtime';
 import type { IrohHomeTunnelRuntime } from '@/sync/runtime/nativeIrohTunnels/types';
 import { fireAndForget } from '@/utils/system/fireAndForget';
+import { createServerUrlComparableKey } from '@/sync/domains/server/url/serverUrlCanonical';
 
 let activeSwitchPromise: Promise<AuthCredentials | null> | null = null;
 let lastAppliedGeneration = -1;
@@ -126,6 +122,25 @@ function capturePublicationTargetForSnapshot(
     return captureActiveServerRuntimeTarget();
 }
 
+function capturePreparedSyncTarget(
+    snapshot: Readonly<ReturnType<typeof getActiveServerSnapshot>>,
+): import('@/sync/sync').SyncServerTarget | null {
+    const current = getActiveServerSnapshot();
+    if (
+        current.serverId !== snapshot.serverId
+        || current.serverUrl !== snapshot.serverUrl
+        || current.generation !== snapshot.generation
+    ) return null;
+    return {
+        serverId: current.serverId,
+        serverUrl: current.serverUrl,
+        generation: current.generation,
+        ...(current.runtimeOrigin ? { runtimeOrigin: current.runtimeOrigin } : {}),
+        ...(current.carrier ? { carrier: current.carrier } : {}),
+        homeCarrier: getActiveServerHomeCarrier(),
+    };
+}
+
 function isPublicationTargetCurrent(
     target: ReturnType<typeof captureActiveServerRuntimeTarget>,
 ): boolean {
@@ -145,8 +160,11 @@ function isPublicationTargetCurrent(
  * and acquiring the next carrier can never overwrite that custody. Secondary
  * Homes are owned by the concurrent-server cache and are never released here.
  */
+type AcquiredBrowserHomeCarrier = Extract<AcquiredHomeCarrier, { kind: 'browser_iroh' }>['carrier'];
+
 const activeBrowserHomeCarriers = new Map<string, Readonly<{
-    carrier: BrowserIrohHomeCarrier;
+    carrier: AcquiredBrowserHomeCarrier;
+    release: () => Promise<void>;
     target: ReturnType<typeof captureActiveServerRuntimeTarget>;
 }>>();
 
@@ -160,7 +178,7 @@ async function releaseActiveBrowserHomeCarriers(): Promise<void> {
     for (const [leaseId, published] of [...activeBrowserHomeCarriers]) {
         releaseActiveServerRuntimeOrigin({ target: published.target, leaseId });
         try {
-            await published.carrier.release();
+            await published.release();
             if (activeBrowserHomeCarriers.get(leaseId) === published) {
                 activeBrowserHomeCarriers.delete(leaseId);
             }
@@ -188,132 +206,67 @@ async function ensureIrohHomeTunnelForActiveSwitch(
 ): Promise<void> {
     const token = credentials?.token?.trim() ?? '';
     const profile = getServerProfileById(snapshot.serverId);
-    const endpoint = profile?.irohEndpoint;
-    const homeServerIdentityId = profile?.serverIdentityId?.trim() ?? '';
-    const canonicalServerUrl = snapshot.serverUrl.trim();
+    const descriptor = profile?.homeConnectionDescriptor;
     // A prior focused-Home carrier never survives a switch or a credential loss:
     // the publication below is the only thing that may reinstate one.
     await releaseActiveBrowserHomeCarriers();
     if (!isPublicationTargetCurrent(publicationTarget)) {
         throw new ServerScopedTransportUnavailableError();
     }
-    if (!token || !credentials || !profile || !endpoint || !homeServerIdentityId || !canonicalServerUrl) {
+    if (!token || !credentials || !profile || !descriptor) {
         if (!token) await getIrohHomeTunnelRuntime().releaseActiveHomeTunnels();
         await getIrohHomeTunnelRuntime().releaseLeasesForStaleTargets();
         return;
     }
 
-    const browserHost = resolveBrowserIrohHostDecision();
-    if (browserHost.eligible) {
-        await ensureBrowserIrohHomeCarrierForActiveSwitch({
-            homeServerIdentityId,
-            endpoint,
-            canonicalServerUrl,
-            credentials,
-            publicServerUrl: profile.publicServerUrl ?? null,
-            hostDecision: browserHost,
-            publicationTarget,
-        });
+    const acquired = await acquireEligibleHomeCarrier({
+        descriptor,
+        verification: { kind: 'authenticated', token },
+        credentials,
+        acquireNative: async (input) => {
+            // The focused lifecycle retains its established publication and
+            // recovery duties; the shared primitive decides only which carrier
+            // is eligible and whether HTTPS fallback is allowed.
+            startNativeSshTunnelRuntimeAppStateLifecycle();
+            const irohRuntime = getIrohHomeTunnelRuntime();
+            startActiveIrohRecoveryLifecycle(irohRuntime);
+            return await irohRuntime.ensureHomeTunnel(input);
+        },
+    });
+    if (acquired.kind === 'fail_closed' || acquired.kind === 'unavailable') {
+        if (acquired.kind === 'unavailable') throw new ServerScopedTransportUnavailableError();
+        if (acquired.fallbackAllowed) throw new ServerScopedTransportUnavailableError();
+        throw acquired.error;
+    }
+    if (acquired.kind === 'native_iroh') return;
+    if (acquired.kind === 'https') {
+        if (!publishActiveServerRuntimeOrigin({
+            target: publicationTarget,
+            leaseId: `https-fallback:${publicationTarget.serverId}:${publicationTarget.generation}`,
+            runtimeOrigin: acquired.runtimeOrigin,
+            carrier: 'https',
+        })) {
+            throw new ServerScopedTransportUnavailableError();
+        }
         return;
     }
 
-    // The shared native tunnel app-state mount owns suspend/foreground recovery
-    // for Iroh leases as well; there is no second AppState lifecycle owner.
-    startNativeSshTunnelRuntimeAppStateLifecycle();
-    const irohRuntime = getIrohHomeTunnelRuntime();
-    startActiveIrohRecoveryLifecycle(irohRuntime);
-    try {
-        await irohRuntime.ensureHomeTunnel({
-            homeServerIdentityId,
-            endpoint,
-            ...(profile.connectionDescriptorRevision === undefined ? {} : { descriptorRevision: profile.connectionDescriptorRevision }),
-            canonicalServerUrl,
-            verification: { kind: 'authenticated', token },
-        });
-    } catch (error) {
-        // Iroh is optional, but only within the approved fallback matrix: a
-        // carrier-availability or bounded health-reachability failure publishes
-        // no runtime origin and the established canonical carrier serves the
-        // switch. Identity, auth, descriptor/integrity, protocol, endpoint
-        // config, and stale-target failures fail closed so the stale/unsafe
-        // target never reaches `syncSwitchServer` (a later explicit switch
-        // request re-runs through the normal owner path).
-        publishIndependentHttpsFallbackOrThrow(error, profile.publicServerUrl ?? null, publicationTarget);
-    }
-}
-
-/**
- * The one approved pre-boundary fallback for both carriers. A carrier
- * availability or bounded health-reachability failure publishes no Iroh
- * transport and lets an independently trusted HTTPS ingress serve the switch.
- * Identity, auth, descriptor/integrity, protocol, endpoint config, and
- * stale-target failures fail closed so the stale or unsafe target never reaches
- * `syncSwitchServer`; an ingress-less Home returns the typed unavailable result.
- */
-function publishIndependentHttpsFallbackOrThrow(
-    error: unknown,
-    publicServerUrl: string | null,
-    publicationTarget: ReturnType<typeof captureActiveServerRuntimeTarget>,
-): void {
-    if (!classifyIrohHomeTunnelSwitchFailure(error).fallbackAllowed) throw error;
-    const independentHttpsOrigin = resolveIndependentHttpsServerOrigin(publicServerUrl ?? '');
-    if (!independentHttpsOrigin) throw new ServerScopedTransportUnavailableError();
+    const carrier = acquired.carrier;
+    activeBrowserHomeCarriers.set(carrier.leaseId, {
+        carrier,
+        release: acquired.release,
+        target: publicationTarget,
+    });
     if (!publishActiveServerRuntimeOrigin({
         target: publicationTarget,
-        leaseId: `https-fallback:${publicationTarget.serverId}:${publicationTarget.generation}`,
-        runtimeOrigin: independentHttpsOrigin,
-        carrier: 'https',
+        leaseId: carrier.leaseId,
+        homeCarrier: carrier,
+        carrier: 'iroh',
     })) {
+        // Focus moved while the carrier was being acquired. The caller keeps
+        // exact release custody and fails closed before Sync sees the target.
+        await releaseActiveBrowserHomeCarriers();
         throw new ServerScopedTransportUnavailableError();
-    }
-}
-
-/**
- * The browser half of the same switch: acquire the relay-only carrier and
- * publish it for this exact active generation. There is no runtime origin to
- * publish and none is invented — the canonical Home URL keeps describing
- * identity, audience, and reachability scope.
- */
-async function ensureBrowserIrohHomeCarrierForActiveSwitch(params: Readonly<{
-    homeServerIdentityId: string;
-    endpoint: IrohEndpointDescriptorV1;
-    canonicalServerUrl: string;
-    credentials: AuthCredentials;
-    publicServerUrl: string | null;
-    hostDecision: ReturnType<typeof resolveBrowserIrohHostDecision>;
-    publicationTarget: ReturnType<typeof captureActiveServerRuntimeTarget>;
-}>): Promise<void> {
-    const carrierRequest = {
-        homeServerIdentityId: params.homeServerIdentityId,
-        endpoint: params.endpoint,
-        canonicalServerUrl: params.canonicalServerUrl,
-        credentials: params.credentials,
-    };
-    try {
-        const eligibility = resolveBrowserIrohHomeCarrierEligibility(carrierRequest, params.hostDecision);
-        if (!eligibility.eligible) {
-            // A descriptor a browser cannot use is an unavailable carrier here,
-            // not a descriptor-integrity failure: a native host would still use
-            // the very same descriptor.
-            throw new IrohError('unavailable', `Browser Iroh Home carrier unavailable: ${eligibility.reason}`);
-        }
-        const carrier = await acquireBrowserIrohHomeCarrier(carrierRequest);
-        activeBrowserHomeCarriers.set(carrier.leaseId, { carrier, target: params.publicationTarget });
-        if (!publishActiveServerRuntimeOrigin({
-            target: params.publicationTarget,
-            leaseId: carrier.leaseId,
-            homeCarrier: carrier,
-            carrier: 'iroh',
-        })) {
-            // Focus moved while the carrier was being acquired. Fail closed: the
-            // stale target must never reach `syncSwitchServer`, and a release
-            // that fails stays retained above for the next attempt.
-            await releaseActiveBrowserHomeCarriers();
-            throw new ServerScopedTransportUnavailableError();
-        }
-    } catch (error) {
-        if (error instanceof ServerScopedTransportUnavailableError) throw error;
-        publishIndependentHttpsFallbackOrThrow(error, params.publicServerUrl, params.publicationTarget);
     }
 }
 
@@ -326,6 +279,16 @@ export async function retryActiveServerConnection(): Promise<void> {
     if (activeRecoveryPromise) return await activeRecoveryPromise;
     activeRecoveryPromise = (async () => {
         const snapshot = getActiveServerSnapshot();
+        if (
+            getAppliedActiveServerId() !== snapshot.serverId
+            || appliedActiveServerGeneration !== snapshot.generation
+        ) {
+            // A failed staged switch has no applied socket for this target to
+            // retry. Re-enter the serialized switch owner so credentials,
+            // carrier and Sync are prepared as one exact target transaction.
+            await switchConnectionToActiveServer();
+            return;
+        }
         abortServerFetches();
         const credentials = await resolveCredentialsForActiveServer(snapshot);
         const publicationTarget = capturePublicationTargetForSnapshot(snapshot);
@@ -360,9 +323,11 @@ async function applyPendingServerSwitches(): Promise<AuthCredentials | null> {
         if (!publicationTarget) continue;
         await ensureIrohHomeTunnelForActiveSwitch(snapshot, credentials, publicationTarget);
         if (!isActiveSwitchTargetCurrent(snapshot, targetGeneration)) continue;
+        const syncTarget = capturePreparedSyncTarget(snapshot);
+        if (!syncTarget) continue;
         publishApplyingActiveServerId(snapshot.serverId, targetGeneration);
         try {
-            await syncSwitchServer(credentials);
+            await syncSwitchServer(credentials, syncTarget);
         } catch (error) {
             republishAppliedActiveServer();
             throw error;
@@ -406,6 +371,32 @@ export async function disconnectActiveServerConnection(): Promise<void> {
     publishAppliedActiveServerId(snapshot.serverId, snapshot.generation);
 }
 
+/**
+ * Retire the focused connection only while it still belongs to the Home that
+ * emitted an asynchronous credential-invalidity fact. The invalidation bus is
+ * intentionally asynchronous, so consulting whichever Home is focused after
+ * waiting would let an old Home disconnect its successor.
+ */
+export async function disconnectActiveServerConnectionIfCurrent(target: Readonly<{
+    serverId: string;
+    serverUrl: string;
+    generation?: number;
+}>): Promise<boolean> {
+    if (activeSwitchPromise) {
+        await activeSwitchPromise.catch(() => null);
+    }
+    const snapshot = getActiveServerSnapshot();
+    if (
+        snapshot.serverId !== target.serverId
+        || createServerUrlComparableKey(snapshot.serverUrl) !== createServerUrlComparableKey(target.serverUrl)
+        || (target.generation !== undefined && snapshot.generation !== target.generation)
+    ) {
+        return false;
+    }
+    await disconnectActiveServerConnection();
+    return true;
+}
+
 /** Cold-restore entrypoint: prepare the verified carrier before Sync reads its origin. */
 export async function restoreConnectionToActiveServer(credentials: AuthCredentials): Promise<void> {
     const snapshot = getActiveServerSnapshot();
@@ -413,7 +404,9 @@ export async function restoreConnectionToActiveServer(credentials: AuthCredentia
     if (!publicationTarget) throw new ServerScopedTransportUnavailableError();
     abortServerFetches();
     await ensureIrohHomeTunnelForActiveSwitch(snapshot, credentials, publicationTarget);
-    await syncRestore(credentials);
+    const syncTarget = capturePreparedSyncTarget(snapshot);
+    if (!syncTarget) throw new ServerScopedTransportUnavailableError();
+    await syncRestore(credentials, syncTarget);
     lastAppliedGeneration = Math.max(lastAppliedGeneration, snapshot.generation);
     publishAppliedActiveServerId(snapshot.serverId, snapshot.generation);
 }

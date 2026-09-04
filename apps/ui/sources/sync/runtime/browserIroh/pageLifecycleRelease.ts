@@ -1,19 +1,21 @@
 /**
  * Handing a page's leases back when the page ends (Lane 06 amendment A7.2).
  *
- * The SharedWorker outlives the tabs connected to it. A tab that reloads,
- * navigates away, or simply closes without saying anything leaves its leases
- * held by a client id no port answers for any more, so a reload inflates the
- * lease count of an endpoint nobody is using. `pagehide` is the ordinary end of
+ * A SharedWorker may remain alive while sibling browsing contexts still use it,
+ * but its lifetime is user-agent controlled and it is not durable after the
+ * final context disappears. A tab that reloads, navigates away, or closes
+ * without saying anything can leave its leases held by a client id no port
+ * answers for while the worker remains live. `pagehide` is the ordinary end of
  * a page in every browser this carrier runs in, and posting the existing
  * `releaseClient` command there is the entire mechanism: no heartbeat, no timer,
  * no expiry, and no second owner of what a client holds.
  *
  * It is best-effort by construction. The page may already be unloading, so
  * nothing is awaited and no reply is correlated; a lost message is exactly the
- * situation that existed before. The explicit `releaseAll` and
- * `clearApplicationData` commands remain the truthful awaited paths, and the
- * worker-side owner remains the only authority over lease custody.
+ * situation that existed before. Complete worker destruction releases the
+ * ephemeral endpoint and all remaining custody. The explicit `releaseAll`
+ * command remains the truthful awaited path, and the worker-side owner remains
+ * the only authority over lease custody while it lives.
  */
 
 import type { BrowserIrohClientCommand } from './protocol';

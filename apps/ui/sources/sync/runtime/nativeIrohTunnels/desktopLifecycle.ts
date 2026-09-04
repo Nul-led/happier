@@ -110,7 +110,6 @@ export function createDesktopIrohLifecycleModule(): IrohNativeLifecycleModule | 
                         policy: input.policy,
                         ...(input.relayUrls === undefined ? {} : { relayUrls: input.relayUrls }),
                         ...(input.directAddresses === undefined ? {} : { directAddresses: input.directAddresses }),
-                        ...(input.descriptorRevision === undefined ? {} : { descriptorRevision: input.descriptorRevision }),
                     },
                 }));
             } catch (error) {

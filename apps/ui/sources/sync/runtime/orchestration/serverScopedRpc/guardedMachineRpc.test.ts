@@ -16,6 +16,7 @@ vi.mock('@/sync/api/capabilities/getReadyServerFeatures', () => ({
 type MachineRpcWithServerScopeInput = Readonly<{
     machineId: string;
     serverId?: string;
+    accountId?: string;
     method: string;
     payload: unknown;
     timeoutMs?: number;
@@ -56,6 +57,7 @@ describe('guardedMachineRpc', () => {
         await callGuardedMachineRpcWithPolicy({
             machineId: 'm1',
             serverId: 'server-a',
+            accountId: 'account-a',
             method: RPC_METHODS.DAEMON_PROMPT_ASSETS_DOWNLOAD_INIT,
             payload: { kind: 'prompt-assets', id: 'asset-a' },
         });
@@ -67,6 +69,7 @@ describe('guardedMachineRpc', () => {
         expect(machineRpcWithServerScopeMock).toHaveBeenCalledWith(expect.objectContaining({
             machineId: 'm1',
             serverId: 'server-a',
+            accountId: 'account-a',
             method: RPC_METHODS.DAEMON_PROMPT_ASSETS_DOWNLOAD_INIT,
             preferScoped: true,
         }));

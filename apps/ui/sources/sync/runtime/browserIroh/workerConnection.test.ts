@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createBrowserIrohEndpointClient } from './endpointClient';
-import type { BrowserIrohEndpointKeyStore } from './endpointKey';
 import type { BrowserIrohPageLifecycle } from './pageLifecycleRelease';
 import {
     createBrowserIrohSharedEndpointOwner,
@@ -68,21 +67,9 @@ function createHarness(options: Readonly<{
         streamKind: 'home' | 'machine';
         endpointId: string;
         relayUrls: readonly string[];
+        signal?: AbortSignal;
     }>) => Promise<BrowserIrohEndpointStreamHandle>;
 }> = {}) {
-    let stored: Uint8Array | null = null;
-    let clears = 0;
-    const keyStore: BrowserIrohEndpointKeyStore = {
-        read: async () => (stored === null ? null : new Uint8Array(stored)),
-        write: async (key) => {
-            stored = new Uint8Array(key);
-        },
-        clear: async () => {
-            clears += 1;
-            stored = null;
-        },
-    };
-
     let binds = 0;
     const closes: string[] = [];
     const streamCalls: string[] = [];
@@ -128,7 +115,6 @@ function createHarness(options: Readonly<{
     };
 
     const owner = createBrowserIrohSharedEndpointOwner({
-        keyStore,
         randomBytes: (length) => new Uint8Array(length).fill(5),
         bindEndpoint,
     });
@@ -174,30 +160,49 @@ function createHarness(options: Readonly<{
         binds: () => binds,
         closes,
         streamCalls,
-        clears: () => clears,
-        storedKey: () => stored,
     };
 }
 
 describe('sync/runtime/browserIroh/workerConnection', () => {
-    it('closes a stream handle that arrives after its open request was cancelled', async () => {
+    it('cancels only the pending WASM open and closes a handle that wins the cancellation race', async () => {
         let settleOpen!: (value: BrowserIrohEndpointStreamHandle) => void;
         const pendingOpen = new Promise<BrowserIrohEndpointStreamHandle>((resolve) => {
             settleOpen = resolve;
         });
+        let cancelledSignal: AbortSignal | undefined;
         const close = vi.fn(async () => undefined);
-        const harness = createHarness({ openStream: async () => await pendingOpen });
-        const tab = harness.connectTab();
-        const lease = await tab.acquireLease([RELAY_A]);
-        const controller = new AbortController();
-        const opening = lease.openStream({
-            streamKind: 'machine', endpointId: 'target', relayUrls: [RELAY_A], signal: controller.signal,
+        const harness = createHarness({
+            openStream: async ({ endpointId, signal }) => {
+                if (endpointId === 'cancelled-target') {
+                    cancelledSignal = signal;
+                    return await pendingOpen;
+                }
+                return {
+                    remoteEndpointId: endpointId, observedPath: 'relay',
+                    read: async () => ({ bytes: new Uint8Array(), done: true }),
+                    write: async () => {}, finishWrite: async () => {}, cancel: () => {}, close: async () => {},
+                };
+            },
         });
+        const tabA = harness.connectTab();
+        const tabB = harness.connectTab();
+        const leaseA = await tabA.acquireLease([RELAY_A]);
+        const leaseB = await tabB.acquireLease([RELAY_A]);
+        const controller = new AbortController();
+        const opening = leaseA.openStream({
+            streamKind: 'machine', endpointId: 'cancelled-target', relayUrls: [RELAY_A], signal: controller.signal,
+        });
+        await vi.waitFor(() => expect(cancelledSignal).toBeDefined());
         controller.abort(new Error('cancelled'));
 
         await expect(opening).rejects.toThrow('cancelled');
+        expect(cancelledSignal?.aborted).toBe(true);
+        const sibling = await leaseB.openStream({
+            streamKind: 'machine', endpointId: 'sibling-target', relayUrls: [RELAY_A],
+        });
+        await expect(sibling.write(new Uint8Array([1]))).resolves.toBeUndefined();
         settleOpen({
-            remoteEndpointId: 'target', observedPath: 'relay',
+            remoteEndpointId: 'cancelled-target', observedPath: 'relay',
             read: async () => ({ bytes: new Uint8Array(), done: true }),
             write: async () => {}, finishWrite: async () => {}, cancel: () => {}, close,
         });
@@ -287,7 +292,7 @@ describe('sync/runtime/browserIroh/workerConnection', () => {
     });
 
     it('releases this tab’s leases when the page goes away, leaving the sibling untouched', async () => {
-        // A SharedWorker outlives its tabs: a reload or a tab close that says
+        // A SharedWorker may stay live for siblings: a reload or a tab close that says
         // nothing would leave a lease held by a client id no port answers for.
         const harness = createHarness();
         const pagehide = createPageLifecycleStub();
@@ -308,33 +313,33 @@ describe('sync/runtime/browserIroh/workerConnection', () => {
                 leaseCount: 1,
             });
         });
-        // Best-effort release is not a teardown: the shared endpoint survives.
+        // Client release is not endpoint teardown while the worker remains live.
         expect(harness.closes).toEqual([]);
     });
 
-    it('applies a second Home relay configuration to the same endpoint', async () => {
+    it('applies a second Home relay contribution to the same endpoint through a lease', async () => {
         const harness = createHarness();
         const tab = harness.connectTab();
         const lease = await tab.acquireLease([RELAY_A]);
 
-        const configured = await tab.configureRelays([RELAY_B]);
+        const second = await tab.acquireLease([RELAY_B]);
 
         expect(harness.binds()).toBe(1);
-        expect(configured.endpointId).toBe(lease.endpointId);
-        expect(configured.appliedRelayUrls).toEqual([RELAY_A, RELAY_B]);
+        expect(second.endpointId).toBe(lease.endpointId);
+        expect(second.appliedRelayUrls).toEqual([RELAY_A, RELAY_B]);
     });
 
-    it('closes the endpoint and deletes the key on an explicit application-data clear', async () => {
+    it('refuses a removed `configureRelays` command instead of reaching the owner', async () => {
+        // Lane 06 amendment A10 removed this IPC. The command boundary is
+        // reachable by any script on the origin, so a name it no longer serves
+        // must be refused by the parser rather than routed anywhere.
         const harness = createHarness();
-        const tab = harness.connectTab();
-        await tab.acquireLease([RELAY_A]);
+        const send = harness.connectRawTab();
 
-        await tab.clearApplicationData();
+        const reply = await send({ kind: 'configureRelays', relayUrls: [RELAY_B] });
 
-        expect(harness.closes).toEqual(['endpoint-1']);
-        expect(harness.clears()).toBe(1);
-        expect(harness.storedKey()).toBeNull();
-        await expect(tab.acquireLease([RELAY_A])).rejects.toMatchObject({ code: 'owner_cleared' });
+        expect(reply).toMatchObject({ kind: 'error', code: 'protocol_violation' });
+        expect(harness.binds()).toBe(0);
     });
 
     it('surfaces the relay-only requirement as a typed error', async () => {
@@ -359,11 +364,6 @@ describe('sync/runtime/browserIroh/workerConnection', () => {
         });
         createBrowserIrohWorkerConnectionHandler(
             createBrowserIrohSharedEndpointOwner({
-                keyStore: {
-                    read: async () => null,
-                    write: async () => {},
-                    clear: async () => {},
-                },
                 randomBytes: (length) => new Uint8Array(length),
                 bindEndpoint,
             }),

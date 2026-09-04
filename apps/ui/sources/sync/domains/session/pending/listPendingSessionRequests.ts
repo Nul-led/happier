@@ -18,6 +18,7 @@ import {
 
 export type SessionPendingRequest = Readonly<{
     id: string;
+    turnId?: string;
     tool: string;
     kind: AgentRequestKind;
     arguments: unknown;
@@ -103,6 +104,11 @@ function mergePendingRequestMetadata(
 ): SessionPendingRequest {
     return {
         ...preferred,
+        ...(preferred.turnId
+            ? { turnId: preferred.turnId }
+            : secondary.turnId
+                ? { turnId: secondary.turnId }
+                : {}),
         arguments: typeof preferred.arguments !== 'undefined' ? preferred.arguments : secondary.arguments,
         createdAt: preferred.createdAt ?? secondary.createdAt,
         ...(preferred.permissionSuggestions
@@ -301,6 +307,9 @@ function listPendingAgentStateRequests(agentState: AgentState | null | undefined
         if (isPendingRequestCoveredByCompleted(completed as Record<string, unknown> | null | undefined, id, createdAt, request)) return [];
         return [{
             id,
+            ...(typeof request.turnId === 'string' && request.turnId.trim().length > 0
+                ? { turnId: request.turnId.trim() }
+                : {}),
             tool: toolName,
             kind: resolveAgentRequestKind({
                 toolName,

@@ -19,12 +19,30 @@ import { isBrowserIrohHost } from '@/sync/runtime/browserIroh/hostEligibility';
 import { captureSessionRequestAuthorityForServerAccountScope } from '@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope';
 import { parseToken } from '@/utils/auth/parseToken';
 import { resolveTransferRouteDecision } from '../routing/resolveTransferRouteDecision';
+import { resolveMachineCarrierPreselection } from '../routing/resolveMachineCarrierPreselection';
+import type { MachineCarrierTransferFlow } from '../routing/machineCarrierTransferFlow';
 
-export type MachineCarrierTransferFlow = 'file_transfer' | 'attachment_transfer';
+export type { MachineCarrierTransferFlow } from '../routing/machineCarrierTransferFlow';
 
 /** Stable user-facing failure copy for an operation pinned to machine/1. */
 export const MACHINE_CARRIER_REQUIRED_TRANSFER_ERROR = 'A direct machine connection is required for this transfer.';
 export const MACHINE_CARRIER_INTERRUPTED_TRANSFER_ERROR = 'The direct machine connection was interrupted. Retry the transfer.';
+export const MACHINE_CARRIER_TRANSPORT_FAILED_ERROR_CODE = 'machine_carrier_transport_failed' as const;
+
+function createMachineCarrierTransportFailure(cause: unknown): Error & Readonly<{
+    errorCode: typeof MACHINE_CARRIER_TRANSPORT_FAILED_ERROR_CODE;
+}> {
+    if (
+        cause instanceof Error
+        && 'errorCode' in cause
+        && cause.errorCode === MACHINE_CARRIER_TRANSPORT_FAILED_ERROR_CODE
+    ) {
+        return cause as Error & Readonly<{ errorCode: typeof MACHINE_CARRIER_TRANSPORT_FAILED_ERROR_CODE }>;
+    }
+    return Object.assign(new Error(MACHINE_CARRIER_INTERRUPTED_TRANSFER_ERROR, { cause }), {
+        errorCode: MACHINE_CARRIER_TRANSPORT_FAILED_ERROR_CODE,
+    });
+}
 
 export type MachineCarrierHttpRequester = (
     input: RequestInfo | URL,
@@ -50,7 +68,7 @@ export type AcquireMachineCarrierHttpLease = (input: Readonly<{
     machineId: string;
     serverId?: string | null;
     flow: MachineCarrierTransferFlow;
-    /** Existing transfer ceiling bound into the single-use signed grant. */
+    /** Prepared-transfer byte ceiling consumed by the application transfer owner. */
     maxBytes: number;
     signal?: AbortSignal;
 }>) => Promise<MachineCarrierHttpLease>;
@@ -96,13 +114,16 @@ export async function resolveMachineCarrierRoute(machineId: string, serverId?: s
         return { kind: 'standard' };
     }
     const browserHost = isBrowserIrohHost();
-    // Browser Iroh has no direct transport. This is pre-selection eligibility,
-    // so an endpoint with only native direct hints stays on the existing
-    // standard route instead of selecting a carrier that cannot dial it.
-    if (browserHost && targetEndpoint.relayUrls.length === 0) {
-        return { kind: 'standard' };
-    }
-    if (!browserHost && !await probeIrohMachineHttpLifecycleAvailability()) {
+    const preselection = resolveMachineCarrierPreselection({
+        targetEndpoint,
+        host: browserHost
+            ? { kind: 'browser' }
+            : {
+                kind: 'native',
+                lifecycleAvailable: await probeIrohMachineHttpLifecycleAvailability(),
+            },
+    });
+    if (preselection.kind !== 'eligible') {
         return { kind: 'standard' };
     }
     const serverFeatures = await getReadyServerFeatures({ serverId: server.serverId });
@@ -116,15 +137,21 @@ export async function resolveMachineCarrierRoute(machineId: string, serverId?: s
     if (decision.kind !== 'selected' || decision.preferredRouteKind !== 'iroh_peer') {
         return { kind: 'standard' };
     }
-    if (browserHost) {
+    if (preselection.carrierKind === 'browser_stream') {
         return {
             kind: 'iroh_peer',
             carrierKind: 'browser_stream',
-            acquire: async (input) => await acquireBrowserMachineCarrierHttpLease({
-                ...input,
-                machineId,
-                serverId: server.serverId,
-            }),
+            acquire: async (input) => {
+                try {
+                    return await acquireBrowserMachineCarrierHttpLease({
+                        ...input,
+                        machineId,
+                        serverId: server.serverId,
+                    });
+                } catch (error) {
+                    throw createMachineCarrierTransportFailure(error);
+                }
+            },
         };
     }
     // One route decision for the whole transfer: capture the resolved server
@@ -134,11 +161,17 @@ export async function resolveMachineCarrierRoute(machineId: string, serverId?: s
     return {
         kind: 'iroh_peer',
         carrierKind: 'native_http',
-        acquire: async (input) => await acquireMachineCarrierHttpLease({
-                ...input,
-                machineId,
-                serverId: server.serverId,
-            }),
+        acquire: async (input) => {
+            try {
+                return await acquireMachineCarrierHttpLease({
+                    ...input,
+                    machineId,
+                    serverId: server.serverId,
+                });
+            } catch (error) {
+                throw createMachineCarrierTransportFailure(error);
+            }
+        },
     };
 }
 
@@ -159,11 +192,8 @@ export type SignedMachineCarrierHandshake = Readonly<{
  * carrier has not opened anything yet.
  */
 export async function mintSignedMachineCarrierHandshake(input: Readonly<{
-    operationId: string;
     machineId: string;
     serverId?: string | null;
-    flow: MachineCarrierTransferFlow;
-    maxBytes: number;
     /** Resolves the initiator EndpointId actually owned by the calling carrier. */
     resolveInitiatorEndpointId: (targetRelayUrls: readonly string[]) => Promise<string>;
 }>): Promise<SignedMachineCarrierHandshake> {
@@ -192,17 +222,15 @@ export async function mintSignedMachineCarrierHandshake(input: Readonly<{
                 flowKind: 'bounded_transfer',
                 routeKind: 'iroh_peer',
                 endpointFingerprint: targetEndpoint.endpointId,
-                ttlMs: DIRECT_ROUTE_GRANT_TTL_MS.boundedTransferSingle,
+                ttlMs: DIRECT_ROUTE_GRANT_TTL_MS.finiteTransferCarrier,
                 scope: {
                     kind: 'bounded_transfer',
-                    mode: 'single',
-                    transferId: input.operationId,
-                    maxBytes: input.maxBytes,
+                    mode: 'carrier',
                 },
                 iroh: {
                     initiator: { kind: 'account_client', endpointId: initiatorEndpointId },
                     target: { machineId: input.machineId, endpointId: targetEndpoint.endpointId },
-                    operationKind: input.flow,
+                    operationKind: 'finite_transfer',
                 },
             });
             const granted = await requestPeerRouteGrantV2({ authority, request });
@@ -218,8 +246,7 @@ export async function mintSignedMachineCarrierHandshake(input: Readonly<{
                 accountId: granted.value.payload.accountId,
                 initiator: granted.value.payload.iroh?.initiator,
                 target: granted.value.payload.iroh?.target,
-                flow: input.flow,
-                operationId: input.operationId,
+                flow: 'finite_transfer',
                 grant: granted.value,
                 proof,
             });
@@ -238,18 +265,14 @@ export async function mintSignedMachineCarrierHandshake(input: Readonly<{
 }
 
 /**
- * Production native account-client lease owner. The existing transfer prepare
- * owns operationId/maxBytes; this function only binds them into V2
- * authorization through the shared mint owner and starts one native HTTP
- * lifecycle lease on the shared native app endpoint.
+ * Production native account-client lease owner. The existing prepared-transfer
+ * capability owns operation and payload size; V2 authorizes only the finite
+ * transfer carrier and this owner starts one native HTTP lifecycle lease.
  */
 export const acquireMachineCarrierHttpLease: AcquireMachineCarrierHttpLease = async (input) => {
     const minted = await mintSignedMachineCarrierHandshake({
-        operationId: input.operationId,
         machineId: input.machineId,
         serverId: input.serverId,
-        flow: input.flow,
-        maxBytes: input.maxBytes,
         resolveInitiatorEndpointId: async (relayUrls) => {
             const applicationEndpoint = await getIrohApplicationEndpoint({ relayUrls });
             return applicationEndpoint.endpointId;
@@ -275,8 +298,8 @@ export const acquireBrowserMachineCarrierHttpLease: AcquireMachineCarrierHttpLea
     // The tab's one packaged endpoint client, shared with the Home carrier
     // owner (Lane 06). A transfer never closes it: releasing the operation
     // releases the stream and its endpoint lease through the connection close,
-    // while pagehide/beforeunload and explicit application-data clearing own
-    // the whole-client lifecycle.
+    // while pagehide/beforeunload owns the tab-client release lifecycle. The
+    // SharedWorker endpoint itself is ephemeral and ends with that worker.
     const client = browserIroh.resolvePackagedBrowserIrohEndpointClient();
     const binding = browserIroh.createBrowserMachineCarrierEndpointBinding(client);
     // Custody taken during acquisition — including a failed cleanup release —

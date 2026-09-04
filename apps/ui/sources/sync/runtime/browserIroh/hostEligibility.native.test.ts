@@ -11,7 +11,7 @@ vi.mock('react-native', async () => {
 
 describe('sync/runtime/browserIroh/hostEligibility (native)', () => {
     it('excludes a native runtime', () => {
-        expect(resolveBrowserIrohHostDecision({ hasSharedWorker: true, hasIndexedDb: true })).toEqual({
+        expect(resolveBrowserIrohHostDecision({ hasSharedWorker: true })).toEqual({
             eligible: false,
             reason: 'not_web',
         });

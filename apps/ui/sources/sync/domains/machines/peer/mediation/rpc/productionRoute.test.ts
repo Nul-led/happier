@@ -209,6 +209,21 @@ describe('production peer mediation machine RPC route adapter', () => {
         storageGetStateSpy.mockImplementation(() => storageSnapshot.state);
     });
 
+    it('fails closed before route selection when stored credentials belong to another Account', async () => {
+        const module = await importProductionRoute();
+        if ('importError' in module) throw module.importError;
+
+        const result = await module.resolveProductionMachineRpcDirectRoute({
+            serverId: 'server-a',
+            accountId: 'account-other',
+            machineId: 'machine-1',
+            method: RPC_METHODS.DAEMON_MEMORY_STATUS,
+        });
+
+        expect(result).toMatchObject({ kind: 'fallback', reasonCode: 'grant_missing' });
+        expect(storageGetStateSpy).not.toHaveBeenCalled();
+    });
+
     it('projects legacy account signing as ready and data-key credentials as typed fail-closed', async () => {
         const module = await importProductionRoute();
         expect(module).toHaveProperty('resolvePeerRouteSigningReadiness');

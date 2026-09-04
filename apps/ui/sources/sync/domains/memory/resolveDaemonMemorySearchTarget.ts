@@ -4,7 +4,10 @@ import {
     type MachineAdministrationTargetSelectionV1,
 } from '@/sync/domains/machines/administration/useTargetSelection';
 import { isMachineAdministrationCandidateSelectable } from '@/sync/domains/machines/administration/targetSelection';
-import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
+import {
+    areServerProfileIdentifiersEquivalent,
+    resolveServerProfileScopeIdForIdentifier,
+} from '@/sync/domains/server/serverProfiles';
 
 /**
  * Exact daemon-memory request target: the machine whose local index holds the
@@ -37,14 +40,17 @@ export function resolveDaemonMemorySearchTarget(
             && candidate.candidate.target.machineId === requestedMachineId
             && isMachineAdministrationCandidateSelectable(candidate.candidate)
         ));
-        return row ? { serverId: row.serverId, machineId: requestedMachineId } : null;
+        return row ? {
+            serverId: resolveServerProfileScopeIdForIdentifier(row.serverId),
+            machineId: requestedMachineId,
+        } : null;
     }
     const resolved = selection.resolveExecutionTarget();
     if (!resolved) return null;
     const serverId = String(resolved.serverId ?? '').trim();
     const machineId = String(resolved.machine?.id ?? '').trim();
     if (!serverId || !machineId) return null;
-    return { serverId, machineId };
+    return { serverId: resolveServerProfileScopeIdForIdentifier(serverId), machineId };
 }
 
 /** Live binding of {@link resolveDaemonMemorySearchTarget} to the selection owner. */

@@ -186,6 +186,20 @@ describe('pairing auth client explicit target', () => {
         });
     });
 
+    it('preserves the typed requester-owned pair id conflict', async () => {
+        endpointFetchMock.mockResolvedValueOnce(json(409, { error: 'pair_id_conflict' }));
+        await expect(pairingStart({
+            direction: 'requester_displays',
+            secretHash: 'hash',
+            pairId: 'pair-conflict',
+            expiresAtMs: 1234,
+        }, await target('https://home-a.test', 'profile-a'))).resolves.toEqual({
+            ok: false,
+            reason: 'pair_id_conflict',
+            status: 409,
+        });
+    });
+
     it('rejects unknown fields and malformed success bodies instead of widening the pairing wire', async () => {
         endpointFetchMock
             .mockResolvedValueOnce(json(200, {

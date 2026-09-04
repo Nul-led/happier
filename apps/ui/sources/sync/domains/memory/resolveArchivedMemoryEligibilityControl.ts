@@ -1,6 +1,9 @@
 import type { MemoryStatusV1 } from '@happier-dev/protocol';
 
+export type ArchivedMemoryStatusRequestState = 'unresolved' | 'loading' | 'resolved' | 'unreachable';
+
 export type ArchivedMemoryEligibilityControlV1 = Readonly<{
+    state: 'loading' | 'unreachable' | 'unsupported' | 'supported';
     /** Whether this daemon advertises implementation support for the setting. */
     supported: boolean;
     /** The eligibility the daemon actually applies; never the desired setting. */
@@ -15,10 +18,20 @@ export type ArchivedMemoryEligibilityControlV1 = Readonly<{
  */
 export function resolveArchivedMemoryEligibilityControl(params: Readonly<{
     status: MemoryStatusV1 | null | undefined;
-    desiredIncludeArchivedSessions: boolean;
+    statusRequestState: ArchivedMemoryStatusRequestState;
 }>): ArchivedMemoryEligibilityControlV1 {
+    if (params.statusRequestState === 'loading' || params.statusRequestState === 'unresolved') {
+        return {
+            state: 'loading',
+            supported: false,
+            value: params.status?.includeArchivedSessionsEffective === true,
+        };
+    }
+    if (params.statusRequestState === 'unreachable') {
+        return { state: 'unreachable', supported: false, value: false };
+    }
     const effective = params.status?.includeArchivedSessionsEffective;
     return typeof effective === 'boolean'
-        ? { supported: true, value: effective }
-        : { supported: false, value: false };
+        ? { state: 'supported', supported: true, value: effective }
+        : { state: 'unsupported', supported: false, value: false };
 }

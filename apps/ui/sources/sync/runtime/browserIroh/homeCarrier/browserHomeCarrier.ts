@@ -116,7 +116,6 @@ let loadedOwner: Promise<BrowserIrohHomeCarrierOwner> | null = null;
  */
 const BROWSER_IROH_FAILURE_CODES: Readonly<Record<string, IrohErrorCode>> = {
     endpoint_unavailable: 'unavailable',
-    owner_cleared: 'unavailable',
     unknown_lease: 'transport',
     unknown_stream: 'transport',
     relay_required: 'endpoint_config_conflict',

@@ -1,73 +1,217 @@
-import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
-import { storage } from '@/sync/domains/state/storageStore';
 import { getSyncSingleton } from '@/sync/runtime/getSyncSingleton';
+import {
+    captureSessionRequestAuthorityForServerAccountScope,
+    type ServerAccountSessionRequestAuthority,
+} from '@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope';
+import { areServerAccountScopesEqual, createServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import { serverFetch } from '@/sync/http/client';
+import { runTasksWithLimit } from '@/sync/runtime/orchestration/runTasksWithLimit';
+import type { MemorySearchResultV1 } from '@happier-dev/protocol';
+import { fetchSessionByIdWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/fetchSessionByIdWithServerScope';
+import type { Session } from '@/sync/domains/state/storageTypes';
+import { storage } from '@/sync/domains/state/storage';
+import { buildSessionListRenderableFromSession } from '@/sync/domains/session/listing/sessionListRenderable';
 
 export type MemorySearchSessionTargetV1 = Readonly<{
     sessionKey: string;
     serverId: string;
+    accountId: string;
     sessionId: string;
 }>;
 
-export type MemorySearchSessionRead = Readonly<{ ok: boolean; errorCode?: string }>;
+export type MemorySearchSessionRead = Readonly<{
+    ok: boolean;
+    /** Highest server sequence currently visible to the captured Account. */
+    visibleThroughSeq?: number;
+    errorCode?: string;
+}>;
+
+export async function captureMemorySearchSessionReadAuthority(input: Readonly<{
+    serverId: string;
+    accountId: string;
+}>): Promise<ServerAccountSessionRequestAuthority> {
+    return await captureSessionRequestAuthorityForServerAccountScope({
+        scope: createServerAccountScope(input.serverId, input.accountId),
+        activeRequest: (path, init) => serverFetch(path, init),
+    });
+}
+
+export function readMemorySearchSessionHydrationConcurrencyLimit(): number {
+    return getSyncSingleton().getSyncTuning().sessionListHydrationConcurrencyLimit;
+}
 
 /**
- * Authorizes transcript hits whose Session is not in the local projection for the
- * hit's own server scope.
+ * Authorizes transcript hits for their exact Account and server scope.
  *
  * A transcript index — daemon-local or Home-derived — is derived state that can
- * outlive the Account's access to a Session. Each hit the local server-scoped
- * projection does not already carry is therefore read through the canonical
- * explicit-server Session reader before it can be displayed or activated. A missing
+ * outlive the Account's access to a Session. Every hit is therefore read through the
+ * canonical explicit-server Session reader before it can be displayed or activated;
+ * a locally projected Session is not evidence for the producing Account lifetime. A missing
  * authorization, a missing Session, or an unreadable target suppresses the row
  * rather than showing a stale entity — and the same read supplies the canonical
  * metadata a normal Session row needs.
  */
-export async function hydrateMemorySearchSessionTargets(params: Readonly<{
+export async function hydrateMemorySearchSessionTargets<TAuthority>(params: Readonly<{
     targets: readonly MemorySearchSessionTargetV1[];
-    hasLocalSession: (target: MemorySearchSessionTargetV1) => boolean;
+    authority: TAuthority;
+    accountLifetime: Readonly<{
+        isCurrent(): boolean;
+        onRetire(cancel: () => void): Readonly<{ dispose(): void }>;
+    }>;
     readSessionForServerScope: (
-        args: Readonly<{ serverId: string; sessionId: string }>,
+        args: Readonly<{
+            target: MemorySearchSessionTargetV1;
+            authority: TAuthority;
+            signal: AbortSignal;
+        }>,
     ) => Promise<MemorySearchSessionRead>;
+    concurrencyLimit: number;
     signal?: AbortSignal;
 }>): Promise<readonly MemorySearchSessionTargetV1[]> {
-    const authorized: MemorySearchSessionTargetV1[] = [];
-
-    for (const target of params.targets) {
-        if (params.signal?.aborted) break;
-        if (params.hasLocalSession(target)) {
-            authorized.push(target);
-            continue;
-        }
-        try {
-            const read = await params.readSessionForServerScope({
-                serverId: target.serverId,
-                sessionId: target.sessionId,
-            });
-            if (read.ok) authorized.push(target);
-        } catch {
-            // Unreadable target: keep the surface coherent by suppressing the
-            // row instead of presenting an entity we cannot authorize.
-        }
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    if (params.signal?.aborted) abort();
+    else params.signal?.addEventListener('abort', abort, { once: true });
+    const retirement = params.accountLifetime.onRetire(abort);
+    try {
+        const reads = await runTasksWithLimit(
+            params.targets.map((target) => async () => {
+                if (controller.signal.aborted || !params.accountLifetime.isCurrent()) return null;
+                try {
+                    const read = await params.readSessionForServerScope({
+                        target,
+                        authority: params.authority,
+                        signal: controller.signal,
+                    });
+                    return read.ok && !controller.signal.aborted && params.accountLifetime.isCurrent()
+                        ? read
+                        : null;
+                } catch {
+                    // Unreadable target: keep the surface coherent by suppressing the
+                    // row instead of presenting an entity we cannot authorize.
+                    return null;
+                }
+            }),
+            params.concurrencyLimit,
+        );
+        return controller.signal.aborted || !params.accountLifetime.isCurrent()
+            ? []
+            : params.targets.filter((_, index) => reads[index]?.ok === true);
+    } finally {
+        retirement.dispose();
+        params.signal?.removeEventListener('abort', abort);
     }
-
-    return authorized;
 }
 
 /**
- * Server-scoped local presence. A same-id Session held for another server is not
- * this hit's Session, so it can neither authorize the row nor supply its metadata.
+ * Applies the incumbent exact-server Session authorization owner to every
+ * retained daemon result before a public Action can receive its summary.
  */
-export function hasLocalMemorySearchSessionForServerScope(
-    target: MemorySearchSessionTargetV1,
-): boolean {
-    const session = storage.getState().sessions[target.sessionId];
-    if (!session) return false;
-    const sessionServerId = String(session.serverId ?? '').trim();
-    // A legacy record with no server owner cannot authorize an explicitly
-    // scoped hit. Force the canonical reader to bind it to the requested Home
-    // before derived transcript bytes become visible.
-    if (!sessionServerId) return false;
-    return areServerProfileIdentifiersEquivalent(sessionServerId, target.serverId);
+export async function authorizeMemorySearchResult<TAuthority>(params: Readonly<{
+    result: MemorySearchResultV1;
+    serverId: string;
+    accountId: string;
+    authority: TAuthority;
+    accountLifetime: Readonly<{
+        isCurrent(): boolean;
+        onRetire(cancel: () => void): Readonly<{ dispose(): void }>;
+    }>;
+    readSessionForServerScope: (
+        args: Readonly<{
+            target: MemorySearchSessionTargetV1;
+            authority: TAuthority;
+            signal: AbortSignal;
+        }>,
+    ) => Promise<MemorySearchSessionRead>;
+    concurrencyLimit: number;
+    signal?: AbortSignal;
+}>): Promise<MemorySearchResultV1> {
+    if (!params.result.ok) return params.result;
+    const targets = [...new Set(params.result.hits.map((hit) => hit.sessionId))].map((sessionId) => ({
+        sessionKey: `${params.accountId}:${params.serverId}:${sessionId}`,
+        serverId: params.serverId,
+        accountId: params.accountId,
+        sessionId,
+    }));
+    const visibleThroughSeqBySessionId = new Map<string, number>();
+    const authorizedTargets = await hydrateMemorySearchSessionTargets({
+        targets,
+        authority: params.authority,
+        accountLifetime: params.accountLifetime,
+        readSessionForServerScope: async (args) => {
+            const read = await params.readSessionForServerScope(args);
+            const visibleThroughSeq = read.visibleThroughSeq;
+            if (
+                !read.ok
+                || typeof visibleThroughSeq !== 'number'
+                || !Number.isSafeInteger(visibleThroughSeq)
+                || visibleThroughSeq < 0
+            ) {
+                return { ok: false, errorCode: read.errorCode ?? 'session_visibility_unavailable' };
+            }
+            visibleThroughSeqBySessionId.set(args.target.sessionId, visibleThroughSeq);
+            return read;
+        },
+        concurrencyLimit: params.concurrencyLimit,
+        ...(params.signal ? { signal: params.signal } : {}),
+    });
+    const authorizedSessionIds = new Set(authorizedTargets.map((target) => target.sessionId));
+    return {
+        ...params.result,
+        hits: params.result.hits.filter((hit) => {
+            const visibleThroughSeq = visibleThroughSeqBySessionId.get(hit.sessionId);
+            return authorizedSessionIds.has(hit.sessionId)
+                && visibleThroughSeq !== undefined
+                && hit.seqFrom <= visibleThroughSeq
+                && hit.seqTo <= visibleThroughSeq;
+        }),
+    };
+}
+
+/** Authorizes a retained daemon window against the caller's current Session projection. */
+export async function authorizeMemorySessionRange<TAuthority>(params: Readonly<{
+    target: MemorySearchSessionTargetV1;
+    seqFrom: number;
+    seqTo: number;
+    authority: TAuthority;
+    accountLifetime: Readonly<{
+        isCurrent(): boolean;
+        onRetire(cancel: () => void): Readonly<{ dispose(): void }>;
+    }>;
+    readSessionForServerScope: (
+        args: Readonly<{
+            target: MemorySearchSessionTargetV1;
+            authority: TAuthority;
+            signal: AbortSignal;
+        }>,
+    ) => Promise<MemorySearchSessionRead>;
+    signal?: AbortSignal;
+}>): Promise<boolean> {
+    let visibleThroughSeq: number | null = null;
+    const authorized = await hydrateMemorySearchSessionTargets({
+        targets: [params.target],
+        authority: params.authority,
+        accountLifetime: params.accountLifetime,
+        readSessionForServerScope: async (args) => {
+            const read = await params.readSessionForServerScope(args);
+            if (
+                !read.ok
+                || typeof read.visibleThroughSeq !== 'number'
+                || !Number.isSafeInteger(read.visibleThroughSeq)
+                || read.visibleThroughSeq < 0
+            ) {
+                return { ok: false, errorCode: read.errorCode ?? 'session_visibility_unavailable' };
+            }
+            visibleThroughSeq = read.visibleThroughSeq;
+            return read;
+        },
+        concurrencyLimit: 1,
+        ...(params.signal ? { signal: params.signal } : {}),
+    });
+    return authorized.length === 1
+        && visibleThroughSeq !== null
+        && params.seqFrom <= visibleThroughSeq
+        && params.seqTo <= visibleThroughSeq;
 }
 
 /**
@@ -76,14 +220,48 @@ export function hasLocalMemorySearchSessionForServerScope(
  * the request target.
  */
 export async function readMemorySearchSessionForServerScope(
-    args: Readonly<{ serverId: string; sessionId: string }>,
+    args: Readonly<{
+        target: MemorySearchSessionTargetV1;
+        authority: ServerAccountSessionRequestAuthority;
+        signal: AbortSignal;
+    }>,
 ): Promise<MemorySearchSessionRead> {
-    const result = await getSyncSingleton().ensureSessionVisibleForMessageRoute(args.sessionId, {
-        serverId: args.serverId,
-        forceRefresh: true,
+    const targetScope = createServerAccountScope(args.target.serverId, args.target.accountId);
+    if (!areServerAccountScopesEqual(args.authority.scope, targetScope)) {
+        return { ok: false, errorCode: 'account_scope_mismatch' };
+    }
+    const credentials = args.authority.context.credentials;
+    if (!credentials) return { ok: false, errorCode: 'credentials_unavailable' };
+    let hydrated: Session | null = null;
+    const result = await fetchSessionByIdWithServerScope({
+        sessionId: args.target.sessionId,
+        serverId: args.target.serverId,
+        activeCredentials: credentials,
+        activeRequest: (path, init) => args.authority.request(path, { ...init, signal: args.signal }),
+        authority: {
+            ...args.authority,
+            request: (path, init) => args.authority.request(path, { ...init, signal: args.signal }),
+        },
+        sessionDataKeys: new Map(),
+        sessionDataKeyEnvelopes: new Map(),
+        applySessions: (sessions) => {
+            hydrated = sessions.at(-1) as Session | undefined ?? null;
+        },
+        getExistingSession: () => null,
+        isCurrent: () => !args.signal.aborted,
         includeTurnsProjection: false,
+        log: { log: () => {} },
     });
-    return result.kind === 'available'
-        ? { ok: true }
-        : { ok: false, errorCode: result.kind === 'missing' ? result.cause : result.kind };
+    if (!result.ok || !hydrated || args.signal.aborted) {
+        return { ok: false, errorCode: result.ok ? 'session_unavailable' : result.errorCode };
+    }
+    storage.getState().mergeSessionListRowsForServerScope(
+        args.target.serverId,
+        [buildSessionListRenderableFromSession(hydrated)],
+    );
+    const visibleThroughSeq = hydrated.seq;
+    if (!Number.isSafeInteger(visibleThroughSeq) || visibleThroughSeq < 0) {
+        return { ok: false, errorCode: 'session_visibility_unavailable' };
+    }
+    return { ok: true, visibleThroughSeq };
 }

@@ -22,8 +22,26 @@ function createAccountLifetimeFixture(accountId: string) {
     };
 }
 
-vi.mock('@/sync/ops/machineRipgrep', () => ({
-    machineRipgrep: (...args: unknown[]) => machineRipgrepMock(...args),
+vi.mock('@/sync/ops/machineWorkspaceFileList', () => ({
+    machineWorkspaceFileList: async (...args: unknown[]) => {
+        const response = await machineRipgrepMock(...args) as Readonly<{
+            ok?: boolean;
+            success?: boolean;
+            paths?: string[];
+            stdout?: string;
+        }>;
+        if (typeof response?.ok === 'boolean') return response;
+        if (response?.success === true) {
+            const requestedLimit = (args[1] as Readonly<{ limit?: number }> | undefined)?.limit;
+            const allPaths = String(response.stdout ?? '').split('\n').filter(Boolean);
+            return {
+                ok: true,
+                paths: typeof requestedLimit === 'number' ? allPaths.slice(0, requestedLimit) : allPaths,
+                truncated: typeof requestedLimit === 'number' && allPaths.length > requestedLimit,
+            };
+        }
+        return { ok: false, errorCode: 'ripgrep_unavailable' };
+    },
 }));
 
 vi.mock('@/sync/ops/machineFileBrowser', () => ({
@@ -137,6 +155,109 @@ describe('workspaceFileSearch', () => {
         })).rejects.toMatchObject({ code: 'WORKSPACE_FILE_SEARCH_UNAVAILABLE' });
     });
 
+    it('keeps simultaneously valid Account lifetime caches isolated', async () => {
+        const accountA = createAccountLifetimeFixture('account-a');
+        const accountB = createAccountLifetimeFixture('account-b');
+        let releaseAccountA!: (value: { success: boolean; stdout: string }) => void;
+        machineRipgrepMock
+            .mockImplementationOnce(() => new Promise((resolve) => {
+                releaseAccountA = resolve;
+            }))
+            .mockResolvedValueOnce({ success: true, stdout: 'src/account-b.ts\n' });
+
+        const mod = await import('./workspaceFileSearch');
+        const pendingAccountA = mod.searchWorkspaceFiles({
+            scope: SCOPE_A,
+            query: '',
+            limit: 50,
+            accountLifetime: accountA,
+        });
+        await vi.waitFor(() => expect(machineRipgrepMock).toHaveBeenCalledTimes(1));
+
+        await expect(mod.searchWorkspaceFiles({
+            scope: SCOPE_A,
+            query: '',
+            limit: 50,
+            accountLifetime: accountB,
+        })).resolves.toEqual(expect.arrayContaining([
+            expect.objectContaining({ fullPath: 'src/account-b.ts' }),
+        ]));
+
+        releaseAccountA({ success: true, stdout: 'src/account-a.ts\n' });
+        await expect(pendingAccountA).resolves.toEqual(expect.arrayContaining([
+            expect.objectContaining({ fullPath: 'src/account-a.ts' }),
+        ]));
+
+        await expect(mod.searchWorkspaceFiles({
+            scope: SCOPE_A,
+            query: '',
+            limit: 50,
+            accountLifetime: accountB,
+        })).resolves.toEqual(expect.arrayContaining([
+            expect.objectContaining({ fullPath: 'src/account-b.ts' }),
+        ]));
+        expect(machineRipgrepMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('retires only the affected Account lifetime cache partition', async () => {
+        const accountA = createAccountLifetimeFixture('account-a');
+        const accountB = createAccountLifetimeFixture('account-b');
+        machineRipgrepMock
+            .mockResolvedValueOnce({ success: true, stdout: 'src/account-a.ts\n' })
+            .mockResolvedValueOnce({ success: true, stdout: 'src/account-b.ts\n' });
+
+        const mod = await import('./workspaceFileSearch');
+        await mod.searchWorkspaceFiles({ scope: SCOPE_A, query: '', accountLifetime: accountA });
+        await mod.searchWorkspaceFiles({ scope: SCOPE_A, query: '', accountLifetime: accountB });
+
+        accountA.retire();
+        await expect(mod.searchWorkspaceFiles({
+            scope: SCOPE_A,
+            query: '',
+            accountLifetime: accountA,
+        })).rejects.toMatchObject({ code: 'WORKSPACE_FILE_SEARCH_UNAVAILABLE' });
+        await expect(mod.searchWorkspaceFiles({
+            scope: SCOPE_A,
+            query: '',
+            accountLifetime: accountB,
+        })).resolves.toEqual(expect.arrayContaining([
+            expect.objectContaining({ fullPath: 'src/account-b.ts' }),
+        ]));
+        expect(machineRipgrepMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('clears one workspace from every valid Account lifetime partition', async () => {
+        const accountA = createAccountLifetimeFixture('account-a');
+        const accountB = createAccountLifetimeFixture('account-b');
+        machineRipgrepMock
+            .mockResolvedValueOnce({ success: true, stdout: 'src/account-a-before.ts\n' })
+            .mockResolvedValueOnce({ success: true, stdout: 'src/account-b-before.ts\n' })
+            .mockResolvedValueOnce({ success: true, stdout: 'src/account-a-after.ts\n' })
+            .mockResolvedValueOnce({ success: true, stdout: 'src/account-b-after.ts\n' });
+
+        const mod = await import('./workspaceFileSearch');
+        await mod.searchWorkspaceFiles({ scope: SCOPE_A, query: '', accountLifetime: accountA });
+        await mod.searchWorkspaceFiles({ scope: SCOPE_A, query: '', accountLifetime: accountB });
+
+        mod.workspaceFileSearchCache.clearCache(SCOPE_A);
+
+        await expect(mod.searchWorkspaceFiles({
+            scope: SCOPE_A,
+            query: '',
+            accountLifetime: accountA,
+        })).resolves.toEqual(expect.arrayContaining([
+            expect.objectContaining({ fullPath: 'src/account-a-after.ts' }),
+        ]));
+        await expect(mod.searchWorkspaceFiles({
+            scope: SCOPE_A,
+            query: '',
+            accountLifetime: accountB,
+        })).resolves.toEqual(expect.arrayContaining([
+            expect.objectContaining({ fullPath: 'src/account-b-after.ts' }),
+        ]));
+        expect(machineRipgrepMock).toHaveBeenCalledTimes(4);
+    });
+
     it('throws a typed unavailable error only when ripgrep and directory traversal both fail', async () => {
         machineRipgrepMock.mockResolvedValue({ success: false, stdout: '', stderr: 'missing', exitCode: 127 });
         machineFilesystemListDirectoryMock.mockResolvedValue({ ok: false });
@@ -168,6 +289,7 @@ describe('workspaceFileSearch', () => {
     });
 
     it('preserves a successful directory fallback when ripgrep is unavailable', async () => {
+        activeAccountLifetime = createAccountLifetimeFixture('account-a');
         machineRipgrepMock.mockResolvedValue({ success: false, stdout: '', stderr: 'missing', exitCode: 127 });
         machineFilesystemListDirectoryMock.mockResolvedValueOnce({
             ok: true,
@@ -177,6 +299,11 @@ describe('workspaceFileSearch', () => {
         const mod = await import('./workspaceFileSearch');
         await expect(mod.searchWorkspaceFiles({ scope: SCOPE_A, query: 'readme', limit: 50 }))
             .resolves.toEqual([expect.objectContaining({ fullPath: 'README.md', fileType: 'file' })]);
+        expect(machineFilesystemListDirectoryMock).toHaveBeenCalledWith(
+            'm1',
+            { path: '/repo', includeFiles: true },
+            { serverId: 'server-a', accountId: 'account-a' },
+        );
     });
 
     it('applies the requested result type before the row limit without removing folders from the shared corpus', async () => {
@@ -208,8 +335,7 @@ describe('workspaceFileSearch', () => {
         await mod.searchWorkspaceFiles({ scope: SCOPE_A, query: 'ci', limit: 20 });
         expect(machineRipgrepMock).toHaveBeenCalledWith(
             'm1',
-            expect.arrayContaining(['--hidden']),
-            '/repo',
+            { rootPath: '/repo', includeHidden: true, limit: 5000 },
             expect.objectContaining({ serverId: 'server-a' }),
         );
 
@@ -247,12 +373,11 @@ describe('workspaceFileSearch', () => {
     it('indexes files via ripgrep and caches per workspace scope, keeping two servers apart', async () => {
         machineRipgrepMock.mockImplementation((
             _machineId: string,
-            args: string[],
-            _cwd: string | undefined,
+            input: Readonly<{ query?: string }>,
             options: Readonly<{ serverId?: string | null }> | undefined,
         ) => Promise.resolve({
             success: true,
-            stdout: args.includes('--iglob')
+            stdout: input.query
                 ? ''
                 : options?.serverId === 'server-b' ? 'src/beta.ts\n' : 'src/alpha.ts\nREADME.md\n',
             stderr: '',
@@ -261,8 +386,8 @@ describe('workspaceFileSearch', () => {
 
         const mod = await import('./workspaceFileSearch');
         const indexBuildServerIds = () => machineRipgrepMock.mock.calls
-            .filter((call) => !(call[1] as string[]).includes('--iglob'))
-            .map((call) => (call[3] as Readonly<{ serverId?: string | null }> | undefined)?.serverId);
+            .filter((call) => !(call[1] as Readonly<{ query?: string }>).query)
+            .map((call) => (call[2] as Readonly<{ serverId?: string | null }> | undefined)?.serverId);
 
         const resA1 = await mod.searchWorkspaceFiles({ scope: SCOPE_A, query: 'alpha', limit: 50 });
         expect(resA1.some((r) => r.fullPath === 'src/alpha.ts')).toBe(true);
@@ -285,10 +410,11 @@ describe('workspaceFileSearch', () => {
     });
 
     it('cancels a query-owned index build and never publishes its late files to the shared cache', async () => {
+        activeAccountLifetime = createAccountLifetimeFixture('account-a');
         let releaseFirstIndex!: (value: { success: boolean; stdout: string }) => void;
         let callCount = 0;
-        machineRipgrepMock.mockImplementation((_machineId: string, args: string[]) => {
-            if (args.includes('--iglob')) {
+        machineRipgrepMock.mockImplementation((_machineId: string, input: Readonly<{ query?: string }>) => {
+            if (input.query) {
                 return Promise.resolve({ success: true, stdout: '' });
             }
             callCount += 1;
@@ -309,8 +435,9 @@ describe('workspaceFileSearch', () => {
         });
 
         await vi.waitFor(() => expect(machineRipgrepMock).toHaveBeenCalledTimes(1));
-        expect(machineRipgrepMock.mock.calls[0]?.[3]).toEqual({
+        expect(machineRipgrepMock.mock.calls[0]?.[2]).toEqual({
             serverId: 'server-a',
+            accountId: 'account-a',
             signal: controller.signal,
         });
 
@@ -337,8 +464,7 @@ describe('workspaceFileSearch', () => {
     it('clears exactly the scope it is given, leaving another server\'s index intact', async () => {
         machineRipgrepMock.mockImplementation((
             _machineId: string,
-            _args: string[],
-            _cwd: string | undefined,
+            _input: Readonly<{ query?: string }>,
             options: Readonly<{ serverId?: string | null }> | undefined,
         ) => Promise.resolve({
             success: true,
@@ -377,8 +503,8 @@ describe('workspaceFileSearch', () => {
         const indexStdout = 'src/index.ts\n';
         const globStdout = Array.from({ length: 400 }, (_, i) => `pkg/zeta-${String(i).padStart(3, '0')}.ts`).join('\n') + '\n';
 
-        machineRipgrepMock.mockImplementation((_machineId: string, args: string[]) => {
-            const isGlob = args.includes('--iglob');
+        machineRipgrepMock.mockImplementation((_machineId: string, input: Readonly<{ query?: string }>) => {
+            const isGlob = Boolean(input.query);
             return Promise.resolve({
                 success: true,
                 stdout: isGlob ? globStdout : indexStdout,
@@ -407,7 +533,7 @@ describe('workspaceFileSearch', () => {
             limit: 4,
         });
         // The fallback must actually have run, or the bound below proves nothing.
-        expect(machineRipgrepMock.mock.calls.some((call) => (call[1] as string[]).includes('--iglob'))).toBe(true);
+        expect(machineRipgrepMock.mock.calls.some((call) => Boolean((call[1] as Readonly<{ query?: string }>).query))).toBe(true);
         expect(floorResults.length).toBe(4);
         expect(await countIngestedZetaFiles('/repo-floor')).toBe(50);
 
@@ -428,9 +554,9 @@ describe('workspaceFileSearch', () => {
     it('re-indexes glob-discovered files so an identical repeat query is served without another scan', async () => {
         // Deliberately unlimited: a regression must fail on the call-count assertion
         // below, not by running out of queued mock responses.
-        machineRipgrepMock.mockImplementation((_machineId: string, args: string[]) => Promise.resolve({
+        machineRipgrepMock.mockImplementation((_machineId: string, input: Readonly<{ query?: string }>) => Promise.resolve({
             success: true,
-            stdout: args.includes('--iglob')
+            stdout: input.query
                 ? '.github/workflows/publish-github-release.yml\n'
                 : 'src/index.ts\n',
             stderr: '',
@@ -458,6 +584,69 @@ describe('workspaceFileSearch', () => {
         expect(machineRipgrepMock).toHaveBeenCalledTimes(2);
     });
 
+    it('queries the complete workspace when a truncated cache has only a weak local match', async () => {
+        machineRipgrepMock
+            .mockResolvedValueOnce({
+                ok: true,
+                paths: ['src/needle-ish.ts'],
+                truncated: true,
+            })
+            .mockResolvedValueOnce({
+                ok: true,
+                paths: ['packages/exact-needle.ts'],
+                truncated: false,
+            });
+
+        const mod = await import('./workspaceFileSearch');
+        const page = await mod.searchWorkspaceFiles({
+            scope: SCOPE_A,
+            query: 'needle',
+            limit: 20,
+            resultType: 'file',
+            includeCoverage: true,
+        });
+
+        expect(machineRipgrepMock).toHaveBeenCalledTimes(2);
+        expect(machineRipgrepMock.mock.calls[1]?.[1]).toEqual(expect.objectContaining({ query: 'needle' }));
+        expect(page.items).toEqual(expect.arrayContaining([
+            expect.objectContaining({ fullPath: 'packages/exact-needle.ts' }),
+        ]));
+        expect(page.truncated).toBe(true);
+    });
+
+    it('retains targeted-query truncation so repeated queries do not report complete coverage', async () => {
+        machineRipgrepMock
+            .mockResolvedValueOnce({
+                ok: true,
+                paths: ['src/index.ts'],
+                truncated: false,
+            })
+            .mockResolvedValueOnce({
+                ok: true,
+                paths: ['packages/exact-needle.ts'],
+                truncated: true,
+            });
+
+        const mod = await import('./workspaceFileSearch');
+        const input = {
+            scope: SCOPE_A,
+            query: 'needle',
+            limit: 20,
+            resultType: 'file' as const,
+            includeCoverage: true as const,
+        };
+
+        const first = await mod.searchWorkspaceFiles(input);
+        expect(first.truncated).toBe(true);
+        expect(machineRipgrepMock).toHaveBeenCalledTimes(2);
+
+        const second = await mod.searchWorkspaceFiles(input);
+        expect(second.truncated).toBe(true);
+        // The retained truncation forces the existing bounded query path to run
+        // again; a false-complete cache would stop at the Fuse result here.
+        expect(machineRipgrepMock).toHaveBeenCalledTimes(3);
+    });
+
     /**
      * A workspace is addressed by `{ serverId, machineId, rootPath }` — all three, because a
      * machine id is only unique within the server that reaches it. `serverId` already keys the
@@ -471,9 +660,9 @@ describe('workspaceFileSearch', () => {
      * leave the other addressing the wrong server.
      */
     it('routes both ripgrep calls through the server the workspace is addressed to', async () => {
-        machineRipgrepMock.mockImplementation((_machineId: string, args: string[]) => Promise.resolve({
+        machineRipgrepMock.mockImplementation((_machineId: string, input: Readonly<{ query?: string }>) => Promise.resolve({
             success: true,
-            stdout: args.includes('--iglob') ? 'pkg/needle-file.ts\n' : 'src/index.ts\n',
+            stdout: input.query ? 'pkg/needle-file.ts\n' : 'src/index.ts\n',
             stderr: '',
             exitCode: 0,
         }));
@@ -490,14 +679,13 @@ describe('workspaceFileSearch', () => {
         // One index build plus one targeted glob, so both call sites are covered here.
         expect(machineRipgrepMock).toHaveBeenCalledTimes(2);
         for (const call of machineRipgrepMock.mock.calls) {
-            const [machineId, , cwd, options] = call as [
+            const [machineId, input, options] = call as [
                 string,
-                string[],
-                string | undefined,
+                Readonly<{ rootPath: string }>,
                 Readonly<{ serverId?: string | null }> | undefined,
             ];
             expect(machineId).toBe('m1');
-            expect(cwd).toBe('/repo');
+            expect(input.rootPath).toBe('/repo');
             expect(options?.serverId).toBe('server-b');
         }
     });

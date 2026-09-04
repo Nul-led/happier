@@ -55,6 +55,11 @@ export function setWorkspaceSyncStatus(scope: WorkspaceSyncStatusScope, status: 
     publish(entryFor(scope), { phase: 'ready', status, error: null });
 }
 
+export function applyWorkspaceSyncStatusEvent(scope: WorkspaceSyncStatusScope, status: WorkspaceSyncStatusV1): void {
+    if (status.relationshipId !== scope.relationshipId || status.controllerMachineId !== scope.controllerMachineId) return;
+    setWorkspaceSyncStatus(scope, status);
+}
+
 export function refreshWorkspaceSyncStatus(scope: WorkspaceSyncStatusScope): Promise<WorkspaceSyncStatusV1 | null> {
     const entry = entryFor(scope);
     if (entry.inFlight) return entry.inFlight;

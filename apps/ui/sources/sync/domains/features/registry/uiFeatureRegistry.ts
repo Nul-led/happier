@@ -357,6 +357,9 @@ export const UI_FEATURE_REGISTRY = {
     'auth.pairing.desktopQrMobileScan': {
         settingsToggle: undefined,
     },
+    'auth.pairing.boundQrV2': {
+        settingsToggle: undefined,
+    },
     'auth.login.keyChallenge': {
         settingsToggle: undefined,
     },

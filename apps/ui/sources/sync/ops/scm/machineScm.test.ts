@@ -127,7 +127,7 @@ describe('machineScm', () => {
         const response = await machineScmLogList(
             'machine-1',
             { cwd: '/repo', limit: 20, query: 'fix login' },
-            { serverId: 'server-b', signal: controller.signal },
+            { serverId: 'server-b', accountId: 'account-b', signal: controller.signal },
         );
 
         expect(response.success).toBe(true);
@@ -135,9 +135,26 @@ describe('machineScm', () => {
             machineId: 'machine-1',
             method: RPC_METHODS.SCM_LOG_LIST,
             serverId: 'server-b',
+            accountId: 'account-b',
             signal: controller.signal,
             payload: expect.objectContaining({ cwd: '/repo', query: 'fix login' }),
         }));
+    });
+
+    it('parses scm.log.list through the canonical closed response schema', async () => {
+        getStateMock.mockReturnValue({ settings: {} });
+        machineRpcWithServerScopeMock.mockResolvedValue({
+            success: true,
+            entries: [],
+            queryApplied: true,
+            authoritativeScope: 'all-refs',
+        });
+
+        const { machineScmLogList } = await import('./machineScm');
+        await expect(machineScmLogList(
+            'machine-1',
+            { cwd: '/repo', query: 'fix login' },
+        )).rejects.toMatchObject({ name: 'ZodError' });
     });
 
     it('rethrows transport failure as cancellation instead of backend-unavailable when the caller aborted', async () => {

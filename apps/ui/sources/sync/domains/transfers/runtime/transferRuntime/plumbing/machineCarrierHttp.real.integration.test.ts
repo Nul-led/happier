@@ -467,7 +467,7 @@ describeReal('production transfer caller over native MachineHttpTunnel into the 
             admission: {
                 localEndpointId: target.endpointId,
                 role: 'acceptor',
-                allowedFlows: ['file_transfer', 'attachment_transfer'],
+                allowedFlows: ['finite_transfer'],
                 resolveApplicationTarget: ({ handshake }) => {
                     verifiedHandshakes.push(handshake);
                     return { port: directTransferPort };
@@ -546,11 +546,11 @@ describeReal('production transfer caller over native MachineHttpTunnel into the 
                 machineId,
                 flowKind: 'bounded_transfer',
                 routeKind: 'iroh_peer',
-                scope: { kind: 'bounded_transfer', mode: 'single', transferId: expect.any(String), maxBytes: declaredSizeBytes },
+                scope: { kind: 'bounded_transfer', mode: 'carrier' },
                 iroh: {
                     initiator: { kind: 'account_client', endpointId: expect.stringMatching(/^[0-9a-f]{64}$/u) },
                     target: { machineId, endpointId: target.endpointId },
-                    operationKind: `${input.transferKind}_transfer`,
+                    operationKind: 'finite_transfer',
                 },
             });
             // Zero disallowed fallback after machine Iroh selection.

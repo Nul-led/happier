@@ -32,25 +32,32 @@
  */
 
 import {
+    MACHINE_ALPN,
+    MACHINE_CONTROL_TIMEOUT_MS,
+    MACHINE_STREAM_ACCEPT_BYTE,
+    MAX_MACHINE_HANDSHAKE_BYTES,
+    TUNNEL_PREAMBLE,
+} from '@happier-dev/iroh-native';
+import {
     MACHINE_CARRIER_INTERRUPTED_TRANSFER_ERROR,
     mintSignedMachineCarrierHandshake,
     type MachineCarrierTransferFlow,
 } from './machineCarrierHttpLease';
 
 /** The only ALPN this seam dials. Shared constant with happier-iroh-core. */
-export const MACHINE_CARRIER_BROWSER_ALPN_V1 = 'happier/machine/1' as const;
+export const MACHINE_CARRIER_BROWSER_ALPN_V1 = MACHINE_ALPN;
 
 /** happier-iroh-core `TUNNEL_PREAMBLE`. */
-export const MACHINE_CARRIER_STREAM_PREAMBLE_BYTE = 0x01;
+export const MACHINE_CARRIER_STREAM_PREAMBLE_BYTE = TUNNEL_PREAMBLE;
 /**
  * happier-iroh-core `MACHINE_STREAM_ACCEPT_BYTE`. Any other decision byte —
  * including `MACHINE_STREAM_REJECT_BYTE` (0x00) — rejects admission.
  */
-export const MACHINE_CARRIER_STREAM_ACCEPT_BYTE = 0x01;
+export const MACHINE_CARRIER_STREAM_ACCEPT_BYTE = MACHINE_STREAM_ACCEPT_BYTE;
 /** happier-iroh-core `MAX_MACHINE_HANDSHAKE_BYTES`. */
-export const MACHINE_CARRIER_HANDSHAKE_MAX_BYTES = 64 * 1024;
+export const MACHINE_CARRIER_HANDSHAKE_MAX_BYTES = MAX_MACHINE_HANDSHAKE_BYTES;
 /** happier-iroh-core `MACHINE_CONTROL_TIMEOUT`. */
-export const MACHINE_CARRIER_STREAM_CONTROL_TIMEOUT_MS = 10_000;
+export const MACHINE_CARRIER_STREAM_CONTROL_TIMEOUT_MS = MACHINE_CONTROL_TIMEOUT_MS;
 
 /**
  * The one post-selection failure. The transfer families already classify
@@ -145,11 +152,8 @@ export async function acquireBrowserMachineCarrierStreamLease(input: Readonly<{
     const custody: { endpointLease: BrowserMachineCarrierEndpointLease | null } = { endpointLease: null };
     try {
         const minted = await mintSignedMachineCarrierHandshake({
-            operationId: input.operationId,
             machineId: input.machineId,
             serverId: input.serverId,
-            flow: input.flow,
-            maxBytes: input.maxBytes,
             resolveInitiatorEndpointId: async (relayUrls) => {
                 const lease = await input.acquireEndpointLease(relayUrls);
                 custody.endpointLease = lease;

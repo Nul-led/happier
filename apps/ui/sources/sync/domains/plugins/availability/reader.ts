@@ -382,6 +382,8 @@ export type PluginAccountAvailabilityReader = Readonly<{
     readCurrentCollectionContract: (input: Readonly<{
         pluginId: string;
         collectionId: string;
+        /** Exact retained ref requested by an already-mounted release. */
+        ref?: PluginCollectionContractRefV1;
     }>) => PluginAccountAvailabilityCollectionContractAdmission;
     /**
      * Current enabled-release capability for direct Account Data UI. This is
@@ -1037,7 +1039,7 @@ function readCurrentPackageAssetAdmission(
 function readCurrentCollectionContractAdmission(
     state: AvailabilityProjectionState | null,
     scope: ServerAccountScope,
-    input: Readonly<{ pluginId: string; collectionId: string }>,
+    input: Readonly<{ pluginId: string; collectionId: string; ref?: PluginCollectionContractRefV1 }>,
 ): PluginAccountAvailabilityCollectionContractAdmission {
     const current = readCurrentReleaseAdmission(state, scope, input.pluginId);
     if (current.kind !== 'available') {
@@ -1056,10 +1058,20 @@ function readCurrentCollectionContractAdmission(
     if (candidates.length !== 1) {
         return Object.freeze({ kind: 'unavailable', code: 'collection_slot_ambiguous' });
     }
+    const ref = input.ref ?? candidates[0]!;
+    if (ref.pluginId !== input.pluginId || ref.collectionId !== input.collectionId) {
+        return Object.freeze({ kind: 'unavailable', code: 'collection_not_current' });
+    }
+    if (
+        ref.schemaVersion === candidates[0]!.schemaVersion
+        && ref.contractDigest !== candidates[0]!.contractDigest
+    ) {
+        return Object.freeze({ kind: 'unavailable', code: 'collection_not_current' });
+    }
     return Object.freeze({
         kind: 'available',
         availabilityCursor: current.availabilityCursor,
-        ref: Object.freeze({ ...candidates[0]! }),
+        ref: Object.freeze({ ...ref }),
     });
 }
 

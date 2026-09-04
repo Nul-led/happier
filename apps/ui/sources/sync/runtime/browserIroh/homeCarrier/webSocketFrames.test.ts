@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
     WEB_SOCKET_CLOSE_CODE,
+    WEB_SOCKET_MAX_MESSAGE_PAYLOAD_BYTES,
     WEB_SOCKET_OPCODE,
     WebSocketFrameDecoder,
     WebSocketProtocolError,
@@ -100,6 +101,10 @@ describe('browserIroh/homeCarrier/webSocketFrames client encoding', () => {
 });
 
 describe('browserIroh/homeCarrier/webSocketFrames server decoding', () => {
+    it('uses the existing Socket.IO carrier boundary as its message ceiling', () => {
+        expect(WEB_SOCKET_MAX_MESSAGE_PAYLOAD_BYTES).toBe(34_603_008);
+    });
+
     it('reassembles frames split across stream reads and splits a coalesced read', () => {
         const decoder = new WebSocketFrameDecoder();
         const first = serverFrame(WEB_SOCKET_OPCODE.text, new TextEncoder().encode('hello'));
@@ -124,6 +129,81 @@ describe('browserIroh/homeCarrier/webSocketFrames server decoding', () => {
         const frames = decoder.push(serverFrame(WEB_SOCKET_OPCODE.binary, payload));
 
         expect(frames[0]?.payload).toHaveLength(300);
+    });
+
+    it('retains incomplete frame chunks and copies a multi-megabyte payload only when complete', () => {
+        const decoder = new WebSocketFrameDecoder();
+        const payload = new Uint8Array(2 * 1024 * 1024).fill(7);
+        const wire = serverFrame(WEB_SOCKET_OPCODE.binary, payload);
+        let frames = [];
+
+        for (let offset = 0; offset < wire.length; offset += 64 * 1024) {
+            frames = decoder.push(wire.subarray(offset, offset + 64 * 1024));
+        }
+
+        expect(frames).toHaveLength(1);
+        expect(frames[0]?.payload).toEqual(payload);
+    });
+
+    it('reassembles a fragmented message at the exact Socket.IO boundary across control frames', () => {
+        const decoder = new WebSocketFrameDecoder();
+        const firstLength = Math.floor(WEB_SOCKET_MAX_MESSAGE_PAYLOAD_BYTES / 2);
+        const secondLength = WEB_SOCKET_MAX_MESSAGE_PAYLOAD_BYTES - firstLength;
+
+        expect(decoder.push(serverFrame(
+            WEB_SOCKET_OPCODE.binary,
+            new Uint8Array(firstLength).fill(1),
+            { fin: false },
+        ))).toEqual([]);
+        expect(decoder.push(serverFrame(WEB_SOCKET_OPCODE.ping, new Uint8Array([9])))).toEqual([
+            expect.objectContaining({ opcode: WEB_SOCKET_OPCODE.ping, payload: new Uint8Array([9]) }),
+        ]);
+
+        const frames = decoder.push(serverFrame(
+            WEB_SOCKET_OPCODE.continuation,
+            new Uint8Array(secondLength).fill(2),
+        ));
+
+        expect(frames).toHaveLength(1);
+        expect(frames[0]).toMatchObject({ fin: true, opcode: WEB_SOCKET_OPCODE.binary });
+        expect(frames[0]?.payload).toHaveLength(WEB_SOCKET_MAX_MESSAGE_PAYLOAD_BYTES);
+        expect(frames[0]?.payload[firstLength - 1]).toBe(1);
+        expect(frames[0]?.payload[firstLength]).toBe(2);
+    });
+
+    it('rejects and releases fragmented-message retention one byte over the boundary', () => {
+        const decoder = new WebSocketFrameDecoder();
+
+        expect(decoder.push(serverFrame(
+            WEB_SOCKET_OPCODE.text,
+            new Uint8Array(WEB_SOCKET_MAX_MESSAGE_PAYLOAD_BYTES),
+            { fin: false },
+        ))).toEqual([]);
+        expect(() => decoder.push(serverFrame(
+            WEB_SOCKET_OPCODE.continuation,
+            new Uint8Array([1]),
+        ))).toThrow(expect.objectContaining({ closeCode: WEB_SOCKET_CLOSE_CODE.messageTooBig }));
+
+        expect(() => decoder.push(serverFrame(
+            WEB_SOCKET_OPCODE.continuation,
+            new Uint8Array(0),
+        ))).toThrow(expect.objectContaining({ closeCode: WEB_SOCKET_CLOSE_CODE.protocolError }));
+    });
+
+    it('rejects an announced over-boundary frame from its header and releases buffered retention', () => {
+        const decoder = new WebSocketFrameDecoder();
+        const oversizedHeader = bigServerFrame(
+            WEB_SOCKET_OPCODE.binary,
+            BigInt(WEB_SOCKET_MAX_MESSAGE_PAYLOAD_BYTES + 1),
+        );
+
+        expect(() => decoder.push(oversizedHeader))
+            .toThrow(expect.objectContaining({ closeCode: WEB_SOCKET_CLOSE_CODE.messageTooBig }));
+
+        const frames = decoder.push(serverFrame(WEB_SOCKET_OPCODE.text, new Uint8Array([1])));
+        expect(frames).toEqual([
+            expect.objectContaining({ opcode: WEB_SOCKET_OPCODE.text, payload: new Uint8Array([1]) }),
+        ]);
     });
 
     it('rejects a masked server frame', () => {

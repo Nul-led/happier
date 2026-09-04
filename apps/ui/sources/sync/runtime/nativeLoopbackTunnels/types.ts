@@ -76,11 +76,7 @@ export type LoopbackTunnelProbe<
     Reason extends string = string,
 > = (url: string, request: Request) => Promise<LoopbackTunnelProbeResult<Reason>>;
 
-export type LoopbackTunnelFailureCodes = Readonly<{
-    suspended: string;
-    probeFailed: string;
-    staleGeneration: string;
-}>;
+export type LoopbackTunnelFailureCodes = Readonly<{ suspended: string; probeFailed: string; staleGeneration: string; disposed?: string; }>;
 
 export type LoopbackTunnelLeaseFactoryInput<
     Request extends LoopbackTunnelRequest,

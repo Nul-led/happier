@@ -8,6 +8,10 @@ import {
     useServerFeaturesRuntimeSnapshot,
     useServerFeaturesSnapshotForServerId,
 } from '@/sync/domains/features/featureDecisionRuntime';
+import {
+    areServerProfileIdentifiersEquivalent,
+    resolveServerProfileScopeIdForIdentifier,
+} from '@/sync/domains/server/serverProfiles';
 
 import {
     resolveDaemonMemorySearchTarget,
@@ -16,6 +20,11 @@ import {
 } from './resolveDaemonMemorySearchTarget';
 
 export type MemorySearchProviderId = 'home' | 'daemon';
+
+export type MemorySearchProviderTarget =
+    | Readonly<{ kind: 'ambient' }>
+    | Readonly<{ kind: 'none' }>
+    | Readonly<{ kind: 'exact'; serverId: string; machineId?: string | null }>;
 
 /**
  * Readiness of the Personal Home search index according to the optional server
@@ -92,9 +101,15 @@ export function resolveHomeMemorySearchReadiness(capability: unknown): HomeMemor
  * a daemon with no explicitly selected usable machine, therefore keeps its truthful
  * `unavailableReason` instead of silently querying the other source.
  */
-export function useMemorySearchProvider(target?: Readonly<{ serverId?: string | null; machineId?: string | null }>): MemorySearchProvider {
+export function useMemorySearchProvider(
+    target: MemorySearchProviderTarget = { kind: 'ambient' },
+): MemorySearchProvider {
     const activeServer = useActiveServerSnapshot();
-    const requestedServerId = String(target?.serverId ?? '').trim();
+    const requestedServerId = target.kind === 'exact'
+        ? resolveServerProfileScopeIdForIdentifier(target.serverId)
+        : '';
+    const isAmbient = target.kind === 'ambient';
+    const isExplicitNone = target.kind === 'none' || (target.kind === 'exact' && !requestedServerId);
     // The Home decision reads the same runtime (focused-Home) snapshot as the
     // capability below, so feature and readiness always describe one Home.
     const homeSearchFeatureEnabled = useFeatureEnabled('search', requestedServerId
@@ -107,24 +122,32 @@ export function useMemorySearchProvider(target?: Readonly<{ serverId?: string | 
     const scopedFeaturesSnapshot = useServerFeaturesSnapshotForServerId(requestedServerId, {
         enabled: requestedServerId.length > 0,
     });
-    const activeServerId = requestedServerId || String(activeServer.serverId ?? '').trim();
+    const activeServerId = requestedServerId || (isAmbient
+        ? resolveServerProfileScopeIdForIdentifier(activeServer.serverId)
+        : '');
     // Daemon memory search targets the explicitly selected usable machine, never an
     // arbitrary first machine and never an automatic all-machine fanout.
     const daemonTargetSelection = useDaemonMemorySearchTargetSelection();
-    const daemonTarget = daemonMemorySearchEnabled
+    const daemonTarget = daemonMemorySearchEnabled && !isExplicitNone
         ? requestedServerId
-            ? target?.machineId
+            ? target.kind === 'exact' && target.machineId
                 ? resolveDaemonMemorySearchTarget(
                     daemonTargetSelection,
                     { serverId: requestedServerId, machineId: target.machineId },
                 )
-                : null
+                : (() => {
+                    const selected = resolveDaemonMemorySearchTarget(daemonTargetSelection);
+                    return selected && areServerProfileIdentifiersEquivalent(selected.serverId, requestedServerId)
+                        ? selected
+                        : null;
+                })()
             : resolveDaemonMemorySearchTarget(daemonTargetSelection)
         : null;
     const daemonServerId = daemonTarget?.serverId ?? null;
     const daemonMachineId = daemonTarget?.machineId ?? null;
 
     return React.useMemo(() => {
+        if (isExplicitNone) return NO_MEMORY_SEARCH_PROVIDER;
         const effectiveFeaturesSnapshot = requestedServerId ? scopedFeaturesSnapshot : featuresSnapshot;
         const capability = effectiveFeaturesSnapshot.status === 'ready'
             ? effectiveFeaturesSnapshot.features.capabilities.homeSearch
@@ -137,10 +160,9 @@ export function useMemorySearchProvider(target?: Readonly<{ serverId?: string | 
                 ? { serverId: daemonServerId, machineId: daemonMachineId }
                 : null;
         const resolvedHomeReadiness = resolveHomeMemorySearchReadiness(capability);
-        const homeAdmitted = homeSearchFeatureEnabled
-            && activeServerId.length > 0
-            && resolvedHomeReadiness !== 'unknown';
-        const homeReadiness = homeAdmitted ? resolvedHomeReadiness : null;
+        const homeCandidate = homeSearchFeatureEnabled && activeServerId.length > 0;
+        const homeAdmitted = homeCandidate && resolvedHomeReadiness !== 'unknown';
+        const homeReadiness = homeCandidate ? resolvedHomeReadiness : null;
         const readyHome: MemorySearchProvider = {
             provider: 'home',
             homeServerId: activeServerId,
@@ -163,7 +185,7 @@ export function useMemorySearchProvider(target?: Readonly<{ serverId?: string | 
             };
         }
         // 3. Otherwise the truthful section-local state of whichever source is admitted.
-        if (homeAdmitted) return readyHome;
+        if (homeCandidate) return readyHome;
         if (daemonMemorySearchEnabled) {
             return {
                 provider: 'daemon',
@@ -182,8 +204,8 @@ export function useMemorySearchProvider(target?: Readonly<{ serverId?: string | 
         daemonServerId,
         featuresSnapshot,
         homeSearchFeatureEnabled,
+        isExplicitNone,
         requestedServerId,
         scopedFeaturesSnapshot,
-        target?.machineId,
     ]);
 }

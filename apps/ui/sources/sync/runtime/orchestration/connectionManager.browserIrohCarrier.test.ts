@@ -58,6 +58,7 @@ function mockEnvironment(options: Readonly<{
     };
     vi.doMock('@/sync/domains/server/serverRuntime', () => ({
         getActiveServerSnapshot: () => snapshot,
+        getActiveServerHomeCarrier: () => null,
         captureActiveServerRuntimeTarget: () => ({
             serverId: String(snapshot.serverId ?? ''),
             generation: Number(snapshot.generation ?? 0),
@@ -124,6 +125,7 @@ describe('focused-Home browser Iroh carrier selection', () => {
 
         expect(nativeRuntimeMock.ensureHomeTunnel).not.toHaveBeenCalled();
         expect(acquireBrowserCarrierSpy).toHaveBeenCalledWith({
+            purpose: 'authenticated_home',
             homeServerIdentityId: 'srv_home_a',
             endpoint: { endpointId: HOME_ENDPOINT_ID, relayUrls: RELAY_URLS },
             canonicalServerUrl: CANONICAL_URL,
@@ -139,7 +141,13 @@ describe('focused-Home browser Iroh carrier selection', () => {
     });
 
     it('keeps a native host on the native lease', async () => {
-        nativeRuntimeMock.ensureHomeTunnel.mockResolvedValue(undefined as never);
+        nativeRuntimeMock.ensureHomeTunnel.mockResolvedValue({
+            leaseId: 'native-lease',
+            endpointId: HOME_ENDPOINT_ID,
+            status: 'ready',
+            runtimeOrigin: 'http://127.0.0.1:43123',
+            release: vi.fn(async () => undefined),
+        } as never);
         mockEnvironment({ browserHost: false });
 
         const { switchConnectionToActiveServer } = await import('./connectionManager');

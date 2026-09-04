@@ -28,6 +28,16 @@ describe('outgoing user message projection', () => {
             session: null,
         });
 
+        expect(rawRecord.meta).toEqual(expect.objectContaining({
+            happierProvenanceV1: { v: 1, kind: 'host', producer: 'happierApp' },
+            happierInputRequestV1: {
+                v: 1,
+                producer: 'happierApp',
+                caller: { kind: 'host' },
+                permission: {},
+            },
+        }));
+
         projectLocalOutboundUserMessage({
             sessionId: 'session-created-before-hydration',
             localId: 'local-first-turn',

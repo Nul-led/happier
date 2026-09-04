@@ -30,7 +30,6 @@ describe('session handoff UI request client', () => {
             selection: 'git_worktree' as const,
             extraIgnorePatterns: [],
             extraIncludePatterns: [],
-            includeGitDirectory: false,
         };
         machineRpc.mockResolvedValueOnce({
             ok: true,
@@ -52,7 +51,17 @@ describe('session handoff UI request client', () => {
                 },
                 flushBeforeCommit: true,
             },
-        })).resolves.toMatchObject({ ok: true, handoffId: 'handoff-1' });
+            actionRequestId: 'handoff-action-1',
+            handoffTargetReplacementApproval: {
+                v: 1,
+                consequences: ['replace_nonempty_workspace_target'],
+                serverId: 'server-1',
+                machineId: 'target-1',
+                canonicalRoot: '/target/repo',
+                rootFingerprint: 'a'.repeat(64),
+                operationId: 'handoff-action-1',
+            },
+        })).resolves.toMatchObject({ ok: true, result: { handoffId: 'handoff-1' } });
         expect(machineRpc).toHaveBeenCalledTimes(1);
         expect(machineRpc).toHaveBeenCalledWith(expect.objectContaining({
             machineId: 'source-1',
@@ -66,6 +75,8 @@ describe('session handoff UI request client', () => {
                     kind: 'create_relationship',
                     mode: 'keep_synced',
                 }),
+                actionRequestId: 'handoff-action-1',
+                handoffTargetReplacementApproval: expect.objectContaining({ operationId: 'handoff-action-1' }),
             }),
         }));
     });

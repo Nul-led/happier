@@ -245,7 +245,6 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
                 relayUrls: ['https://relay.example.test'],
                 directAddresses: ['192.168.1.10:4242'],
             },
-            descriptorRevision: 4,
             canonicalServerUrl: 'https://order.example.test',
             verification: { kind: 'authenticated', token: 'token-a' },
         });
@@ -273,7 +272,6 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
             policy: 'automatic',
             relayUrls: ['https://relay.example.test'],
             directAddresses: ['192.168.1.10:4242'],
-            descriptorRevision: 4,
         });
     });
 
@@ -973,7 +971,6 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
         await runtime.ensureHomeTunnel({
             homeServerIdentityId: HOME_IDENTITY_A,
             endpoint: { endpointId: 'endpoint-a-revision-2' },
-            descriptorRevision: 2,
             canonicalServerUrl: 'https://retry-superseded.example.test',
             verification: { kind: 'authenticated', token: 'token-a' },
         });
@@ -1203,6 +1200,145 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
         expect(getIrohHomeTunnelRuntime({ createSupervisor: () => createSupervisorFake().supervisor })).not.toBe(runtime);
     });
 
+    it('closes admission while disposal is in flight and releases an admitted lease that completes after disposal begins', async () => {
+        vi.resetModules();
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
+        const profiles = await import('../../domains/server/serverProfiles');
+        const home = profiles.upsertServerProfile({ serverUrl: 'https://dispose-race.example.test', source: 'manual' });
+        profiles.setActiveServerId(home.id, { scope: 'device' });
+
+        let resolveNative: ((value: ReturnType<typeof nativeLease>) => void) | undefined;
+        const native = {
+            ensureHomeTunnel: vi.fn(async (input: { homeServerIdentityId: string; endpointId: string }) =>
+                await new Promise<ReturnType<typeof nativeLease>>((resolve) => { resolveNative = resolve; })),
+            releaseHomeTunnel: vi.fn(async () => undefined),
+        };
+        const { createIrohHomeTunnelRuntime } = await import('./runtime');
+        const { createIrohHomeTunnelSupervisor } = await import('./supervisor');
+        const runtime = createIrohHomeTunnelRuntime({
+            createSupervisor: () => createIrohHomeTunnelSupervisor({ native, probe: async () => ({ ok: true }) }),
+        });
+
+        const admitted = runtime.ensureHomeTunnel({
+            homeServerIdentityId: HOME_IDENTITY_A,
+            endpoint: { endpointId: 'endpoint-a' },
+            canonicalServerUrl: 'https://dispose-race.example.test',
+            verification: { kind: 'authenticated', token: 'token-a' },
+        });
+        await vi.waitFor(() => expect(resolveNative).toBeTypeOf('function'));
+
+        const disposal = runtime.dispose();
+
+        // Admission is already closed while disposal is settling the admitted start.
+        expect(native.ensureHomeTunnel).toHaveBeenCalledTimes(1);
+        await expect(runtime.acquireHomeRuntimeOrigin({
+            homeServerIdentityId: HOME_IDENTITY_B,
+            endpoint: { endpointId: 'endpoint-b' },
+            canonicalServerUrl: 'https://dispose-race.example.test',
+            verification: { kind: 'enrollment' },
+        })).rejects.toThrow('iroh_home_tunnel_disposed');
+        expect(native.ensureHomeTunnel).toHaveBeenCalledTimes(1);
+
+        // The admitted start settles, but its late handle is released and the
+        // runtime origin is never published after disposal began.
+        resolveNative!(nativeLease('native-lease-late', HOME_IDENTITY_A, 'endpoint-a', 45981));
+        await expect(admitted).rejects.toThrow('iroh_home_tunnel_disposed');
+        await disposal;
+        expect(native.releaseHomeTunnel).toHaveBeenCalledWith('native-lease-late');
+        expect(profiles.getActiveServerSnapshot().runtimeOrigin).toBeUndefined();
+    });
+
+    it('keeps the singleton published during in-flight disposal while refusing its work', async () => {
+        vi.resetModules();
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
+        const profiles = await import('../../domains/server/serverProfiles');
+        const home = profiles.upsertServerProfile({ serverUrl: 'https://singleton-dispose.example.test', source: 'manual' });
+        profiles.setActiveServerId(home.id, { scope: 'device' });
+
+        let resolveNative: ((value: ReturnType<typeof nativeLease>) => void) | undefined;
+        const native = {
+            ensureHomeTunnel: vi.fn(async (input: { homeServerIdentityId: string; endpointId: string }) =>
+                await new Promise<ReturnType<typeof nativeLease>>((resolve) => { resolveNative = resolve; })),
+            releaseHomeTunnel: vi.fn(async () => undefined),
+        };
+        const { getIrohHomeTunnelRuntime, disposeIrohHomeTunnelRuntime } = await import('./runtime');
+        const { createIrohHomeTunnelSupervisor } = await import('./supervisor');
+        let resolveSupervisorDisposalBegan: (() => void) | undefined;
+        const supervisorDisposalBegan = new Promise<void>((resolve) => { resolveSupervisorDisposalBegan = resolve; });
+        const supervisor = createIrohHomeTunnelSupervisor({ native, probe: async () => ({ ok: true }) });
+        const supervisorDispose = supervisor.dispose.bind(supervisor);
+        // Observes the disposal boundary: by the time the supervisor disposal
+        // starts, the runtime admission gates must already be closed.
+        const disposingSupervisor: IrohHomeTunnelSupervisor = {
+            ...supervisor,
+            dispose: async () => {
+                resolveSupervisorDisposalBegan?.();
+                await supervisorDispose();
+            },
+        };
+        const runtime = getIrohHomeTunnelRuntime({ createSupervisor: () => disposingSupervisor });
+
+        const admitted = runtime.ensureHomeTunnel({
+            homeServerIdentityId: HOME_IDENTITY_A,
+            endpoint: { endpointId: 'endpoint-a' },
+            canonicalServerUrl: 'https://singleton-dispose.example.test',
+            verification: { kind: 'authenticated', token: 'token-a' },
+        });
+        await vi.waitFor(() => expect(resolveNative).toBeTypeOf('function'));
+
+        const disposal = disposeIrohHomeTunnelRuntime();
+        await supervisorDisposalBegan;
+
+        // The singleton stays published for in-flight callers, but its work
+        // entry points refuse while disposal runs.
+        expect(getIrohHomeTunnelRuntime()).toBe(runtime);
+        await expect(runtime.acquireHomeRuntimeOrigin({
+            homeServerIdentityId: HOME_IDENTITY_B,
+            endpoint: { endpointId: 'endpoint-b' },
+            canonicalServerUrl: 'https://singleton-dispose.example.test',
+            verification: { kind: 'enrollment' },
+        })).rejects.toThrow('iroh_home_tunnel_disposed');
+        expect(native.ensureHomeTunnel).toHaveBeenCalledTimes(1);
+
+        resolveNative!(nativeLease('native-lease-singleton', HOME_IDENTITY_A, 'endpoint-a', 45982));
+        await expect(admitted).rejects.toThrow('iroh_home_tunnel_disposed');
+        await disposal;
+        expect(native.releaseHomeTunnel).toHaveBeenCalledWith('native-lease-singleton');
+    });
+
+    it('refuses further acquisitions on a disposed runtime without starting native work', async () => {
+        vi.resetModules();
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
+        const native = createRecordingNativeLifecycle();
+        const { createIrohHomeTunnelRuntime } = await import('./runtime');
+        const { createIrohHomeTunnelSupervisor } = await import('./supervisor');
+        const runtime = createIrohHomeTunnelRuntime({
+            createSupervisor: () => createIrohHomeTunnelSupervisor({
+                native: native.module,
+                probe: async () => ({ ok: true }),
+            }),
+        });
+        const lease = await runtime.acquireHomeRuntimeOrigin({
+            homeServerIdentityId: HOME_IDENTITY_A,
+            endpoint: { endpointId: 'endpoint-a' },
+            canonicalServerUrl: 'https://disposed-acquire.example.test',
+            verification: { kind: 'enrollment' },
+        });
+        await lease.release();
+        await runtime.dispose();
+
+        const input: IrohHomeTunnelAcquireInput = {
+            homeServerIdentityId: HOME_IDENTITY_A,
+            endpoint: { endpointId: 'endpoint-a' },
+            canonicalServerUrl: 'https://disposed-acquire.example.test',
+            verification: { kind: 'enrollment' },
+        };
+        await expect(runtime.acquireHomeRuntimeOrigin(input)).rejects.toThrow('iroh_home_tunnel_disposed');
+        await expect(runtime.ensureHomeTunnel(input)).rejects.toThrow('iroh_home_tunnel_disposed');
+        expect(native.startCount()).toBe(1);
+        expect(native.stops).toEqual(['native-lease-1']);
+    });
+
     it('unpublishes the matching generation when the native owner reports transport closure', async () => {
         vi.resetModules();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
@@ -1215,7 +1351,6 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
         const lease = await runtime.ensureHomeTunnel({
             homeServerIdentityId: HOME_IDENTITY_A,
             endpoint: { endpointId: 'endpoint-a' },
-            descriptorRevision: 7,
             canonicalServerUrl: 'https://event.example.test',
             verification: { kind: 'authenticated', token: 'token-a' },
         });
@@ -1228,6 +1363,52 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
 
         expect(profiles.getActiveServerSnapshot().runtimeOrigin).toBeUndefined();
         expect(profiles.getActiveServerSnapshot().carrier).toBeUndefined();
+    });
+
+    it('keeps the active runtime published across a transient native status observation error', async () => {
+        vi.resetModules();
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
+        const profiles = await import('../../domains/server/serverProfiles');
+        const home = profiles.upsertServerProfile({ serverUrl: 'https://status-error.example.test', source: 'manual' });
+        profiles.setActiveServerId(home.id, { scope: 'device' });
+        const fake = createSupervisorFake();
+        const { createIrohHomeTunnelRuntime } = await import('./runtime');
+        const runtime = createIrohHomeTunnelRuntime({ createSupervisor: () => fake.supervisor });
+        const recoveryEvents: unknown[] = [];
+        runtime.subscribeRecoveryRequired((event) => recoveryEvents.push(event));
+        const lease = await runtime.ensureHomeTunnel({
+            homeServerIdentityId: HOME_IDENTITY_A,
+            endpoint: { endpointId: 'endpoint-a' },
+            canonicalServerUrl: 'https://status-error.example.test',
+            verification: { kind: 'authenticated', token: 'token-a' },
+        });
+        const publishedOrigin = profiles.getActiveServerSnapshot().runtimeOrigin;
+
+        fake.emit({
+            type: 'error',
+            tunnelHandle: 'native-event',
+            status: 'error',
+            errorCode: 'status_observation_failed',
+            atMs: 10,
+            lease,
+        });
+
+        expect(profiles.getActiveServerSnapshot().runtimeOrigin).toBe(publishedOrigin);
+        expect(profiles.getActiveServerSnapshot().carrier).toBe('iroh');
+        expect(recoveryEvents).toEqual([]);
+
+        fake.emit({
+            type: 'closed',
+            tunnelHandle: 'native-event',
+            status: 'closed',
+            errorCode: 'transport_closed',
+            atMs: 11,
+            lease: { ...lease, status: 'stopped' },
+        });
+        expect(profiles.getActiveServerSnapshot().runtimeOrigin).toBeUndefined();
+        expect(recoveryEvents).toEqual([
+            expect.objectContaining({ leaseId: lease.leaseId, reason: 'terminal' }),
+        ]);
     });
 
     it('requests replacement for a terminal native lease and a foreground probe failure', async () => {

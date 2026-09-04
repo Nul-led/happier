@@ -15,6 +15,53 @@ function activeMachine(id: string, host: string) {
 }
 
 describe('resolveMachineTargetForSessionFromState', () => {
+    it('reads the exact Home projection when duplicate Session ids exist', () => {
+        const row = (machineId: string, path: string) => ({
+            id: 'same-session',
+            seq: 1,
+            createdAt: 1,
+            updatedAt: 1,
+            active: true,
+            activeAt: 1,
+            metadataVersion: 1,
+            agentStateVersion: 1,
+            metadata: { machineId, path },
+            thinking: false,
+            thinkingAt: 0,
+            presence: 'online' as const,
+        });
+        const state = {
+            sessions: {
+                'same-session': {
+                    id: 'same-session',
+                    serverId: 'home-a',
+                    active: true,
+                    updatedAt: 1,
+                    metadata: { machineId: 'machine-a', path: '/repo/a' },
+                },
+            },
+            sessionListRowStateByServerId: {
+                'home-a': { 'same-session': row('machine-a', '/repo/a') },
+                'home-b': { 'same-session': row('machine-b', '/repo/b') },
+            },
+            machines: {
+                'machine-a': activeMachine('machine-a', 'a.local'),
+                'machine-b': activeMachine('machine-b', 'b.local'),
+            },
+            getProjectForSession: () => ({ key: { machineId: 'machine-a', rootPath: '/repo/a' } }),
+        } as any;
+
+        expect(resolveMachineControlTargetForSessionFromState(state, {
+            serverId: 'home-b',
+            accountId: 'account-b',
+            sessionId: 'same-session',
+        })).toEqual({
+            machineId: 'machine-b',
+            basePath: '/repo/b',
+            confidence: 'reachable',
+        });
+    });
+
     it('does not use layout-v1 shared metadata as a private machine control fallback', () => {
         const state = {
             sessions: {

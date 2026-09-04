@@ -203,6 +203,43 @@ describe('uploadBulkPayloadFromFileWithCarrierFallbacks', () => {
         expect(release).toHaveBeenCalledTimes(1);
     });
 
+    it('maps composer media staging uploads to the attachment-transfer carrier flow', async () => {
+        prepareDirectImportMock.mockResolvedValueOnce({
+            success: true,
+            uploadId: 'composer-stage-upload',
+            destDisplayPath: 'composer-photo.jpg',
+            expectedSizeBytes: 5,
+            chunkSizeBytes: 5,
+            recipientPublicKeyBase64: Buffer.alloc(32, 9).toString('base64'),
+            expiresAt: 5_000,
+            endpointCandidates: [{
+                kind: 'http',
+                url: 'http://127.0.0.1:46001/machine-transfers/direct/imports/composer-stage-upload',
+                expiresAt: 5_000,
+            }],
+        });
+        carrierBoundary.selected = true;
+        carrierBoundary.acquire.mockRejectedValueOnce(new Error('stop after flow assertion'));
+
+        await uploadBulkPayloadFromFileWithCarrierFallbacks({
+            machineId: 'machine-1',
+            fileReader: createReader(async () => {}),
+            directImportRequest: {
+                t: 'composer_media_stage_upload_v1',
+                fileName: 'composer-photo.jpg',
+                mimeType: 'image/jpeg',
+                sizeBytes: 5,
+            },
+            relay: createRelay(),
+        });
+
+        expect(carrierBoundary.acquire).toHaveBeenCalledWith(expect.objectContaining({
+            operationId: 'composer-stage-upload',
+            flow: 'attachment_transfer',
+            maxBytes: 5,
+        }));
+    });
+
     it('rejects a predecessor LAN HTTP candidate, aborts its allocation, then falls back to relay', async () => {
         prepareDirectImportMock
             .mockResolvedValueOnce({

@@ -12,6 +12,7 @@ import {
     resolveMachineControlTargetForSessionFromState,
     resolveMachineTargetForSessionFromState,
     type SessionDisplayIdentity,
+    type ExactSessionMachineTargetIdentity,
     type SessionMachineControlTarget,
     type SessionMachineTarget,
     type SessionMachineTargetState,
@@ -20,15 +21,15 @@ import {
 export { INACTIVE_SESSION_RPC_UNAVAILABLE_ERROR } from '@/sync/runtime/sessionMachineRpcErrorCodes';
 
 export function readMachineTargetForSession(
-    sessionId: string,
+    session: string | ExactSessionMachineTargetIdentity,
 ): SessionMachineTarget | null {
-    return resolveMachineTargetForSessionFromState(storage.getState() as SessionMachineTargetState, sessionId);
+    return resolveMachineTargetForSessionFromState(storage.getState() as SessionMachineTargetState, session);
 }
 
 export function readMachineControlTargetForSession(
-    sessionId: string,
+    session: string | ExactSessionMachineTargetIdentity,
 ): SessionMachineControlTarget | null {
-    return resolveMachineControlTargetForSessionFromState(storage.getState() as SessionMachineTargetState, sessionId);
+    return resolveMachineControlTargetForSessionFromState(storage.getState() as SessionMachineTargetState, session);
 }
 
 export function readDisplayMachineIdForSession(input: Readonly<{
@@ -116,4 +117,4 @@ export {
     resolveMachineControlTargetForSessionFromState,
     resolveMachineTargetForSessionFromState,
 };
-export type { SessionDisplayIdentity, SessionMachineControlTarget, SessionMachineTarget, SessionMachineTargetState };
+export type { ExactSessionMachineTargetIdentity, SessionDisplayIdentity, SessionMachineControlTarget, SessionMachineTarget, SessionMachineTargetState };

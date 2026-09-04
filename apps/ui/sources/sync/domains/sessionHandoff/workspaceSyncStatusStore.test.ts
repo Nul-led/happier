@@ -7,6 +7,7 @@ vi.mock('@/sync/ops/workspaceSync', () => ({
 }));
 
 import {
+    applyWorkspaceSyncStatusEvent,
     getWorkspaceSyncStatusSnapshot,
     refreshWorkspaceSyncStatus,
     resetWorkspaceSyncStatusStoreForTests,
@@ -45,5 +46,18 @@ describe('workspaceSyncStatusStore', () => {
             phase: 'refreshing',
             status: { state: 'watching' },
         });
+    });
+
+    it('applies a daemon runtime status event only to its exact Home and controller scope', () => {
+        const scope = { serverId: 'server-1', controllerMachineId: 'machine-1', relationshipId: 'relationship-1' } as const;
+        applyWorkspaceSyncStatusEvent(scope, {
+            relationshipId: 'relationship-1', controllerMachineId: 'machine-1', state: 'paused',
+            alphaPath: '/alpha', betaPath: '/beta', mode: 'keep_synced', changedFiles: 0,
+            conflictCount: 0, lastSuccessfulSyncAtMs: 1,
+        });
+
+        expect(getWorkspaceSyncStatusSnapshot(scope)).toMatchObject({ phase: 'ready', status: { state: 'paused' } });
+        expect(getWorkspaceSyncStatusSnapshot({ ...scope, serverId: 'server-2' })).toMatchObject({ phase: 'idle', status: null });
+        expect(getWorkspaceSyncStatusSnapshot({ ...scope, controllerMachineId: 'machine-2' })).toMatchObject({ phase: 'idle', status: null });
     });
 });

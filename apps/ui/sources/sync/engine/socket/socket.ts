@@ -1642,6 +1642,7 @@ export async function handleUpdateContainer(params: {
                 notifyActivityAgentRequest({
                     sessionId: updateData.body.id,
                     requestId: nextRequest.requestId,
+                    ...(nextRequest.turnId ? { turnId: nextRequest.turnId } : {}),
                     requestKind: nextRequest.requestKind,
                     toolName: nextRequest.toolName,
                     toolArgs: nextRequest.toolArgs,

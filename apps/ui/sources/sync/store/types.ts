@@ -98,6 +98,13 @@ export interface SessionsDomainSlice {
     applySessions: (sessions: (Omit<Session, 'presence'> & { presence?: 'online' | number })[]) => void;
     replaceSessionListRenderables: (sessions: SessionListRenderableSession[]) => void;
     mergeSessionListRenderables: (sessions: SessionListRenderableSession[]) => void;
+    reconcileSessionListRowsForServerScope: (
+        serverId: string,
+        sessions: SessionListRenderableSession[],
+        baseline: Readonly<Record<string, SessionListRenderableSession>>,
+    ) => void;
+    mergeSessionListRowsForServerScope: (serverId: string, sessions: SessionListRenderableSession[]) => void;
+    clearSessionListRowsForServerScope: (serverId: string) => void;
     applySessionListRenderablePatches: (
         patches: ReadonlyArray<Readonly<{
             sessionId: string;

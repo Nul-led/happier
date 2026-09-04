@@ -47,6 +47,54 @@ afterEach(async () => {
 });
 
 describe('apiSocket reachability supervision', () => {
+    it('does not import an ambient Home runtime origin into an exact HTTPS target', async () => {
+        const startParams: Array<Record<string, unknown>> = [];
+        vi.doMock('@/sync/runtime/connectivity/serverReachabilitySupervisorPool', async (importOriginal) => {
+            const actual = await importOriginal<typeof import('@/sync/runtime/connectivity/serverReachabilitySupervisorPool')>();
+            return {
+                ...actual,
+                subscribeServerReachabilityState: () => () => {},
+                startServerReachabilitySupervisor: async (params: Record<string, unknown>) => {
+                    startParams.push(params);
+                },
+            };
+        });
+        vi.doMock('@/sync/domains/server/serverRuntime', () => ({
+            getActiveServerSnapshot: () => ({
+                serverId: 'server-b',
+                serverUrl: 'https://b.example.test',
+                runtimeOrigin: 'http://127.0.0.1:49999',
+                carrier: 'iroh',
+                generation: 9,
+            }),
+            getActiveServerHomeCarrier: () => ({ endpointId: 'ambient-b-carrier' }),
+        }));
+        vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
+            const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
+            return {
+                ...actual,
+                getServerProfileById: () => null,
+                subscribeActiveServerRuntimeOrigin: () => () => {},
+            };
+        });
+
+        const { apiSocket } = await import('./apiSocket');
+        const encryption = { getSessionEncryption: () => null } as unknown as Encryption;
+        apiSocket.initialize({
+            endpoint: 'https://a.example.test',
+            token: 'token-a',
+            serverId: 'server-a',
+            generation: 3,
+            homeCarrier: null,
+        }, encryption);
+
+        expect(startParams).toEqual([{
+            serverUrl: 'https://a.example.test',
+            token: 'token-a',
+            homeCarrier: null,
+        }]);
+    });
+
     it('re-subscribes to reachability when initialized with a new endpoint', async () => {
         const unsubscribeSpy = vi.fn();
         const subscribeSpy = vi.fn((_serverUrl: string, listener: (state: any) => void) => {

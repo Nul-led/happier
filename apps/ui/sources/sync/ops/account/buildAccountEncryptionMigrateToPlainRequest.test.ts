@@ -40,6 +40,44 @@ function createLegacyCredentials(): Extract<AuthCredentials, { secret: string }>
   };
 }
 
+function createSettingsWithSavedSecret(encryptedValue: unknown) {
+  return {
+    schemaVersion: 7,
+    secrets: [{
+      id: 'sec1',
+      name: 'Nested Saved Secret',
+      kind: 'apiKey',
+      encryptedValue: {
+        _isSecretValue: true,
+        encryptedValue,
+      },
+      createdAt: 1,
+      updatedAt: 1,
+    }],
+  } as any;
+}
+
+async function buildPlainRequestWithSettings(
+  credentials: AuthCredentials,
+  settings: any,
+) {
+  return await buildAccountEncryptionMigrateToPlainRequest({
+    storageDirectives: EMPTY_STORAGE_DIRECTIVES,
+    ...CURRENTNESS,
+    credentials,
+    expectedSettingsVersion: 9,
+    settings,
+    connectedServiceProfiles: [],
+    automations: [],
+    fetchConnectedServiceCredentialSealed: async () => {
+      throw new Error('unexpected fetchConnectedServiceCredentialSealed');
+    },
+    decryptAutomationTemplateRaw: async () => {
+      throw new Error('unexpected decryptAutomationTemplateRaw');
+    },
+  });
+}
+
 function assertObject(value: unknown, name: string): asserts value is Record<string, unknown> {
   if (!value || typeof value !== 'object') {
     throw new Error(`Expected ${name} to be an object`);
@@ -404,5 +442,45 @@ describe('buildAccountEncryptionMigrateToPlainRequest', () => {
       throw new Error('expected plain settings content');
     }
     expect((request.settingsContent.v as any)?.secrets?.[0]?.encryptedValue?.value).toBe('sk-canonical');
+  });
+
+  it('refuses a target-plain request when a nested SavedSecret was encrypted with a different key', async () => {
+    const credentials = createLegacyCredentials();
+    const otherSettingsKey = deriveSettingsSecretsKeyV1(
+      deriveAccountMachineKeyFromRecoverySecret(new Uint8Array(32).fill(9)),
+    );
+    const encryptedValue = encryptSecretStringV1(
+      'sk-wrong-key',
+      otherSettingsKey,
+      () => new Uint8Array(24).fill(7),
+    );
+
+    await expect(buildPlainRequestWithSettings(
+      credentials,
+      createSettingsWithSavedSecret(encryptedValue),
+    )).rejects.toMatchObject({ code: 'local_secret_unavailable' });
+  });
+
+  it('refuses a target-plain request when a nested SavedSecret ciphertext is malformed', async () => {
+    await expect(buildPlainRequestWithSettings(
+      createLegacyCredentials(),
+      createSettingsWithSavedSecret({ t: 'enc-v1', c: 'not-valid-base64' }),
+    )).rejects.toMatchObject({ code: 'local_secret_unavailable' });
+  });
+
+  it('refuses a target-plain request when token-only credentials cannot open a nested SavedSecret', async () => {
+    const sourceSettingsKey = deriveSettingsSecretsKeyV1(
+      deriveAccountMachineKeyFromRecoverySecret(new Uint8Array(32).fill(4)),
+    );
+    const encryptedValue = encryptSecretStringV1(
+      'sk-token-only',
+      sourceSettingsKey,
+      () => new Uint8Array(24).fill(6),
+    );
+
+    await expect(buildPlainRequestWithSettings(
+      { token: 'token-only' },
+      createSettingsWithSavedSecret(encryptedValue),
+    )).rejects.toMatchObject({ code: 'local_secret_unavailable' });
   });
 });

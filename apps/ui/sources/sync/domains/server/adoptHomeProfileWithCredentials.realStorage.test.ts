@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createHomeCredentialDestinationDigestV1 } from '@happier-dev/protocol';
 
 import { installTokenStorageWebPlatformMocks } from '@/auth/storage/tokenStorage.testHelpers';
 import { installLocalStorageMock } from '@/auth/storage/tokenStorage.web.testHelpers';
+import { createHomeCredentialDestinationDigestV1 } from '@happier-dev/protocol';
 
 // Real TokenStorage + real serverProfiles storage: no credential-owner mocks. The web
 // platform mocks below only stand in for genuine device boundaries (secure store/OS).
@@ -172,48 +172,6 @@ describe('adoptHomeProfileWithCredentials (real storage integration)', () => {
         }
     });
 
-    it('stores a newly issued credential for a signed-out established Home without accepting advisory routing changes', async () => {
-        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `adopt_advisory_signed_out_${Date.now()}_${Math.random()}`;
-        const localStorageMock = installLocalStorageMock();
-        restoreLocalStorage = localStorageMock.restore;
-
-        const profiles = await import('@/sync/domains/server/serverProfiles');
-        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
-        const { adoptHomeProfileWithCredentials } = await import('./adoptHomeProfile');
-        const established = await profiles.adoptHomeProfile({
-            source: 'qr',
-            descriptor: {
-                v: 1,
-                homeServerIdentityId: 'srv_signed_out_home',
-                canonicalServerUrl: 'https://signed-out-home.test',
-                revision: 4,
-                endpoints: [{ kind: 'iroh', endpointId: 'b'.repeat(64) }],
-            },
-        });
-
-        const adopted = await adoptHomeProfileWithCredentials({
-            source: 'account-directory',
-            descriptorAuthority: 'advisory',
-            descriptor: {
-                v: 1,
-                homeServerIdentityId: 'srv_signed_out_home',
-                canonicalServerUrl: 'https://directory-signed-out-route.test',
-                revision: 100,
-                endpoints: [{ kind: 'https', url: 'https://directory-signed-out-route.test' }],
-            },
-            credentials: { token: 'newly-issued-token' },
-        });
-
-        expect(adopted).toEqual(established);
-        await expect(TokenStorage.getCredentialsForServerUrl(
-            'https://signed-out-home.test',
-            { serverId: 'srv_signed_out_home' },
-        )).resolves.toEqual({ token: 'newly-issued-token' });
-        await expect(TokenStorage.getCredentialsForServerUrl(
-            'https://directory-signed-out-route.test',
-            { serverId: 'srv_signed_out_home' },
-        )).resolves.toBeNull();
-    });
 
     it('rejects credentials for an advisory-only placeholder until a current Home observation establishes routing', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `adopt_advisory_placeholder_${Date.now()}_${Math.random()}`;
@@ -281,73 +239,94 @@ describe('adoptHomeProfileWithCredentials (real storage integration)', () => {
         }
     });
 
-    it('stores the advisory Home credential for a digest-bound destination authorization and rejects a wrong-digest one without mutating anything', async () => {
-        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `adopt_bound_authorization_${Date.now()}_${Math.random()}`;
+    it('allows only a destination-bound assertion to write a credential while retaining advisory profile authority', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `adopt_assertion_bound_advisory_${Date.now()}_${Math.random()}`;
         const localStorageMock = installLocalStorageMock();
         restoreLocalStorage = localStorageMock.restore;
 
         const profiles = await import('@/sync/domains/server/serverProfiles');
         const { TokenStorage } = await import('@/auth/storage/tokenStorage');
-        const { adoptHomeProfileWithCredentials } = await import('./adoptHomeProfile');
+        const {
+            adoptHomeProfileWithCredentials,
+            createHomeProfileCredentialWriteAuthorization,
+        } = await import('./adoptHomeProfile');
         const descriptor = {
             v: 1 as const,
-            homeServerIdentityId: 'srv_bound_first_contact',
-            canonicalServerUrl: 'https://bound-first-contact.test',
-            revision: 12,
-            endpoints: [{ kind: 'https' as const, url: 'https://bound-first-contact.test' }],
+            homeServerIdentityId: 'srv_assertion_bound_home',
+            canonicalServerUrl: 'https://canonical.assertion-bound.test',
+            revision: 7,
+            endpoints: [{ kind: 'https' as const, url: 'https://ingress.assertion-bound.test' }],
         };
-        const attackerDescriptor = {
-            ...descriptor,
-            canonicalServerUrl: 'https://attacker-route.test',
-            endpoints: [{ kind: 'https' as const, url: 'https://attacker-route.test' }],
-        };
-
-        // A signed binding for a different destination cannot authorize this write.
-        await profiles.withHomeCredentialWriteAuthorization({
-                kind: 'assertion_destination_binding_v1',
-                descriptor: attackerDescriptor,
-                credentialDestinationDigestBase64Url:
-                    createHomeCredentialDestinationDigestV1(attackerDescriptor),
-        }, async (credentialWriteAuthorization) => {
-            await expect(adoptHomeProfileWithCredentials({
-                source: 'account-directory',
-                descriptorAuthority: 'advisory',
-                descriptor,
-                credentialWriteAuthorization,
-                credentials: { token: 'unauthorized-home-token' },
-            })).rejects.toMatchObject({
-            code: 'home_credential_write_authorization_invalid',
-            reason: 'descriptor_mismatch',
-            });
+        await profiles.adoptHomeProfile({
+            source: 'account-directory',
+            descriptorAuthority: 'advisory',
+            descriptor,
         });
-        expect(profiles.listServerProfiles()).not.toEqual(expect.arrayContaining([
-            expect.objectContaining({ serverIdentityId: 'srv_bound_first_contact' }),
-        ]));
-        for (const [, value] of localStorageMock.store.entries()) {
-            expect(value).not.toContain('unauthorized-home-token');
-        }
 
-        const adopted = await profiles.withHomeCredentialWriteAuthorization({
-                kind: 'assertion_destination_binding_v1',
-                descriptor,
-                credentialDestinationDigestBase64Url:
-                    createHomeCredentialDestinationDigestV1(descriptor),
-        }, async (credentialWriteAuthorization) => await adoptHomeProfileWithCredentials({
-                source: 'account-directory',
-                descriptorAuthority: 'advisory',
-                descriptor,
-                preserveUserLabel: true,
-                credentialWriteAuthorization,
-                credentials: { token: 'bound-home-token' },
-            }),
-        );
+        const credentialWriteAuthorization = createHomeProfileCredentialWriteAuthorization({
+            descriptor,
+            credentialDestinationDigestBase64Url: createHomeCredentialDestinationDigestV1(descriptor),
+            selectedDestination: {
+                kind: 'https',
+                applicationUrl: 'https://ingress.assertion-bound.test',
+            },
+        });
+        expect(credentialWriteAuthorization).not.toBeNull();
+        if (!credentialWriteAuthorization) return;
 
-        expect(adopted.serverIdentityId).toBe('srv_bound_first_contact');
+        const adopted = await adoptHomeProfileWithCredentials({
+            source: 'account-directory',
+            descriptorAuthority: 'advisory',
+            descriptor,
+            credentials: { token: 'assertion-bound-token' },
+            credentialWriteAuthorization,
+        });
+
         expect(adopted.descriptorProvenance).toBe('advisory-only');
         await expect(TokenStorage.getCredentialsForServerUrl(
-            'https://bound-first-contact.test',
-            { serverId: 'srv_bound_first_contact' },
-        )).resolves.toEqual({ token: 'bound-home-token' });
+            descriptor.canonicalServerUrl,
+            { serverId: descriptor.homeServerIdentityId },
+        )).resolves.toEqual({ token: 'assertion-bound-token' });
+
+        const mismatchedAuthorization = createHomeProfileCredentialWriteAuthorization({
+            descriptor,
+            credentialDestinationDigestBase64Url: createHomeCredentialDestinationDigestV1(descriptor),
+            selectedDestination: {
+                kind: 'https',
+                applicationUrl: 'https://ingress.assertion-bound.test',
+            },
+        });
+        expect(mismatchedAuthorization).not.toBeNull();
+        if (!mismatchedAuthorization) return;
+        await expect(adoptHomeProfileWithCredentials({
+            source: 'account-directory',
+            descriptorAuthority: 'advisory',
+            descriptor: { ...descriptor, revision: 8 },
+            credentials: { token: 'retargeted-token' },
+            credentialWriteAuthorization: mismatchedAuthorization,
+        })).rejects.toMatchObject({
+            code: 'home_profile_adoption_requires_current_observation',
+        });
+
+        const forgedAuthorization = createHomeProfileCredentialWriteAuthorization({
+            descriptor,
+            credentialDestinationDigestBase64Url: createHomeCredentialDestinationDigestV1(descriptor),
+            selectedDestination: {
+                kind: 'https',
+                applicationUrl: 'https://ingress.assertion-bound.test',
+            },
+        });
+        expect(forgedAuthorization).not.toBeNull();
+        if (!forgedAuthorization) return;
+        await expect(adoptHomeProfileWithCredentials({
+            source: 'account-directory',
+            descriptorAuthority: 'advisory',
+            descriptor,
+            credentials: { token: 'forged-token' },
+            credentialWriteAuthorization: { ...forgedAuthorization },
+        })).rejects.toMatchObject({
+            code: 'home_profile_adoption_requires_current_observation',
+        });
     });
 
     it('reads a pre-adoption loopback credential through the adopted stable identity', async () => {

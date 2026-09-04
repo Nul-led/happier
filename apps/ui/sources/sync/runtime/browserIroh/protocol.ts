@@ -2,7 +2,7 @@
  * The typed command boundary between a browser tab and the one shared browser
  * Iroh endpoint and stream owner (Lane 06 amendment A7.2/A7.3).
  *
- * Deliberately small: it carries endpoint leases/configuration/clear plus opaque,
+ * Deliberately small: it carries endpoint leases plus opaque,
  * bounded incremental stream operations. It is not a generic RPC framework and
  * exposes neither raw endpoint internals nor HTTP/Socket.IO semantics; activating
  * those production consumers remains separate work.
@@ -18,14 +18,13 @@ export const BROWSER_IROH_STREAM_CHUNK_BYTES = 1024 * 1024;
 export type BrowserIrohErrorCode =
     | 'protocol_violation'
     | 'relay_required'
-    | 'owner_cleared'
     | 'unknown_lease'
     | 'unknown_stream'
     | 'resource_limit'
     | 'cancelled'
     | 'endpoint_unavailable';
 
-export type BrowserIrohEndpointState = 'idle' | 'ready' | 'cleared';
+export type BrowserIrohEndpointState = 'idle' | 'ready';
 
 /**
  * The closed set of protocols a browser stream may be opened for. It is a kind,
@@ -54,7 +53,6 @@ export type BrowserIrohClientCommand =
     | Readonly<{ v: 1; kind: 'acquireLease'; requestId: string; relayUrls: readonly string[] }>
     | Readonly<{ v: 1; kind: 'releaseLease'; requestId: string; leaseId: string }>
     | Readonly<{ v: 1; kind: 'releaseClient'; requestId: string }>
-    | Readonly<{ v: 1; kind: 'configureRelays'; requestId: string; relayUrls: readonly string[] }>
     | Readonly<{
         v: 1;
         kind: 'openStream';
@@ -70,8 +68,7 @@ export type BrowserIrohClientCommand =
     | Readonly<{ v: 1; kind: 'finishStreamWrite'; requestId: string; streamId: string }>
     | Readonly<{ v: 1; kind: 'cancelStream'; requestId: string; streamId: string }>
     | Readonly<{ v: 1; kind: 'closeStream'; requestId: string; streamId: string }>
-    | Readonly<{ v: 1; kind: 'status'; requestId: string }>
-    | Readonly<{ v: 1; kind: 'clearApplicationData'; requestId: string }>;
+    | Readonly<{ v: 1; kind: 'status'; requestId: string }>;
 
 export type BrowserIrohWorkerReply =
     | Readonly<{
@@ -84,13 +81,6 @@ export type BrowserIrohWorkerReply =
     }>
     | Readonly<{ v: 1; kind: 'released'; requestId: string }>
     | Readonly<{ v: 1; kind: 'requestCancelled'; requestId: string }>
-    | Readonly<{
-        v: 1;
-        kind: 'relaysConfigured';
-        requestId: string;
-        endpointId: string;
-        appliedRelayUrls: readonly string[];
-    }>
     | Readonly<{ v: 1; kind: 'status'; requestId: string; status: BrowserIrohEndpointStatus }>
     | Readonly<{
         v: 1;
@@ -107,7 +97,6 @@ export type BrowserIrohWorkerReply =
         kind: 'streamWritten' | 'streamWriteFinished' | 'streamCancelled' | 'streamClosed';
         requestId: string;
     }>
-    | Readonly<{ v: 1; kind: 'cleared'; requestId: string }>
     | Readonly<{ v: 1; kind: 'error'; requestId: string; code: BrowserIrohErrorCode; message: string }>;
 
 function readRecord(value: unknown): Record<string, unknown> | null {
@@ -151,12 +140,11 @@ export function parseBrowserIrohClientCommand(value: unknown): BrowserIrohClient
     if (requestId === null) return null;
 
     switch (record.kind) {
-        case 'acquireLease':
-        case 'configureRelays': {
+        case 'acquireLease': {
             if (!hasExactKeys(record, ['v', 'kind', 'requestId', 'relayUrls'])) return null;
             const relayUrls = readRelayUrls(record);
             if (relayUrls === null) return null;
-            return { v: 1, kind: record.kind, requestId, relayUrls };
+            return { v: 1, kind: 'acquireLease', requestId, relayUrls };
         }
         case 'releaseLease': {
             if (!hasExactKeys(record, ['v', 'kind', 'requestId', 'leaseId'])) return null;
@@ -216,8 +204,7 @@ export function parseBrowserIrohClientCommand(value: unknown): BrowserIrohClient
             return { v: 1, kind: record.kind, requestId, streamId };
         }
         case 'releaseClient':
-        case 'status':
-        case 'clearApplicationData': {
+        case 'status': {
             if (!hasExactKeys(record, ['v', 'kind', 'requestId'])) return null;
             return { v: 1, kind: record.kind, requestId };
         }
@@ -243,13 +230,6 @@ export function parseBrowserIrohWorkerReply(value: unknown): BrowserIrohWorkerRe
                 return null;
             }
             return { v: 1, kind: 'leaseAcquired', requestId, leaseId, endpointId, appliedRelayUrls: relayUrls };
-        }
-        case 'relaysConfigured': {
-            if (!hasExactKeys(record, ['v', 'kind', 'requestId', 'endpointId', 'appliedRelayUrls'])) return null;
-            const relayUrls = readAppliedRelayUrls(record);
-            const endpointId = record.endpointId;
-            if (relayUrls === null || typeof endpointId !== 'string') return null;
-            return { v: 1, kind: 'relaysConfigured', requestId, endpointId, appliedRelayUrls: relayUrls };
         }
         case 'status': {
             if (!hasExactKeys(record, ['v', 'kind', 'requestId', 'status'])) return null;
@@ -284,7 +264,6 @@ export function parseBrowserIrohWorkerReply(value: unknown): BrowserIrohWorkerRe
             if (!hasExactKeys(record, ['v', 'kind', 'requestId'])) return null;
             return { v: 1, kind: record.kind, requestId };
         case 'released':
-        case 'cleared':
             if (!hasExactKeys(record, ['v', 'kind', 'requestId'])) return null;
             return { v: 1, kind: record.kind, requestId };
         case 'error': {
@@ -322,7 +301,6 @@ function isBrowserIrohErrorCode(value: unknown): value is BrowserIrohErrorCode {
     return (
         value === 'protocol_violation'
         || value === 'relay_required'
-        || value === 'owner_cleared'
         || value === 'unknown_lease'
         || value === 'unknown_stream'
         || value === 'resource_limit'
@@ -336,7 +314,7 @@ export function parseBrowserIrohEndpointStatus(value: unknown): BrowserIrohEndpo
     const record = value as Record<string, unknown>;
     if (!hasExactKeys(record, ['state', 'endpointId', 'appliedRelayUrls', 'leaseCount'])) return null;
     const state = record.state;
-    if (state !== 'idle' && state !== 'ready' && state !== 'cleared') return null;
+    if (state !== 'idle' && state !== 'ready') return null;
 
     const endpointId = record.endpointId;
     if (endpointId !== null && typeof endpointId !== 'string') return null;

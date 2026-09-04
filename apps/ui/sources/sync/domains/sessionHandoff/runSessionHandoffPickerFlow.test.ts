@@ -33,9 +33,21 @@ const policyFields = {
     selection: 'git_worktree' as const,
     extraIgnorePatterns: [],
     extraIncludePatterns: [],
-    includeGitDirectory: false,
 };
 const contentPolicy = { ...policyFields, policyDigest: computeWorkspaceSyncPolicyDigest(policyFields) };
+const completedStatus = {
+    handoffId: 'handoff_1',
+    status: 'completed' as const,
+    phase: 'finalizing' as const,
+    recoveryActions: [],
+};
+const completedResult = (workspace: { kind: 'none' } | {
+    kind: 'relationship'; relationshipId: string; created: boolean;
+    cleanupWarning?: { code: string; message: string };
+} = { kind: 'none' as const }) => ({
+    ok: true as const,
+    result: { handoffId: 'handoff_1', status: completedStatus, workspace },
+});
 
 describe('runSessionHandoffPickerFlow', () => {
     beforeEach(() => {
@@ -64,7 +76,7 @@ describe('runSessionHandoffPickerFlow', () => {
             targetMachineId: 'target', targetPath: '/target/repo', sourceRootPath: '/source/repo',
             targetSessionStorageMode: 'persisted', workspaceAction,
         });
-        executeSessionHandoffActionMock.mockResolvedValueOnce({ ok: true, handoffId: 'handoff_1' });
+        executeSessionHandoffActionMock.mockResolvedValueOnce(completedResult());
         const execute = vi.fn();
         const { runSessionHandoffPickerFlow } = await import('./runSessionHandoffPickerFlow');
 
@@ -88,7 +100,7 @@ describe('runSessionHandoffPickerFlow', () => {
             targetSessionStorageMode: 'persisted',
             workspaceAction: { kind: 'none' },
         });
-        executeSessionHandoffActionMock.mockResolvedValueOnce({ ok: true, handoffId: 'handoff_1' });
+        executeSessionHandoffActionMock.mockResolvedValueOnce(completedResult());
         const { runSessionHandoffPickerFlow } = await import('./runSessionHandoffPickerFlow');
 
         await runSessionHandoffPickerFlow({
@@ -104,7 +116,7 @@ describe('runSessionHandoffPickerFlow', () => {
             targetSessionStorageMode: 'persisted',
             workspaceAction: { kind: 'none' },
         });
-        executeSessionHandoffActionMock.mockResolvedValueOnce({ ok: true, handoffId: 'handoff_1' });
+        executeSessionHandoffActionMock.mockResolvedValueOnce(completedResult());
         const { runSessionHandoffPickerFlow } = await import('./runSessionHandoffPickerFlow');
 
         await runSessionHandoffPickerFlow({
@@ -145,7 +157,7 @@ describe('runSessionHandoffPickerFlow', () => {
                 flushBeforeCommit: true,
             },
         });
-        executeSessionHandoffActionMock.mockResolvedValueOnce({ ok: true, handoffId: 'handoff_1' });
+        executeSessionHandoffActionMock.mockResolvedValueOnce(completedResult());
         const execute = vi.fn();
         const { runSessionHandoffPickerFlow } = await import('./runSessionHandoffPickerFlow');
 
@@ -164,5 +176,53 @@ describe('runSessionHandoffPickerFlow', () => {
         }));
         expect(executeSessionHandoffActionMock.mock.calls[0]?.[0]?.workspaceAction)
             .not.toHaveProperty('destructiveTargetReuseApproved');
+    });
+
+    it('confirms the daemon-owned committed workspace outcome on the same progress surface', async () => {
+        const workspaceAction = { kind: 'create_relationship' as const, mode: 'keep_synced' as const, contentPolicy, flushBeforeCommit: true as const };
+        openSessionHandoffPickerMock.mockResolvedValueOnce({
+            targetMachineId: 'target', targetPath: '/target/repo', workspaceAction,
+        });
+        const workspace = {
+            kind: 'relationship' as const,
+            relationshipId: 'relationship-1',
+            created: true,
+            cleanupWarning: { code: 'staging_release_failed', message: 'Staging could not be released.' },
+        };
+        executeSessionHandoffActionMock.mockResolvedValueOnce(completedResult(workspace));
+        const { runSessionHandoffPickerFlow } = await import('./runSessionHandoffPickerFlow');
+
+        const result = await runSessionHandoffPickerFlow({
+            execute: vi.fn(), sessionId: 'sess_1', sourceMachineId: 'source', serverId: 'server', placement: 'session_info',
+        });
+
+        expect(result).toEqual(completedResult(workspace));
+        expect(progressCloseMock).not.toHaveBeenCalled();
+    });
+
+    it('closes the progress surface when the daemon reports no workspace outcome', async () => {
+        openSessionHandoffPickerMock.mockResolvedValueOnce({
+            targetMachineId: 'target', workspaceAction: { kind: 'none' },
+        });
+        executeSessionHandoffActionMock.mockResolvedValueOnce(completedResult());
+        const { runSessionHandoffPickerFlow } = await import('./runSessionHandoffPickerFlow');
+
+        await runSessionHandoffPickerFlow({
+            execute: vi.fn(), sessionId: 'sess_1', sourceMachineId: 'source', serverId: 'server', placement: 'session_info',
+        });
+
+        expect(progressCloseMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the canonical progress surface attached when the handoff fails', async () => {
+        openSessionHandoffPickerMock.mockResolvedValueOnce({ targetMachineId: 'target', workspaceAction: { kind: 'none' } });
+        executeSessionHandoffActionMock.mockResolvedValueOnce({ ok: false, error: 'target_unavailable' });
+        const { runSessionHandoffPickerFlow } = await import('./runSessionHandoffPickerFlow');
+
+        await expect(runSessionHandoffPickerFlow({
+            execute: vi.fn(), sessionId: 'sess_1', sourceMachineId: 'source', serverId: 'server', placement: 'session_info',
+        })).resolves.toEqual({ ok: false, error: 'target_unavailable' });
+
+        expect(progressCloseMock).not.toHaveBeenCalled();
     });
 });

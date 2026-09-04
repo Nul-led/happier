@@ -117,7 +117,7 @@ describe('resolvePreferredServerIdForSessionId', () => {
         expect(resolvePreferredServerIdForSessionId('session-1')).toBe('active-server');
     });
 
-    it('prefers the cached owner server when the stored session scope still mirrors the active server', async () => {
+    it('fails closed when the same bare session id is projected by two Homes', async () => {
         storage.setState((state) => ({
             ...state,
             sessions: {
@@ -148,7 +148,7 @@ describe('resolvePreferredServerIdForSessionId', () => {
 
         const { resolvePreferredServerIdForSessionId } = await import('./resolvePreferredServerIdForSessionId');
 
-        expect(resolvePreferredServerIdForSessionId('session-1')).toBe('owner-server');
+        expect(resolvePreferredServerIdForSessionId('session-1')).toBeUndefined();
     });
 
     it('returns undefined when the session cannot be resolved to any cached server', async () => {

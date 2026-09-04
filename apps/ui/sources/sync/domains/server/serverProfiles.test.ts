@@ -1428,7 +1428,7 @@ describe('serverProfiles', () => {
         expect(profiles.getServerProfileById(created.id)?.irohEndpoint).toBeUndefined();
     });
 
-    it('preserves trusted direct hints when a newer public feature observation updates relay facts', async () => {
+    it('keeps privacy-reduced public descriptor observations from advancing an established private descriptor generation', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
         const profiles = await importFresh();
         await profiles.adoptHomeProfile({
@@ -1437,7 +1437,7 @@ describe('serverProfiles', () => {
                 v: 1,
                 homeServerIdentityId: 'srv_public_observation_1',
                 canonicalServerUrl: 'https://public-observation.example.test',
-                revision: 3,
+                revision: 4,
                 endpoints: [{
                     kind: 'iroh',
                     endpointId: 'a'.repeat(64),
@@ -1447,7 +1447,7 @@ describe('serverProfiles', () => {
             },
         });
 
-        const result = await profiles.reconcileServerProfileHomeConnectionDescriptor({
+        const publicResult = await profiles.reconcileServerProfileHomeConnectionDescriptor({
             serverUrl: 'https://public-observation.example.test',
             observedServerIdentityId: 'srv_public_observation_1',
             observation: 'public',
@@ -1455,20 +1455,51 @@ describe('serverProfiles', () => {
                 v: 1,
                 homeServerIdentityId: 'srv_public_observation_1',
                 canonicalServerUrl: 'https://public-observation.example.test',
-                revision: 4,
+                revision: 5,
                 endpoints: [{
                     kind: 'iroh',
                     endpointId: 'a'.repeat(64),
-                    relayUrls: ['https://relay-new.example.test'],
+                    relayUrls: ['https://relay-public.example.test'],
                 }],
             },
         });
 
-        expect(result.kind).toBe('applied');
-        expect(profiles.getServerProfileById('srv_public_observation_1')?.irohEndpoint).toEqual({
-            endpointId: 'a'.repeat(64),
-            relayUrls: ['https://relay-new.example.test'],
-            directAddresses: ['192.0.2.90:443'],
+        expect(publicResult.kind).toBe('unchanged');
+        expect(profiles.getServerProfileById('srv_public_observation_1')).toMatchObject({
+            connectionDescriptorRevision: 4,
+            irohEndpoint: {
+                endpointId: 'a'.repeat(64),
+                relayUrls: ['https://relay-old.example.test'],
+                directAddresses: ['192.0.2.90:443'],
+            },
+        });
+
+        const authenticatedResult = await profiles.reconcileServerProfileHomeConnectionDescriptor({
+            serverUrl: 'https://public-observation.example.test',
+            observedServerIdentityId: 'srv_public_observation_1',
+            observation: 'exact',
+            descriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_public_observation_1',
+                canonicalServerUrl: 'https://public-observation.example.test',
+                revision: 5,
+                endpoints: [{
+                    kind: 'iroh',
+                    endpointId: 'a'.repeat(64),
+                    relayUrls: ['https://relay-authenticated.example.test'],
+                    directAddresses: ['192.0.2.91:443'],
+                }],
+            },
+        });
+
+        expect(authenticatedResult.kind).toBe('applied');
+        expect(profiles.getServerProfileById('srv_public_observation_1')).toMatchObject({
+            connectionDescriptorRevision: 5,
+            irohEndpoint: {
+                endpointId: 'a'.repeat(64),
+                relayUrls: ['https://relay-authenticated.example.test'],
+                directAddresses: ['192.0.2.91:443'],
+            },
         });
     });
 
@@ -1677,7 +1708,7 @@ describe('serverProfiles', () => {
         expect(merged?.connectionDescriptorRevision).toBe(9);
     });
 
-    it('composes the canonical QR descriptor from stable profile state only', async () => {
+    it('returns only the exact retained server-published descriptor for shareable flows', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
         const profiles = await importFresh();
         // An Iroh-capable loopback Personal Home with no public ingress: the descriptor
@@ -1704,13 +1735,12 @@ describe('serverProfiles', () => {
             ],
         });
 
-        // A real public HTTPS ingress is advertised alongside the Iroh endpoint.
+        // Derived profile scalars cannot change the retained outer descriptor.
         expect(profiles.buildHomeConnectionDescriptorForProfile({
             ...personalHome,
             publicServerUrl: 'https://public.example.test',
         })?.endpoints).toEqual([
             { kind: 'iroh', endpointId: 'f'.repeat(64), relayUrls: ['https://relay.example.test'], directAddresses: ['[2001:db8::1]:443'] },
-            { kind: 'https', url: 'https://public.example.test' },
         ]);
 
         // Non-Iroh Homes keep the current reachable HTTPS behavior.
@@ -1732,9 +1762,32 @@ describe('serverProfiles', () => {
             endpoints: [{ kind: 'https', url: 'https://ordinary.example.test' }],
         });
 
-        // Without a stable Home identity there is no descriptor to compose.
+        // A Directory descriptor is signed and safe to use for its one enrollment
+        // attempt, but remains advisory until the Home authenticates its complete
+        // current generation. It must not become a shareable QR/link descriptor.
+        const advisory = await profiles.adoptHomeProfile({
+            source: 'account-directory',
+            descriptorAuthority: 'advisory',
+            descriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_advisory_home_1',
+                canonicalServerUrl: 'https://advisory.example.test',
+                revision: 3,
+                endpoints: [{ kind: 'https', url: 'https://advisory.example.test' }],
+            },
+        });
+        expect(profiles.buildHomeConnectionDescriptorForProfile(advisory)).toBeNull();
+
+        // Scalars alone never synthesize a descriptor or revision 1.
         const anonymous = profiles.upsertServerProfile({ serverUrl: 'https://anonymous.example.test', source: 'manual' });
         expect(profiles.buildHomeConnectionDescriptorForProfile(anonymous)).toBeNull();
+        expect(profiles.buildHomeConnectionDescriptorForProfile({
+            ...anonymous,
+            serverIdentityId: 'srv_scalar_only',
+            canonicalServerUrl: 'https://anonymous.example.test',
+            connectionDescriptorRevision: 7,
+            publicServerUrl: 'https://ingress.example.test',
+        })).toBeNull();
     });
 
     it('uses the canonical strict descriptor parser before adopting QR Homes', async () => {

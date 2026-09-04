@@ -21,6 +21,8 @@ export type ServerScopedMachineRpcParams<A> = Readonly<{
     method: string;
     payload: A;
     serverId?: string | null;
+    /** When present, scoped credentials must resolve to this exact Account. */
+    accountId?: string | null;
     timeoutMs?: number;
     preferScoped?: boolean;
     skipTransferPolicyEvaluation?: boolean;

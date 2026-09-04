@@ -185,6 +185,7 @@ export function createPluginUiDataClient(input: Readonly<{
         const admission = input.readAvailability().readCurrentCollectionContract({
             pluginId: requested.pluginId,
             collectionId: requested.collectionId,
+            ref: requested,
         });
         if (admission.kind !== 'available') {
             const code = admission.code === 'account_availability_not_loaded'
@@ -393,6 +394,12 @@ export function createPluginUiDataClient(input: Readonly<{
             request: {
                 pluginId: input.pluginId,
                 collectionId: query.collectionId,
+                readerContext: {
+                    pluginId: active.contract.pluginId,
+                    collectionId: active.contract.collectionId,
+                    schemaVersion: active.contract.schemaVersion,
+                    contractDigest: active.contract.contractDigest,
+                },
                 uiQueryId: query.uiQueryId,
                 parameters: query.parameters,
             },

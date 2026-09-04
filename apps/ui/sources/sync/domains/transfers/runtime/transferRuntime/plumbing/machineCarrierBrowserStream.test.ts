@@ -294,8 +294,8 @@ describe('acquireBrowserMachineCarrierStreamLease', () => {
         expect(IrohMachineHandshakeV1Schema.safeParse(handshake).success).toBe(true);
         expect(handshake.initiator).toEqual({ kind: 'account_client', endpointId: BROWSER_ENDPOINT_ID });
         expect(handshake.target).toEqual({ machineId: 'machine-1', endpointId: TARGET_ENDPOINT_ID });
-        expect(handshake.flow).toBe('file_transfer');
-        expect(handshake.operationId).toBe('prepared-browser-1');
+        expect(handshake.flow).toBe('finite_transfer');
+        expect(handshake).not.toHaveProperty('operationId');
         expect(handshake.accountId).toBe('account-from-signed-grant');
 
         // The one admission decision byte is consumed before any payload write.
@@ -311,9 +311,7 @@ describe('acquireBrowserMachineCarrierStreamLease', () => {
         expect(grantCall.request.routeKind).toBe('iroh_peer');
         expect(grantCall.request.scope).toMatchObject({
             kind: 'bounded_transfer',
-            mode: 'single',
-            transferId: 'prepared-browser-1',
-            maxBytes: 5,
+            mode: 'carrier',
         });
         expect(grantCall.request.iroh.initiator).toEqual({ kind: 'account_client', endpointId: BROWSER_ENDPOINT_ID });
         expect(grantCall.request.iroh.target).toEqual({ machineId: 'machine-1', endpointId: TARGET_ENDPOINT_ID });

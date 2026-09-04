@@ -39,6 +39,7 @@ async function runCommand(
     owner: BrowserIrohSharedEndpointOwner,
     clientId: string,
     command: BrowserIrohClientCommand,
+    openSignal?: AbortSignal,
 ): Promise<BrowserIrohWorkerReply> {
     const { requestId } = command;
     try {
@@ -62,16 +63,6 @@ async function runCommand(
             case 'releaseClient':
                 await owner.releaseClient(clientId);
                 return { v: 1, kind: 'released', requestId };
-            case 'configureRelays': {
-                const configured = await owner.configureRelays(command.relayUrls);
-                return {
-                    v: 1,
-                    kind: 'relaysConfigured',
-                    requestId,
-                    endpointId: configured.endpointId,
-                    appliedRelayUrls: configured.appliedRelayUrls,
-                };
-            }
             case 'openStream': {
                 const opened = await owner.openStream({
                     clientId,
@@ -81,6 +72,7 @@ async function runCommand(
                     streamKind: command.streamKind,
                     endpointId: command.endpointId,
                     relayUrls: command.relayUrls,
+                    signal: openSignal,
                 });
                 return { v: 1, kind: 'streamOpened', requestId, ...opened };
             }
@@ -110,9 +102,6 @@ async function runCommand(
                 return { v: 1, kind: 'streamClosed', requestId };
             case 'status':
                 return { v: 1, kind: 'status', requestId, status: owner.status() };
-            case 'clearApplicationData':
-                await owner.clearApplicationData();
-                return { v: 1, kind: 'cleared', requestId };
         }
     } catch (error) {
         return {
@@ -136,8 +125,11 @@ export function createBrowserIrohWorkerConnectionHandler(
 ): (port: BrowserIrohMessagePort) => void {
     return (port) => {
         const clientId = newClientId();
-        const activeOpenRequests = new Set<string>();
-        const cancelledOpenRequests = new Set<string>();
+        type OpenRequest = Readonly<{
+            controller: AbortController;
+            isCancelled: () => boolean;
+        }>;
+        const openRequests = new Map<string, OpenRequest>();
         port.addEventListener('message', (event) => {
             const command = parseBrowserIrohClientCommand(event.data);
             if (command === null) {
@@ -154,9 +146,7 @@ export function createBrowserIrohWorkerConnectionHandler(
                 return;
             }
             if (command.kind === 'cancelRequest') {
-                if (activeOpenRequests.has(command.targetRequestId)) {
-                    cancelledOpenRequests.add(command.targetRequestId);
-                }
+                openRequests.get(command.targetRequestId)?.controller.abort();
                 port.postMessage({
                     v: 1,
                     kind: 'requestCancelled',
@@ -164,10 +154,20 @@ export function createBrowserIrohWorkerConnectionHandler(
                 } satisfies BrowserIrohWorkerReply);
                 return;
             }
-            if (command.kind === 'openStream') activeOpenRequests.add(command.requestId);
-            void runCommand(owner, clientId, command).then((reply) => {
-                if (command.kind === 'openStream') activeOpenRequests.delete(command.requestId);
-                if (command.kind === 'openStream' && cancelledOpenRequests.delete(command.requestId)) {
+            let openRequest: OpenRequest | undefined;
+            if (command.kind === 'openStream') {
+                const controller = new AbortController();
+                let cancelled = false;
+                controller.signal.addEventListener('abort', () => {
+                    cancelled = true;
+                }, { once: true });
+                openRequest = { controller, isCancelled: () => cancelled };
+                openRequests.set(command.requestId, openRequest);
+            }
+            const running = runCommand(owner, clientId, command, openRequest?.controller.signal);
+            void running.then((reply) => {
+                if (command.kind === 'openStream') openRequests.delete(command.requestId);
+                if (command.kind === 'openStream' && openRequest?.isCancelled()) {
                     if (reply.kind === 'streamOpened') {
                         void owner.closeStream({ clientId, streamId: reply.streamId }).catch(() => undefined);
                     }

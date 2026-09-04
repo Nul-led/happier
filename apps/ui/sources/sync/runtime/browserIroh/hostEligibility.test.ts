@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
     isBrowserIrohHost,
+    readBrowserIrohHostCapabilities,
     resolveBrowserIrohHostDecision,
     type BrowserIrohHostCapabilities,
 } from './hostEligibility';
@@ -11,7 +12,7 @@ vi.mock('react-native', async () => {
     return await createReactNativeWebMock();
 });
 
-const BROWSER: BrowserIrohHostCapabilities = { hasSharedWorker: true, hasIndexedDb: true };
+const BROWSER: BrowserIrohHostCapabilities = { hasSharedWorker: true };
 
 const TAURI_INTERNALS_KEY = '__TAURI_INTERNALS__';
 
@@ -33,6 +34,8 @@ afterEach(() => {
     // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
     delete (globalThis as Record<string, unknown>)[TAURI_INTERNALS_KEY];
     Reflect.deleteProperty(globalThis, 'navigator');
+    Reflect.deleteProperty(globalThis, 'SharedWorker');
+    Reflect.deleteProperty(globalThis, 'indexedDB');
 });
 
 describe('sync/runtime/browserIroh/hostEligibility', () => {
@@ -65,13 +68,23 @@ describe('sync/runtime/browserIroh/hostEligibility', () => {
     it('reports the missing capability rather than falling back to a per-tab endpoint', () => {
         setUserAgent(BROWSER_USER_AGENT);
 
-        expect(resolveBrowserIrohHostDecision({ hasSharedWorker: false, hasIndexedDb: true })).toEqual({
+        expect(resolveBrowserIrohHostDecision({ hasSharedWorker: false })).toEqual({
             eligible: false,
             reason: 'shared_worker_unsupported',
         });
-        expect(resolveBrowserIrohHostDecision({ hasSharedWorker: true, hasIndexedDb: false })).toEqual({
-            eligible: false,
-            reason: 'indexed_db_unsupported',
-        });
+    });
+
+    it('accepts a browser with no device-local storage at all', () => {
+        // Lane 06 amendment A10: the endpoint identity is ephemeral and lives
+        // only in the live SharedWorker global, so nothing about the carrier
+        // needs IndexedDB. A private-mode or storage-restricted browser that
+        // can host the worker is eligible; requiring a store the carrier never
+        // opens would refuse a host that works.
+        setUserAgent(BROWSER_USER_AGENT);
+        Object.defineProperty(globalThis, 'SharedWorker', { configurable: true, value: function SharedWorkerStub() {} });
+        Object.defineProperty(globalThis, 'indexedDB', { configurable: true, value: undefined });
+
+        expect(resolveBrowserIrohHostDecision()).toEqual({ eligible: true });
+        expect(Object.keys(readBrowserIrohHostCapabilities())).toEqual(['hasSharedWorker']);
     });
 });

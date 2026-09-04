@@ -30,11 +30,12 @@ describe('useAccountDirectoryActivePolling', () => {
         vi.restoreAllMocks();
     });
 
-    it('uses the canonical enrollment backoff for transient failures and resets after success', async () => {
+    it('uses the canonical enrollment backoff for pending approval attempts and resets after completion', async () => {
         const { useAccountDirectoryActivePolling } = await import('./useAccountDirectoryActivePolling');
-        const outcomes = ['transient', 'transient', 'success'] as const;
-        let outcomeIndex = 0;
-        const poll = vi.fn(async () => outcomes[outcomeIndex++] ?? 'success');
+        let attempt = 0;
+        const poll = vi.fn(async (): Promise<'backoff' | 'completed'> => (
+            ++attempt <= 12 ? 'backoff' : 'completed'
+        ));
 
         await renderHook(() => useAccountDirectoryActivePolling(poll), {
             flushOptions: { cycles: 0 },
@@ -43,8 +44,7 @@ describe('useAccountDirectoryActivePolling', () => {
         await flushHookEffects({ cycles: 1, advanceTimersMs: 1_000 });
         expect(poll).toHaveBeenCalledTimes(1);
 
-        // The first retry uses the bounded policy's base delay. A second
-        // consecutive failure then backs off to two seconds.
+        // Pending attempts advance the shared 1s -> 2s -> 4s -> 5s cadence.
         await flushHookEffects({ cycles: 1, advanceTimersMs: 1_000 });
         expect(poll).toHaveBeenCalledTimes(2);
         await flushHookEffects({ cycles: 1, advanceTimersMs: 1_999 });
@@ -52,19 +52,37 @@ describe('useAccountDirectoryActivePolling', () => {
         await flushHookEffects({ cycles: 1, advanceTimersMs: 1 });
         expect(poll).toHaveBeenCalledTimes(3);
 
-        // A successful/progress response restores the normal one-second cadence.
-        await flushHookEffects({ cycles: 1, advanceTimersMs: 999 });
+        await flushHookEffects({ cycles: 1, advanceTimersMs: 3_999 });
         expect(poll).toHaveBeenCalledTimes(3);
         await flushHookEffects({ cycles: 1, advanceTimersMs: 1 });
         expect(poll).toHaveBeenCalledTimes(4);
+
+        await flushHookEffects({ cycles: 1, advanceTimersMs: 4_999 });
+        expect(poll).toHaveBeenCalledTimes(4);
+        await flushHookEffects({ cycles: 1, advanceTimersMs: 1 });
+        expect(poll).toHaveBeenCalledTimes(5);
+
+        // Once capped, a late approval can complete at 53s with 13 total
+        // redemption attempts, remaining below the Home route's 30/min budget.
+        for (let cappedAttempt = 0; cappedAttempt < 8; cappedAttempt += 1) {
+            await flushHookEffects({ cycles: 1, advanceTimersMs: 5_000 });
+        }
+        expect(poll).toHaveBeenCalledTimes(13);
+        expect(poll.mock.calls.length).toBeLessThanOrEqual(30);
+
+        // Terminal completion restores the normal one-second cadence.
+        await flushHookEffects({ cycles: 1, advanceTimersMs: 999 });
+        expect(poll).toHaveBeenCalledTimes(13);
+        await flushHookEffects({ cycles: 1, advanceTimersMs: 1 });
+        expect(poll).toHaveBeenCalledTimes(14);
     });
 
     it('treats thrown polling work as transient and keeps one shared retry scheduler', async () => {
         const { useAccountDirectoryActivePolling } = await import('./useAccountDirectoryActivePolling');
         const first = vi.fn()
             .mockRejectedValueOnce(new Error('temporary transport failure'))
-            .mockResolvedValue('success');
-        const second = vi.fn(async () => 'success' as const);
+            .mockResolvedValue('completed');
+        const second = vi.fn(async () => 'completed' as const);
 
         await renderHook(() => {
             useAccountDirectoryActivePolling(first);

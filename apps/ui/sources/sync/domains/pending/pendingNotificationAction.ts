@@ -13,6 +13,7 @@ export type PendingNotificationAction = Readonly<{
     serverUrl: string;
     sessionId: string;
     requestId: string;
+    turnId?: string;
     action: 'allow' | 'deny';
 }>;
 
@@ -56,9 +57,10 @@ function readScopedPendingNotificationAction(key: string): PendingNotificationAc
         const serverUrl = normalizeUrl(parsed.serverUrl ?? '');
         const sessionId = String(parsed.sessionId ?? '').trim();
         const requestId = String(parsed.requestId ?? '').trim();
+        const turnId = String(parsed.turnId ?? '').trim();
         const action = parsed.action === 'allow' ? 'allow' : parsed.action === 'deny' ? 'deny' : null;
         if (serverUrl && sessionId && requestId && action) {
-            return { serverUrl, sessionId, requestId, action };
+            return { serverUrl, sessionId, requestId, ...(turnId ? { turnId } : {}), action };
         }
     } catch {
         // ignore corrupt scoped payload
@@ -76,10 +78,17 @@ export function setPendingNotificationAction(value: PendingNotificationAction): 
     const serverUrl = normalizeUrl(value?.serverUrl ?? '');
     const sessionId = String(value?.sessionId ?? '').trim();
     const requestId = String(value?.requestId ?? '').trim();
+    const turnId = String(value?.turnId ?? '').trim();
     const action = value?.action === 'allow' ? 'allow' : value?.action === 'deny' ? 'deny' : '';
     const activeScope = getActiveServerAccountScope();
     if (!serverUrl || !sessionId || !requestId || !action) return;
-    const record = JSON.stringify({ serverUrl, sessionId, requestId, action } satisfies PendingNotificationAction);
+    const record = JSON.stringify({
+        serverUrl,
+        sessionId,
+        requestId,
+        ...(turnId ? { turnId } : {}),
+        action,
+    } satisfies PendingNotificationAction);
     if (activeScope && isPendingServerUrlActive(serverUrl)) {
         storage.set(serverAccountScopedStorageKey(KEY_RECORD_PREFIX, activeScope), record);
         const serverScopedKey = resolveActiveServerScopedKey();

@@ -19,6 +19,7 @@ import {
   type SessionModelTransitionResultV1,
   type SessionSpawnNewInputV2,
   type SessionSpawnNewResultV1,
+  MemorySearchResultV1Schema,
 } from '@happier-dev/protocol';
 import {
     resolveAmbientProviderConnectionForModelIntent,
@@ -38,10 +39,21 @@ import {
     rollbackSessionConversation as rollbackSessionConversationOp,
     sessionStopWithServerScope,
 } from '@/sync/ops/sessions';
-import { startSessionHandoff as startSessionHandoffOp } from '@/sync/ops/sessionHandoffs';
+import {
+  preflightSessionHandoffTargetReplacement,
+  startSessionHandoff as startSessionHandoffOp,
+} from '@/sync/ops/sessionHandoffs';
 import { sessionRpcWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedSessionRpc';
 import { sendSessionMessageWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedSessionSendMessage';
 import { machineRpcWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc';
+import { captureActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
+import {
+  authorizeMemorySessionRange,
+  authorizeMemorySearchResult,
+  captureMemorySearchSessionReadAuthority,
+  readMemorySearchSessionForServerScope,
+  readMemorySearchSessionHydrationConcurrencyLimit,
+} from '@/sync/domains/memory/hydrateMemorySearchSessionTargets';
 import { voiceSessionManager } from '@/voice/session/voiceSession';
 import { VOICE_AGENT_GLOBAL_SESSION_ID } from '@/voice/agent/voiceAgentGlobalSessionId';
 import { teleportVoiceAgentToSessionRoot } from '@/voice/agent/teleportVoiceAgentToSessionRoot';
@@ -51,6 +63,7 @@ import { resolveLocalFeaturePolicyEnabled } from '@/sync/domains/features/featur
 import { resolveSessionForkStrategyAvailability } from '@/sync/domains/sessionFork/forkUiSupport';
 import { resolveSessionForkReplayOptions } from '@/sync/domains/sessionFork/resolveSessionForkReplayOptions';
 import { resetVoiceAgentPersistenceState } from '@/voice/persistence/resetVoiceAgentPersistenceState';
+import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import type { ArtifactHeader } from '@/sync/domains/artifacts/artifactTypes';
 import { openSessionForVoiceTool } from '@/voice/tools/actionImpl/openSession';
 import { setPrimaryActionSessionId, setTrackedSessionIds } from '@/voice/tools/actionImpl/sessionTargets';
@@ -382,16 +395,32 @@ export async function replayApprovalRequestAtExactDaemon(input: Readonly<{
     checkpointCodeRollback: async ({ request, serverId }) =>
       await rollbackSessionCheckpointCodeOp({ request, serverId }),
 
+    sessionHandoffTargetReplacementApprovalPreflight: async ({
+      targetMachineId,
+      targetPath,
+      workspaceAction,
+      serverId,
+      operationId,
+      signal,
+    }) => await preflightSessionHandoffTargetReplacement({
+      targetMachineId,
+      targetPath: targetPath ?? '',
+      serverId: serverId ?? '',
+      operationId,
+      workspaceAction: workspaceAction ?? { kind: 'none' },
+      ...(signal ? { signal } : {}),
+    }),
+
     sessionHandoffStart: async ({
       sessionId,
       targetMachineId,
       targetPath,
       targetSessionStorageMode,
       workspaceAction,
-      workspaceSyncSourceWorkspaceRefId,
-      workspaceSyncTargetWorkspaceRefId,
-      workspaceSyncSettingsVersion,
       serverId,
+      actionRequestId,
+      handoffTargetReplacementApproval,
+      signal,
     }) => {
       const sid = String(sessionId ?? '').trim();
       const tid = String(targetMachineId ?? '').trim();
@@ -424,10 +453,10 @@ export async function replayApprovalRequestAtExactDaemon(input: Readonly<{
         ...(targetSessionStorageMode ? { targetSessionStorageMode } : {}),
         preferredTransportStrategies: ['direct_peer', 'server_routed_stream'],
         ...(workspaceAction ? { workspaceAction } : {}),
-        ...(workspaceSyncSourceWorkspaceRefId ? { workspaceSyncSourceWorkspaceRefId } : {}),
-        ...(workspaceSyncTargetWorkspaceRefId ? { workspaceSyncTargetWorkspaceRefId } : {}),
-        ...(workspaceSyncSettingsVersion === undefined ? {} : { workspaceSyncSettingsVersion }),
         serverId,
+        ...(actionRequestId ? { actionRequestId } : {}),
+        ...(handoffTargetReplacementApproval ? { handoffTargetReplacementApproval } : {}),
+        ...(signal ? { signal } : {}),
       });
     },
 
@@ -530,14 +559,14 @@ export async function replayApprovalRequestAtExactDaemon(input: Readonly<{
       return { ok: true, sessionId: sid, title: normalizedTitle, updatedAt };
     },
 
-    sessionPermissionRespond: async ({ sessionId, requestId, decision, serverId }) => {
+    sessionPermissionRespond: async ({ sessionId, requestId, turnId, decision, serverId }) => {
       const reqId = String(requestId ?? '').trim();
       if (!reqId) {
         return { ok: false, errorCode: 'permission_request_not_found', errorMessage: 'permission_request_not_found', sessionId };
       }
       const request = decision === 'allow'
-        ? { id: reqId, approved: true }
-        : { id: reqId, approved: false };
+        ? { id: reqId, ...(turnId ? { turnId } : {}), approved: true }
+        : { id: reqId, ...(turnId ? { turnId } : {}), approved: false };
       return projectSessionInteractionRpcResult(await sessionRpcWithServerScope({
         sessionId,
         serverId,
@@ -861,21 +890,92 @@ export async function replayApprovalRequestAtExactDaemon(input: Readonly<{
     },
     teleportVoiceAgentToSessionRoot: async ({ sessionId }) => await teleportVoiceAgentToSessionRoot({ sessionId }),
 
-    daemonMemorySearch: async ({ machineId, query, serverId }) =>
-      await machineRpcWithServerScope({
-        machineId,
-        serverId,
-        method: RPC_METHODS.DAEMON_MEMORY_SEARCH,
-        payload: query,
-      }),
+    daemonMemorySearch: async ({ machineId, query, serverId, signal }) => {
+      const accountLifetime = captureActiveServerAccountScopeLifetime();
+      if (!accountLifetime) {
+        return { v: 1, ok: false, errorCode: 'memory_invalid_query', error: 'Account scope is unavailable.' };
+      }
+      const exactServerId = String(serverId ?? accountLifetime.scope.serverId).trim();
+      if (!exactServerId || !areServerProfileIdentifiersEquivalent(exactServerId, accountLifetime.scope.serverId)) {
+        return { v: 1, ok: false, errorCode: 'memory_invalid_query', error: 'Exact Account scope is unavailable.' };
+      }
+      const authority = await captureMemorySearchSessionReadAuthority({
+        serverId: exactServerId,
+        accountId: accountLifetime.scope.accountId,
+      });
+      try {
+        const result = MemorySearchResultV1Schema.parse(await machineRpcWithServerScope({
+          machineId,
+          serverId: exactServerId,
+          accountId: accountLifetime.scope.accountId,
+          preferScoped: true,
+          method: RPC_METHODS.DAEMON_MEMORY_SEARCH,
+          payload: query,
+          ...(signal ? { signal } : {}),
+        }));
+        if (!result.ok) return result;
+        return await authorizeMemorySearchResult({
+          result,
+          serverId: exactServerId,
+          accountId: accountLifetime.scope.accountId,
+          authority,
+          accountLifetime,
+          readSessionForServerScope: readMemorySearchSessionForServerScope,
+          concurrencyLimit: readMemorySearchSessionHydrationConcurrencyLimit(),
+          ...(signal ? { signal } : {}),
+        });
+      } finally {
+        await authority.release();
+      }
+    },
 
-    daemonMemoryGetWindow: async ({ machineId, sessionId, seqFrom, seqTo, serverId }) =>
-      await machineRpcWithServerScope({
-        machineId,
-        serverId,
-        method: RPC_METHODS.DAEMON_MEMORY_GET_WINDOW,
-        payload: { v: 1, sessionId, seqFrom, seqTo },
-      }),
+    daemonMemoryGetWindow: async ({ machineId, sessionId, seqFrom, seqTo, serverId, signal }) => {
+      const accountLifetime = captureActiveServerAccountScopeLifetime();
+      const exactServerId = String(serverId ?? accountLifetime?.scope.serverId ?? '').trim();
+      if (
+        !accountLifetime
+        || !exactServerId
+        || !areServerProfileIdentifiersEquivalent(exactServerId, accountLifetime.scope.serverId)
+      ) {
+        throw Object.assign(new Error('Exact Account scope is unavailable.'), { code: 'not_authenticated' as const });
+      }
+      const authority = await captureMemorySearchSessionReadAuthority({
+        serverId: exactServerId,
+        accountId: accountLifetime.scope.accountId,
+      });
+      try {
+        const authorized = await authorizeMemorySessionRange({
+          target: {
+            sessionKey: `${accountLifetime.scope.accountId}:${exactServerId}:${sessionId}`,
+            serverId: exactServerId,
+            accountId: accountLifetime.scope.accountId,
+            sessionId,
+          },
+          seqFrom,
+          seqTo,
+          authority,
+          accountLifetime,
+          readSessionForServerScope: readMemorySearchSessionForServerScope,
+          ...(signal ? { signal } : {}),
+        });
+        if (!authorized) {
+          throw Object.assign(new Error('Memory window is outside the current Session projection.'), {
+            code: 'not_authenticated' as const,
+          });
+        }
+        return await machineRpcWithServerScope({
+          machineId,
+          serverId: exactServerId,
+          accountId: accountLifetime.scope.accountId,
+          preferScoped: true,
+          method: RPC_METHODS.DAEMON_MEMORY_GET_WINDOW,
+          payload: { v: 1, sessionId, seqFrom, seqTo },
+          ...(signal ? { signal } : {}),
+        });
+      } finally {
+        await authority.release();
+      }
+    },
 
     daemonMemoryEnsureUpToDate: async ({ machineId, sessionId, serverId }) =>
       await machineRpcWithServerScope({

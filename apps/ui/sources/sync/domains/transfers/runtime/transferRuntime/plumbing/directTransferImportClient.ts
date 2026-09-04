@@ -15,6 +15,10 @@ import {
     createDirectTransferRequestAbortSignal,
     resolveDirectTransferRequestTimeoutMs,
 } from './directTransferRequestDeadline';
+import {
+    DirectTransferHttpStatusError,
+    DirectTransferRequestTimeoutError,
+} from './directTransferEndpointRetry';
 import { rebaseMachineCarrierHttpEndpoint, type MachineCarrierHttpLease, type MachineCarrierHttpRequester } from './machineCarrierHttpLease';
 
 export type ComposerMediaStageUploadRequest = Readonly<{
@@ -216,7 +220,7 @@ async function cancelResponseBody(response: Response): Promise<void> {
 async function readJsonResponse(response: Response, maxBytes: number, signal: AbortSignal): Promise<unknown> {
     if (response.status !== 200) {
         await cancelResponseBody(response);
-        throw new Error(`Direct import request failed with status ${response.status}`);
+        throw new DirectTransferHttpStatusError(response.status);
     }
     const contentType = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase();
     if (contentType !== 'application/json') {
@@ -501,6 +505,11 @@ async function putJson(url: string, input: Readonly<{
             signal: requestSignal.signal,
         });
         return await readJsonResponse(response, input.maxResponseBytes, requestSignal.signal);
+    } catch (error) {
+        if (!input.signal?.aborted && requestSignal.signal.aborted) {
+            throw new DirectTransferRequestTimeoutError(error);
+        }
+        throw error;
     } finally {
         requestSignal.cleanup();
     }

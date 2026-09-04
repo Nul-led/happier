@@ -116,6 +116,8 @@ import {
 } from '@/sync/domains/session/attention/runtimePresentation';
 import { reconcileLatestUsageContextSnapshotModel } from '@/sync/reducer/reducer';
 import { classifySessionTupleApplyCurrentness } from './sessionTupleApplyCurrentness';
+import { buildSessionListIndexWithServerScope } from '../sessionListIndex/buildSessionListIndexWithServerScope';
+import { getServerProfileById } from '../../domains/server/serverProfiles';
 
 export {
     classifySessionTupleApplyCurrentness,
@@ -210,6 +212,13 @@ export type SessionsDomain = {
     applySessions: (sessions: (Omit<Session, 'presence'> & { presence?: 'online' | number })[]) => void;
     replaceSessionListRenderables: (sessions: SessionListRenderableSession[]) => void;
     mergeSessionListRenderables: (sessions: SessionListRenderableSession[]) => void;
+    reconcileSessionListRowsForServerScope: (
+        serverId: string,
+        sessions: SessionListRenderableSession[],
+        baseline: Readonly<Record<string, SessionListRenderableSession>>,
+    ) => void;
+    mergeSessionListRowsForServerScope: (serverId: string, sessions: SessionListRenderableSession[]) => void;
+    clearSessionListRowsForServerScope: (serverId: string) => void;
     applySessionListRenderablePatches: (
         patches: ReadonlyArray<Readonly<{
             sessionId: string;
@@ -1453,6 +1462,110 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
             );
             }),
         ),
+        reconcileSessionListRowsForServerScope: (serverIdRaw, sessions, baseline) => set((state) => {
+            const serverId = serverIdRaw.trim();
+            if (!serverId) return state;
+            const previousRows = state.sessionListRowStateByServerId[serverId] ?? {};
+            const nextRows: Record<string, SessionListRenderableSession> = {};
+            const incomingById = new Map(sessions.map((session) => [session.id, session]));
+            const sessionIds = new Set([
+                ...Object.keys(previousRows),
+                ...Object.keys(baseline),
+                ...incomingById.keys(),
+            ]);
+            for (const sessionId of sessionIds) {
+                const previous = previousRows[sessionId];
+                const atStart = baseline[sessionId];
+                // Active Sync and exact-session hydration publish immutable row
+                // objects. If the current object differs from the one captured
+                // when inventory began, that newer create/update/delete wins
+                // over the older paged snapshot.
+                if (previous !== atStart) {
+                    if (previous) nextRows[sessionId] = previous;
+                    continue;
+                }
+                const incoming = incomingById.get(sessionId);
+                if (!incoming) continue;
+                const withStaleFields = preserveSessionListRenderableStaleFields(previous, incoming);
+                nextRows[sessionId] = preserveSessionListRenderableTransientState(previous, withStaleFields);
+            }
+            const settings = resolveSessionListIndexRebuildSettings(state.settings);
+            const nextIndex = buildSessionListIndexWithServerScope({
+                sessions: nextRows,
+                machines: state.machineDisplayById,
+                groupInactiveSessionsByProject: settings.groupInactiveSessionsByProject,
+                activeGroupingV1: settings.activeGroupingV1,
+                inactiveGroupingV1: settings.inactiveGroupingV1,
+                sectionModeV1: settings.sectionModeV1,
+                previousIndex: state.sessionListIndexByServerId[serverId] ?? null,
+                serverScope: {
+                    serverId,
+                    serverName: getServerProfileById(serverId)?.name ?? null,
+                },
+            });
+            return {
+                ...state,
+                sessionListRowStateByServerId: {
+                    ...state.sessionListRowStateByServerId,
+                    [serverId]: nextRows,
+                },
+                sessionListIndexByServerId: {
+                    ...state.sessionListIndexByServerId,
+                    [serverId]: nextIndex,
+                },
+            };
+        }),
+        mergeSessionListRowsForServerScope: (serverIdRaw, sessions) => set((state) => {
+            const serverId = serverIdRaw.trim();
+            if (!serverId || sessions.length === 0) return state;
+            const previousRows = state.sessionListRowStateByServerId[serverId] ?? {};
+            const nextRows = { ...previousRows };
+            for (const incoming of sessions) {
+                const previous = previousRows[incoming.id];
+                const withStaleFields = preserveSessionListRenderableStaleFields(previous, incoming);
+                nextRows[incoming.id] = preserveSessionListRenderableTransientState(previous, withStaleFields);
+            }
+            const settings = resolveSessionListIndexRebuildSettings(state.settings);
+            const nextIndex = buildSessionListIndexWithServerScope({
+                sessions: nextRows,
+                machines: state.machineDisplayById,
+                groupInactiveSessionsByProject: settings.groupInactiveSessionsByProject,
+                activeGroupingV1: settings.activeGroupingV1,
+                inactiveGroupingV1: settings.inactiveGroupingV1,
+                sectionModeV1: settings.sectionModeV1,
+                previousIndex: state.sessionListIndexByServerId[serverId] ?? null,
+                serverScope: {
+                    serverId,
+                    serverName: getServerProfileById(serverId)?.name ?? null,
+                },
+            });
+            return {
+                ...state,
+                sessionListRowStateByServerId: {
+                    ...state.sessionListRowStateByServerId,
+                    [serverId]: nextRows,
+                },
+                sessionListIndexByServerId: {
+                    ...state.sessionListIndexByServerId,
+                    [serverId]: nextIndex,
+                },
+            };
+        }),
+        clearSessionListRowsForServerScope: (serverIdRaw) => set((state) => {
+            const serverId = serverIdRaw.trim();
+            if (!serverId || (!state.sessionListRowStateByServerId[serverId] && state.sessionListIndexByServerId[serverId] == null)) {
+                return state;
+            }
+            const nextRowsByServerId = { ...state.sessionListRowStateByServerId };
+            const nextIndexByServerId = { ...state.sessionListIndexByServerId };
+            delete nextRowsByServerId[serverId];
+            delete nextIndexByServerId[serverId];
+            return {
+                ...state,
+                sessionListRowStateByServerId: nextRowsByServerId,
+                sessionListIndexByServerId: nextIndexByServerId,
+            };
+        }),
         replaceSessionListRenderables: (sessions) => set((state) => {
             let nextRenderables = state.sessionListRenderables;
             const incomingIds = new Set<string>();

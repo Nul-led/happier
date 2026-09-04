@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION } from '@happier-dev/protocol';
 
 import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
+import { createOwnedHomeCarrierRelease } from '@/sync/runtime/homeCarrierPolicy';
 import type { ScopedSocketClient } from './serverScopedRpcTypes';
 import { createServerScopedRpcSocketPool } from './serverScopedRpcSocketPool';
 
@@ -696,9 +697,10 @@ describe('serverScopedRpcSocketPool', () => {
             .mockReturnValueOnce(first.socket)
             .mockReturnValueOnce(second.socket);
         const releaseError = new Error('carrier release failed');
-        const releaseCarrier = vi.fn()
+        const releasePhysicalCarrier = vi.fn()
             .mockRejectedValueOnce(releaseError)
             .mockResolvedValue(undefined);
+        const releaseCarrier = createOwnedHomeCarrierRelease(releasePhysicalCarrier);
         const homeCarrier = createFakeHomeCarrier('endpoint-shared');
 
         const pool = createServerScopedRpcSocketPool({
@@ -722,11 +724,11 @@ describe('serverScopedRpcSocketPool', () => {
         });
 
         await expect(pool.stopAll()).rejects.toBe(releaseError);
-        expect(releaseCarrier).toHaveBeenCalledTimes(1);
+        expect(releasePhysicalCarrier).toHaveBeenCalledTimes(1);
 
-        // Custody survives the failure, so an explicit retry completes it.
+        // Lane 06 custody survives the failure, so the pool's explicit drain completes it.
         await pool.stopAll();
-        expect(releaseCarrier).toHaveBeenCalledTimes(2);
+        expect(releasePhysicalCarrier).toHaveBeenCalledTimes(2);
 
         await pool.acquire({
             serverUrl: 'https://home.example.test',
@@ -738,7 +740,7 @@ describe('serverScopedRpcSocketPool', () => {
         });
         expect(createSocketSpy).toHaveBeenCalledTimes(2);
         expect(second.connectSpy).toHaveBeenCalledTimes(1);
-        expect(releaseCarrier).toHaveBeenCalledTimes(2);
+        expect(releasePhysicalCarrier).toHaveBeenCalledTimes(2);
 
         pool.resetForTests();
     });
@@ -753,9 +755,10 @@ describe('serverScopedRpcSocketPool', () => {
         const redundantReleaseSettled = new Promise<void>((_resolve, reject) => {
             failRedundantRelease = () => reject(redundantReleaseError);
         });
-        const releaseRedundant = vi.fn()
+        const releaseRedundantPhysicalCarrier = vi.fn()
             .mockImplementationOnce(() => redundantReleaseSettled)
             .mockResolvedValue(undefined);
+        const releaseRedundant = createOwnedHomeCarrierRelease(releaseRedundantPhysicalCarrier);
         const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
         const pool = createServerScopedRpcSocketPool({
@@ -786,7 +789,7 @@ describe('serverScopedRpcSocketPool', () => {
             timeoutMs: 1_000,
         });
         await vi.waitFor(() => {
-            expect(releaseRedundant).toHaveBeenCalledTimes(1);
+            expect(releaseRedundantPhysicalCarrier).toHaveBeenCalledTimes(1);
         });
 
         // The last settled client leaves while the redundant release is still in
@@ -805,7 +808,7 @@ describe('serverScopedRpcSocketPool', () => {
             '[scoped-rpc] redundant carrier release failed',
             redundantReleaseError,
         );
-        expect(releaseRedundant).toHaveBeenCalledTimes(1);
+        expect(releaseRedundantPhysicalCarrier).toHaveBeenCalledTimes(1);
 
         second.disconnect();
         await vi.waitFor(() => {
@@ -813,9 +816,9 @@ describe('serverScopedRpcSocketPool', () => {
             expect(releaseRetained).toHaveBeenCalledTimes(1);
         });
 
-        // Custody is the pool's, not the removed entry's, so the failure is retried.
+        // Custody is Lane 06's, not the removed entry's, so the failure is retried.
         await pool.stopAll();
-        expect(releaseRedundant).toHaveBeenCalledTimes(2);
+        expect(releaseRedundantPhysicalCarrier).toHaveBeenCalledTimes(2);
         expect(releaseRetained).toHaveBeenCalledTimes(1);
         consoleErrorSpy.mockRestore();
         pool.resetForTests();
@@ -851,9 +854,10 @@ describe('serverScopedRpcSocketPool', () => {
 
     it('reports the acquire failure and keeps custody when its carrier cleanup also fails', async () => {
         const cleanupError = new Error('carrier release failed');
-        const releaseCarrier = vi.fn()
+        const releasePhysicalCarrier = vi.fn()
             .mockRejectedValueOnce(cleanupError)
             .mockResolvedValue(undefined);
+        const releaseCarrier = createOwnedHomeCarrierRelease(releasePhysicalCarrier);
         const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
         const pool = createServerScopedRpcSocketPool({
             createSocket: () => {
@@ -877,15 +881,15 @@ describe('serverScopedRpcSocketPool', () => {
             token: 'token-carrier',
             timeoutMs: 1_000,
         })).rejects.toThrow('socket construction failed');
-        expect(releaseCarrier).toHaveBeenCalledTimes(1);
+        expect(releasePhysicalCarrier).toHaveBeenCalledTimes(1);
         expect(consoleErrorSpy).toHaveBeenCalledWith(
             '[scoped-rpc] carrier release failed after acquire failure',
             cleanupError,
         );
 
-        // ...and the lease is not lost: the pool still holds it for a retry.
+        // ...and the lease is not lost: the Lane 06 owner retains it for a retry.
         await pool.stopAll();
-        expect(releaseCarrier).toHaveBeenCalledTimes(2);
+        expect(releasePhysicalCarrier).toHaveBeenCalledTimes(2);
         consoleErrorSpy.mockRestore();
         pool.resetForTests();
     });

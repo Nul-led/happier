@@ -97,10 +97,6 @@ function createLoopbackEndpointClient(port: () => number, remoteEndpointId = HOM
                 release: async () => {},
             };
         },
-        configureRelays: async (relayUrls) => ({
-            endpointId: 'local-browser-endpoint',
-            appliedRelayUrls: [...relayUrls],
-        }),
         status: async () => ({
             state: 'ready',
             endpointId: 'local-browser-endpoint',
@@ -108,7 +104,6 @@ function createLoopbackEndpointClient(port: () => number, remoteEndpointId = HOM
             leaseCount: leaseSequence,
         }),
         releaseAll: async () => {},
-        clearApplicationData: async () => {},
         close: () => {},
     };
 }

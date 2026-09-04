@@ -22,7 +22,18 @@ import {
     createDirectTransferRequestAbortSignal,
     resolveDirectTransferRequestTimeoutMs,
 } from './directTransferRequestDeadline';
-import { rebaseMachineCarrierHttpEndpoint, type MachineCarrierHttpLease, type MachineCarrierHttpRequester } from './machineCarrierHttpLease';
+import {
+    DirectTransferHttpStatusError,
+    DirectTransferRequestTimeoutError,
+    isRetryableDirectTransferEndpointError,
+} from './directTransferEndpointRetry';
+import {
+    MACHINE_CARRIER_INTERRUPTED_TRANSFER_ERROR,
+    MACHINE_CARRIER_TRANSPORT_FAILED_ERROR_CODE,
+    rebaseMachineCarrierHttpEndpoint,
+    type MachineCarrierHttpLease,
+    type MachineCarrierHttpRequester,
+} from './machineCarrierHttpLease';
 
 type DirectTransferExportPrepareRequest =
     | Readonly<{
@@ -74,11 +85,11 @@ type DirectTransferOpenResponse = Readonly<{
 
 type DirectTransferJsonDownloadResponse<TPayload> =
     | Readonly<{ ok: true; payload: TPayload }>
-    | Readonly<{ ok: false; error: string }>;
+    | Readonly<{ ok: false; error: string; errorCode?: string }>;
 
-type DirectTransferFileDownloadResponse =
+export type DirectTransferFileDownloadResponse =
     | Readonly<{ ok: true; name: string; sizeBytes: number }>
-    | Readonly<{ ok: false; error: string }>;
+    | Readonly<{ ok: false; error: string; errorCode?: string }>;
 
 type DirectTransferFailureResponse = Readonly<{
     success: false;
@@ -97,12 +108,10 @@ type DirectTransferPrepareResult =
     | Readonly<{
         ok: false;
         error: string;
+        errorCode?: string;
     }>;
 
 const DIRECT_TRANSFER_OPEN_RESPONSE_MAX_BYTES = 8 * 1024;
-// Match the direct receiver's existing default request-work ceiling. The UI has no
-// need to admit the daemon's larger configuration hard-max as one browser operation.
-const DIRECT_TRANSFER_MAX_TOTAL_CHUNKS = 1_000_000;
 // The direct producer caps plaintext chunks at 512 KiB. One MiB leaves ample room for
 // base64 expansion, the encrypted data-key envelope, and JSON framing without admitting
 // the broader multi-transport protocol envelope ceiling at this direct HTTP boundary.
@@ -138,7 +147,6 @@ function isDirectTransferOpenResponse(value: unknown): value is DirectTransferOp
 function isDirectTransferChunkCountConsistent(totalChunks: number, maxPlaintextBytes: number): boolean {
     return Number.isSafeInteger(maxPlaintextBytes)
         && maxPlaintextBytes >= 0
-        && totalChunks <= DIRECT_TRANSFER_MAX_TOTAL_CHUNKS
         && totalChunks <= Math.max(1, maxPlaintextBytes);
 }
 
@@ -146,6 +154,10 @@ function toDirectTransferExportPrepareFailure(error: unknown): DirectTransferPre
     return {
         ok: false,
         error: error instanceof Error ? error.message : 'Direct export unavailable',
+        ...(error && typeof error === 'object'
+            && (error as { errorCode?: unknown }).errorCode === MACHINE_CARRIER_TRANSPORT_FAILED_ERROR_CODE
+            ? { errorCode: MACHINE_CARRIER_TRANSPORT_FAILED_ERROR_CODE }
+            : {}),
     };
 }
 
@@ -215,10 +227,16 @@ async function prepareDirectTransferExport(params: Readonly<{
         }
         if (endpointCandidates.length === 0) {
             if (carrier) await Promise.resolve(carrier.release()).catch(() => undefined);
-            return {
-                ok: false,
-                error: 'Direct export endpoints unavailable',
-            };
+            return carrier
+                ? {
+                    ok: false,
+                    error: MACHINE_CARRIER_INTERRUPTED_TRANSFER_ERROR,
+                    errorCode: MACHINE_CARRIER_TRANSPORT_FAILED_ERROR_CODE,
+                }
+                : {
+                    ok: false,
+                    error: 'Direct export endpoints unavailable',
+                };
         }
 
         return {
@@ -286,7 +304,7 @@ async function runtimeFetchJsonWithDirectTransferTimeout(
         });
         if (!response.ok) {
             await response.body?.cancel().catch(() => undefined);
-            throw new Error(`Direct export request failed with status ${response.status}`);
+            throw new DirectTransferHttpStatusError(response.status);
         }
         const contentType = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase();
         if (contentType !== 'application/json') {
@@ -300,6 +318,11 @@ async function runtimeFetchJsonWithDirectTransferTimeout(
         });
         const text = new TextDecoder('utf-8', { fatal: true }).decode(body);
         return JSON.parse(text) as unknown;
+    } catch (error) {
+        if (!params.signal?.aborted && requestSignal.signal.aborted) {
+            throw new DirectTransferRequestTimeoutError(error);
+        }
+        throw error;
     } finally {
         requestSignal.cleanup();
     }
@@ -340,6 +363,7 @@ export async function downloadBulkPayloadViaDirectExportToDestination(params: Re
         return {
             ok: false,
             error: prepared.error,
+            ...(prepared.errorCode ? { errorCode: prepared.errorCode } : {}),
         };
     }
     const prepare = prepared.prepare;
@@ -474,15 +498,6 @@ export async function downloadBulkPayloadViaDirectExportToDestination(params: Re
                 if (params.signal?.aborted) {
                     return await returnCanceled();
                 }
-                if (hasMoreCandidates) {
-                    await resetBulkTransferDestinationAfterCandidateFailure(params.destination);
-                    const resetFailure = await initializeDestination();
-                    if (resetFailure) {
-                        await cleanupFailedDestination();
-                        return { ok: false, error: resetFailure.error };
-                    }
-                    continue;
-                }
                 break;
             }
 
@@ -497,11 +512,11 @@ export async function downloadBulkPayloadViaDirectExportToDestination(params: Re
                 name: prepare.name,
                 sizeBytes: download.sizeBytes,
             };
-        } catch {
+        } catch (error) {
             if (params.signal?.aborted) {
                 return await returnCanceled();
             }
-            if (hasMoreCandidates) {
+            if (hasMoreCandidates && isRetryableDirectTransferEndpointError(error)) {
                 await resetBulkTransferDestinationAfterCandidateFailure(params.destination);
                 const resetFailure = await initializeDestination();
                 if (resetFailure) {
@@ -515,7 +530,13 @@ export async function downloadBulkPayloadViaDirectExportToDestination(params: Re
     }
 
     await cleanupFailedDestination();
-    return { ok: false, error: 'Direct export download unavailable' };
+    return prepared.releaseCarrier && !params.signal?.aborted
+        ? {
+            ok: false,
+            error: MACHINE_CARRIER_INTERRUPTED_TRANSFER_ERROR,
+            errorCode: MACHINE_CARRIER_TRANSPORT_FAILED_ERROR_CODE,
+        }
+        : { ok: false, error: 'Direct export download unavailable' };
     } finally {
         // Hand carrier custody back to the machine HTTP lease owner. A failed
         // release stays retained and retryable there, so this helper neither
@@ -540,6 +561,7 @@ export async function downloadBulkJsonPayloadViaDirectExport<TPayload>(params: R
         return {
             ok: false,
             error: prepared.error,
+            ...(prepared.errorCode ? { errorCode: prepared.errorCode } : {}),
         };
     }
     const prepare = prepared.prepare;
@@ -549,7 +571,8 @@ export async function downloadBulkJsonPayloadViaDirectExport<TPayload>(params: R
     const recipientKeyPair = createTransferRecipientKeyPair();
     const requestTimeoutMs = resolveDirectTransferRequestTimeoutMs(params.timeoutMs);
 
-    for (const candidate of prepare.endpointCandidates) {
+    for (const [index, candidate] of prepare.endpointCandidates.entries()) {
+        const hasMoreCandidates = index + 1 < prepare.endpointCandidates.length;
         try {
             const { requestUrl, authorizationHeader } = extractDirectPeerRequestAuth(candidate, Boolean(params.httpOriginOverride || prepared.releaseCarrier));
             const headers = {
@@ -658,12 +681,20 @@ export async function downloadBulkJsonPayloadViaDirectExport<TPayload>(params: R
                 };
             }
             return { ok: true, payload: parsedPayload };
-        } catch {
-            continue;
+        } catch (error) {
+            if (params.signal?.aborted || !hasMoreCandidates || !isRetryableDirectTransferEndpointError(error)) {
+                break;
+            }
         }
     }
 
-    return { ok: false, error: 'Direct export download unavailable' };
+    return prepared.releaseCarrier && !params.signal?.aborted
+        ? {
+            ok: false,
+            error: MACHINE_CARRIER_INTERRUPTED_TRANSFER_ERROR,
+            errorCode: MACHINE_CARRIER_TRANSPORT_FAILED_ERROR_CODE,
+        }
+        : { ok: false, error: 'Direct export download unavailable' };
     } finally {
         // Hand carrier custody back to the machine HTTP lease owner. A failed
         // release stays retained and retryable there, so this helper neither

@@ -28,21 +28,20 @@ import {
     projectIrohHomeTransportDiagnosticsReady,
 } from './diagnostics';
 import type { IrohHomeTunnelLease, IrohHomeTunnelRequest } from './types';
-import { publishIrohHomeTransportDiagnostics } from '@/sync/runtime/irohHomeTransportDiagnostics';
+import {
+    createIrohHomeTransportDiagnosticsPublisher,
+    type IrohHomeTransportDiagnosticsPublisher,
+} from '@/sync/runtime/irohHomeTransportDiagnostics';
 
-/**
- * Recent-history bound for Homes with no live lease. Homes that still hold a
- * lease are always retained, so this never evicts an active Home.
- */
-const MAX_INACTIVE_HOME_TRANSPORT_DIAGNOSTICS = 64;
+let nextDiagnosticsProducerId = 1;
 
 /** Lifecycle-only native boundary consumed by the supervisor (see `createIrohNativeAdapter`). */
 export type IrohNativeLifecycleModule = NonNullable<Parameters<typeof createIrohNativeAdapter>[0]>;
 
-export type IrohHomeTunnelSupervisor = LoopbackTunnelSupervisor<IrohHomeTunnelRequest, IrohHomeTunnelLease, never> & Readonly<{
-    /** Pull-only Home-scoped projection; reading it never starts native runtime work. */
-    readDiagnostics: () => readonly DoctorSnapshotHomeTransportDiagnostics[];
-}>;
+/** Terminal admission refusal once the owning supervisor/runtime disposal has begun. */
+export const IROH_HOME_TUNNEL_DISPOSED_ERROR = 'iroh_home_tunnel_disposed';
+
+export type IrohHomeTunnelSupervisor = LoopbackTunnelSupervisor<IrohHomeTunnelRequest, IrohHomeTunnelLease, never>;
 
 function readDiagnosticError(error: unknown): Readonly<{ code: string; message?: string }> {
     if (error && typeof error === 'object') {
@@ -81,7 +80,6 @@ export function buildIrohHomeTunnelKey(request: IrohHomeTunnelRequest): string {
         endpointId: request.endpointId.trim(),
         canonicalServerUrl: request.canonicalServerUrl.trim().replace(/\/+$/, ''),
         policy: request.policy,
-        descriptorRevision: request.descriptorRevision ?? null,
         relayUrls: request.relayUrls ? [...request.relayUrls] : null,
         directAddresses: request.directAddresses ? [...request.directAddresses] : null,
     });
@@ -103,7 +101,7 @@ export function createIrohHomeTunnelSupervisor(params: Readonly<{
         async startLoopbackTunnel(request) {
             const nativeAdapter = createBoundNativeAdapter(params.native);
             // Carries homeServerIdentityId, endpointId, relay URLs, direct
-            // addresses, descriptor revision, and the relay policy verbatim into
+            // addresses and the relay policy verbatim into
             // the native request. The verification token never enters native config.
             let nativeLease: IrohNativeHomeTunnelLease;
             try {
@@ -113,7 +111,6 @@ export function createIrohHomeTunnelSupervisor(params: Readonly<{
                     policy: request.policy,
                     relayUrls: request.relayUrls,
                     directAddresses: request.directAddresses,
-                    descriptorRevision: request.descriptorRevision,
                 });
             } catch (error) {
                 // A rejected start can still leave this adapter owning a native
@@ -156,6 +153,7 @@ export function createIrohHomeTunnelSupervisor(params: Readonly<{
             suspended: IROH_HOME_TUNNEL_SUSPENDED_ERROR,
             probeFailed: IROH_HOME_TUNNEL_PROBE_FAILED_ERROR,
             staleGeneration: IROH_HOME_TUNNEL_STALE_GENERATION_ERROR,
+            disposed: IROH_HOME_TUNNEL_DISPOSED_ERROR,
         },
         createLease: ({ key, request, native }) => ({
             leaseId: `iroh-home:${key}`,
@@ -180,114 +178,124 @@ export function createIrohHomeTunnelSupervisor(params: Readonly<{
                 : {}),
         }),
     });
-    const diagnosticsByHomeIdentity = new Map<string, DoctorSnapshotHomeTransportDiagnostics>();
-    function publishDiagnostics(diagnostics: DoctorSnapshotHomeTransportDiagnostics): void {
-        diagnosticsByHomeIdentity.set(diagnostics.homeServerIdentityId, diagnostics);
-        publishIrohHomeTransportDiagnostics(diagnostics);
+    const diagnosticsProducerId = `native-home-tunnel-supervisor:${nextDiagnosticsProducerId++}`;
+    const diagnosticsByLeaseId = new Map<string, Readonly<{
+        diagnostics: DoctorSnapshotHomeTransportDiagnostics;
+        publisher: IrohHomeTransportDiagnosticsPublisher;
+    }>>();
+
+    function publishDiagnostics(
+        leaseId: string,
+        diagnostics: DoctorSnapshotHomeTransportDiagnostics,
+    ): void {
+        const observation = diagnosticsByLeaseId.get(leaseId);
+        if (!observation) return;
+        diagnosticsByLeaseId.set(leaseId, { ...observation, diagnostics });
+        observation.publisher.publish(diagnostics);
     }
 
-    /** A Home is active while the existing lease store still owns a lease for it. */
-    function isActiveHome(homeServerIdentityId: string): boolean {
-        return supervisor.listTunnels().leases.some(
-            (lease) => lease.homeServerIdentityId === homeServerIdentityId,
+    function releaseDiagnostics(leaseId: string): void {
+        const observation = diagnosticsByLeaseId.get(leaseId);
+        if (!observation) return;
+        const closed = projectIrohHomeTransportDiagnosticsEvent(
+            observation.diagnostics,
+            { type: 'closed', atMs: Date.now() },
         );
-    }
-
-    /**
-     * Bounds inactive recent history only. Every Home that still holds a lease
-     * keeps its diagnostics, so an active Home can never be evicted by newer
-     * Homes; released Homes age out oldest-transition first.
-     */
-    function boundInactiveDiagnosticsHistory(): void {
-        const activeHomeIdentities = new Set(
-            supervisor.listTunnels().leases.map((lease) => lease.homeServerIdentityId),
-        );
-        const inactive = [...diagnosticsByHomeIdentity.entries()]
-            .filter(([homeServerIdentityId]) => !activeHomeIdentities.has(homeServerIdentityId))
-            .sort(([, left], [, right]) => (left.lastTransitionAtMs ?? 0) - (right.lastTransitionAtMs ?? 0));
-        for (let index = 0; index < inactive.length - MAX_INACTIVE_HOME_TRANSPORT_DIAGNOSTICS; index += 1) {
-            diagnosticsByHomeIdentity.delete(inactive[index][0]);
-        }
-    }
-
-    /** Ages a Home fact once its last lease is gone, through the existing release/disposal path. */
-    function ageReleasedHomeDiagnostics(homeServerIdentityId: string): void {
-        const current = diagnosticsByHomeIdentity.get(homeServerIdentityId);
-        if (current && !isActiveHome(homeServerIdentityId)) {
-            publishDiagnostics(projectIrohHomeTransportDiagnosticsEvent(current, { type: 'closed', atMs: Date.now() }));
-        }
-        boundInactiveDiagnosticsHistory();
+        observation.publisher.release(closed);
+        diagnosticsByLeaseId.delete(leaseId);
     }
 
     supervisor.subscribe((event) => {
-        const current = diagnosticsByHomeIdentity.get(event.lease.homeServerIdentityId);
+        const current = diagnosticsByLeaseId.get(event.lease.leaseId)?.diagnostics;
         if (!current) return;
-        publishDiagnostics(projectIrohHomeTransportDiagnosticsEvent(current, event));
+        publishDiagnostics(
+            event.lease.leaseId,
+            projectIrohHomeTransportDiagnosticsEvent(current, event),
+        );
     });
 
     return {
         ...supervisor,
         async ensureTunnel(request) {
             const atMs = Date.now();
-            if (!diagnosticsByHomeIdentity.has(request.homeServerIdentityId)) {
-                boundInactiveDiagnosticsHistory();
+            const leaseId = `iroh-home:${buildIrohHomeTunnelKey(request)}`;
+            let observation = diagnosticsByLeaseId.get(leaseId);
+            if (!observation) {
+                const initial = createInitialIrohHomeTransportDiagnostics({
+                    homeServerIdentityId: request.homeServerIdentityId,
+                    remoteEndpointId: request.endpointId,
+                    policy: request.policy,
+                    relayUrls: request.relayUrls,
+                    directAddresses: request.directAddresses,
+                    atMs,
+                });
+                const publisher = createIrohHomeTransportDiagnosticsPublisher({
+                    producerId: diagnosticsProducerId,
+                    leaseId,
+                    homeServerIdentityId: request.homeServerIdentityId,
+                });
+                observation = { diagnostics: initial, publisher };
+                diagnosticsByLeaseId.set(leaseId, observation);
+                publisher.publish(initial);
             }
-            const initial = createInitialIrohHomeTransportDiagnostics({
-                homeServerIdentityId: request.homeServerIdentityId,
-                remoteEndpointId: request.endpointId,
-                policy: request.policy,
-                relayUrls: request.relayUrls,
-                directAddresses: request.directAddresses,
-                atMs,
-            });
-            publishDiagnostics(initial);
             try {
                 const lease = await supervisor.ensureTunnel(request);
                 publishDiagnostics(
-                    projectIrohHomeTransportDiagnosticsReady(initial, {
+                    leaseId,
+                    projectIrohHomeTransportDiagnosticsReady(observation.diagnostics, {
                         observedPath: lease.observedPath,
                         atMs: Date.now(),
                     }),
                 );
                 return lease;
             } catch (error) {
-                publishDiagnostics(
-                    projectIrohHomeTransportDiagnosticsFailure(initial, {
-                        ...readDiagnosticError(error),
-                        atMs: Date.now(),
-                    }),
-                );
+                const currentObservation = diagnosticsByLeaseId.get(leaseId) ?? observation;
+                const failure = projectIrohHomeTransportDiagnosticsFailure(currentObservation.diagnostics, {
+                    ...readDiagnosticError(error),
+                    atMs: Date.now(),
+                });
+                currentObservation.publisher.release(failure);
+                if (diagnosticsByLeaseId.get(leaseId) === currentObservation) diagnosticsByLeaseId.delete(leaseId);
                 throw error;
             }
         },
         async releaseTunnel(leaseId) {
-            const released = supervisor.listTunnels().leases.find((lease) => lease.leaseId === leaseId);
             await supervisor.releaseTunnel(leaseId);
-            if (released) ageReleasedHomeDiagnostics(released.homeServerIdentityId);
+            if (!supervisor.listTunnels().leases.some((lease) => lease.leaseId === leaseId)) {
+                releaseDiagnostics(leaseId);
+            }
         },
         async dispose() {
-            const ownedHomeIdentities = new Set(
-                supervisor.listTunnels().leases.map((lease) => lease.homeServerIdentityId),
-            );
+            const ownedLeaseIds = new Set(supervisor.listTunnels().leases.map((lease) => lease.leaseId));
             try {
-                await supervisor.dispose();
+                const errors: unknown[] = [];
+                try {
+                    await supervisor.dispose();
+                } catch (error) {
+                    errors.push(error);
+                }
                 // Retry any native custody a rejected start could not release.
                 // A successful disposal drops the adapter; a failing one stays
                 // owned for the next disposal rather than being orphaned.
                 for (const nativeAdapter of [...nativeAdaptersRetainingCustody]) {
-                    await nativeAdapter.dispose()
-                        .then(() => { nativeAdaptersRetainingCustody.delete(nativeAdapter); })
-                        .catch(() => undefined);
+                    try {
+                        await nativeAdapter.dispose();
+                        nativeAdaptersRetainingCustody.delete(nativeAdapter);
+                    } catch (error) {
+                        errors.push(error);
+                    }
                 }
+                if (errors.length === 1) throw errors[0];
+                if (errors.length > 1) throw new AggregateError(errors, 'Failed to dispose every Iroh Home tunnel.');
             } finally {
                 // Disposal stops each owned handle once; failed stops stay owned
                 // by the same supervisor, so only released Homes age here.
-                for (const homeServerIdentityId of ownedHomeIdentities) {
-                    ageReleasedHomeDiagnostics(homeServerIdentityId);
+                for (const leaseId of ownedLeaseIds) {
+                    if (!supervisor.listTunnels().leases.some((lease) => lease.leaseId === leaseId)) {
+                        releaseDiagnostics(leaseId);
+                    }
                 }
             }
         },
-        readDiagnostics: () => [...diagnosticsByHomeIdentity.values()]
-            .sort((left, right) => left.homeServerIdentityId.localeCompare(right.homeServerIdentityId)),
     };
 }

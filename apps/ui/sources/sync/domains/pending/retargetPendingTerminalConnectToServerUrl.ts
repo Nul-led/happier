@@ -18,5 +18,8 @@ export function retargetPendingTerminalConnectToServerUrl(serverUrl: string): vo
         serverIdentityId: pending.serverIdentityId,
         ...(pending.pairing ? { pairing: pending.pairing } : {}),
         ...(pending.supportsTokenOnly ? { supportsTokenOnly: true } : {}),
+        ...(pending.homeConnectionDescriptor
+            ? { homeConnectionDescriptor: pending.homeConnectionDescriptor }
+            : {}),
     });
 }

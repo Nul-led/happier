@@ -4,30 +4,36 @@ import {
     redeemHomeLoginAssertion,
     type AccountDirectoryHomeEntryV1,
     type HomeLoginAssertionV1,
-    type HomeLoginRedemptionResultV1,
 } from '@/sync/api/accountDirectory/accountDirectoryClient';
 import {
     ACCOUNT_DIRECTORY_ERROR_CODES_V1,
     ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_CREDENTIAL_PLAINTEXT_BYTES,
     ACCOUNT_DIRECTORY_MAX_SEALED_TOKEN_BYTES,
-    createHomeCredentialDestinationDigestV1,
-    createHomeCredentialDestinationV1,
     HomeLoginCredentialPayloadV1Schema,
-    isHomeCredentialDestinationAllowedV1,
 } from '@happier-dev/protocol';
+import {
+    continueAccountServiceHomeEnrollment,
+    type AccountServiceHomeEnrollmentResult,
+} from '@happier-dev/cli-common/accountService';
 import { decodeBase64 } from '@/encryption/base64';
 import { decryptBox } from '@/encryption/libsodium';
 import {
     resolveHomeEnrollmentTransport,
     type HomeEnrollmentTransportFailureReason,
+    type HomeEnrollmentTransport,
 } from '@/auth/enrollment/homeEnrollmentTransport';
 import {
     adoptHomeProfileWithCredentials,
+    createHomeProfileCredentialWriteAuthorization,
     HomeProfileAdoptionPartialCommitError,
     type HomeProfileCredentialRollbackOutcome,
 } from '@/sync/domains/server/adoptHomeProfile';
+import { decodeServerFeaturesResponse } from '@/sync/api/capabilities/serverFeaturesParse';
 import { probeServerFeaturesAtUrl } from '@/sync/api/capabilities/serverFeaturesClient';
-import { withHomeCredentialWriteAuthorization } from '@/sync/domains/server/serverProfiles';
+import {
+    reconcileServerProfileHomeConnectionDescriptor,
+} from '@/sync/domains/server/serverProfiles';
+import { adoptDirectoryHome } from './adoptDirectoryHome';
 
 /**
  * Home-authoritative existing-device approval continuation. All requests target the exact
@@ -106,6 +112,12 @@ function terminalRedemptionError(error: unknown): HomeLoginContinuationResult | 
         return { kind: 'failed' };
     }
     return null;
+}
+
+class HomeEnrollmentBoundaryError extends Error {
+    constructor(readonly result: HomeLoginContinuationResult) {
+        super('home_enrollment_boundary_error');
+    }
 }
 
 type HomeLoginApprovalContinuation = Extract<
@@ -219,168 +231,198 @@ export async function continueHomeLoginEnrollment(input: Readonly<{
         ...(input.shouldCancel ? { externalShouldCancel: input.shouldCancel } : {}),
     };
     const continuationInput = { ...input, cancellationState };
-    const descriptor = input.home.connectionDescriptor;
-    const targetIdentity = descriptor.homeServerIdentityId;
-    if (input.assertion.audienceHomeServerIdentityId !== targetIdentity) return { kind: 'failed' };
-    let credentialDestination: ReturnType<typeof createHomeCredentialDestinationV1>;
-    try {
-        credentialDestination = createHomeCredentialDestinationV1(descriptor);
-        if (
-            createHomeCredentialDestinationDigestV1(descriptor)
-            !== input.assertion.credentialDestinationDigestBase64Url
-        ) return { kind: 'failed' };
-    } catch {
-        return { kind: 'failed' };
-    }
-    if (input.clientSecretKey.byteLength !== 32) return { kind: 'failed' };
     if (isCancelled(cancellationState)) return { kind: 'cancelled' };
     if (input.approvalExpiresAtMs !== undefined && Date.now() >= input.approvalExpiresAtMs) {
         return { kind: 'expired' };
     }
-
-    const resolved = await resolveHomeEnrollmentTransport(descriptor);
-    if (!resolved.ok) {
-        if (resolved.reason === 'iroh_transport_unavailable') {
-            return createExplicitResumeContinuation(
-                continuationInput,
-                resolved.reason,
-                input.approvalId && input.approvalExpiresAtMs !== undefined
-                    ? { approvalId: input.approvalId, expiresAtMs: input.approvalExpiresAtMs }
-                    : undefined,
-            );
-        }
-        return { kind: 'transport_unavailable', reason: resolved.reason };
-    }
-
-    const transport = resolved.transport;
-    let redemption: HomeLoginRedemptionResultV1;
-    try {
-        if (isCancelled(cancellationState)) return { kind: 'cancelled' };
-        if (
-            !transport.authenticatedCredentialDestination
-            || !isHomeCredentialDestinationAllowedV1(
-                credentialDestination,
-                transport.authenticatedCredentialDestination,
-            )
-        ) return { kind: 'failed' };
-        const observation = await probeServerFeaturesAtUrl({
-            endpointUrl: transport.endpointUrl,
-            ...(transport.runtimeOrigin ? { runtimeOrigin: transport.runtimeOrigin } : {}),
-            ...(transport.homeCarrier ? { homeCarrier: transport.homeCarrier } : {}),
-            serverId: targetIdentity,
-            force: true,
-        });
-        if (cancellationState.cancelled) return { kind: 'cancelled' };
-        if (observation.status !== 'ready') {
-            return createExplicitResumeContinuation(
-                continuationInput,
-                'home_observation_unavailable',
-                input.approvalId && input.approvalExpiresAtMs !== undefined
-                    ? { approvalId: input.approvalId, expiresAtMs: input.approvalExpiresAtMs }
-                    : undefined,
-            );
-        }
-        if (isCancelled(cancellationState)) return { kind: 'cancelled' };
-        const observedIdentity = observation.serverIdentityId
-            ?? observation.features.capabilities.serverIdentity.serverIdentityId;
-        const publishedDescriptor = observation.features.homeConnectionDescriptor;
-        if (observedIdentity !== targetIdentity) {
-            return { kind: 'failed' };
-        }
-        if (!publishedDescriptor) {
-            return createExplicitResumeContinuation(
-                continuationInput,
-                'home_observation_unavailable',
-                input.approvalId && input.approvalExpiresAtMs !== undefined
-                    ? { approvalId: input.approvalId, expiresAtMs: input.approvalExpiresAtMs }
-                    : undefined,
-            );
-        }
-        if (publishedDescriptor.homeServerIdentityId !== targetIdentity) return { kind: 'failed' };
-        try {
-            if (
-                createHomeCredentialDestinationDigestV1(publishedDescriptor)
-                !== input.assertion.credentialDestinationDigestBase64Url
-            ) return { kind: 'failed' };
-        } catch {
-            return { kind: 'failed' };
-        }
-        redemption = await redeemHomeLoginAssertion(transport, input.assertion, {
+    const descriptor = input.home.connectionDescriptor;
+    const targetIdentity = descriptor.homeServerIdentityId;
+    let selectedCredentialDestination: HomeEnrollmentTransport['authenticatedCredentialDestination'] = null;
+    const result: AccountServiceHomeEnrollmentResult<Uint8Array, void> =
+        await continueAccountServiceHomeEnrollment({
+            home: input.home,
+            assertion: input.assertion,
+            requesterSecretKey: input.clientSecretKey,
             ...(input.approvalId ? { approvalId: input.approvalId } : {}),
+            nowMs: Date.now(),
+            shouldCancel: () => isCancelled(cancellationState),
+            adapters: {
+                createRequesterKeyPair: async () => { throw new Error('not used'); },
+                requestAssertion: async () => { throw new Error('not used'); },
+                openHomeTransport: async (home) => {
+                    const resolved = await resolveHomeEnrollmentTransport(home.connectionDescriptor);
+                    if (!resolved.ok) {
+                        const retryable = resolved.reason === 'iroh_transport_unavailable';
+                        throw new HomeEnrollmentBoundaryError(retryable
+                            ? createExplicitResumeContinuation(continuationInput, resolved.reason,
+                                input.approvalId && input.approvalExpiresAtMs !== undefined
+                                    ? { approvalId: input.approvalId, expiresAtMs: input.approvalExpiresAtMs }
+                                    : undefined)
+                            : { kind: 'transport_unavailable', reason: resolved.reason });
+                    }
+                    if (!resolved.transport.authenticatedCredentialDestination) {
+                        throw new HomeEnrollmentBoundaryError({ kind: 'failed' });
+                    }
+                    selectedCredentialDestination = resolved.transport.authenticatedCredentialDestination;
+                    return {
+                        transport: resolved.transport,
+                        authenticatedCredentialDestination:
+                            resolved.transport.authenticatedCredentialDestination,
+                    };
+                },
+                observeHomeBeforeRedemption: async ({ transport }) => {
+                    const observation = await probeServerFeaturesAtUrl({
+                        endpointUrl: transport.endpointUrl,
+                        ...(transport.runtimeOrigin ? { runtimeOrigin: transport.runtimeOrigin } : {}),
+                        ...(transport.homeCarrier ? { homeCarrier: transport.homeCarrier } : {}),
+                        serverId: targetIdentity,
+                        force: true,
+                    });
+                    if (observation.status !== 'ready') {
+                        throw new HomeEnrollmentBoundaryError(createExplicitResumeContinuation(
+                            continuationInput,
+                            'home_observation_unavailable',
+                            input.approvalId && input.approvalExpiresAtMs !== undefined
+                                ? { approvalId: input.approvalId, expiresAtMs: input.approvalExpiresAtMs }
+                                : undefined,
+                        ));
+                    }
+                    const observedIdentity = observation.serverIdentityId
+                        ?? observation.features.capabilities.serverIdentity.serverIdentityId;
+                    const publishedDescriptor = observation.features.homeConnectionDescriptor;
+                    if (!observedIdentity || !publishedDescriptor) {
+                        throw new HomeEnrollmentBoundaryError(createExplicitResumeContinuation(
+                            continuationInput,
+                            'home_observation_unavailable',
+                            input.approvalId && input.approvalExpiresAtMs !== undefined
+                                ? { approvalId: input.approvalId, expiresAtMs: input.approvalExpiresAtMs }
+                                : undefined,
+                        ));
+                    }
+                    return { homeServerIdentityId: observedIdentity, connectionDescriptor: publishedDescriptor };
+                },
+                redeemAssertion: async ({ transport, assertion, approvalId }) => {
+                    try {
+                        return await redeemHomeLoginAssertion(transport, assertion, {
+                            ...(approvalId ? { approvalId } : {}),
+                        });
+                    } catch (error) {
+                        const terminal = terminalRedemptionError(error);
+                        if (terminal) throw new HomeEnrollmentBoundaryError(terminal);
+                        throw new HomeEnrollmentBoundaryError(createExplicitResumeContinuation(
+                            continuationInput,
+                            'request_failed',
+                            input.approvalId && input.approvalExpiresAtMs !== undefined
+                                ? { approvalId: input.approvalId, expiresAtMs: input.approvalExpiresAtMs }
+                                : undefined,
+                        ));
+                    }
+                },
+                decodeHomeCredential: async ({ redemption, secretKey }) =>
+                    decodeHomeCredentialPayload(redemption.sealedHomeTokenBase64Url, secretKey),
+                observeAuthenticatedHome: async ({ transport, credential }) => {
+                    try {
+                        const response = await transport.createRequest({
+                            serverId: targetIdentity,
+                            credentials: { token: credential.token },
+                        })('/v1/features/authenticated', { method: 'GET' }, {
+                            includeAuth: true,
+                            retry: 'none',
+                        });
+                        if (!response.ok) throw new Error('authenticated observation unavailable');
+                        const features = await decodeServerFeaturesResponse(response);
+                        const exactDescriptor = features?.homeConnectionDescriptor;
+                        const observedIdentity = features?.capabilities.serverIdentity.serverIdentityId;
+                        if (!exactDescriptor || !observedIdentity) throw new Error('authenticated descriptor unavailable');
+                        return { homeServerIdentityId: observedIdentity, connectionDescriptor: exactDescriptor };
+                    } catch {
+                        throw new HomeEnrollmentBoundaryError(createExplicitResumeContinuation(
+                            continuationInput,
+                            'home_observation_unavailable',
+                            input.approvalId && input.approvalExpiresAtMs !== undefined
+                                ? { approvalId: input.approvalId, expiresAtMs: input.approvalExpiresAtMs }
+                                : undefined,
+                        ));
+                    }
+                },
+                commitHomeCredential: async ({ credential }) => {
+                    if (!selectedCredentialDestination) {
+                        throw new HomeEnrollmentBoundaryError({ kind: 'failed' });
+                    }
+                    try {
+                        const credentialWriteAuthorization = createHomeProfileCredentialWriteAuthorization({
+                            descriptor,
+                            credentialDestinationDigestBase64Url:
+                                input.assertion.credentialDestinationDigestBase64Url,
+                            selectedDestination: selectedCredentialDestination,
+                        });
+                        if (!credentialWriteAuthorization) throw new Error('credential authorization failed');
+                        await adoptHomeProfileWithCredentials({
+                            descriptor,
+                            source: 'account-directory',
+                            preserveUserLabel: true,
+                            suggestedName: input.home.label,
+                            descriptorAuthority: 'advisory',
+                            credentials: { token: credential.token },
+                            credentialWriteAuthorization,
+                            shouldCancel: () => isCancelled(cancellationState),
+                        });
+                    } catch (error) {
+                        if (error instanceof HomeProfileAdoptionPartialCommitError) {
+                            throw new HomeEnrollmentBoundaryError({
+                                kind: 'partial_commit',
+                                homeServerIdentityId: error.serverIdentityId,
+                                canonicalServerUrl: error.canonicalServerUrl,
+                                adoptionError: error.adoptionError,
+                                rollbackOutcome: error.rollbackOutcome,
+                            });
+                        }
+                        if (error instanceof HomeEnrollmentBoundaryError) throw error;
+                        throw new HomeEnrollmentBoundaryError({ kind: 'failed' });
+                    }
+                },
+                reconcileAuthenticatedHome: async ({ observation }) => {
+                    let reconciliation = await reconcileServerProfileHomeConnectionDescriptor({
+                        serverUrl: descriptor.canonicalServerUrl,
+                        observedServerIdentityId: targetIdentity,
+                        descriptor: observation.connectionDescriptor,
+                        observation: 'exact',
+                    });
+                    if (reconciliation.kind === 'conflict' && reconciliation.code === 'profile_missing') {
+                        await adoptDirectoryHome(input.home);
+                        reconciliation = await reconcileServerProfileHomeConnectionDescriptor({
+                            serverUrl: descriptor.canonicalServerUrl,
+                            observedServerIdentityId: targetIdentity,
+                            descriptor: observation.connectionDescriptor,
+                            observation: 'exact',
+                        });
+                    }
+                    if (reconciliation.kind !== 'applied' && reconciliation.kind !== 'unchanged') {
+                        throw new HomeEnrollmentBoundaryError({ kind: 'failed' });
+                    }
+                },
+                closeHomeTransport: async (transport) => await transport.close(),
+            },
         });
-    } catch (error) {
-        const terminalError = terminalRedemptionError(error);
-        if (terminalError) return terminalError;
-        return createExplicitResumeContinuation(
+
+    if (result.kind === 'enrolled') return { kind: 'enrolled', homeServerIdentityId: targetIdentity };
+    if (result.kind === 'cancelled') return result;
+    if (result.kind === 'approval_required') {
+        return createApprovalContinuation(
             continuationInput,
-            'request_failed',
-            input.approvalId && input.approvalExpiresAtMs !== undefined
-                ? { approvalId: input.approvalId, expiresAtMs: input.approvalExpiresAtMs }
-                : undefined,
+            result.approval.approvalId,
+            Math.min(input.approvalExpiresAtMs ?? result.approval.expiresAtMs, result.approval.expiresAtMs),
         );
-    } finally {
-        await transport.close().catch(() => {});
     }
-    if ('approvalId' in redemption) {
-        // A durable Home approval request must survive cancellation owned by
-        // the initiating screen. Explicit service change/disconnect flips the
-        // detached state's own `cancelled` bit through continuation.cancel().
-        if (cancellationState.cancelled) return { kind: 'cancelled' };
-        if (redemption.homeServerIdentityId !== targetIdentity) return { kind: 'failed' };
-        const resolvedApprovalId = input.approvalId ?? redemption.approvalId;
-        if (resolvedApprovalId !== redemption.approvalId) return { kind: 'failed' };
-        const approvalExpiresAtMs = Math.min(
-            input.approvalExpiresAtMs ?? redemption.expiresAtMs,
-            redemption.expiresAtMs,
-        );
-        if (approvalExpiresAtMs <= Date.now()) return { kind: 'expired' };
-        return createApprovalContinuation(continuationInput, resolvedApprovalId, approvalExpiresAtMs);
+    if (result.kind === 'verification_failed') {
+        return result.reason === 'redemption_expired' ? { kind: 'expired' } : { kind: 'failed' };
     }
-
-    if (isCancelled(cancellationState)) return { kind: 'cancelled' };
-    if (redemption.homeServerIdentityId !== targetIdentity) return { kind: 'failed' };
-    // The locked wire field names the redemption window, not the lifetime of
-    // the durable Home credential carried inside the sealed envelope.
-    const redemptionExpiresAtMs = redemption.expiresAtMs;
-    if (redemptionExpiresAtMs <= redemption.issuedAtMs || redemptionExpiresAtMs <= Date.now()) {
-        return { kind: 'failed' };
-    }
-    const payload = decodeHomeCredentialPayload(
-        redemption.sealedHomeTokenBase64Url,
-        input.clientSecretKey,
+    if (result.error instanceof HomeEnrollmentBoundaryError) return result.error.result;
+    return createExplicitResumeContinuation(
+        continuationInput,
+        'request_failed',
+        input.approvalId && input.approvalExpiresAtMs !== undefined
+            ? { approvalId: input.approvalId, expiresAtMs: input.approvalExpiresAtMs }
+            : undefined,
     );
-    if (!payload) return { kind: 'failed' };
-    if (isCancelled(cancellationState)) return { kind: 'cancelled' };
-
-    try {
-        await withHomeCredentialWriteAuthorization({
-            kind: 'assertion_destination_binding_v1',
-            descriptor,
-            credentialDestinationDigestBase64Url:
-                input.assertion.credentialDestinationDigestBase64Url,
-        }, async (credentialWriteAuthorization) => {
-            return await adoptHomeProfileWithCredentials({
-                descriptor,
-                source: 'account-directory',
-                preserveUserLabel: true,
-                suggestedName: input.home.label,
-                descriptorAuthority: 'advisory',
-                credentialWriteAuthorization,
-                credentials: { token: payload.token },
-                shouldCancel: () => isCancelled(cancellationState),
-            });
-        });
-    } catch (error) {
-        if (error instanceof HomeProfileAdoptionPartialCommitError) {
-            return {
-                kind: 'partial_commit',
-                homeServerIdentityId: error.serverIdentityId,
-                canonicalServerUrl: error.canonicalServerUrl,
-                adoptionError: error.adoptionError,
-                rollbackOutcome: error.rollbackOutcome,
-            };
-        }
-        return { kind: 'failed' };
-    }
-    return { kind: 'enrolled', homeServerIdentityId: targetIdentity };
 }

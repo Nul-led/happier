@@ -79,6 +79,34 @@ describe('pendingTerminalConnect', () => {
         });
     });
 
+    it('round-trips the strict V4 Home descriptor without weakening its identity binding', async () => {
+        const descriptor = {
+            v: 1 as const,
+            homeServerIdentityId: 'srv_v4_pending',
+            canonicalServerUrl: 'https://home.example.test',
+            revision: 1,
+            endpoints: [{ kind: 'iroh' as const, endpointId: 'a'.repeat(64) }],
+        };
+        const pending = {
+            publicKeyB64Url: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+            serverUrl: 'https://home.example.test',
+            serverIdentityId: 'srv_v4_pending',
+            pairing: {
+                secretB64Url: 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE',
+                createdAtMs: 1_000,
+                expiresAtMs: 61_000,
+            },
+            supportsTokenOnly: true as const,
+            homeConnectionDescriptor: descriptor,
+        };
+
+        expect(fromRecord({ ...pending, createdAtMs: Date.now() })).toEqual(pending);
+        expect(toRecord({
+            ...pending,
+            serverIdentityId: 'srv_other_home',
+        })).toBeNull();
+    });
+
     it('expires stale pending payloads', async () => {
         const now = 1_700_000_000_000;
         vi.spyOn(Date, 'now').mockReturnValue(now);

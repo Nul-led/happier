@@ -523,6 +523,13 @@ async function writeChunkedBody(
             }
         }
         await write(ENCODER.encode(`0${CRLF}${CRLF}`));
+    } catch (error) {
+        // The source may own a file, generator, or network reader. Once this
+        // carrier cannot consume it, cancellation is part of releasing that
+        // custody. Its failure is secondary and must not replace the abort or
+        // stream-write error that ended the request.
+        await reader.cancel(error).catch(() => undefined);
+        throw error;
     } finally {
         reader.releaseLock();
     }

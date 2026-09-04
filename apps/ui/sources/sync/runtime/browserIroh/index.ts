@@ -15,11 +15,9 @@
  */
 export * from './assets';
 export * from './endpointClient';
-export * from './endpointKey';
 export * from './homeCarrier/homeTunnelWebSocket';
 export * from './homeTunnelHttp';
 export * from './hostEligibility';
-export * from './indexedDbEndpointKeyStore';
 export * from './machineCarrierStream';
 export * from './pageLifecycleRelease';
 export * from './protocol';

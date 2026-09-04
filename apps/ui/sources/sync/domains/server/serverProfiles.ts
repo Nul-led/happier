@@ -1,10 +1,6 @@
 import { MMKV } from 'react-native-mmkv';
 import {
-    createHomeCredentialDestinationDigestV1,
-    createHomeCredentialDestinationV1,
     HomeConnectionDescriptorV1Schema,
-    isHomeCredentialDestinationAllowedV1,
-    mergePublicIrohEndpointObservation,
     normalizeServerIdentityIdCapability,
     parseIrohEndpointDescriptorV1,
     type HomeConnectionDescriptorV1,
@@ -62,6 +58,8 @@ export type ServerProfile = Readonly<{
     irohEndpoint?: IrohEndpointDescriptorV1;
     /** Monotonic revision of the last adopted connection descriptor. */
     connectionDescriptorRevision?: number;
+    /** Exact server-published outer descriptor retained for transport and share flows. */
+    homeConnectionDescriptor?: HomeConnectionDescriptorV1;
     /**
      * This device completed and verified managed Personal Home bootstrap for this exact Home
      * identity. It is deliberately separate from mutable adoption provenance and live health.
@@ -643,6 +641,9 @@ function parseProfile(id: string, value: unknown): ServerProfile | null {
         && record.connectionDescriptorRevision > 0
         ? record.connectionDescriptorRevision
         : undefined;
+    const homeConnectionDescriptorResult = HomeConnectionDescriptorV1Schema.safeParse(
+        record.homeConnectionDescriptor,
+    );
     // Tolerant, additive provenance read: unknown values are dropped, never trusted.
     const descriptorProvenance = record.descriptorProvenance === 'advisory-only'
         ? 'advisory-only' as const
@@ -656,6 +657,9 @@ function parseProfile(id: string, value: unknown): ServerProfile | null {
         ...(publicServerUrl !== undefined ? { publicServerUrl } : {}),
         ...(irohEndpoint ? { irohEndpoint } : {}),
         ...(connectionDescriptorRevision !== undefined ? { connectionDescriptorRevision } : {}),
+        ...(homeConnectionDescriptorResult.success
+            ? { homeConnectionDescriptor: homeConnectionDescriptorResult.data }
+            : {}),
         ...(descriptorProvenance ? { descriptorProvenance } : {}),
         ...(typeof record.shareableServerUrl === 'string'
             ? { shareableServerUrl: sanitizeServerUrlForShareableLink(record.shareableServerUrl) }
@@ -790,7 +794,7 @@ export function findPersonalHomeBootstrapCompletedProfile(
 function coalesceIrohTransportFacts(
     group: readonly ServerProfile[],
     preferred: ServerProfile,
-): Pick<ServerProfile, 'irohEndpoint' | 'connectionDescriptorRevision'> {
+): Pick<ServerProfile, 'irohEndpoint' | 'connectionDescriptorRevision' | 'homeConnectionDescriptor'> {
     let source = preferred;
     for (const profile of group) {
         if (
@@ -806,6 +810,9 @@ function coalesceIrohTransportFacts(
         ...(source.irohEndpoint ? { irohEndpoint: source.irohEndpoint } : {}),
         ...(source.connectionDescriptorRevision !== undefined
             ? { connectionDescriptorRevision: source.connectionDescriptorRevision }
+            : {}),
+        ...(source.homeConnectionDescriptor
+            ? { homeConnectionDescriptor: source.homeConnectionDescriptor }
             : {}),
     };
 }
@@ -1669,47 +1676,14 @@ export function resetAccountServiceToDefault(): void {
 }
 
 /**
- * Composes the canonical connection descriptor of a Home profile from stable persisted
- * state only. This is the single descriptor composer for QR producers: the adopted Iroh
- * endpoint rides along when present, an HTTPS endpoint is advertised only when a real
- * public HTTPS ingress exists for an Iroh-capable (typically loopback) Home, and ordinary
- * non-Iroh Homes keep their reachable canonical HTTPS endpoint. `runtimeOrigin` and
- * ephemeral tunnel ports are runtime-only request state and can never enter a descriptor.
- * Returns null when the profile has no stable Home identity/audience to compose from.
+ * Returns the exact server-published outer descriptor retained by the profile owner.
+ * Shareable QR/link producers must not synthesize endpoint membership or revisions from
+ * profile scalars: absence means the server has not published an exact shareable descriptor.
  */
 export function buildHomeConnectionDescriptorForProfile(profile: ServerProfile): HomeConnectionDescriptorV1 | null {
-    const identity = normalizeServerIdentityId(profile.serverIdentityId);
-    if (!identity) return null;
-    const canonicalServerUrl = (profile.canonicalServerUrl ?? profile.serverUrl ?? '').trim().replace(/\/+$/, '');
-    if (!canonicalServerUrl) return null;
-    const publicHttpsUrl = typeof profile.publicServerUrl === 'string'
-        && /^https:\/\//i.test(profile.publicServerUrl.trim())
-        ? profile.publicServerUrl.trim().replace(/\/+$/, '')
-        : '';
-    const endpoints: HomeConnectionDescriptorV1['endpoints'] = [];
-    if (profile.irohEndpoint) {
-        const { endpointId, relayUrls, directAddresses } = profile.irohEndpoint;
-        endpoints.push({
-            kind: 'iroh',
-            endpointId,
-            ...(relayUrls ? { relayUrls: [...relayUrls] } : {}),
-            ...(directAddresses ? { directAddresses: [...directAddresses] } : {}),
-        });
-        // A loopback-only Iroh Home has no HTTPS ingress: advertise HTTPS only for a real
-        // public endpoint instead of falsely claiming the loopback canonical audience.
-        if (publicHttpsUrl) endpoints.push({ kind: 'https', url: publicHttpsUrl });
-    } else {
-        // Non-Iroh Homes keep the current reachable HTTPS behavior under the existing
-        // canonical/public rules: the stable canonical URL is the advertised endpoint.
-        endpoints.push({ kind: 'https', url: canonicalServerUrl });
-    }
-    return {
-        v: 1,
-        homeServerIdentityId: identity,
-        canonicalServerUrl,
-        revision: profile.connectionDescriptorRevision ?? 1,
-        endpoints,
-    };
+    if (profile.descriptorProvenance === 'advisory-only') return null;
+    const parsed = HomeConnectionDescriptorV1Schema.safeParse(profile.homeConnectionDescriptor);
+    return parsed.success ? parsed.data : null;
 }
 
 /**
@@ -1720,63 +1694,12 @@ export type HomeProfileDescriptorAuthority =
     | 'advisory'
     | 'current_connection_observation';
 
-/**
- * Closed, digest-bound permission to store one Home credential against an exact
- * advisory descriptor. The caller supplies the descriptor its Account Service
- * signed plus that signed destination digest; this owner recomputes the canonical
- * protocol projection for both the supplied descriptor and the descriptor actually
- * being adopted and permits the credential write only when all three agree. It is
- * not a boolean bypass and never promotes descriptor provenance: the adopted
- * profile stays `advisory-only` until a current Home observation establishes it.
- */
-export type HomeCredentialWriteAuthorizationV1 = Readonly<{
-    kind: 'assertion_destination_binding_v1';
-    descriptor: HomeConnectionDescriptorV1;
-    credentialDestinationDigestBase64Url: string;
-}>;
-
-// Runtime custody for the short-lived authorization. A structurally identical
-// object is deliberately insufficient: the token is valid only while the
-// Account Directory redemption owner executes its bounded adoption callback.
-const activeHomeCredentialWriteAuthorizations = new WeakSet<object>();
-
-export async function withHomeCredentialWriteAuthorization<T>(
-    input: HomeCredentialWriteAuthorizationV1,
-    run: (authorization: HomeCredentialWriteAuthorizationV1) => Promise<T>,
-): Promise<T> {
-    const authorization = Object.freeze({ ...input });
-    activeHomeCredentialWriteAuthorizations.add(authorization);
-    try {
-        return await run(authorization);
-    } finally {
-        activeHomeCredentialWriteAuthorizations.delete(authorization);
-    }
-}
-
-export type HomeCredentialWriteAuthorizationRejectionReason =
-    | 'unsupported_authorization'
-    | 'authority_not_advisory'
-    | 'malformed_descriptor'
-    | 'digest_mismatch'
-    | 'descriptor_mismatch'
-    | 'destination_not_authorized';
-
-export class HomeCredentialWriteAuthorizationError extends Error {
-    readonly code = 'home_credential_write_authorization_invalid' as const;
-
-    constructor(readonly reason: HomeCredentialWriteAuthorizationRejectionReason) {
-        super(`Home credential write authorization rejected: ${reason}`);
-        this.name = 'HomeCredentialWriteAuthorizationError';
-    }
-}
-
 type HomeProfileAdoptionParams = Readonly<{
     descriptor: HomeConnectionDescriptorV1 | LegacyManualHomeDescriptor;
     source: ServerProfileSource;
     preserveUserLabel?: boolean;
     preserveProfileSource?: boolean;
     descriptorAuthority?: HomeProfileDescriptorAuthority;
-    credentialWriteAuthorization?: HomeCredentialWriteAuthorizationV1;
     suggestedName?: string;
 }>;
 
@@ -1811,39 +1734,12 @@ export class HomeProfileAdoptionConflictError extends Error {
     }
 }
 
-function descriptorSnapshotFacts(descriptor: HomeConnectionDescriptorV1): Readonly<{
-    homeServerIdentityId: string;
-    canonicalServerUrl: string;
-    publicServerUrl: string | null;
-    irohEndpoint: IrohEndpointDescriptorV1 | null;
-}> {
-    const httpsEndpoint = descriptor.endpoints.find((endpoint) => endpoint.kind === 'https');
-    const irohEndpoint = descriptor.endpoints.find(
-        (endpoint): endpoint is Extract<HomeConnectionDescriptorV1['endpoints'][number], { kind: 'iroh' }> => endpoint.kind === 'iroh',
-    );
-    return {
-        homeServerIdentityId: normalizeServerIdentityId(descriptor.homeServerIdentityId) ?? '',
-        canonicalServerUrl: normalizeUrl(descriptor.canonicalServerUrl),
-        publicServerUrl: httpsEndpoint ? normalizeUrl(httpsEndpoint.url) : null,
-        irohEndpoint: irohEndpoint
-            ? parseIrohEndpointDescriptorV1({
-                endpointId: irohEndpoint.endpointId,
-                ...(irohEndpoint.relayUrls ? { relayUrls: [...irohEndpoint.relayUrls] } : {}),
-                ...(irohEndpoint.directAddresses ? { directAddresses: [...irohEndpoint.directAddresses] } : {}),
-            })
-            : null,
-    };
-}
-
 function descriptorSnapshotMatchesProfile(
     descriptor: HomeConnectionDescriptorV1,
     profile: ServerProfile,
 ): boolean {
-    const incoming = descriptorSnapshotFacts(descriptor);
-    return incoming.homeServerIdentityId === (normalizeServerIdentityId(profile.serverIdentityId) ?? '')
-        && incoming.canonicalServerUrl === normalizeUrl(profile.canonicalServerUrl ?? profile.serverUrl)
-        && incoming.publicServerUrl === (profile.publicServerUrl ?? null)
-        && JSON.stringify(incoming.irohEndpoint) === JSON.stringify(profile.irohEndpoint ?? null);
+    return profile.homeConnectionDescriptor !== undefined
+        && JSON.stringify(descriptor) === JSON.stringify(profile.homeConnectionDescriptor);
 }
 
 type DescriptorRevisionAdjudication =
@@ -1862,31 +1758,6 @@ function adjudicateDescriptorRevision(
     return descriptorSnapshotMatchesProfile(descriptor, profile)
         ? 'unchanged'
         : 'equal_revision_conflict';
-}
-
-function mergePublicDescriptorObservation(
-    descriptor: HomeConnectionDescriptorV1,
-    profile: ServerProfile,
-): HomeConnectionDescriptorV1 {
-    const observedEntry = descriptor.endpoints.find((endpoint) => endpoint.kind === 'iroh') ?? null;
-    const observed = observedEntry ? {
-        endpointId: observedEntry.endpointId,
-        ...(observedEntry.relayUrls ? { relayUrls: observedEntry.relayUrls } : {}),
-        ...(observedEntry.directAddresses ? { directAddresses: observedEntry.directAddresses } : {}),
-    } : null;
-    const trustedCurrent = profile.descriptorProvenance === 'advisory-only'
-        ? null
-        : profile.irohEndpoint ?? null;
-    const merged = mergePublicIrohEndpointObservation(trustedCurrent, observed);
-    const endpoints: HomeConnectionDescriptorV1['endpoints'][number][] = descriptor.endpoints
-        .filter((endpoint) => endpoint.kind !== 'iroh');
-    if (merged) {
-        endpoints.push({
-            kind: 'iroh',
-            ...merged,
-        });
-    }
-    return { ...descriptor, endpoints };
 }
 
 /**
@@ -1909,7 +1780,7 @@ export async function reconcileServerProfileHomeConnectionDescriptor(params: Rea
     if (!parsed.success) {
         return { kind: 'conflict', code: 'invalid_descriptor', profile };
     }
-    let descriptor = parsed.data;
+    const descriptor = parsed.data;
     if (!observedIdentity || descriptor.homeServerIdentityId !== observedIdentity) {
         return { kind: 'conflict', code: 'identity_mismatch', profile };
     }
@@ -1920,7 +1791,11 @@ export async function reconcileServerProfileHomeConnectionDescriptor(params: Rea
         return { kind: 'conflict', code: 'identity_mismatch', profile };
     }
     if (params.observation === 'public') {
-        descriptor = mergePublicDescriptorObservation(descriptor, profile);
+        // Public features are first-contact verification only. A redacted public
+        // projection can never establish or replace an exact outer generation.
+        return descriptor.revision < (profile.connectionDescriptorRevision ?? 0)
+            ? { kind: 'stale', profile }
+            : { kind: 'unchanged', profile };
     }
 
     // Observation authority establishes an advisory-only placeholder wholesale; the
@@ -1951,59 +1826,7 @@ type ResolvedHomeProfileAdoption = Readonly<{
     state: Required<PersistedServerState>;
     existing: ServerProfile | null;
     descriptorAdjudication: DescriptorRevisionAdjudication | null;
-    credentialWriteAuthorized: boolean;
 }>;
-
-/**
- * Recomputes the canonical protocol credential-destination digest for the supplied
- * authorization and for the descriptor actually being adopted, then proves all three
- * values equal. Any missing, malformed, mismatched or non-advisory authorization is
- * rejected here — before the resolver reads or writes any profile state — so no
- * adoption path can treat an unproven destination as permission to store a bearer.
- */
-function authorizeAdvisoryCredentialWrite(
-    authorization: HomeCredentialWriteAuthorizationV1 | undefined,
-    adoptedDescriptor: HomeConnectionDescriptorV1 | LegacyManualHomeDescriptor,
-    descriptorAuthority: HomeProfileDescriptorAuthority | undefined,
-): boolean {
-    if (authorization === undefined) return false;
-    if (
-        !authorization
-        || typeof authorization !== 'object'
-        || authorization.kind !== 'assertion_destination_binding_v1'
-        || !activeHomeCredentialWriteAuthorizations.has(authorization)
-    ) {
-        throw new HomeCredentialWriteAuthorizationError('unsupported_authorization');
-    }
-    // Only advisory adoption needs this permission; an establishing authority that
-    // also carried one would be a second, redundant trust path for the same write.
-    if (descriptorAuthority !== 'advisory') {
-        throw new HomeCredentialWriteAuthorizationError('authority_not_advisory');
-    }
-    let authorizedDigest: string;
-    try {
-        authorizedDigest = createHomeCredentialDestinationDigestV1(authorization.descriptor);
-    } catch {
-        throw new HomeCredentialWriteAuthorizationError('malformed_descriptor');
-    }
-    if (authorizedDigest !== authorization.credentialDestinationDigestBase64Url) {
-        throw new HomeCredentialWriteAuthorizationError('digest_mismatch');
-    }
-    const parsedAdopted = HomeConnectionDescriptorV1Schema.safeParse(adoptedDescriptor);
-    if (!parsedAdopted.success) {
-        throw new HomeCredentialWriteAuthorizationError('descriptor_mismatch');
-    }
-    let adoptedDigest: string;
-    try {
-        adoptedDigest = createHomeCredentialDestinationDigestV1(parsedAdopted.data);
-    } catch {
-        throw new HomeCredentialWriteAuthorizationError('descriptor_mismatch');
-    }
-    if (adoptedDigest !== authorizedDigest) {
-        throw new HomeCredentialWriteAuthorizationError('descriptor_mismatch');
-    }
-    return true;
-}
 
 function resolveHomeProfileAdoption(
     params: HomeProfileAdoptionParams,
@@ -2020,11 +1843,6 @@ function resolveHomeProfileAdoption(
     if (!descriptor || typeof descriptor !== 'object') {
         throw new Error('Invalid Home connection descriptor');
     }
-    const credentialWriteAuthorized = authorizeAdvisoryCredentialWrite(
-        params.credentialWriteAuthorization,
-        descriptor,
-        params.descriptorAuthority,
-    );
     const strictDescriptor = params.source === 'qr' || params.source === 'account-directory';
     if (strictDescriptor) {
         const parsed = HomeConnectionDescriptorV1Schema.safeParse(descriptor);
@@ -2052,27 +1870,6 @@ function resolveHomeProfileAdoption(
         || (byIdentity.length === 1 && profile.id !== byIdentity[0]!.id)
     ))) throw new Error('Home identity conflicts with URL');
     const existing = byIdentity[0] ?? byUrl;
-    // The authorization is the only thing permitting this credential write, so the
-    // destination the runtime will actually route to must be one the Home bound the
-    // credential to. Advisory facts never retarget an existing profile, so an
-    // unproven advisory route would otherwise keep its stale URL while receiving a
-    // bearer issued for a different destination.
-    if (
-        credentialWriteAuthorized
-        && params.credentialWriteAuthorization
-        && (!existing || existing.descriptorProvenance === 'advisory-only')
-        && !isHomeCredentialDestinationAllowedV1(
-            createHomeCredentialDestinationV1(params.credentialWriteAuthorization.descriptor),
-            {
-                kind: 'https',
-                applicationUrl: existing
-                    ? normalizeUrl(existing.canonicalServerUrl ?? existing.serverUrl)
-                    : url,
-            },
-        )
-    ) {
-        throw new HomeCredentialWriteAuthorizationError('destination_not_authorized');
-    }
     const parsedCanonicalDescriptor = HomeConnectionDescriptorV1Schema.safeParse(descriptor);
     let descriptorAdjudication: DescriptorRevisionAdjudication | null;
     if (parsedCanonicalDescriptor.success && existing) {
@@ -2101,7 +1898,6 @@ function resolveHomeProfileAdoption(
         state,
         existing,
         descriptorAdjudication,
-        credentialWriteAuthorized,
     };
 }
 
@@ -2120,11 +1916,8 @@ export function preflightHomeProfileAdoption(
         && resolved.existing.descriptorProvenance !== 'advisory-only';
     const preserveExisting = existingEstablished
         && params.descriptorAuthority === 'advisory';
-    // A digest-bound destination authorization permits exactly this advisory write;
-    // it never upgrades provenance, so the adopted profile stays advisory-only.
     const requiresCurrentObservation = !existingEstablished
-        && params.descriptorAuthority === 'advisory'
-        && !resolved.credentialWriteAuthorized;
+        && params.descriptorAuthority === 'advisory';
     const existingServerUrl = resolved.existing
         ? normalizeUrl(resolved.existing.canonicalServerUrl ?? resolved.existing.serverUrl)
         : resolved.canonicalServerUrl;
@@ -2194,6 +1987,7 @@ async function adoptHomeProfileWithOptions(
         && descriptor.revision > 0
         ? descriptor.revision
         : undefined;
+    const exactDescriptor = HomeConnectionDescriptorV1Schema.safeParse(descriptor);
     if (
         (descriptorAdjudication === 'unchanged' || descriptorAdjudication === 'stale')
         && options.completePersonalHomeBootstrap !== true
@@ -2227,6 +2021,9 @@ async function adoptHomeProfileWithOptions(
                 }
                 : { irohEndpoint: undefined }),
             connectionDescriptorRevision: descriptorRevision,
+            ...(exactDescriptor.success
+                ? { homeConnectionDescriptor: exactDescriptor.data }
+                : {}),
         };
     const publicEndpointFacts = descriptorRevision !== undefined
         ? acceptsDescriptorSnapshot
@@ -2420,6 +2217,9 @@ function buildUpsertedServerProfile(
             : {}),
         ...(existingEquivalent?.connectionDescriptorRevision !== undefined || existing?.connectionDescriptorRevision !== undefined
             ? { connectionDescriptorRevision: existingEquivalent?.connectionDescriptorRevision ?? existing?.connectionDescriptorRevision }
+            : {}),
+        ...(existingEquivalent?.homeConnectionDescriptor ?? existing?.homeConnectionDescriptor
+            ? { homeConnectionDescriptor: existingEquivalent?.homeConnectionDescriptor ?? existing?.homeConnectionDescriptor }
             : {}),
         ...((existingEquivalent?.legacyServerIds ?? existing?.legacyServerIds)?.length
             ? { legacyServerIds: existingEquivalent?.legacyServerIds ?? existing?.legacyServerIds ?? [] }

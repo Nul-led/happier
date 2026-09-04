@@ -62,8 +62,9 @@ export async function runSessionHandoffPickerFlow(args: Readonly<{
             ),
         },
     });
+    let result: ExecuteSessionHandoffActionResult | null = null;
     try {
-        return await executeSessionHandoffAction({
+        result = await executeSessionHandoffAction({
             execute: args.execute,
             sessionId: args.sessionId,
             targetMachineId: selection.targetMachineId,
@@ -78,8 +79,14 @@ export async function runSessionHandoffPickerFlow(args: Readonly<{
                 actionRequestId: requestId,
             },
         });
+        return result;
     } finally {
-        progressPresentation.close();
+        // Workspace outcomes and failures remain visible through the canonical
+        // Action operation result. Only an ordinary handoff with no workspace
+        // result retains the compact auto-close behavior.
+        if (result?.ok && result.result.workspace?.kind === 'none') {
+            progressPresentation.close();
+        }
         releaseUserRequestLease();
     }
 }

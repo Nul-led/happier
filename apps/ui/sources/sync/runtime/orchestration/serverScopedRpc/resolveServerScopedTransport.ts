@@ -1,20 +1,13 @@
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import {
     canonicalizeServerUrl,
-    resolveIndependentHttpsServerOrigin,
 } from '@/sync/domains/server/url/serverUrlCanonical';
 import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
 import {
-    acquireIrohHomeRuntimeOrigin,
-    classifyIrohHomeTunnelSwitchFailure,
-} from '@/sync/runtime/nativeIrohTunnels';
-import {
-    acquireBrowserIrohHomeCarrier,
-    resolveBrowserIrohHomeCarrierEligibility,
-} from '@/sync/runtime/browserIroh/homeCarrier/browserHomeCarrier';
-import { resolveBrowserIrohHostDecision } from '@/sync/runtime/browserIroh/hostEligibility';
-import { IrohError } from '@happier-dev/iroh-native';
-import type { IrohEndpointDescriptorV1 } from '@happier-dev/protocol';
+    acquireEligibleHomeCarrier,
+    drainRetainedHomeCarrierReleases,
+} from '@/sync/runtime/homeCarrierPolicy';
+import type { HomeConnectionDescriptorV1 } from '@happier-dev/protocol';
 
 export class ServerScopedTransportUnavailableError extends Error {
     constructor() {
@@ -26,10 +19,7 @@ export class ServerScopedTransportUnavailableError extends Error {
 type ServerTransportProfile = Readonly<{
     serverUrl: string;
     canonicalServerUrl?: string | null;
-    publicServerUrl?: string | null;
-    serverIdentityId?: string | null;
-    irohEndpoint?: IrohEndpointDescriptorV1;
-    connectionDescriptorRevision?: number;
+    homeConnectionDescriptor?: HomeConnectionDescriptorV1;
 }>;
 
 export type ResolvedServerScopedTransport = Readonly<{
@@ -79,6 +69,14 @@ export function onceAsync(release: () => Promise<void>): () => Promise<void> {
 }
 
 /**
+ * Thin compatibility name for the existing scoped-feature caller. The carrier
+ * owner retains and retries the physical releases.
+ */
+export async function drainRetainedServerScopedTransportReleases(): Promise<void> {
+    await drainRetainedHomeCarrierReleases();
+}
+
+/**
  * Resolves one Home's stable identity/audience and acquired request carrier.
  * Canonical identity remains the reachability key; the verified runtime origin
  * is mutable transport metadata and is never persisted as the Home URL.
@@ -97,58 +95,31 @@ export async function resolveServerScopedTransport(params: Readonly<{
     let leaseId: string | undefined;
     let homeCarrier: HomeCarrier | undefined;
     let releaseCarrier = async (): Promise<void> => {};
-    const identity = String(params.profile.serverIdentityId ?? '').trim();
-    const endpoint = params.profile.irohEndpoint;
+    const descriptor = params.profile.homeConnectionDescriptor;
 
-    if (identity && endpoint) {
-        const browserRequest = {
-            homeServerIdentityId: identity,
-            endpoint,
-            canonicalServerUrl,
+    if (descriptor) {
+        const acquired = await acquireEligibleHomeCarrier({
+            descriptor,
+            verification: { kind: 'authenticated', token: params.credentials.token },
             credentials: params.credentials,
-        };
-        // A browser cannot bind the native loopback listener, so it uses the
-        // relay-only semantic carrier instead. Every other host — including
-        // Tauri and Electron running this same bundle — keeps the native lease,
-        // which can also use direct paths.
-        const browserHost = resolveBrowserIrohHostDecision();
-        try {
-            if (browserHost.eligible) {
-                const eligibility = resolveBrowserIrohHomeCarrierEligibility(browserRequest, browserHost);
-                if (!eligibility.eligible) {
-                    // A descriptor a browser cannot use (no explicit relay set,
-                    // no endpoint) means this carrier is unavailable here. It is
-                    // not a descriptor-integrity failure: a native host would
-                    // still use the same descriptor.
-                    throw new IrohError('unavailable', `Browser Iroh Home carrier unavailable: ${eligibility.reason}`);
-                }
-                const acquired = await acquireBrowserIrohHomeCarrier(browserRequest);
-                carrier = 'iroh';
-                leaseId = acquired.leaseId;
-                homeCarrier = acquired;
-                releaseCarrier = onceAsync(acquired.release);
-            } else {
-                const lease = await acquireIrohHomeRuntimeOrigin({
-                    homeServerIdentityId: identity,
-                    endpoint,
-                    ...(params.profile.connectionDescriptorRevision === undefined
-                        ? {}
-                        : { descriptorRevision: params.profile.connectionDescriptorRevision }),
-                    canonicalServerUrl,
-                    verification: { kind: 'authenticated', token: params.credentials.token },
-                });
-                runtimeOrigin = lease.runtimeOrigin;
-                carrier = 'iroh';
-                leaseId = lease.leaseId;
-                releaseCarrier = onceAsync(lease.release);
-            }
-        } catch (error) {
-            if (!classifyIrohHomeTunnelSwitchFailure(error).fallbackAllowed) throw error;
-            const independentHttpsOrigin = resolveIndependentHttpsServerOrigin(
-                params.profile.publicServerUrl ?? '',
-            );
-            if (!independentHttpsOrigin) throw new ServerScopedTransportUnavailableError();
-            runtimeOrigin = independentHttpsOrigin;
+        });
+        if (acquired.kind === 'fail_closed' || acquired.kind === 'unavailable') {
+            if (acquired.kind === 'unavailable') throw new ServerScopedTransportUnavailableError();
+            if (acquired.fallbackAllowed) throw new ServerScopedTransportUnavailableError();
+            throw acquired.error;
+        }
+        if (acquired.kind === 'https') {
+            runtimeOrigin = acquired.runtimeOrigin;
+        } else if (acquired.kind === 'browser_iroh') {
+            carrier = 'iroh';
+            leaseId = acquired.carrier.leaseId;
+            homeCarrier = acquired.carrier;
+            releaseCarrier = acquired.release;
+        } else {
+            runtimeOrigin = acquired.lease.runtimeOrigin;
+            carrier = 'iroh';
+            leaseId = acquired.lease.leaseId;
+            releaseCarrier = acquired.release;
         }
     }
 

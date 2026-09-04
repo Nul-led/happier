@@ -11,6 +11,7 @@ let featuresFetchMock: ReturnType<typeof vi.fn>;
 let setServerProfileIdentityForUrlMock: ReturnType<typeof vi.fn>;
 let reconcileServerProfileHomeConnectionDescriptorMock: ReturnType<typeof vi.fn>;
 let learnedServerIdentityId: string | null;
+let serverBProfileOverrides: Record<string, unknown>;
 
 const frozenServerFeaturesTime = new Date('2026-02-13T00:00:00.000Z');
 const frozenServerFeaturesTimeAfterCooldown = new Date('2026-02-13T00:01:00.000Z');
@@ -39,7 +40,7 @@ vi.mock('@/sync/domains/server/serverProfiles', () => ({
                 ...(learnedServerIdentityId ? { serverIdentityId: learnedServerIdentityId } : {}),
             };
         }
-        if (id === 'server-b') return { id, serverUrl: 'https://other.example.test' };
+        if (id === 'server-b') return { id, serverUrl: 'https://other.example.test', ...serverBProfileOverrides };
         return null;
     },
     resolveServerProfileScopeIdForIdentifier: (idRaw: unknown) => {
@@ -53,11 +54,10 @@ vi.mock('@/sync/domains/server/serverProfiles', () => ({
 }));
 
 function createResponse(status: number, payload: unknown) {
-    return {
-        ok: status >= 200 && status < 300,
+    return new Response(JSON.stringify(payload), {
         status,
-        json: async () => payload,
-    } as Response;
+        headers: { 'content-type': 'application/json' },
+    });
 }
 
 function useFrozenServerFeaturesClock(now = frozenServerFeaturesTime): void {
@@ -80,6 +80,7 @@ describe('serverFeaturesClient', () => {
         };
         featuresFetchMock = vi.fn();
         learnedServerIdentityId = null;
+        serverBProfileOverrides = {};
         setServerProfileIdentityForUrlMock = vi.fn((_url: string, identity: string) => {
             learnedServerIdentityId = identity;
             activeServerSnapshot = {
@@ -112,6 +113,9 @@ describe('serverFeaturesClient', () => {
         vi.useRealTimers();
         globalThis.fetch = originalFetch;
         vi.restoreAllMocks();
+        vi.doUnmock('@/auth/storage/tokenStorage');
+        vi.doUnmock('@/sync/runtime/browserIroh/hostEligibility');
+        vi.doUnmock('@/sync/runtime/browserIroh/homeCarrier/browserHomeCarrier');
         vi.resetModules();
         const { resetServerReachabilitySupervisors } = await import('@/sync/runtime/connectivity/serverReachabilitySupervisorPool');
         await resetServerReachabilitySupervisors();
@@ -314,9 +318,16 @@ describe('serverFeaturesClient', () => {
 
         const fetched = await getServerFeaturesSnapshot({ force: true, timeoutMs: 50 });
 
-        expect(fetched).toMatchObject({ status: 'ready' });
+        expect(fetched).toMatchObject({
+            status: 'ready',
+            serverIdentityId: 'srv_active_identity',
+        });
         expect(activeServerSnapshot.serverId).toBe('srv_active_identity');
         expect(getCachedServerFeaturesSnapshot({ serverId: 'srv_active_identity' })).toBe(fetched);
+        expect(getCachedServerFeaturesSnapshot({ serverId: 'srv_active_identity' })).toMatchObject({
+            status: 'ready',
+            serverIdentityId: 'srv_active_identity',
+        });
     });
 
     it('surfaces the authenticated full Home descriptor as an exact current-connection observation', async () => {
@@ -992,6 +1003,310 @@ describe('serverFeaturesClient', () => {
         const calls = featuresFetchMock.mock.calls;
         expect(calls.length).toBe(1);
         expect(String(calls[0]?.[0] ?? '')).toContain('https://other.example.test');
+    });
+
+    it('refreshes a nonfocused ingress-less Home through its authenticated server-scoped carrier after a public privacy-reduced observation', async () => {
+        const publicDescriptor = {
+            v: 1 as const,
+            homeServerIdentityId: 'srv_iroh_home',
+            canonicalServerUrl: 'http://localhost:3010',
+            revision: 5,
+            endpoints: [{
+                kind: 'iroh' as const,
+                endpointId: 'a'.repeat(64),
+                relayUrls: ['https://relay-public.example.test'],
+            }],
+        };
+        const authenticatedDescriptor = {
+            v: 1 as const,
+            homeServerIdentityId: 'srv_iroh_home',
+            canonicalServerUrl: 'http://localhost:3010',
+            revision: 5,
+            endpoints: [{
+                kind: 'iroh' as const,
+                endpointId: 'a'.repeat(64),
+                relayUrls: ['https://relay-authenticated.example.test'],
+                directAddresses: ['192.0.2.91:443'],
+            }],
+        };
+        serverBProfileOverrides = {
+            canonicalServerUrl: 'http://localhost:3010',
+            publicServerUrl: null,
+            serverIdentityId: 'srv_iroh_home',
+            irohEndpoint: {
+                endpointId: 'a'.repeat(64),
+                relayUrls: ['https://relay-old.example.test'],
+                directAddresses: ['192.0.2.90:443'],
+            },
+            connectionDescriptorRevision: 4,
+            homeConnectionDescriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_iroh_home',
+                canonicalServerUrl: 'http://localhost:3010',
+                revision: 4,
+                endpoints: [{
+                    kind: 'iroh',
+                    endpointId: 'a'.repeat(64),
+                    relayUrls: ['https://relay-old.example.test'],
+                }],
+            },
+        };
+        const release = vi.fn(async () => {});
+        const homeCarrierRequest = vi.fn(async (url: string) => new Response(JSON.stringify({
+            features: {},
+            capabilities: {
+                serverIdentity: { serverIdentityId: 'srv_iroh_home' },
+            },
+            homeConnectionDescriptor: url.endsWith('/v1/features/authenticated')
+                ? authenticatedDescriptor
+                : publicDescriptor,
+        }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        }));
+        const homeCarrier = {
+            leaseId: 'browser-iroh-lease',
+            homeServerIdentityId: 'srv_iroh_home',
+            appliedRelayUrls: ['https://relay.example.test'],
+            endpointId: 'a'.repeat(64),
+            readObservedPath: () => 'relay' as const,
+            request: homeCarrierRequest,
+            createWebSocket: vi.fn(),
+            release,
+        };
+        vi.doMock('@/auth/storage/tokenStorage', async (importOriginal) => {
+            const original = await importOriginal<typeof import('@/auth/storage/tokenStorage')>();
+            return {
+                ...original,
+                TokenStorage: {
+                    ...original.TokenStorage,
+                    getCredentialsForServerUrl: vi.fn(async () => ({ token: 'home-token' })),
+                },
+            };
+        });
+        vi.doMock('@/sync/runtime/browserIroh/hostEligibility', () => ({
+            resolveBrowserIrohHostDecision: () => ({ eligible: true }),
+        }));
+        vi.doMock('@/sync/runtime/browserIroh/homeCarrier/browserHomeCarrier', async (importOriginal) => {
+            const original = await importOriginal<
+                typeof import('@/sync/runtime/browserIroh/homeCarrier/browserHomeCarrier')
+            >();
+            return {
+                ...original,
+                acquireBrowserIrohHomeCarrier: vi.fn(async () => homeCarrier),
+            };
+        });
+
+        const {
+            getServerFeaturesSnapshot,
+            refreshAuthenticatedServerFeaturesSnapshot,
+            resetServerFeaturesClientForTests,
+        } = await import('./serverFeaturesClient');
+        resetServerFeaturesClientForTests();
+
+        const publicResult = await getServerFeaturesSnapshot({
+            force: true,
+            timeoutMs: 2_000,
+            serverId: 'server-b',
+        });
+        const authenticatedResult = await refreshAuthenticatedServerFeaturesSnapshot({
+            credentials: { token: 'home-token' },
+            force: true,
+            timeoutMs: 2_000,
+            serverId: 'server-b',
+        });
+
+        expect(publicResult).toMatchObject({ status: 'ready', serverIdentityId: 'srv_iroh_home' });
+        expect(authenticatedResult).toMatchObject({ status: 'ready', serverIdentityId: 'srv_iroh_home' });
+        expect(homeCarrierRequest.mock.calls.map(([url]) => url)).toEqual([
+            'http://localhost:3010/v1/features',
+            'http://localhost:3010/v1/features/authenticated',
+        ]);
+        expect(reconcileServerProfileHomeConnectionDescriptorMock).toHaveBeenNthCalledWith(1, {
+            serverUrl: 'https://other.example.test',
+            observedServerIdentityId: 'srv_iroh_home',
+            descriptor: publicDescriptor,
+            observation: 'public',
+        });
+        expect(reconcileServerProfileHomeConnectionDescriptorMock).toHaveBeenNthCalledWith(2, {
+            serverUrl: 'https://other.example.test',
+            observedServerIdentityId: 'srv_iroh_home',
+            descriptor: authenticatedDescriptor,
+            observation: 'exact',
+        });
+        expect(release).toHaveBeenCalledTimes(2);
+    });
+
+    it('discovers features for a nonfocused ingress-less Home through its server-scoped browser Iroh carrier', async () => {
+        serverBProfileOverrides = {
+            canonicalServerUrl: 'http://localhost:3010',
+            publicServerUrl: null,
+            serverIdentityId: 'srv_iroh_home',
+            irohEndpoint: {
+                endpointId: 'iroh-home-endpoint',
+                relayUrls: ['https://relay.example.test'],
+            },
+            connectionDescriptorRevision: 4,
+            homeConnectionDescriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_iroh_home',
+                canonicalServerUrl: 'http://localhost:3010',
+                revision: 4,
+                endpoints: [{
+                    kind: 'iroh',
+                    endpointId: 'iroh-home-endpoint',
+                    relayUrls: ['https://relay.example.test'],
+                }],
+            },
+        };
+        const release = vi.fn(async () => {});
+        const homeCarrierRequest = vi.fn(async () => new Response(JSON.stringify({
+            features: {},
+            capabilities: {
+                serverIdentity: { serverIdentityId: 'srv_iroh_home' },
+            },
+        }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        }));
+        const homeCarrier = {
+            leaseId: 'browser-iroh-lease',
+            homeServerIdentityId: 'srv_iroh_home',
+            appliedRelayUrls: ['https://relay.example.test'],
+            endpointId: 'iroh-home-endpoint',
+            readObservedPath: () => 'relay' as const,
+            request: homeCarrierRequest,
+            createWebSocket: vi.fn(),
+            release,
+        };
+        vi.doMock('@/auth/storage/tokenStorage', async (importOriginal) => {
+            const original = await importOriginal<typeof import('@/auth/storage/tokenStorage')>();
+            return {
+                ...original,
+                TokenStorage: {
+                    ...original.TokenStorage,
+                    getCredentialsForServerUrl: vi.fn(async () => ({ token: 'home-token' })),
+                },
+            };
+        });
+        vi.doMock('@/sync/runtime/browserIroh/hostEligibility', () => ({
+            resolveBrowserIrohHostDecision: () => ({ eligible: true }),
+        }));
+        vi.doMock('@/sync/runtime/browserIroh/homeCarrier/browserHomeCarrier', async (importOriginal) => {
+            const original = await importOriginal<
+                typeof import('@/sync/runtime/browserIroh/homeCarrier/browserHomeCarrier')
+            >();
+            return {
+                ...original,
+                acquireBrowserIrohHomeCarrier: vi.fn(async () => homeCarrier),
+            };
+        });
+
+        const { getServerFeaturesSnapshot, resetServerFeaturesClientForTests } = await import('./serverFeaturesClient');
+        resetServerFeaturesClientForTests();
+
+        const result = await getServerFeaturesSnapshot({
+            force: true,
+            timeoutMs: 2_000,
+            serverId: 'server-b',
+        });
+
+        expect(result).toMatchObject({ status: 'ready', serverIdentityId: 'srv_iroh_home' });
+        expect(homeCarrierRequest).toHaveBeenCalledWith(
+            'http://localhost:3010/v1/features',
+            expect.objectContaining({ method: 'GET' }),
+        );
+        expect(release).toHaveBeenCalledTimes(1);
+        expect(featuresFetchMock).not.toHaveBeenCalled();
+    });
+
+    it('retries retained explicit transport release custody before returning a cached feature snapshot', async () => {
+        serverBProfileOverrides = {
+            canonicalServerUrl: 'http://localhost:3010',
+            publicServerUrl: null,
+            serverIdentityId: 'srv_iroh_home',
+            irohEndpoint: {
+                endpointId: 'iroh-home-endpoint',
+                relayUrls: ['https://relay.example.test'],
+            },
+            connectionDescriptorRevision: 4,
+            homeConnectionDescriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_iroh_home',
+                canonicalServerUrl: 'http://localhost:3010',
+                revision: 4,
+                endpoints: [{
+                    kind: 'iroh',
+                    endpointId: 'iroh-home-endpoint',
+                    relayUrls: ['https://relay.example.test'],
+                }],
+            },
+        };
+        const releaseError = new Error('feature transport release failed');
+        const release = vi.fn(async () => {})
+            .mockRejectedValueOnce(releaseError)
+            .mockResolvedValue(undefined);
+        const homeCarrierRequest = vi.fn(async () => new Response(JSON.stringify({
+            features: {},
+            capabilities: {
+                serverIdentity: { serverIdentityId: 'srv_iroh_home' },
+            },
+        }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        }));
+        const homeCarrier = {
+            leaseId: 'browser-iroh-lease',
+            homeServerIdentityId: 'srv_iroh_home',
+            appliedRelayUrls: ['https://relay.example.test'],
+            endpointId: 'iroh-home-endpoint',
+            readObservedPath: () => 'relay' as const,
+            request: homeCarrierRequest,
+            createWebSocket: vi.fn(),
+            release,
+        };
+        vi.doMock('@/auth/storage/tokenStorage', async (importOriginal) => {
+            const original = await importOriginal<typeof import('@/auth/storage/tokenStorage')>();
+            return {
+                ...original,
+                TokenStorage: {
+                    ...original.TokenStorage,
+                    getCredentialsForServerUrl: vi.fn(async () => ({ token: 'home-token' })),
+                },
+            };
+        });
+        vi.doMock('@/sync/runtime/browserIroh/hostEligibility', () => ({
+            resolveBrowserIrohHostDecision: () => ({ eligible: true }),
+        }));
+        vi.doMock('@/sync/runtime/browserIroh/homeCarrier/browserHomeCarrier', async (importOriginal) => {
+            const original = await importOriginal<
+                typeof import('@/sync/runtime/browserIroh/homeCarrier/browserHomeCarrier')
+            >();
+            return {
+                ...original,
+                acquireBrowserIrohHomeCarrier: vi.fn(async () => homeCarrier),
+            };
+        });
+
+        const { getServerFeaturesSnapshot, resetServerFeaturesClientForTests } = await import('./serverFeaturesClient');
+        resetServerFeaturesClientForTests();
+
+        await expect(getServerFeaturesSnapshot({
+            force: true,
+            timeoutMs: 2_000,
+            serverId: 'server-b',
+        })).rejects.toBe(releaseError);
+        expect(release).toHaveBeenCalledTimes(1);
+        expect(homeCarrierRequest).toHaveBeenCalledTimes(1);
+
+        const cached = await getServerFeaturesSnapshot({
+            timeoutMs: 2_000,
+            serverId: 'server-b',
+        });
+
+        expect(cached).toMatchObject({ status: 'ready', serverIdentityId: 'srv_iroh_home' });
+        expect(release).toHaveBeenCalledTimes(2);
+        expect(homeCarrierRequest).toHaveBeenCalledTimes(1);
     });
 
     it('does not reuse an in-flight old-origin identity observation for a new runtime origin', async () => {

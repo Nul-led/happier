@@ -20,6 +20,7 @@ describe('machineRpcWithPeerMediationRoute', () => {
 
         const result = await module.machineRpcWithPeerMediationRoute({
             serverId: 'server_1',
+            accountId: 'account_1',
             machineId: 'machine_1',
             method: RPC_METHODS.SPAWN_HAPPY_SESSION,
             payload: { prompt: 'hello' },
@@ -34,6 +35,7 @@ describe('machineRpcWithPeerMediationRoute', () => {
         expect(result).toEqual({ routed: 'server' });
         expect(postDirect).not.toHaveBeenCalled();
         expect(serverFallback).toHaveBeenCalledWith(expect.objectContaining({
+            accountId: 'account_1',
             reasonCode: 'server_required',
         }));
     });

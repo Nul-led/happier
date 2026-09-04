@@ -247,6 +247,81 @@ describe('sync/runtime/browserIroh/homeTunnelHttp', () => {
         expect(fake.countOf('finishWrite')).toBe(1);
     });
 
+    it('cancels the request body reader on a stream write failure without masking that failure', async () => {
+        const fake = createFakeHomeStream();
+        const primary = new Error('primary stream write failure');
+        const sourceCancel = vi.fn(async () => {
+            throw new Error('secondary source cancellation failure');
+        });
+        const body = new ReadableStream<Uint8Array>({
+            start(controller) {
+                controller.enqueue(new Uint8Array([1, 2, 3]));
+            },
+            cancel: sourceCancel,
+        });
+        let writes = 0;
+        const stream: BrowserIrohStream = {
+            ...fake.stream,
+            write: async (bytes) => {
+                writes += 1;
+                if (writes === 2) throw primary;
+                await fake.stream.write(bytes);
+            },
+        };
+        const requester = createBrowserIrohHomeHttpRequester({
+            openStream: async () => stream,
+            expectedRemoteEndpointId: HOME_ENDPOINT_ID,
+        });
+
+        const pending = requester('https://home.example.test/v1/sessions', {
+            method: 'POST',
+            body,
+            duplex: 'half',
+        } as RequestInit & { duplex: 'half' });
+
+        await expect(pending).rejects.toBe(primary);
+        expect(sourceCancel).toHaveBeenCalledTimes(1);
+        expect(sourceCancel).toHaveBeenCalledWith(primary);
+    });
+
+    it('cancels a pending request body reader on abort but only releases it after EOF', async () => {
+        const fake = createFakeHomeStream();
+        const abortController = new AbortController();
+        const abortReason = new Error('body upload aborted');
+        const abortedSourceCancel = vi.fn(async () => undefined);
+        const pendingBody = new ReadableStream<Uint8Array>({
+            pull: async () => await new Promise<void>(() => {}),
+            cancel: abortedSourceCancel,
+        });
+        const requester = requesterFor(fake);
+        const pending = requester('https://home.example.test/v1/upload', {
+            method: 'POST',
+            body: pendingBody,
+            duplex: 'half',
+            signal: abortController.signal,
+        } as RequestInit & { duplex: 'half' });
+        abortController.abort(abortReason);
+
+        await expect(pending).rejects.toBe(abortReason);
+        await vi.waitFor(() => expect(abortedSourceCancel).toHaveBeenCalledWith(abortReason));
+
+        const eofSourceCancel = vi.fn(async () => undefined);
+        const eofBody = new ReadableStream<Uint8Array>({
+            start(controller) {
+                controller.enqueue(new Uint8Array([4]));
+                controller.close();
+            },
+            cancel: eofSourceCancel,
+        });
+        const eofFake = createFakeHomeStream();
+        const completed = requesterFor(eofFake)('https://home.example.test/v1/upload', {
+            method: 'POST', body: eofBody, duplex: 'half',
+        } as RequestInit & { duplex: 'half' });
+        eofFake.push('HTTP/1.1 204 No Content\r\ncontent-length: 0\r\n\r\n');
+        await expect(completed).resolves.toMatchObject({ response: { status: 204 } });
+        expect(eofSourceCancel).not.toHaveBeenCalled();
+    });
+
     it('delivers the response body incrementally and only reads when the consumer pulls', async () => {
         const fake = createFakeHomeStream();
         const pending = requesterFor(fake)('https://home.example.test/v1/stream');

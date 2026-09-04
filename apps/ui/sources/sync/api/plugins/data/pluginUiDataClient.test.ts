@@ -204,7 +204,7 @@ async function loadClient(options: Readonly<{
             }), { status: 200, headers: { 'Content-Type': 'application/json' } });
         }
         if (path === '/v1/plugins/data/contract') {
-            return new Response(JSON.stringify({ contract }), {
+            return new Response(JSON.stringify({ access: 'writable', contract }), {
                 status: 200,
                 headers: { 'Content-Type': 'application/json' },
             });

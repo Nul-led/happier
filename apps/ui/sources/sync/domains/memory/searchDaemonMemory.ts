@@ -13,6 +13,7 @@ import { applyMemorySearchSessionEligibility } from './applyMemorySearchSessionE
 
 export async function searchDaemonMemory(args: Readonly<{
     serverId: string | null | undefined;
+    accountId: string | null | undefined;
     machineId: string | null | undefined;
     query: string;
     scope: MemorySearchScope;
@@ -35,14 +36,15 @@ export async function searchDaemonMemory(args: Readonly<{
     }
 
     const serverId = typeof args.serverId === 'string' ? args.serverId.trim() : '';
+    const accountId = typeof args.accountId === 'string' ? args.accountId.trim() : '';
     const machineId = typeof args.machineId === 'string' ? args.machineId.trim() : '';
     const query = args.query.trim();
-    if (!serverId || !machineId || !query) {
+    if (!serverId || !accountId || !machineId || !query) {
         return {
             v: 1,
             ok: false,
             errorCode: 'memory_invalid_query',
-            error: 'Memory search requires a server, machine, and query.',
+            error: 'Memory search requires a server, Account, machine, and query.',
         };
     }
 
@@ -50,6 +52,8 @@ export async function searchDaemonMemory(args: Readonly<{
         const raw = await machineRpcWithServerScope<unknown, unknown>({
             machineId,
             serverId,
+            accountId,
+            preferScoped: true,
             method: RPC_METHODS.DAEMON_MEMORY_SEARCH,
             payload: {
                 v: 1,

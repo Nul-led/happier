@@ -207,7 +207,11 @@ describe('workspaceFileTransfers', () => {
             acquirePreparedCarrier: (prepared: { operationId: string; maxBytes: number }) => Promise<unknown>;
         }) => {
             await params.acquirePreparedCarrier({ operationId: 'workspace-download-failed', maxBytes: 3 });
-            throw new Error('tunnel closed');
+            return {
+                ok: false,
+                error: 'The direct machine connection was interrupted. Retry the transfer.',
+                errorCode: 'machine_carrier_transport_failed',
+            };
         });
 
         const { downloadDaemonWorkspaceFileToDestination } = await import('./workspaceFileTransfers');

@@ -5,6 +5,7 @@ import {
     resolveWorkspaceSyncConflictOpenTarget,
     resolveWorkspaceSyncErrorTranslationKey,
     resolveWorkspaceSyncModeTranslationKey,
+    resolveWorkspaceSyncRelationshipStateLabel,
     resolveWorkspaceSyncStateTranslationKey,
 } from './workspaceSyncPresentation';
 
@@ -65,5 +66,49 @@ describe('workspaceSyncPresentation', () => {
         expect(resolveWorkspaceSyncErrorTranslationKey('root_changed')).toBe('workspaceSync.error.rootNoLongerAuthorized');
         expect(resolveWorkspaceSyncErrorTranslationKey('future-error')).toBe('workspaceSync.error.needsAttention');
         expect(resolveWorkspaceSyncErrorTranslationKey(null)).toBeNull();
+    });
+
+    it('reads a retained disabled relationship as Paused — resumable — never as the terminal Stopped', () => {
+        // A retained disabled relationship without live daemon status is pause
+        // intent, so it stays resumable; the terminal Stopped label is reserved
+        // for a daemon-projected `stopped` state.
+        expect(resolveWorkspaceSyncRelationshipStateLabel({
+            enabled: false,
+            statusState: undefined,
+            errorCode: undefined,
+            statusPhaseHasError: false,
+        })).toBe('workspaceSync.state.paused');
+        expect(resolveWorkspaceSyncRelationshipStateLabel({
+            enabled: false,
+            statusState: null,
+            errorCode: null,
+            statusPhaseHasError: false,
+        })).toBe('workspaceSync.state.paused');
+        // Live daemon projection owns the row state whenever it carries one.
+        expect(resolveWorkspaceSyncRelationshipStateLabel({
+            enabled: false,
+            statusState: 'watching',
+            errorCode: undefined,
+            statusPhaseHasError: false,
+        })).toBe('workspaceSync.state.watching');
+        expect(resolveWorkspaceSyncRelationshipStateLabel({
+            enabled: false,
+            statusState: 'stopped',
+            errorCode: undefined,
+            statusPhaseHasError: false,
+        })).toBe('workspaceSync.state.stopped');
+        expect(resolveWorkspaceSyncRelationshipStateLabel({
+            enabled: false,
+            statusState: 'paused',
+            errorCode: undefined,
+            statusPhaseHasError: false,
+        })).toBe('workspaceSync.state.paused');
+        // An enabled relationship with no readable state is still loading, not paused.
+        expect(resolveWorkspaceSyncRelationshipStateLabel({
+            enabled: true,
+            statusState: undefined,
+            errorCode: undefined,
+            statusPhaseHasError: false,
+        })).toBe('workspaceSync.state.loading');
     });
 });

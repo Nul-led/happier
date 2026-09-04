@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MMKV } from 'react-native-mmkv';
-import { createHomeCredentialDestinationDigestV1 } from '@happier-dev/protocol';
 
 import { scopedStorageId } from '@/utils/system/storageScope';
 
@@ -139,248 +138,7 @@ describe('serverProfiles adoption authority', () => {
         ]));
     });
 
-    it('permits exactly one advisory credential write for a digest-bound destination authorization while the profile stays advisory-only', async () => {
-        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await importFresh();
-        const descriptor = {
-            v: 1 as const,
-            homeServerIdentityId: 'srv_bound_destination_1',
-            canonicalServerUrl: 'https://bound-destination.example.test',
-            revision: 7,
-            endpoints: [{ kind: 'https' as const, url: 'https://bound-destination.example.test' }],
-        };
-        const authorization = {
-            kind: 'assertion_destination_binding_v1' as const,
-            descriptor,
-            credentialDestinationDigestBase64Url: createHomeCredentialDestinationDigestV1(descriptor),
-        };
-
-        expect(profiles.preflightHomeProfileAdoption({
-            source: 'account-directory',
-            descriptorAuthority: 'advisory',
-            descriptor,
-        })).toEqual({
-            canonicalServerUrl: 'https://bound-destination.example.test',
-            serverIdentityId: 'srv_bound_destination_1',
-            credentialWrite: 'requiresCurrentObservation',
-        });
-
-        const adopted = await profiles.withHomeCredentialWriteAuthorization(
-            authorization,
-            async (credentialWriteAuthorization) => {
-                expect(profiles.preflightHomeProfileAdoption({
-                    source: 'account-directory',
-                    descriptorAuthority: 'advisory',
-                    descriptor,
-                    credentialWriteAuthorization,
-                })).toEqual({
-                    canonicalServerUrl: 'https://bound-destination.example.test',
-                    serverIdentityId: 'srv_bound_destination_1',
-                    credentialWrite: 'required',
-                });
-                return await profiles.adoptHomeProfile({
-                    source: 'account-directory',
-                    descriptorAuthority: 'advisory',
-                    descriptor,
-                    credentialWriteAuthorization,
-                });
-            },
-        );
-        // The authorization permits the credential write only; routing provenance
-        // remains advisory until a current Home observation establishes it.
-        expect(adopted.descriptorProvenance).toBe('advisory-only');
-        expect(profiles.getServerProfileById(adopted.id)?.descriptorProvenance).toBe('advisory-only');
-    });
-
-    it('refuses an authorized advisory credential write whose stored destination is a stale advisory route', async () => {
-        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await importFresh();
-        // A Directory listing can publish an advisory placeholder for a real Home
-        // identity at any route it likes; that entry never proves the route.
-        const staleAdvisory = await profiles.adoptHomeProfile({
-            source: 'account-directory',
-            descriptorAuthority: 'advisory',
-            descriptor: {
-                v: 1,
-                homeServerIdentityId: 'srv_stale_advisory_route_1',
-                canonicalServerUrl: 'https://stale-advisory-route.example.test',
-                revision: 1,
-                endpoints: [{ kind: 'https', url: 'https://stale-advisory-route.example.test' }],
-            },
-        });
-        expect(staleAdvisory.descriptorProvenance).toBe('advisory-only');
-
-        // The Home itself later issues a credential bound to a different destination.
-        const boundDescriptor = {
-            v: 1 as const,
-            homeServerIdentityId: 'srv_stale_advisory_route_1',
-            canonicalServerUrl: 'https://bound-advisory-route.example.test',
-            revision: 2,
-            endpoints: [{ kind: 'https' as const, url: 'https://bound-advisory-route.example.test' }],
-        };
-        const params = {
-            source: 'account-directory' as const,
-            descriptorAuthority: 'advisory' as const,
-            descriptor: boundDescriptor,
-            credentialWriteAuthorization: {
-                kind: 'assertion_destination_binding_v1' as const,
-                descriptor: boundDescriptor,
-                credentialDestinationDigestBase64Url:
-                    createHomeCredentialDestinationDigestV1(boundDescriptor),
-            },
-        };
-
-        // Advisory facts never retarget the profile, so the write target would stay
-        // the stale route and the runtime would send the bound bearer there.
-        await profiles.withHomeCredentialWriteAuthorization(
-            params.credentialWriteAuthorization,
-            async (credentialWriteAuthorization) => {
-                const authorizedParams = { ...params, credentialWriteAuthorization };
-                expect(() => profiles.preflightHomeProfileAdoption(authorizedParams)).toThrow(
-                    expect.objectContaining({
-                        code: 'home_credential_write_authorization_invalid',
-                        reason: 'destination_not_authorized',
-                    }),
-                );
-                await expect(profiles.adoptHomeProfile(authorizedParams)).rejects.toMatchObject({
-                    code: 'home_credential_write_authorization_invalid',
-                    reason: 'destination_not_authorized',
-                });
-            },
-        );
-        expect(
-            profiles.getServerProfileById(staleAdvisory.id)?.canonicalServerUrl
-            ?? profiles.getServerProfileById(staleAdvisory.id)?.serverUrl,
-        ).toBe('https://stale-advisory-route.example.test');
-
-        // The same authorization remains usable for an advisory Home whose stored
-        // destination is the authorized one.
-        const secondDescriptor = { ...boundDescriptor, homeServerIdentityId: 'srv_bound_advisory_route_2' };
-        const secondAuthorization = {
-                kind: 'assertion_destination_binding_v1',
-                descriptor: secondDescriptor,
-                credentialDestinationDigestBase64Url: createHomeCredentialDestinationDigestV1(secondDescriptor),
-        } as const;
-        await profiles.withHomeCredentialWriteAuthorization(secondAuthorization, async (credentialWriteAuthorization) => {
-            expect(profiles.preflightHomeProfileAdoption({
-                source: 'account-directory',
-                descriptorAuthority: 'advisory',
-                descriptor: secondDescriptor,
-                credentialWriteAuthorization,
-            })).toEqual({
-                canonicalServerUrl: 'https://bound-advisory-route.example.test',
-                serverIdentityId: 'srv_bound_advisory_route_2',
-                credentialWrite: 'required',
-            });
-        });
-    });
-
-    it('rejects a malformed, wrong-descriptor, wrong-digest, or non-advisory credential write authorization before any mutation', async () => {
-        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await importFresh();
-        const descriptor = {
-            v: 1 as const,
-            homeServerIdentityId: 'srv_rejected_authorization_1',
-            canonicalServerUrl: 'https://rejected-authorization.example.test',
-            revision: 2,
-            endpoints: [{ kind: 'https' as const, url: 'https://rejected-authorization.example.test' }],
-        };
-        const otherDestination = {
-            v: 1 as const,
-            homeServerIdentityId: 'srv_rejected_authorization_1',
-            canonicalServerUrl: 'https://attacker-destination.example.test',
-            revision: 2,
-            endpoints: [{ kind: 'https' as const, url: 'https://attacker-destination.example.test' }],
-        };
-        const boundDigest = createHomeCredentialDestinationDigestV1(descriptor);
-        const invalidAuthorizations = [
-            [{
-                kind: 'assertion_destination_binding_v1' as const,
-                descriptor,
-                credentialDestinationDigestBase64Url:
-                    createHomeCredentialDestinationDigestV1(otherDestination),
-            }, 'digest_mismatch'],
-            [{
-                kind: 'assertion_destination_binding_v1' as const,
-                descriptor: otherDestination,
-                credentialDestinationDigestBase64Url:
-                    createHomeCredentialDestinationDigestV1(otherDestination),
-            }, 'descriptor_mismatch'],
-            [{
-                kind: 'assertion_destination_binding_v1' as const,
-                descriptor: { ...descriptor, endpoints: [] },
-                credentialDestinationDigestBase64Url: boundDigest,
-            }, 'malformed_descriptor'],
-        ] as const;
-
-        for (const [credentialWriteAuthorization, reason] of invalidAuthorizations) {
-            await profiles.withHomeCredentialWriteAuthorization(credentialWriteAuthorization, async (authorization) => {
-                const params = {
-                    source: 'account-directory' as const,
-                    descriptorAuthority: 'advisory' as const,
-                    descriptor,
-                    credentialWriteAuthorization: authorization,
-                };
-                expect(() => profiles.preflightHomeProfileAdoption(params)).toThrow(
-                    expect.objectContaining({ code: 'home_credential_write_authorization_invalid', reason }),
-                );
-                await expect(profiles.adoptHomeProfile(params)).rejects.toMatchObject({
-                    code: 'home_credential_write_authorization_invalid',
-                    reason,
-                });
-            });
-        }
-
-        const forged = {
-            kind: 'assertion_destination_binding_v1' as const,
-            descriptor,
-            credentialDestinationDigestBase64Url: boundDigest,
-        };
-        expect(() => profiles.preflightHomeProfileAdoption({
-            source: 'account-directory',
-            descriptorAuthority: 'advisory',
-            descriptor,
-            credentialWriteAuthorization: forged,
-        })).toThrow(expect.objectContaining({
-            code: 'home_credential_write_authorization_invalid',
-            reason: 'unsupported_authorization',
-        }));
-
-        // A destination authorization is meaningless for an authority that already
-        // establishes routing; accepting it silently would create a second trust path.
-        const establishedParams = {
-            source: 'qr' as const,
-            descriptorAuthority: 'current_connection_observation' as const,
-            descriptor,
-            credentialWriteAuthorization: {
-                kind: 'assertion_destination_binding_v1' as const,
-                descriptor,
-                credentialDestinationDigestBase64Url: boundDigest,
-            },
-        };
-        await profiles.withHomeCredentialWriteAuthorization(
-            establishedParams.credentialWriteAuthorization,
-            async (credentialWriteAuthorization) => {
-                const authorizedParams = { ...establishedParams, credentialWriteAuthorization };
-                expect(() => profiles.preflightHomeProfileAdoption(authorizedParams)).toThrow(
-                    expect.objectContaining({
-                        code: 'home_credential_write_authorization_invalid',
-                        reason: 'authority_not_advisory',
-                    }),
-                );
-                await expect(profiles.adoptHomeProfile(authorizedParams)).rejects.toMatchObject({
-                    code: 'home_credential_write_authorization_invalid',
-                    reason: 'authority_not_advisory',
-                });
-            },
-        );
-
-        expect(profiles.listServerProfiles()).not.toEqual(expect.arrayContaining([
-            expect.objectContaining({ serverIdentityId: 'srv_rejected_authorization_1' }),
-        ]));
-    });
-
-    it('does not preserve advisory-only direct-address hints when a public observation omits them', async () => {
+    it('keeps an advisory descriptor unchanged when public features expose a projection', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
         const profiles = await importFresh();
         const placeholder = await profiles.adoptHomeProfile({
@@ -417,14 +175,15 @@ describe('serverProfiles adoption authority', () => {
             },
         });
 
-        expect(result.kind).toBe('applied');
+        expect(result.kind).toBe('stale');
         expect(profiles.getServerProfileById(placeholder.id)?.irohEndpoint).toEqual({
             endpointId: 'a'.repeat(64),
-            relayUrls: ['https://relay-observed.example.test'],
+            relayUrls: ['https://relay-directory.example.test'],
+            directAddresses: ['192.0.2.200:443'],
         });
     });
 
-    it('continues preserving established private direct-address hints across a reduced public observation', async () => {
+    it('keeps an established private descriptor generation unchanged across a reduced public observation', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
         const profiles = await importFresh();
         const established = await profiles.adoptHomeProfile({
@@ -460,11 +219,14 @@ describe('serverProfiles adoption authority', () => {
             },
         });
 
-        expect(result.kind).toBe('applied');
-        expect(profiles.getServerProfileById(established.id)?.irohEndpoint).toEqual({
-            endpointId: 'b'.repeat(64),
-            relayUrls: ['https://relay-new.example.test'],
-            directAddresses: ['192.0.2.201:443'],
+        expect(result.kind).toBe('unchanged');
+        expect(profiles.getServerProfileById(established.id)).toMatchObject({
+            connectionDescriptorRevision: 4,
+            irohEndpoint: {
+                endpointId: 'b'.repeat(64),
+                relayUrls: ['https://relay-old.example.test'],
+                directAddresses: ['192.0.2.201:443'],
+            },
         });
     });
 

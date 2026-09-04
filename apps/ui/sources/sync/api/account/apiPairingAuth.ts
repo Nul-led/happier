@@ -36,7 +36,7 @@ export type PairingConsumeResult =
 
 export type PairingStartResult =
     | Readonly<{ ok: true; data: PairingStartResponse }>
-    | Readonly<{ ok: false; reason: 'invalid_target' | 'http_error'; status: number }>;
+    | Readonly<{ ok: false; reason: 'pair_id_conflict' | 'invalid_target' | 'http_error'; status: number }>;
 
 export type PairingStatusResult =
     | Readonly<{ ok: true; data: PairingStatus }>
@@ -111,6 +111,12 @@ export async function pairingStart(params: PairingStartParams, target: PairingCa
         { includeAuth: true },
     );
     if (!res.ok) {
+        if (res.status === 409) {
+            const json = await safeReadJson(res);
+            if (isRecord(json) && hasExactKeys(json, ['error']) && json.error === 'pair_id_conflict') {
+                return { ok: false, reason: 'pair_id_conflict', status: 409 };
+            }
+        }
         return { ok: false, reason: 'http_error', status: res.status };
     }
     const json = await safeReadJson(res);
@@ -125,10 +131,14 @@ export async function pairingStart(params: PairingStartParams, target: PairingCa
     return { ok: true, data: { pairId: json.pairId, expiresAt: json.expiresAt } };
 }
 
-export async function pairingStatus(params: { pairId: string }, target: PairingCallTarget): Promise<PairingStatusResult> {
+export async function pairingStatus(
+    params: { pairId: string },
+    target: PairingCallTarget,
+    options: Readonly<{ signal?: AbortSignal }> = {},
+): Promise<PairingStatusResult> {
     const request = resolvePairingRequest(target, true);
     if (!request) return { ok: false, reason: 'invalid_target', status: 0 };
-    const res = await request(`/v1/auth/pairing/status?pairId=${encodeURIComponent(params.pairId)}`, undefined, {
+    const res = await request(`/v1/auth/pairing/status?pairId=${encodeURIComponent(params.pairId)}`, options.signal ? { signal: options.signal } : undefined, {
         includeAuth: true,
     });
     if (!res.ok) {
@@ -253,6 +263,7 @@ export async function pairingRequest(params: {
 export async function pairingConsume(
     params: { pairId: string; intent?: 'reject' | 'cancel' },
     target: PairingCallTarget,
+    options: Readonly<{ signal?: AbortSignal }> = {},
 ): Promise<PairingConsumeResult> {
     const request = resolvePairingRequest(target, true);
     if (!request) return { ok: false, reason: 'invalid_target', status: 0 };
@@ -265,6 +276,7 @@ export async function pairingConsume(
                 pairId: params.pairId,
                 ...(params.intent ? { intent: params.intent } : null),
             }),
+            ...(options.signal ? { signal: options.signal } : {}),
         },
         { includeAuth: true },
     );

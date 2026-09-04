@@ -52,13 +52,43 @@ function mockActiveSnapshot(snapshot: Record<string, unknown>): void {
             serverId: String(snapshot.serverId ?? ''),
             generation: Number(snapshot.generation ?? 0),
         }),
+        getActiveServerHomeCarrier: () => undefined,
         publishActiveServerRuntimeOrigin: publishActiveServerRuntimeOriginSpy,
+        releaseActiveServerRuntimeOrigin: vi.fn(),
     }));
 }
 
+function buildExactIrohProfileFixture(profile: Record<string, unknown>): Record<string, unknown> {
+    if (!profile.irohEndpoint) return profile;
+    const canonicalServerUrl = String(profile.canonicalServerUrl ?? profile.serverUrl ?? '');
+    const publicServerUrl = typeof profile.publicServerUrl === 'string' && profile.publicServerUrl.trim()
+        ? (() => {
+            const url = new URL(profile.publicServerUrl.trim());
+            url.search = '';
+            url.hash = '';
+            return url.toString().replace(/\/+$/u, '');
+        })()
+        : null;
+    return {
+        ...profile,
+        canonicalServerUrl,
+        homeConnectionDescriptor: {
+            v: 1,
+            homeServerIdentityId: String(profile.serverIdentityId ?? ''),
+            canonicalServerUrl,
+            revision: Number(profile.connectionDescriptorRevision ?? 1),
+            endpoints: [
+                ...(publicServerUrl ? [{ kind: 'https', url: publicServerUrl }] : []),
+                { kind: 'iroh', ...(profile.irohEndpoint as Record<string, unknown>) },
+            ],
+        },
+    };
+}
+
 function mockProfile(profile: Record<string, unknown> | null): void {
+    const normalizedProfile = profile ? buildExactIrohProfileFixture(profile) : null;
     vi.doMock('@/sync/domains/server/serverProfiles', () => ({
-        getServerProfileById: (_id: string) => profile,
+        getServerProfileById: (_id: string) => normalizedProfile,
     }));
 }
 
@@ -76,7 +106,10 @@ function mockSyncInfra(): {
     retryNow: ReturnType<typeof vi.fn>;
     abortServerFetches: ReturnType<typeof vi.fn>;
 } {
-    const syncSwitchServer = vi.fn(async (_credentials: { token: string; secret: string }) => {});
+    const syncSwitchServer = vi.fn(async (
+        _credentials: { token: string; secret: string } | null,
+        _target?: Readonly<{ serverId: string; serverUrl: string; generation: number }>,
+    ) => {});
     const retryNow = vi.fn();
     const abortServerFetches = vi.fn();
     vi.doMock('@/sync/sync', () => ({ syncSwitchServer, sync: { retryNow } }));
@@ -125,8 +158,7 @@ describe('switchConnectionToActiveServer Iroh lease acquisition', () => {
         expect(irohRuntimeMock.ensureHomeTunnel).toHaveBeenCalledTimes(1);
         expect(irohRuntimeMock.ensureHomeTunnel).toHaveBeenCalledWith({
             homeServerIdentityId: 'srv_home_a',
-            endpoint: { endpointId: 'endpoint-a', relayUrls: ['https://relay.example.test'] },
-            descriptorRevision: 7,
+            endpoint: { kind: 'iroh', endpointId: 'endpoint-a', relayUrls: ['https://relay.example.test'] },
             canonicalServerUrl: 'https://iroh-home.example.test',
             verification: { kind: 'authenticated', token: 'scoped-token' },
         });
@@ -136,7 +168,14 @@ describe('switchConnectionToActiveServer Iroh lease acquisition', () => {
         expect(irohRuntimeMock.ensureHomeTunnel.mock.invocationCallOrder[0])
             .toBeLessThan(syncSwitchServer.mock.invocationCallOrder[0]);
         expect(irohRuntimeMock.releaseLeasesForStaleTargets).not.toHaveBeenCalled();
-        expect(syncSwitchServer).toHaveBeenCalledWith({ token: 'scoped-token', secret: 'scoped-secret' });
+        expect(syncSwitchServer).toHaveBeenCalledWith(
+            { token: 'scoped-token', secret: 'scoped-secret' },
+            expect.objectContaining({
+                serverId: 'srv_home_a',
+                serverUrl: 'https://iroh-home.example.test',
+                generation: 42,
+            }),
+        );
     });
 
     it.each(['terminal', 'foreground_probe_failed'] as const)(
@@ -212,7 +251,14 @@ describe('switchConnectionToActiveServer Iroh lease acquisition', () => {
 
         expect(irohRuntimeMock.ensureHomeTunnel.mock.invocationCallOrder[0])
             .toBeLessThan(syncRestore.mock.invocationCallOrder[0]);
-        expect(syncRestore).toHaveBeenCalledWith(credentials);
+        expect(syncRestore).toHaveBeenCalledWith(
+            credentials,
+            expect.objectContaining({
+                serverId: 'srv_home_a',
+                serverUrl: 'http://127.0.0.1:3010',
+                generation: 42,
+            }),
+        );
         expect(syncSwitchServer).not.toHaveBeenCalled();
     });
 
@@ -243,7 +289,14 @@ describe('switchConnectionToActiveServer Iroh lease acquisition', () => {
         expect(irohRuntimeMock.ensureHomeTunnel).not.toHaveBeenCalled();
         expect(startLifecycleSpy).not.toHaveBeenCalled();
         expect(irohRuntimeMock.releaseLeasesForStaleTargets).toHaveBeenCalledTimes(1);
-        expect(syncSwitchServer).toHaveBeenCalledWith({ token: 'plain-token', secret: 'plain-secret' });
+        expect(syncSwitchServer).toHaveBeenCalledWith(
+            { token: 'plain-token', secret: 'plain-secret' },
+            expect.objectContaining({
+                serverId: 'srv_home_plain',
+                serverUrl: 'https://plain.example.test',
+                generation: 8,
+            }),
+        );
     });
 
     // Lane-06 fallback matrix: identity, auth, descriptor/integrity, protocol
@@ -345,7 +398,14 @@ describe('switchConnectionToActiveServer Iroh lease acquisition', () => {
 
         expect(ensureHomeTunnel).toHaveBeenCalledTimes(1);
         expect(syncSwitchServer).toHaveBeenCalledTimes(1);
-        expect(syncSwitchServer).toHaveBeenCalledWith({ token: 'scoped-token', secret: 'scoped-secret' });
+        expect(syncSwitchServer).toHaveBeenCalledWith(
+            { token: 'scoped-token', secret: 'scoped-secret' },
+            expect.objectContaining({
+                serverId: 'srv_home_a',
+                serverUrl: 'https://iroh-fail.example.test',
+                generation: 9,
+            }),
+        );
     });
 
     it('publishes the canonical independent HTTPS fallback origin', async () => {
@@ -432,6 +492,13 @@ describe('switchConnectionToActiveServer Iroh lease acquisition', () => {
                 kind: 'custom',
                 generation,
             }),
+            captureActiveServerRuntimeTarget: () => ({
+                serverId: 'srv_home_a',
+                generation,
+            }),
+            getActiveServerHomeCarrier: () => undefined,
+            publishActiveServerRuntimeOrigin: publishActiveServerRuntimeOriginSpy,
+            releaseActiveServerRuntimeOrigin: vi.fn(),
         }));
         mockProfile({
             id: 'profile-a',
@@ -481,7 +548,14 @@ describe('switchConnectionToActiveServer Iroh lease acquisition', () => {
         generation = 10;
         await expect(switchConnectionToActiveServer()).resolves.toEqual({ token: 'scoped-token', secret: 'scoped-secret' });
         expect(syncSwitchServer).toHaveBeenCalledTimes(1);
-        expect(syncSwitchServer).toHaveBeenCalledWith({ token: 'scoped-token', secret: 'scoped-secret' });
+        expect(syncSwitchServer).toHaveBeenCalledWith(
+            { token: 'scoped-token', secret: 'scoped-secret' },
+            expect.objectContaining({
+                serverId: 'srv_home_a',
+                serverUrl: 'https://iroh-stale.example.test',
+                generation: 10,
+            }),
+        );
     });
 
     it('does not acquire or retry through Home A after focus changes while its credentials are loading', async () => {
@@ -497,24 +571,26 @@ describe('switchConnectionToActiveServer Iroh lease acquisition', () => {
                 serverId: activeSnapshot.serverId,
                 generation: activeSnapshot.generation,
             }),
+            getActiveServerHomeCarrier: () => undefined,
             publishActiveServerRuntimeOrigin: publishActiveServerRuntimeOriginSpy,
+            releaseActiveServerRuntimeOrigin: vi.fn(),
         }));
         vi.doMock('@/sync/domains/server/serverProfiles', () => ({
             getServerProfileById: (serverId: string) => serverId === 'srv_home_a'
-                ? {
+                ? buildExactIrohProfileFixture({
                     id: 'profile-a',
                     serverIdentityId: 'srv_home_a',
                     serverUrl: 'https://home-a.example.test',
                     irohEndpoint: { endpointId: 'endpoint-a' },
                     connectionDescriptorRevision: 2,
-                }
-                : {
+                })
+                : buildExactIrohProfileFixture({
                     id: 'profile-b',
                     serverIdentityId: 'srv_home_b',
                     serverUrl: 'https://home-b.example.test',
                     irohEndpoint: { endpointId: 'endpoint-b' },
                     connectionDescriptorRevision: 1,
-                },
+                }),
         }));
         let resolveCredentials: ((value: { token: string; secret: string }) => void) | null = null;
         vi.doMock('@/auth/storage/tokenStorage', () => ({
@@ -606,7 +682,14 @@ describe('switchConnectionToActiveServer Iroh lease acquisition', () => {
         expect(irohRuntimeMock.releaseActiveHomeTunnels).toHaveBeenCalledTimes(1);
         expect(irohRuntimeMock.releaseActiveHomeTunnels.mock.invocationCallOrder[0])
             .toBeLessThan(syncSwitchServer.mock.invocationCallOrder[0]);
-        expect(syncSwitchServer).toHaveBeenCalledWith(null);
+        expect(syncSwitchServer).toHaveBeenCalledWith(
+            null,
+            expect.objectContaining({
+                serverId: 'srv_home_a',
+                serverUrl: 'http://127.0.0.1:3010',
+                generation: 10,
+            }),
+        );
     });
 
     it('disconnects explicitly after first-key authority is cleared even while recovery storage retains credentials', async () => {

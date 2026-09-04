@@ -1,5 +1,7 @@
 import type { SessionListLookupStateLike } from '@/sync/domains/session/listing/sessionListLookupState';
 import { resolveSessionListPreferredSessionMetadataFromState } from '@/sync/domains/session/listing/sessionListLookupState';
+import { readSessionListRowForServerId, type SessionListRowStateByServerId } from '@/sync/domains/session/listing/sessionListRowStateLookup';
+import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import type { Machine } from '@/sync/domains/state/storageTypes';
 import { machineCollectionValues, type MachineCollection } from '@/sync/domains/machines/identity/machineCollection';
 import { resolveSessionMachineId } from '@/sync/domains/session/external/resolveSessionMachineId';
@@ -15,17 +17,28 @@ import type { Metadata } from '@/sync/domains/state/storageTypes';
 
 type MachineTargetLikeState = SessionListLookupStateLike & Readonly<{
     sessions?: Record<string, {
+        id?: string;
+        serverId?: string;
         active?: boolean;
         updatedAt?: number;
         metadata?: SessionTargetMetadataLike;
         metadataLayoutVersion?: number;
         ownerMetadataView?: Metadata | null;
     }>;
+    sessionListRowStateByServerId?: SessionListRowStateByServerId;
     machines?: Record<string, Machine>;
     getProjectForSession?: (sessionId: string) => { key?: { machineId?: string; rootPath?: string } } | null;
 }>;
 
 export type SessionMachineTargetState = MachineTargetLikeState;
+
+export type ExactSessionMachineTargetIdentity = Readonly<{
+    serverId: string;
+    accountId: string;
+    sessionId: string;
+}>;
+
+export type SessionMachineTargetIdentity = string | ExactSessionMachineTargetIdentity;
 
 export type SessionMachineControlTarget = Readonly<{
     machineId: string;
@@ -115,14 +128,20 @@ function readSessionTargetInputForMetadata(
     state: SessionMachineTargetState,
     sessionId: string,
     metadata: SessionTargetMetadataLike,
+    options?: Readonly<{
+        sessionActive?: boolean;
+        allowProjectLookup?: boolean;
+    }>,
 ) {
     const session = state.sessions?.[sessionId];
-    const getProjectForSession = typeof state.getProjectForSession === 'function' ? state.getProjectForSession : null;
+    const getProjectForSession = options?.allowProjectLookup === false
+        ? null
+        : typeof state.getProjectForSession === 'function' ? state.getProjectForSession : null;
     const project = getProjectForSession?.(sessionId) ?? null;
 
     return {
         metadata,
-        sessionActive: session?.active === true,
+        sessionActive: options?.sessionActive ?? session?.active === true,
         sessionMachineId: resolveSessionMachineId(metadata),
         sessionPath: normalizeNonEmptyString(metadata?.path),
         projectMachineId: normalizeKnownProjectMachineId(project?.key?.machineId),
@@ -207,6 +226,67 @@ function readPrivateSessionTargetInputs(state: SessionMachineTargetState, sessio
     ].filter((input): input is NonNullable<typeof input> => input !== null);
 }
 
+function normalizeExactSessionTargetIdentity(
+    target: SessionMachineTargetIdentity,
+): ExactSessionMachineTargetIdentity | null {
+    if (typeof target === 'string') return null;
+    const serverId = normalizeNonEmptyString(target.serverId);
+    const accountId = normalizeNonEmptyString(target.accountId);
+    const sessionId = normalizeSessionId(target.sessionId);
+    return serverId && accountId && sessionId ? { serverId, accountId, sessionId } : null;
+}
+
+function readExactSessionTargetInputs(
+    state: SessionMachineTargetState,
+    target: ExactSessionMachineTargetIdentity,
+) {
+    const scopedRow = readSessionListRowForServerId(
+        state.sessionListRowStateByServerId,
+        target.serverId,
+        target.sessionId,
+    );
+    if (scopedRow) {
+        const metadata = toSessionTargetMetadataLike(scopedRow.metadata);
+        return metadata
+            ? [readSessionTargetInputForMetadata(state, target.sessionId, metadata, {
+                sessionActive: scopedRow.active === true,
+                // Project lookup is keyed only by Session id. It is therefore
+                // not admissible for an exact cross-Home target.
+                allowProjectLookup: false,
+            })]
+            : [];
+    }
+
+    const directSession = state.sessions?.[target.sessionId];
+    if (
+        !directSession
+        || !areServerProfileIdentifiersEquivalent(directSession.serverId, target.serverId)
+    ) return [];
+    const metadataValue = readSessionOwnerMetadataView({
+        metadataLayoutVersion: directSession.metadataLayoutVersion,
+        metadata: directSession.metadata as Metadata | null,
+        ownerMetadataView: directSession.ownerMetadataView,
+    });
+    const metadata = toSessionTargetMetadataLike(metadataValue);
+    return metadata
+        ? [readSessionTargetInputForMetadata(state, target.sessionId, metadata, {
+            sessionActive: directSession.active === true,
+            allowProjectLookup: false,
+        })]
+        : [];
+}
+
+function readSessionTargetInputs(
+    state: SessionMachineTargetState,
+    target: SessionMachineTargetIdentity,
+) {
+    const exact = normalizeExactSessionTargetIdentity(target);
+    if (typeof target !== 'string') {
+        return exact ? readExactSessionTargetInputs(state, exact) : [];
+    }
+    return readPrivateSessionTargetInputs(state, normalizeSessionId(target));
+}
+
 function readSessionDisplayTargetInput(state: SessionMachineTargetState, sessionId: string) {
     const preferredMetadata = toSessionTargetMetadataLike(resolveSessionListPreferredSessionMetadataFromState(state, sessionId));
     return readSessionTargetInputForMetadata(state, sessionId, preferredMetadata);
@@ -218,10 +298,9 @@ function readPrivateSessionTargetInput(state: SessionMachineTargetState, session
 
 export function resolveMachineTargetForSessionFromState(
     state: SessionMachineTargetState,
-    sessionId: string,
+    target: SessionMachineTargetIdentity,
 ): SessionMachineTarget | null {
-    const resolvedSessionId = normalizeSessionId(sessionId);
-    const inputs = readPrivateSessionTargetInputs(state, resolvedSessionId);
+    const inputs = readSessionTargetInputs(state, target);
     for (const input of inputs) {
         const target = resolveSessionRpcTarget(input);
         if (!target) continue;
@@ -266,10 +345,12 @@ function hasConflictingDirectSessionMachine(input: ReturnType<typeof readPrivate
 
 export function resolveMachineControlTargetForSessionFromState(
     state: SessionMachineTargetState,
-    sessionId: string,
+    target: SessionMachineTargetIdentity,
 ): SessionMachineControlTarget | null {
-    const resolvedSessionId = normalizeSessionId(sessionId);
-    const reachableTarget = resolveMachineTargetForSessionFromState(state, resolvedSessionId);
+    const resolvedSessionId = typeof target === 'string'
+        ? normalizeSessionId(target)
+        : normalizeSessionId(target.sessionId);
+    const reachableTarget = resolveMachineTargetForSessionFromState(state, target);
     if (reachableTarget) {
         return {
             ...reachableTarget,
@@ -277,7 +358,8 @@ export function resolveMachineControlTargetForSessionFromState(
         };
     }
 
-    const input = readPrivateSessionTargetInput(state, resolvedSessionId);
+    const input = readSessionTargetInputs(state, target)[0]
+        ?? (typeof target === 'string' ? readPrivateSessionTargetInput(state, resolvedSessionId) : null);
     if (!input) return null;
     const displayTarget = resolveSessionDisplayTarget(input);
     if (!displayTarget) return null;

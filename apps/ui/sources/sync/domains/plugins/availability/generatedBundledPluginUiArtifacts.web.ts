@@ -36,7 +36,7 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
     contributionId: "channels-app-native",
     tier: "reactNative",
     platform: "web",
-    digest: "sha256:8017482abe0b8f849fcfb466a06cc24565d1cc3717aaa137ff4371c5fa6984c2",
+    digest: "sha256:f6d08503316ad0c091ef1c9afeef444e83f66e615663e9e18d853f7e676738f5",
     releaseVersion: "0.0.0",
     files: Object.freeze([
       Object.freeze({
@@ -50,7 +50,7 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
     contributionId: "inspector-app-native",
     tier: "reactNative",
     platform: "web",
-    digest: "sha256:8c133581c9b10ba1fac922d06c4cb9c0c2e02d32e31f4cde2a81fc0d48e5cf3e",
+    digest: "sha256:5cc861071ab3c96e21954b5f7f129c484e334e5243b01aefb06068dcd0c9ad6e",
     releaseVersion: "0.0.0",
     files: Object.freeze([
       Object.freeze({
@@ -64,7 +64,7 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
     contributionId: "posthog-issue-detail-native",
     tier: "reactNative",
     platform: "web",
-    digest: "sha256:ccb614272acbf2d3f075045b2d0c3cbeaf9556a61e720ddb7c7581538f3a4af9",
+    digest: "sha256:5caec0ead42eff52842849996770bad3d7dc28ee927153ddc0143164b5f5e177",
     releaseVersion: "0.0.0",
     files: Object.freeze([
       Object.freeze({
@@ -78,7 +78,7 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
     contributionId: "posthog-triage-sources-native",
     tier: "reactNative",
     platform: "web",
-    digest: "sha256:7ac1b0d5014f6a7435b20cf56accf60ec6bfa48a47960d2a2dc36872dd63bab9",
+    digest: "sha256:8f537bb422a14e3d537723799de6ebe7e22725e406a0a18113af20d76683010e",
     releaseVersion: "0.0.0",
     files: Object.freeze([
       Object.freeze({
@@ -92,7 +92,7 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
     contributionId: "azure-devops-detail-native",
     tier: "reactNative",
     platform: "web",
-    digest: "sha256:c8ef513539ee2a83ddd32112fdb456eb058edfd6534e671d925bd6e16199a747",
+    digest: "sha256:37aa9adb7a3c0ebd8c6a40c0195d5efb9e079c16add5e6a8e92514645a84fb70",
     releaseVersion: "0.0.0",
     files: Object.freeze([
       Object.freeze({
@@ -106,7 +106,7 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
     contributionId: "azure-devops-triage-sources-native",
     tier: "reactNative",
     platform: "web",
-    digest: "sha256:4945adee5097fccf63ba8959585fca7366f92d2841f258a90290f088988c9d37",
+    digest: "sha256:89946e1aeb5fbaba80567d270f49179d67fb1d1ac6fc91dc83e5c41bfa11463f",
     releaseVersion: "0.0.0",
     files: Object.freeze([
       Object.freeze({
@@ -120,7 +120,7 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
     contributionId: "bitbucket-detail-native",
     tier: "reactNative",
     platform: "web",
-    digest: "sha256:dc297085df7c0b5069710fb1b4b7f907336f107cf282075a08729a0bb8700483",
+    digest: "sha256:829cb232036cb70b67513cbda38397406a4fea28e70bffc9f93bba6c1d91e1c6",
     releaseVersion: "0.0.0",
     files: Object.freeze([
       Object.freeze({
@@ -134,7 +134,7 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
     contributionId: "bitbucket-triage-sources-native",
     tier: "reactNative",
     platform: "web",
-    digest: "sha256:3872750a4cf673788e245214ea7ed0c6a54946a1d241b6e59e35a8b1e8015ef6",
+    digest: "sha256:09eeee7bfbc85dd2b142ce2895e5252623e50dc8aa1ffe211d63bfbf33229748",
     releaseVersion: "0.0.0",
     files: Object.freeze([
       Object.freeze({
@@ -148,7 +148,7 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
     contributionId: "github-detail-native",
     tier: "reactNative",
     platform: "web",
-    digest: "sha256:412dac862d02ac222151e2f4fc005005f213ae11765642456489bd4f7393ed8e",
+    digest: "sha256:b3ee86878f778f14c768a7003e878acaabebd1a3be0c8fd7608abb0a0e7f6a07",
     releaseVersion: "0.0.0",
     files: Object.freeze([
       Object.freeze({
@@ -162,7 +162,7 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
     contributionId: "github-triage-sources-native",
     tier: "reactNative",
     platform: "web",
-    digest: "sha256:e195cbce06dd4fefe3e3a0d544b6cb3a93f5a2235b2553a1fabd5ecb3bc81377",
+    digest: "sha256:66b094c94e4c5cbca6966c8e3ffb9e4655e46287d010159af13f2c72970040f6",
     releaseVersion: "0.0.0",
     files: Object.freeze([
       Object.freeze({
@@ -176,7 +176,7 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
     contributionId: "gitlab-detail-native",
     tier: "reactNative",
     platform: "web",
-    digest: "sha256:3f47f7cd58bd176660c650ff2f7e256ac15904361de5a1811b0260116fa7bcbf",
+    digest: "sha256:7981103de7c53fb63a9d938b445bae0ea5bef6c47a4992c51545dba6e20fd759",
     releaseVersion: "0.0.0",
     files: Object.freeze([
       Object.freeze({
@@ -190,7 +190,7 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
     contributionId: "gitlab-triage-sources-native",
     tier: "reactNative",
     platform: "web",
-    digest: "sha256:60f7226b5024a39c518a53ef5dd0e0d939e07ef5f1cea4c7b27aa6421b7fa65d",
+    digest: "sha256:779eabc28d3d5807871fc98bbee851e8742837f862adae43ab47a940728e595e",
     releaseVersion: "0.0.0",
     files: Object.freeze([
       Object.freeze({
@@ -204,7 +204,7 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
     contributionId: "sentry-detail-native",
     tier: "reactNative",
     platform: "web",
-    digest: "sha256:bf3573b7794981db947abf32f9b1ab79af27674f43cb1f7faaa030d256cddcef",
+    digest: "sha256:93669cbd65a3146e38bda20506a411c47fc7c4665ba41e1d7b7058205cb4bb95",
     releaseVersion: "0.0.0",
     files: Object.freeze([
       Object.freeze({
@@ -218,7 +218,7 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
     contributionId: "sentry-triage-sources-native",
     tier: "reactNative",
     platform: "web",
-    digest: "sha256:a7e7f115ccab579e58362275255ea7f7654c5743bcadb2565bcebec607ffd6f5",
+    digest: "sha256:4e49776707b67610e346277cbbc2c3e68816dbafc01bfbe4a428a52a91d9f3a5",
     releaseVersion: "0.0.0",
     files: Object.freeze([
       Object.freeze({
@@ -232,7 +232,7 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
     contributionId: "triage-entries-compact-native",
     tier: "reactNative",
     platform: "web",
-    digest: "sha256:ce3eb08557fa064fe288d19fde724b2902c28b41dcb6779463dda95526dc66f8",
+    digest: "sha256:6d6ccc437e05a36cac340629bf31c7178c8d56e5eda4b4b1a7a1c641425aa270",
     releaseVersion: "0.0.0",
     files: Object.freeze([
       Object.freeze({
@@ -246,7 +246,7 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
     contributionId: "triage-entry-picker-native",
     tier: "reactNative",
     platform: "web",
-    digest: "sha256:1d38409362809003a8e8ef46bc79cccf7788e6ee94a64e4b9b4b0c9d4d74dde8",
+    digest: "sha256:bf8ce406e7afacbba9f1491fb4daa76e2ea21a2354aa8c263eb6a835e7575b87",
     releaseVersion: "0.0.0",
     files: Object.freeze([
       Object.freeze({
@@ -260,7 +260,7 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
     contributionId: "triage-list-page-native",
     tier: "reactNative",
     platform: "web",
-    digest: "sha256:831d496b427cb7e35d57f72a73d7c0335f80f6c92fdb61aa637339474bee594c",
+    digest: "sha256:1b6f58aefe4c520836dbed39d8a9b36f25f11038f7d14a6f87863b9fc9f3c18b",
     releaseVersion: "0.0.0",
     files: Object.freeze([
       Object.freeze({
@@ -274,7 +274,7 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
     contributionId: "triage-session-entries-native",
     tier: "reactNative",
     platform: "web",
-    digest: "sha256:81ffb44045c59a9ef9d091437619f8bc73bdff380ab81bf3102014450bf034bf",
+    digest: "sha256:129907c572c8abea70d61c956502b36ab15a87aa3928219adf4c1870308c02bc",
     releaseVersion: "0.0.0",
     files: Object.freeze([
       Object.freeze({

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { computeWorkspaceSyncPolicyDigest } from '@happier-dev/protocol';
 
 import { createDefaultActionExecutor } from './defaultActionExecutor';
 
@@ -6,6 +7,10 @@ const forkSessionOpMock = vi.hoisted(() => vi.fn());
 const rollbackSessionConversationOpMock = vi.hoisted(() => vi.fn());
 const rollbackSessionCheckpointCodeOpMock = vi.hoisted(() => vi.fn());
 const startSessionHandoffOpMock = vi.hoisted(() => vi.fn());
+const machineRpcMock = vi.hoisted(() => vi.fn());
+const sessionHandoffOpRuntime = vi.hoisted(() => ({
+  useActual: false,
+}));
 const openSessionForVoiceToolMock = vi.hoisted(() => vi.fn());
 const readMachineTargetForSessionMock = vi.hoisted(() => vi.fn());
 const completeSessionForkNavigationMock = vi.hoisted(() => vi.fn());
@@ -17,9 +22,15 @@ vi.mock('@/sync/ops/sessions', () => ({
   sessionRename: vi.fn(async () => ({ success: true })),
 }));
 
-vi.mock('@/sync/ops/sessionHandoffs', () => ({
-  startSessionHandoff: startSessionHandoffOpMock,
-}));
+vi.mock('@/sync/ops/sessionHandoffs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/sync/ops/sessionHandoffs')>();
+  return {
+    ...actual,
+    startSessionHandoff: (input: unknown) => sessionHandoffOpRuntime.useActual
+      ? actual.startSessionHandoff(input as Parameters<typeof actual.startSessionHandoff>[0])
+      : startSessionHandoffOpMock(input),
+  };
+});
 
 vi.mock('@/sync/ops/sessionMachineTarget', () => ({
   readMachineTargetForSession: readMachineTargetForSessionMock,
@@ -43,7 +54,7 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedSessionSendMes
 }));
 
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', () => ({
-  machineRpcWithServerScope: vi.fn(),
+  machineRpcWithServerScope: machineRpcMock,
 }));
 
 vi.mock('@/sync/domains/sessionControl/sessionModeControl', () => ({
@@ -140,6 +151,8 @@ describe('createDefaultActionExecutor (session.fork)', () => {
     rollbackSessionConversationOpMock.mockReset();
     rollbackSessionCheckpointCodeOpMock.mockReset();
     startSessionHandoffOpMock.mockReset();
+    machineRpcMock.mockReset();
+    sessionHandoffOpRuntime.useActual = false;
     openSessionForVoiceToolMock.mockReset();
     completeSessionForkNavigationMock.mockReset();
     completeSessionForkNavigationMock.mockImplementation(async (params: any) => {
@@ -539,9 +552,10 @@ describe('createDefaultActionExecutor (session.fork)', () => {
   it('delegates session handoff to the session handoff op with the current machine id', async () => {
     startSessionHandoffOpMock.mockResolvedValueOnce({
       ok: true,
-      handoffId: 'handoff_1',
-      status: { handoffId: 'handoff_1', status: 'pending', phase: 'preparing', recoveryActions: [] },
-      endpointCandidates: [],
+      result: {
+        handoffId: 'handoff_1',
+        status: { handoffId: 'handoff_1', status: 'pending', phase: 'preparing', recoveryActions: [] },
+      },
     });
 
     storageGetStateMock.mockReturnValue({
@@ -585,9 +599,6 @@ describe('createDefaultActionExecutor (session.fork)', () => {
       targetMachineId: 'machine_2',
       targetPath: '/home/guest/workspace',
       sessionStorageMode: 'persisted',
-      sourceMetadata: {
-        machineId: 'machine_1',
-      },
     }));
   });
 
@@ -636,9 +647,10 @@ describe('createDefaultActionExecutor (session.fork)', () => {
   it('prefers the reachable machine target over stale session metadata for session handoff', async () => {
     startSessionHandoffOpMock.mockResolvedValueOnce({
       ok: true,
-      handoffId: 'handoff_1',
-      status: { handoffId: 'handoff_1', status: 'pending', phase: 'preparing', recoveryActions: [] },
-      endpointCandidates: [],
+      result: {
+        handoffId: 'handoff_1',
+        status: { handoffId: 'handoff_1', status: 'pending', phase: 'preparing', recoveryActions: [] },
+      },
     });
     readMachineTargetForSessionMock.mockReturnValue({
       machineId: 'machine_rebound',
@@ -681,17 +693,16 @@ describe('createDefaultActionExecutor (session.fork)', () => {
       sessionId: 'sess_parent',
       sourceMachineId: 'machine_rebound',
       targetMachineId: 'machine_2',
-      sourceMetadata: {
-        machineId: 'machine_stale',
-      },
     }));
   });
 
   it('passes direct-to-persisted handoff options through to the handoff op', async () => {
     startSessionHandoffOpMock.mockResolvedValueOnce({
       ok: true,
-      handoffId: 'handoff_2',
-      status: { handoffId: 'handoff_2', status: 'completed', phase: 'finalizing', recoveryActions: [] },
+      result: {
+        handoffId: 'handoff_2',
+        status: { handoffId: 'handoff_2', status: 'completed', phase: 'finalizing', recoveryActions: [] },
+      },
     });
 
     storageGetStateMock.mockReturnValue({
@@ -756,6 +767,101 @@ describe('createDefaultActionExecutor (session.fork)', () => {
         relationshipId: 'relationship_1',
         flushBeforeCommit: true,
       },
+    }));
+  });
+
+  it('routes a Home A handoff and its exact target proof through the real UI RPC adapter while Home B is focused', async () => {
+    const approval = {
+      v: 1 as const,
+      consequences: [
+        'replace_nonempty_workspace_target',
+        'delete_target_only_files_during_exact_mirror',
+      ] as const,
+      serverId: 'home-a',
+      machineId: 'machine_2',
+      canonicalRoot: '/target/repo',
+      rootFingerprint: 'a'.repeat(64),
+      operationId: 'handoff-action-1',
+    };
+    const policyFields = {
+      v: 1 as const,
+      selection: 'git_worktree' as const,
+      extraIgnorePatterns: [],
+      extraIncludePatterns: [],
+    };
+    const workspaceAction = {
+      kind: 'create_relationship' as const,
+      mode: 'mirror_exactly' as const,
+      contentPolicy: {
+        ...policyFields,
+        policyDigest: computeWorkspaceSyncPolicyDigest(policyFields),
+      },
+      flushBeforeCommit: true,
+    };
+    const terminalResult = {
+      handoffId: 'handoff_2',
+      status: { handoffId: 'handoff_2', status: 'completed' as const, phase: 'finalizing' as const, recoveryActions: [] },
+      workspace: {
+        kind: 'relationship' as const,
+        relationshipId: 'relationship_1',
+        created: true,
+        cleanupWarning: { code: 'staging_release_failed', message: 'Staging could not be released.' },
+      },
+      warning: { code: 'source_cleanup_failed', message: 'Source cleanup needs attention.' },
+    };
+    sessionHandoffOpRuntime.useActual = true;
+    machineRpcMock
+      .mockResolvedValueOnce({ type: 'approval_required', approval })
+      .mockResolvedValueOnce(terminalResult);
+    storageGetStateMock.mockReturnValue({
+      sessions: {
+        sess_parent: {
+          id: 'sess_parent', seq: 1, createdAt: 1, updatedAt: 1, active: false, activeAt: 0,
+          metadataVersion: 0, agentStateVersion: 0, thinking: false, thinkingAt: 0, presence: 0,
+          metadata: { machineId: 'machine_1', flavor: 'claude' },
+        },
+      },
+      settings: { sessionReplayEnabled: true, activeServerId: 'home-b' },
+    });
+
+    const executor = createDefaultActionExecutor({
+      resolveServerIdForSessionId: (sessionId) => sessionId === 'sess_parent' ? 'home-a' : null,
+    });
+    const result = await executor.execute(
+      'session.handoff' as any,
+      {
+        sessionId: 'sess_parent',
+        targetMachineId: 'machine_2',
+        targetPath: '/target/repo',
+        workspaceAction,
+      },
+      {
+        surface: 'ui', placement: 'session_action_menu', actionRequestId: 'handoff-action-1',
+        handoffTargetReplacementApproval: approval, bypassApprovals: true,
+      } as any,
+    );
+
+    expect(result).toEqual({ ok: true, result: terminalResult });
+    expect(machineRpcMock).toHaveBeenCalledTimes(2);
+    expect(machineRpcMock).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      serverId: 'home-a',
+      machineId: 'machine_2',
+      method: 'daemon.workspaceSync.target.replacement.preflight.v1',
+      payload: expect.objectContaining({
+        operationId: 'handoff-action-1',
+        activatesExactMirror: true,
+      }),
+    }));
+    expect(machineRpcMock).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      serverId: 'home-a',
+      machineId: 'machine_1',
+      method: 'daemon.sessionHandoff.start.v3',
+      payload: expect.objectContaining({
+        accountServerId: 'home-a',
+        actionRequestId: 'handoff-action-1',
+        handoffTargetReplacementApproval: approval,
+        workspaceAction,
+      }),
     }));
   });
 

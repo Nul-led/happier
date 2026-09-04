@@ -1,4 +1,8 @@
-import { normalizeServerIdentityIdCapability } from '@happier-dev/protocol';
+import {
+    HomeConnectionDescriptorV1Schema,
+    normalizeServerIdentityIdCapability,
+    type HomeConnectionDescriptorV1,
+} from '@happier-dev/protocol';
 
 export type PendingTerminalPairing = Readonly<{
     secretB64Url: string;
@@ -12,6 +16,7 @@ export type PendingTerminalConnect = Readonly<{
     serverIdentityId: string;
     pairing?: PendingTerminalPairing;
     supportsTokenOnly?: true;
+    homeConnectionDescriptor?: HomeConnectionDescriptorV1;
 }>;
 
 export type PendingTerminalConnectRecord = Readonly<{
@@ -20,6 +25,7 @@ export type PendingTerminalConnectRecord = Readonly<{
     serverIdentityId: string;
     pairing?: PendingTerminalPairing;
     supportsTokenOnly?: true;
+    homeConnectionDescriptor?: HomeConnectionDescriptorV1;
     createdAtMs: number;
 }>;
 
@@ -54,12 +60,19 @@ export function toRecord(value: PendingTerminalConnect): PendingTerminalConnectR
             }
             : undefined;
     if (value.pairing && !pairing) return null;
+    const descriptor = value.homeConnectionDescriptor === undefined
+        ? undefined
+        : HomeConnectionDescriptorV1Schema.safeParse(value.homeConnectionDescriptor);
+    if (descriptor && !descriptor.success) return null;
+    if (descriptor?.success && descriptor.data.homeServerIdentityId !== serverIdentityId) return null;
+    if (descriptor?.success && !pairing) return null;
     return {
         publicKeyB64Url,
         serverUrl,
         serverIdentityId,
         ...(pairing ? { pairing } : {}),
         ...(pairing && value.supportsTokenOnly === true ? { supportsTokenOnly: true } : {}),
+        ...(descriptor?.success ? { homeConnectionDescriptor: descriptor.data } : {}),
         createdAtMs: Date.now(),
     };
 }
@@ -93,11 +106,18 @@ export function fromRecord(value: unknown): PendingTerminalConnect | null {
             }
             : undefined;
     if (pairingRecord && !pairing) return null;
+    const descriptor = record.homeConnectionDescriptor === undefined
+        ? undefined
+        : HomeConnectionDescriptorV1Schema.safeParse(record.homeConnectionDescriptor);
+    if (descriptor && !descriptor.success) return null;
+    if (descriptor?.success && descriptor.data.homeServerIdentityId !== serverIdentityId) return null;
+    if (descriptor?.success && !pairing) return null;
     return {
         publicKeyB64Url,
         serverUrl,
         serverIdentityId,
         ...(pairing ? { pairing } : {}),
         ...(pairing && record.supportsTokenOnly === true ? { supportsTokenOnly: true } : {}),
+        ...(descriptor?.success ? { homeConnectionDescriptor: descriptor.data } : {}),
     };
 }

@@ -47,6 +47,7 @@ describe('concurrentSessionCache teardown ordering', () => {
         process.env.EXPO_PUBLIC_HAPPY_MULTI_SERVER_CONCURRENT = '1';
         process.env.EXPO_PUBLIC_HAPPIER_CONCURRENT_CACHE_REFRESH_INTERVAL_MS = '600000';
         let appliedActiveServerId = 'server-a';
+        let selectedActiveServerId = 'server-a';
         let appliedActiveServerListener: ((serverId: string) => void) | null = null;
         let applyingActiveServerListener: ((serverId: string) => void) | null = null;
         let serverProfilesListener: ((generation: number) => void) | null = null;
@@ -116,7 +117,14 @@ describe('concurrentSessionCache teardown ordering', () => {
         }));
 
         vi.doMock('@/sync/domains/server/serverRuntime', () => ({
-            getActiveServerSnapshot: () => ({ serverId: 'server-a', serverUrl: 'https://stack-a.example.test', kind: 'stack', generation: 1 }),
+            getActiveServerSnapshot: () => ({
+                serverId: selectedActiveServerId,
+                serverUrl: selectedActiveServerId === 'server-a'
+                    ? 'https://stack-a.example.test'
+                    : 'https://stack-b.example.test',
+                kind: 'stack',
+                generation: 1,
+            }),
             subscribeActiveServer: () => () => {},
         }));
 
@@ -247,6 +255,7 @@ describe('concurrentSessionCache teardown ordering', () => {
         // Home. Applying B must invalidate that queued view before releasing
         // B's secondary transport, otherwise the queued pass recreates B.
         (serverProfilesListener as ((generation: number) => void) | null)?.(1);
+        selectedActiveServerId = 'server-b';
         (applyingActiveServerListener as ((serverId: string) => void) | null)?.('server-b');
         await vi.advanceTimersByTimeAsync(1);
         expect(getCredentialsForServerUrlSpy.mock.calls.filter(([serverUrl]) => (
@@ -262,10 +271,10 @@ describe('concurrentSessionCache teardown ordering', () => {
         await vi.advanceTimersByTimeAsync(1);
         expect(getCredentialsForServerUrlSpy.mock.calls.filter(([serverUrl]) => (
             serverUrl === 'https://stack-b.example.test'
-        ))).toHaveLength(2);
+        ))).toHaveLength(1);
 
         (applyingActiveServerListener as ((serverId: string) => void) | null)?.('server-b');
-        expect(releaseServerReachabilitySupervisorSpy).toHaveBeenCalledTimes(2);
+        expect(releaseServerReachabilitySupervisorSpy).toHaveBeenCalledTimes(1);
         appliedActiveServerId = 'server-b';
         (appliedActiveServerListener as ((serverId: string) => void) | null)?.('server-b');
         await vi.advanceTimersByTimeAsync(1);
@@ -274,6 +283,10 @@ describe('concurrentSessionCache teardown ordering', () => {
             { serverId: 'server-a' },
         );
 
+        // This assertion is specifically about intentional teardown. Ignore
+        // any earlier reachability report from the secondary's connection
+        // attempt so the transport-destroy callback is the measured boundary.
+        reportServerUnreachableSpy.mockClear();
         stopConcurrentSessionCacheSync();
 
         expect(acquireServerReachabilitySupervisorSpy).toHaveBeenCalled();

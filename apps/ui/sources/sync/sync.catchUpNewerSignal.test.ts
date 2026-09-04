@@ -77,13 +77,22 @@ vi.mock('@/sync/api/session/apiSocket', () => ({
     },
 }));
 
+const externalTranscriptPageMock = vi.hoisted(() => vi.fn());
+const externalTranscriptReadAfterMock = vi.hoisted(() => vi.fn());
+vi.mock('@/sync/ops/machineExternalSessions', () => ({
+    machineExternalSessionTranscriptPage: externalTranscriptPageMock,
+    machineExternalSessionTranscriptReadAfter: externalTranscriptReadAfterMock,
+    machineExternalSessionTranscriptRefreshReadAfter: vi.fn(),
+}));
+
 import { storage } from './domains/state/storage';
 import {
     markSessionSurfaceHidden,
     markSessionSurfaceVisible,
     resetSessionSurfaceVisibilityForTests,
 } from './domains/session/sessionSurfaceVisibility';
-import type { Session } from './domains/state/storageTypes';
+import type { Machine, Session } from './domains/state/storageTypes';
+import type { NormalizedMessage } from './typesRaw';
 
 type SyncCatchUpTestAccess = {
     encryption: { getSessionEncryption: (sessionId: string) => null };
@@ -117,6 +126,68 @@ function createSession(sessionId: string, seq: number): Session {
     };
 }
 
+function buildMessage(id: string, seq: number): NormalizedMessage {
+    return {
+        id,
+        localId: null,
+        createdAt: seq,
+        role: 'user',
+        content: { type: 'text', text: id },
+        seq,
+        isSidechain: false,
+    };
+}
+
+function createExternalSession(
+    currentStorageState: 'machine_only' | 'snapshot_complete',
+): Session {
+    return {
+        ...createSession(SESSION_ID, 1),
+        currentStorageState,
+        ...(currentStorageState === 'snapshot_complete'
+            ? {
+                publishedThroughServerSeq: 1,
+                materializedThroughSourceAt: 1,
+                transcriptShareable: true,
+            }
+            : {}),
+        metadata: {
+            path: '/workspace',
+            host: 'test-host',
+            machineId: 'machine-1',
+            externalSessionV1: {
+                v: 1,
+                agentId: 'codex',
+                machineId: 'machine-1',
+                remoteSessionId: 'vendor-session-1',
+                source: { kind: 'codexHome', home: 'user' },
+                linkedAtMs: 1,
+                qualifiedIdentity: {
+                    v: 1,
+                    agent: { pluginId: 'happier.codex', localId: 'codex' },
+                    source: { kind: 'codexHome', contractVersion: 1 },
+                },
+            },
+        },
+    };
+}
+
+function createOfflineMachine(): Machine {
+    return {
+        id: 'machine-1',
+        seq: 0,
+        createdAt: 1,
+        updatedAt: 1,
+        active: false,
+        activeAt: 1,
+        revokedAt: null,
+        metadata: null,
+        metadataVersion: 0,
+        daemonState: null,
+        daemonStateVersion: 0,
+    };
+}
+
 function emptyMessagesResponse(): Response {
     return new Response(
         JSON.stringify({ messages: [], hasMore: false, nextAfterSeq: null }),
@@ -130,6 +201,14 @@ async function waitFor(condition: () => boolean): Promise<void> {
         if (Date.now() > deadline) throw new Error('waitFor: condition not met within 2000ms');
         await new Promise((resolve) => setTimeout(resolve, 0));
     }
+}
+
+function deferredValue<T>(): Readonly<{ promise: Promise<T>; resolve: (value: T) => void }> {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((settle) => {
+        resolve = settle;
+    });
+    return { promise, resolve };
 }
 
 /** Defer the next message-fetch request (snapshot or `afterSeq` newer) so the in-flight window is observable. */
@@ -156,11 +235,18 @@ function catchUpInFlight(): number {
     return storage.getState().sessionCatchUpNewerInFlight[SESSION_ID] ?? 0;
 }
 
-async function seedLoadedSession(materializedMaxSeq: number, sessionSeq: number): Promise<typeof import('./sync').sync> {
+async function seedLoadedSession(
+    materializedMaxSeq: number,
+    sessionSeq: number,
+    options: Readonly<{ withMaterializedMessage?: boolean }> = {},
+): Promise<typeof import('./sync').sync> {
     const { sync } = await import('./sync');
     const t = sync as unknown as SyncCatchUpTestAccess;
     sync.disconnectServer();
     storage.getState().applySessions([createSession(SESSION_ID, sessionSeq)]);
+    if (options.withMaterializedMessage !== false && materializedMaxSeq > 0) {
+        storage.getState().applyMessages(SESSION_ID, [buildMessage(`m${materializedMaxSeq}`, materializedMaxSeq)]);
+    }
     storage.getState().applyMessagesLoaded(SESSION_ID);
     t.encryption = { getSessionEncryption: () => null };
     t.activeServerSessionIds = new Set<string>([SESSION_ID]);
@@ -176,6 +262,8 @@ describe('§13 catch-up-newer signal brackets the on-open catch-up', () => {
         storage.setState(initialStorageState, true);
         kvStore.clear();
         requestMock.mockReset();
+        externalTranscriptPageMock.mockReset();
+        externalTranscriptReadAfterMock.mockReset();
         resetSessionSurfaceVisibilityForTests();
     });
 
@@ -226,6 +314,89 @@ describe('§13 catch-up-newer signal brackets the on-open catch-up', () => {
         // The snapshot is in flight, but the catch-up signal must stay clear.
         expect(catchUpInFlight()).toBe(0);
         expect(storage.getState().isSessionCatchingUpNewer(SESSION_ID)).toBe(false);
+
+        deferred.resolve();
+        await refresh;
+        expect(catchUpInFlight()).toBe(0);
+    });
+
+    it('flips the signal when a previously loaded empty transcript catches up its first durable activity', async () => {
+        const sync = await seedLoadedSession(0, 1, { withMaterializedMessage: false });
+        const deferred = deferMessagesFetch();
+
+        const refresh = sync.refreshSessionMessages(SESSION_ID);
+        await waitFor(() => deferred.wasIssued());
+
+        expect(catchUpInFlight()).toBeGreaterThan(0);
+        expect(storage.getState().isSessionCatchingUpNewer(SESSION_ID)).toBe(true);
+
+        deferred.resolve();
+        await refresh;
+        expect(catchUpInFlight()).toBe(0);
+    });
+
+    it('flips the signal while a loaded empty external transcript recovers from its live Agent', async () => {
+        const { sync } = await import('./sync');
+        const t = sync as unknown as SyncCatchUpTestAccess;
+        sync.disconnectServer();
+        storage.getState().applySessions([createExternalSession('machine_only')]);
+        storage.getState().applyMessagesLoaded(SESSION_ID);
+        t.encryption = { getSessionEncryption: () => null };
+        t.activeServerSessionIds = new Set([SESSION_ID]);
+        t.hasFetchedSessionsSnapshotForActiveServer = true;
+        t.isForeground = true;
+        t.sessionMaterializedMaxSeqById = { [SESSION_ID]: 0 };
+        markSessionSurfaceVisible(SESSION_ID);
+        const page = deferredValue<{
+            ok: true;
+            items: [];
+            nextCursor: null;
+            tailCursor: string;
+            hasMore: false;
+        }>();
+        externalTranscriptPageMock.mockReturnValue(page.promise);
+        externalTranscriptReadAfterMock.mockResolvedValue({
+            ok: true,
+            items: [],
+            nextCursor: 'tail-1',
+            truncated: false,
+        });
+
+        const refresh = sync.refreshSessionMessages(SESSION_ID);
+        await waitFor(() => externalTranscriptPageMock.mock.calls.length > 0);
+
+        expect(catchUpInFlight()).toBeGreaterThan(0);
+
+        page.resolve({
+            ok: true,
+            items: [],
+            nextCursor: null,
+            tailCursor: 'tail-1',
+            hasMore: false,
+        });
+        await refresh;
+        expect(catchUpInFlight()).toBe(0);
+    });
+
+    it('flips the signal while a loaded empty external transcript recovers from its server snapshot', async () => {
+        const { sync } = await import('./sync');
+        const t = sync as unknown as SyncCatchUpTestAccess;
+        sync.disconnectServer();
+        storage.getState().applyMachines([createOfflineMachine()]);
+        storage.getState().applySessions([createExternalSession('snapshot_complete')]);
+        storage.getState().applyMessagesLoaded(SESSION_ID);
+        t.encryption = { getSessionEncryption: () => null };
+        t.activeServerSessionIds = new Set([SESSION_ID]);
+        t.hasFetchedSessionsSnapshotForActiveServer = true;
+        t.isForeground = true;
+        t.sessionMaterializedMaxSeqById = { [SESSION_ID]: 0 };
+        markSessionSurfaceVisible(SESSION_ID);
+        const deferred = deferMessagesFetch();
+
+        const refresh = sync.refreshSessionMessages(SESSION_ID);
+        await waitFor(() => deferred.wasIssued());
+
+        expect(catchUpInFlight()).toBeGreaterThan(0);
 
         deferred.resolve();
         await refresh;

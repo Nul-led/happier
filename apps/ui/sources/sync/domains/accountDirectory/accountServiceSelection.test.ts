@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { AccountServiceEndpointV1 } from '@/sync/domains/server/serverProfiles';
+
 import { createAccountDirectoryServiceKey } from './accountDirectorySession';
 
 const selectedEndpoint = vi.hoisted(() => ({
@@ -7,7 +9,7 @@ const selectedEndpoint = vi.hoisted(() => ({
         url: 'https://api.happier.dev',
         displayName: 'Happier Cloud',
         source: 'default' as const,
-    },
+    } as AccountServiceEndpointV1,
 }));
 const persistedEndpoint = vi.hoisted(() => ({ current: null as null | typeof selectedEndpoint.current }));
 

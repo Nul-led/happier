@@ -47,7 +47,6 @@ function makeRequest(overrides: Partial<IrohHomeTunnelRequest> = {}): IrohHomeTu
         policy: 'automatic',
         relayUrls: ['https://relay.example.test'],
         directAddresses: ['192.168.1.10:4242'],
-        descriptorRevision: 4,
         verification: { kind: 'authenticated', token: 'token-a' },
         ...overrides,
     };
@@ -94,7 +93,6 @@ describe('sync/runtime/nativeIrohTunnels desktop lifecycle bridge', () => {
                 policy: 'automatic',
                 relayUrls: ['https://relay.example.test'],
                 directAddresses: ['192.168.1.10:4242'],
-                descriptorRevision: 4,
             },
         });
         // The renderer never provides endpoint identity material or key paths.
