@@ -11,6 +11,7 @@ describe('RPC_METHODS file-system surface', () => {
     expect(RPC_METHODS.GET_DIRECTORY_TREE).toBe('getDirectoryTree');
     expect(RPC_METHODS.DAEMON_FILESYSTEM_LIST_ROOTS).toBe('daemon.filesystem.listRoots');
     expect(RPC_METHODS.DAEMON_FILESYSTEM_LIST_DIRECTORY).toBe('daemon.filesystem.listDirectory');
+    expect(RPC_METHODS.DAEMON_WORKSPACE_FILES_LIST).toBe('daemon.workspaceFiles.list.v1');
     expect(RPC_METHODS.STAT_FILE).toBe('statFile');
     expect(RPC_METHODS.RENAME_PATH).toBe('renamePath');
     expect(RPC_METHODS.DELETE_PATH).toBe('deletePath');
@@ -32,6 +33,7 @@ describe('RPC_METHODS file-system surface', () => {
     expect(RPC_METHODS.DAEMON_TRANSFER_COMPOSER_MEDIA_RELEASE).toBe('daemon.bulkTransfer.composerMedia.release');
     expect('DAEMON_BULK_TRANSFER_UPLOAD_INIT' in RPC_METHODS).toBe(false);
     expect('DAEMON_BULK_TRANSFER_DOWNLOAD_INIT' in RPC_METHODS).toBe(false);
+    expect('RIPGREP' in RPC_METHODS).toBe(false);
 
     // Guardrail: legacy undeployed session file/attachment transfer surfaces must not reappear
     // as method literals in the canonical RPC method table.

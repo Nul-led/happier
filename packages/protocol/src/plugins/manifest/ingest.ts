@@ -68,6 +68,38 @@ export type PluginManifestSetReferenceResolutionResult =
 // Private parser-recursion fail-safe, not an author-visible manifest quota.
 const PLUGIN_MANIFEST_SCHEMA_STACK_SAFETY_DEPTH = 1_024;
 
+type PublicPluginManifestPolicyRequest = Readonly<{ capability: string }>;
+
+const DEFERRED_PUBLIC_HOST_ACCESS_CAPABILITIES = new Set([
+  'browser',
+  'clipboard',
+  'externalLinks',
+]);
+
+/**
+ * Applies the public authoring policy after the broad Protocol manifest has
+ * been parsed and its references have been resolved. Internal/bundled
+ * consumers continue to use `ingestPluginManifestV2` directly; only the
+ * public author boundary applies this deferred HostAccess rule.
+ */
+export function validatePublicPluginManifestPolicy(
+  manifest: Readonly<{
+    hostAccess: Readonly<{
+      required: readonly PublicPluginManifestPolicyRequest[];
+    }>;
+  }>,
+): readonly PluginManifestIngestionDiagnostic[] {
+  return manifest.hostAccess.required.flatMap((request, index) => (
+    DEFERRED_PUBLIC_HOST_ACCESS_CAPABILITIES.has(request.capability)
+      ? [{
+        code: 'plugin_manifest_invalid' as const,
+        path: ['hostAccess', 'required', index, 'capability'] as const,
+        message: `HostAccess capability '${request.capability}' is deferred from public plugin authoring: no host authority or service owner binds it yet.`,
+      }]
+      : []
+  ));
+}
+
 /** Decodes the manifest's raw file bytes without silently replacing malformed UTF-8. */
 export function decodePluginManifestUtf8(bytes: Uint8Array): string {
   return new TextDecoder('utf-8', { fatal: true }).decode(bytes);

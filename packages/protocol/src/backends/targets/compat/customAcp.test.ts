@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   hasLegacyCustomAcpConcreteBackendId,
   isLegacyConfiguredAcpFlavorCarrier,
+  isInvalidNestedLegacyCustomAcpPlaceholder,
   readLegacyConfiguredAcpBackendId,
 } from './customAcp.js';
 import { readLegacyContinueWithReplayCompatBackendTargetInput } from './continueWithReplayRpcParamsCompat.js';
@@ -21,6 +22,8 @@ describe('customAcp backend-target compat', () => {
 
   it('rejects nested customAcp placeholders inside configured ACP flavor carriers', () => {
     expect(readLegacyConfiguredAcpBackendId('acp:customAcp')).toBeNull();
+    expect(isInvalidNestedLegacyCustomAcpPlaceholder('acp:customAcp')).toBe(true);
+    expect(isInvalidNestedLegacyCustomAcpPlaceholder(undefined)).toBe(false);
     expect(isLegacyConfiguredAcpFlavorCarrier('acp:customAcp')).toBe(false);
     expect(hasLegacyCustomAcpConcreteBackendId({ backendId: 'acp:customAcp' })).toBe(true);
     expect(readLegacyContinueWithReplayCompatBackendTargetInput('acp:customAcp')).toBeNull();

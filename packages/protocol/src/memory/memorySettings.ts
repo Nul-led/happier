@@ -39,6 +39,15 @@ export const MemoryContentPolicyV1Schema = z
 export type MemoryContentPolicyV1 = z.infer<typeof MemoryContentPolicyV1Schema>;
 const DEFAULT_MEMORY_CONTENT_POLICY: MemoryContentPolicyV1 = MemoryContentPolicyV1Schema.parse({});
 
+/** Policy provenance stamped onto reconstructible daemon-memory artifacts. */
+export const MemoryIndexPolicyV1Schema = z.object({
+  coveragePolicy: MemoryCoveragePolicyV1Schema,
+  contentPolicy: MemoryContentPolicyV1Schema,
+  backfillPolicy: z.enum(['new_only', 'last_30_days', 'all_history']),
+  enabledAtMs: z.number().int().min(0),
+}).passthrough();
+export type MemoryIndexPolicyV1 = z.infer<typeof MemoryIndexPolicyV1Schema>;
+
 export const MemoryHintsSettingsV1Schema = z.preprocess((value) => {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     const candidate = value as Record<string, unknown>;

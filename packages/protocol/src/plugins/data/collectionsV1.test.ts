@@ -54,6 +54,7 @@ import {
   normalizePluginAccountCollectionContractV1,
   normalizePluginAccountCollectionContractsV1,
   resolveEffectivePluginCollectionLimitsV1,
+  resolvePluginCollectionContractAccessV1,
   splitPluginCollectionCandidatePreparationStageRequestsForKnownLimitsV1,
   validatePluginCollectionUiQueryParametersV1,
   validatePluginCollectionUiQueryResultV1,
@@ -102,7 +103,74 @@ const baseCollection = {
   }],
 } as const;
 
+function collectionRef(contract: Readonly<{
+  pluginId: string;
+  collectionId: string;
+  schemaVersion: number;
+  contractDigest: string;
+}>) {
+  return {
+    pluginId: contract.pluginId,
+    collectionId: contract.collectionId,
+    schemaVersion: contract.schemaVersion,
+    contractDigest: contract.contractDigest,
+  };
+}
+
 describe('Plugin Account Collection contracts', () => {
+  it('grants older declared-compatible contracts reads but reserves writes for the exact current ref', () => {
+    const sourceReader = normalizePluginAccountCollectionContractV1({
+      pluginId: 'example.compat',
+      contribution: PluginAccountCollectionContributionV1Schema.parse({
+        ...baseCollection,
+        readableSchemaVersions: [2],
+      }),
+    });
+    const target = normalizePluginAccountCollectionContractV1({
+      pluginId: 'example.compat',
+      contribution: PluginAccountCollectionContributionV1Schema.parse({
+        ...baseCollection,
+        schemaVersion: 2,
+      }),
+    });
+    expect(resolvePluginCollectionContractAccessV1({ currentWriter: target, requested: target }))
+      .toBe('writable');
+    expect(resolvePluginCollectionContractAccessV1({ currentWriter: target, requested: sourceReader }))
+      .toBe('readOnly');
+    expect(resolvePluginCollectionContractAccessV1({
+      currentWriter: target,
+      requested: { ...target, contractDigest: sourceReader.contractDigest },
+    })).toBeNull();
+
+    const sourceThatDoesNotAdmitTheWriter = normalizePluginAccountCollectionContractV1({
+      pluginId: 'example.compat',
+      contribution: PluginAccountCollectionContributionV1Schema.parse(baseCollection),
+    });
+    expect(resolvePluginCollectionContractAccessV1({
+      currentWriter: { ...target, readableSchemaVersions: [1] },
+      requested: sourceThatDoesNotAdmitTheWriter,
+    })).toBeNull();
+
+    const sourceWithDifferentQuerySemantics = normalizePluginAccountCollectionContractV1({
+      pluginId: 'example.compat',
+      contribution: PluginAccountCollectionContributionV1Schema.parse({
+        ...baseCollection,
+        readableSchemaVersions: [2],
+        indexes: [{
+          id: 'by-status',
+          fields: [
+            { field: 'title', direction: 'asc' },
+            { field: 'id', direction: 'asc' },
+          ],
+        }],
+        uiQueries: [],
+      }),
+    });
+    expect(resolvePluginCollectionContractAccessV1({
+      currentWriter: target,
+      requested: sourceWithDifferentQuerySemantics,
+    })).toBeNull();
+  });
   it('keeps collection-declared ceilings distinct from Account aggregate ceilings', () => {
     expect(resolveEffectivePluginCollectionLimitsV1({
       deployment: {
@@ -374,16 +442,21 @@ describe('Plugin Account Collection contracts', () => {
       relations: [{ id: 'project', field: 'projectId', collectionId: 'projects' }],
     });
 
-    expect(PluginCollectionContractReadResultV1Schema.safeParse({ contract: normalized }).success).toBe(true);
+    expect(PluginCollectionContractReadResultV1Schema.safeParse({
+      access: 'writable',
+      contract: normalized,
+    }).success).toBe(true);
     expect(PluginCollectionQueryRequestV1Schema.safeParse({
       pluginId: normalized.pluginId,
       collectionId: normalized.collectionId,
+      readerContext: collectionRef(normalized),
       indexId: 'byProjectAndStatus',
       order: 'asc',
     }).success).toBe(true);
     expect(PluginCollectionUiQueryRequestV1Schema.safeParse({
       pluginId: normalized.pluginId,
       collectionId: normalized.collectionId,
+      readerContext: collectionRef(normalized),
       uiQueryId: 'openByProject',
       parameters: { projectId: 'project-1' },
     }).success).toBe(true);
@@ -429,6 +502,7 @@ describe('Plugin Account Collection contracts', () => {
       expect(PluginCollectionUiQueryRequestV1Schema.safeParse({
         pluginId: normalized.pluginId,
         collectionId: normalized.collectionId,
+        readerContext: collectionRef(normalized),
         uiQueryId: invalidMemberName,
         parameters: { projectId: 'project-1' },
       }).success).toBe(false);
@@ -442,6 +516,7 @@ describe('Plugin Account Collection contracts', () => {
       expect(PluginCollectionQueryRequestV1Schema.safeParse({
         pluginId: normalized.pluginId,
         collectionId: normalized.collectionId,
+        readerContext: collectionRef(normalized),
         indexId: invalidMemberName,
         order: 'asc',
       }).success).toBe(false);
@@ -493,7 +568,10 @@ describe('Plugin Account Collection contracts', () => {
       pluginId: 'example.tasks',
       contribution,
     });
-    expect(PluginCollectionContractReadResultV1Schema.safeParse({ contract: normalized }).success).toBe(true);
+    expect(PluginCollectionContractReadResultV1Schema.safeParse({
+      access: 'writable',
+      contract: normalized,
+    }).success).toBe(true);
   });
 
   it('normalizes only object-root Collection schemas', () => {
@@ -874,7 +952,13 @@ describe('Plugin Account Collection contracts', () => {
     }, 'e2ee')).toThrow('Plugin Collection content envelope');
   });
 
-  it('defines bounded generic get/query envelopes without caller-supplied contract authority', () => {
+  it('defines bounded generic get/query envelopes with exact host-stamped reader authority', () => {
+    const readerContext = {
+      pluginId: 'example.tasks',
+      collectionId: 'tasks',
+      schemaVersion: 1,
+      contractDigest: 'a'.repeat(43),
+    };
     const row = {
       rowId: 'task-1',
       revision: 2,
@@ -885,10 +969,12 @@ describe('Plugin Account Collection contracts', () => {
     expect(PluginCollectionGetRequestV1Schema.parse({
       pluginId: 'example.tasks',
       collectionId: 'tasks',
+      readerContext,
       rowId: 'task-1',
     })).toEqual({
       pluginId: 'example.tasks',
       collectionId: 'tasks',
+      readerContext,
       rowId: 'task-1',
     });
     expect(PluginCollectionGetResultV1Schema.parse({ row, absenceEpoch: 0 })).toEqual({ row, absenceEpoch: 0 });
@@ -897,6 +983,7 @@ describe('Plugin Account Collection contracts', () => {
     expect(PluginCollectionQueryRequestV1Schema.parse({
       pluginId: 'example.tasks',
       collectionId: 'tasks',
+      readerContext,
       indexId: 'by-status',
       prefix: ['open'],
       range: { lower: 'a', upper: 'z' },
@@ -905,6 +992,7 @@ describe('Plugin Account Collection contracts', () => {
     })).toEqual({
       pluginId: 'example.tasks',
       collectionId: 'tasks',
+      readerContext,
       indexId: 'by-status',
       prefix: ['open'],
       range: { lower: 'a', upper: 'z' },
@@ -914,6 +1002,7 @@ describe('Plugin Account Collection contracts', () => {
     expect(PluginCollectionQueryRequestV1Schema.safeParse({
       pluginId: 'example.tasks',
       collectionId: 'tasks',
+      readerContext,
       indexId: 'by-status',
       order: 'asc',
       contractDigest: 'forged-authority',
@@ -921,6 +1010,7 @@ describe('Plugin Account Collection contracts', () => {
     expect(PluginCollectionQueryRequestV1Schema.safeParse({
       pluginId: 'example.tasks',
       collectionId: 'tasks',
+      readerContext,
       indexId: 'by-status',
       order: 'asc',
       limit: 201,

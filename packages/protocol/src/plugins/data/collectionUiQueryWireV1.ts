@@ -9,6 +9,7 @@ import {
   PluginCollectionProjectedScalarValueV1Schema,
 } from './collectionContributionV1.js';
 import { PluginCollectionOpaqueCursorV1Schema } from './collectionOpaqueCursorV1.js';
+import { PluginCollectionContractRefV1Schema } from './collectionContractRefV1.js';
 
 const MAX_COLLECTION_ROW_ID_UTF8_BYTES = 256;
 
@@ -34,7 +35,7 @@ export { PluginCollectionOpaqueCursorV1Schema };
  * Account qualification, contract admission, and private cursor ownership stay
  * with the direct Data client that consumes them.
  */
-export const PluginCollectionUiQueryRequestV1Schema = z.object({
+export const PluginCollectionUiQueryInputV1Schema = z.object({
   pluginId: asProtocolZod(PluginIdSchema),
   collectionId: asProtocolZod(PluginContributionLocalIdSchema),
   uiQueryId: PluginCollectionMemberNameV1Schema,
@@ -43,6 +44,11 @@ export const PluginCollectionUiQueryRequestV1Schema = z.object({
     z.union([z.string(), PluginCollectionFiniteNumberV1Schema, z.boolean()]),
   ).default({}),
   cursor: asProtocolZod(PluginCollectionOpaqueCursorV1Schema).optional(),
+}).strict();
+export type PluginCollectionUiQueryInputV1 = z.infer<typeof PluginCollectionUiQueryInputV1Schema>;
+
+export const PluginCollectionUiQueryRequestV1Schema = PluginCollectionUiQueryInputV1Schema.extend({
+  readerContext: PluginCollectionContractRefV1Schema,
 }).strict();
 export type PluginCollectionUiQueryRequestV1 = z.infer<typeof PluginCollectionUiQueryRequestV1Schema>;
 

@@ -45,4 +45,36 @@ describe('ScmLogList wire contract with bounded commit query', () => {
         const atBound = 'a'.repeat(SCM_LOG_QUERY_MAX_LENGTH);
         expect(ScmLogListRequestSchema.safeParse({ cwd: '/repo', query: atBound }).success).toBe(true);
     });
+
+    it('rejects unknown request and response fields at the SCM routing boundary', () => {
+        expect(ScmLogListRequestSchema.safeParse({
+            cwd: '/repo',
+            query: 'fix login',
+            routeToAnotherWorkspace: true,
+        }).success).toBe(false);
+
+        expect(ScmLogListResponseSchema.safeParse({
+            success: true,
+            entries: [],
+            queryApplied: true,
+            authoritativeScope: 'all-refs',
+        }).success).toBe(false);
+    });
+
+    it('rejects unknown fields on commit identities returned by the SCM owner', () => {
+        expect(ScmLogListResponseSchema.safeParse({
+            success: true,
+            entries: [{
+                sha: 'a'.repeat(40),
+                shortSha: 'a'.repeat(12),
+                authorName: 'Ada Lovelace',
+                authorEmail: 'ada@example.com',
+                timestamp: 1,
+                subject: 'fix: login',
+                body: '',
+                activationTarget: 'another-repository',
+            }],
+            queryApplied: true,
+        }).success).toBe(false);
+    });
 });

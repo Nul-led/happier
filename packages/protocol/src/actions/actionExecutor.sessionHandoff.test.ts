@@ -85,7 +85,7 @@ describe('createActionExecutor (session.handoff)', () => {
     });
   });
 
-  it('passes canonical workspace action and target storage mode through to sessionHandoffStart', async () => {
+  it('passes only the canonical workspace action and never a caller-named WorkspaceRef or settings version', async () => {
     const sessionHandoffStart = vi.fn(async () => ({ handoffId: 'handoff_1', status: { handoffId: 'handoff_1', status: 'pending', phase: 'preparing', recoveryActions: [] } }));
     const deps = createDeps({
       sessionHandoffStart,
@@ -95,7 +95,7 @@ describe('createActionExecutor (session.handoff)', () => {
     const executor = createActionExecutor(deps);
 
     const policyDigest = computeWorkspaceSyncPolicyDigest({
-      v: 1, selection: 'git_worktree', extraIgnorePatterns: [], extraIncludePatterns: ['dist/**'], includeGitDirectory: false,
+      v: 1, selection: 'git_worktree', extraIgnorePatterns: [], extraIncludePatterns: ['dist/**'],
     });
     const result = await executor.execute(
       'session.handoff',
@@ -110,10 +110,12 @@ describe('createActionExecutor (session.handoff)', () => {
             selection: 'git_worktree',
             extraIgnorePatterns: [],
             extraIncludePatterns: ['dist/**'],
-            includeGitDirectory: false,
             policyDigest,
           },
         },
+        // Retired daemon mechanics. A caller may still put them on the wire;
+        // the public Action must ignore them so the daemon stays the only
+        // WorkspaceRef/settings-version authority.
         workspaceSyncSourceWorkspaceRefId: 'workspace-source',
         workspaceSyncTargetWorkspaceRefId: 'workspace-target',
         workspaceSyncSettingsVersion: 8,
@@ -134,16 +136,16 @@ describe('createActionExecutor (session.handoff)', () => {
           selection: 'git_worktree',
           extraIgnorePatterns: [],
           extraIncludePatterns: ['dist/**'],
-          includeGitDirectory: false,
           policyDigest,
         },
       },
-      workspaceSyncSourceWorkspaceRefId: 'workspace-source',
-      workspaceSyncTargetWorkspaceRefId: 'workspace-target',
-      workspaceSyncSettingsVersion: 8,
       serverId: 'server_a',
       actionRequestId: 'handoff-action-copy-1',
     });
+    const [forwarded] = sessionHandoffStart.mock.calls[0] as [Record<string, unknown>];
+    expect(forwarded).not.toHaveProperty('workspaceSyncSourceWorkspaceRefId');
+    expect(forwarded).not.toHaveProperty('workspaceSyncTargetWorkspaceRefId');
+    expect(forwarded).not.toHaveProperty('workspaceSyncSettingsVersion');
   });
 
   it('routes one non-empty target replacement approval and replays only its exact host proof', async () => {
@@ -152,13 +154,11 @@ describe('createActionExecutor (session.handoff)', () => {
       selection: 'all_files' as const,
       extraIgnorePatterns: [],
       extraIncludePatterns: [],
-      includeGitDirectory: false,
       policyDigest: computeWorkspaceSyncPolicyDigest({
         v: 1,
         selection: 'all_files',
         extraIgnorePatterns: [],
         extraIncludePatterns: [],
-        includeGitDirectory: false,
       }),
     };
     const approval = {
@@ -171,7 +171,7 @@ describe('createActionExecutor (session.handoff)', () => {
       operationId: 'handoff-action-1',
     };
     const preflight = vi.fn(async () => ({ type: 'approval_required' as const, approval }));
-    const sessionHandoffStart = vi.fn(async () => ({ handoffId: 'handoff_1' }));
+    const sessionHandoffStart = vi.fn(async () => ({ handoffId: 'handoff_1', status: { handoffId: 'handoff_1', status: 'completed' as const, phase: 'finalizing' as const, recoveryActions: [] } }));
     let persistedApproval: Record<string, unknown> | null = null;
     const approvalsCreate = vi.fn(async ({ request }: { request: Record<string, unknown> }) => {
       persistedApproval = request;
@@ -233,13 +233,11 @@ describe('createActionExecutor (session.handoff)', () => {
       selection: 'all_files' as const,
       extraIgnorePatterns: [],
       extraIncludePatterns: [],
-      includeGitDirectory: false,
       policyDigest: computeWorkspaceSyncPolicyDigest({
         v: 1,
         selection: 'all_files',
         extraIgnorePatterns: [],
         extraIncludePatterns: [],
-        includeGitDirectory: false,
       }),
     };
     const approval = {
@@ -263,7 +261,7 @@ describe('createActionExecutor (session.handoff)', () => {
         approval: preflightCalls === 1 ? approval : refreshedApproval,
       };
     });
-    const sessionHandoffStart = vi.fn(async () => ({ handoffId: 'handoff_1' }));
+    const sessionHandoffStart = vi.fn(async () => ({ handoffId: 'handoff_1', status: { handoffId: 'handoff_1', status: 'completed' as const, phase: 'finalizing' as const, recoveryActions: [] } }));
     let persistedApproval: Record<string, unknown> | null = null;
     const approvalsCreate = vi.fn(async ({ request }: { request: Record<string, unknown> }) => {
       persistedApproval = request;
@@ -344,7 +342,7 @@ describe('createActionExecutor (session.handoff)', () => {
 
   it('fails when the target machine id is missing', async () => {
     const deps = createDeps({
-      sessionHandoffStart: vi.fn(async () => ({ handoffId: 'handoff_1' })),
+      sessionHandoffStart: vi.fn(async () => ({ handoffId: 'handoff_1', status: { handoffId: 'handoff_1', status: 'completed' as const, phase: 'finalizing' as const, recoveryActions: [] } })),
     });
     const executor = createActionExecutor(deps);
 

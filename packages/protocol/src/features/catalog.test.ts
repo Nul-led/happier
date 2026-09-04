@@ -113,6 +113,14 @@ describe('feature catalog', () => {
     expect(isFeatureId('updates.ota')).toBe(true);
   });
 
+  it('advertises bound QR v2 separately from the legacy pairing surface', () => {
+    expect(isFeatureId('auth.pairing.boundQrV2')).toBe(true);
+    expect(FEATURE_CATALOG['auth.pairing.boundQrV2']?.dependencies).toEqual([
+      'auth.pairing.desktopQrMobileScan',
+    ]);
+    expect(FEATURE_CATALOG['auth.pairing.boundQrV2']?.defaultFailMode).toBe('fail_closed');
+  });
+
   it('includes attachments uploads feature id', () => {
     expect(isFeatureId('attachments.uploads')).toBe(true);
   });
@@ -146,6 +154,7 @@ describe('feature catalog', () => {
 
   it('represents server search independently from the client memory-search surface', () => {
     expect(FEATURE_CATALOG.search).toMatchObject({
+      description: 'Personal Home plaintext transcript search indexing and authenticated query route.',
       representation: 'server',
       defaultFailMode: 'fail_closed',
       dependencies: [],

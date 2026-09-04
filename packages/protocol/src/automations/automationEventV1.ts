@@ -1054,32 +1054,6 @@ export const AutomationRunReplyHandoffStateV1Schema = AutomationReplyHandoffStat
 export type AutomationRunReplyHandoffStateV1 = AutomationReplyHandoffStateV1;
 
 /**
- * The private Action outcome is retained for the receipt owner only. The
- * server receives the outer envelope and a coarse settlement projection, never
- * this payload or a provider/Channels detail.
- */
-export const AutomationReplyHandoffReceiptPayloadV1Schema = z.object({
-  v: z.literal(1),
-  correspondence: AutomationReplyHandoffCorrespondenceV1Schema,
-  result: AutomationResultDeliveryResultV1Schema,
-}).strict();
-export type AutomationReplyHandoffReceiptPayloadV1 = z.infer<
-  typeof AutomationReplyHandoffReceiptPayloadV1Schema
->;
-
-export const AutomationReplyHandoffReceiptStoredV1Schema = z.discriminatedUnion('t', [
-  z.object({ t: z.literal('plain'), v: AutomationReplyHandoffReceiptPayloadV1Schema }).strict(),
-  ENCRYPTED_STORED_CONTENT_SCHEMA,
-]).superRefine((value, context) => {
-  if (UTF8_ENCODER.encode(createCanonicalJsonSigningInput(value)).byteLength > MAX_AUTOMATION_STORED_ENVELOPE_UTF8_BYTES) {
-    context.addIssue({ code: z.ZodIssueCode.custom, message: 'Stored Conversation reply receipt exceeds its UTF-8 byte limit' });
-  }
-});
-export type AutomationReplyHandoffReceiptStoredV1 = z.infer<
-  typeof AutomationReplyHandoffReceiptStoredV1Schema
->;
-
-/**
  * The only server-readable classification of a reply-handoff payload. It
  * validates the bounded persisted shape and its Account-mode tag, but never
  * opens ciphertext or exposes an inner payload to the server.
@@ -1087,7 +1061,6 @@ export type AutomationReplyHandoffReceiptStoredV1 = z.infer<
 export const AutomationReplyHandoffStoredEnvelopeContentV1Schema = z.enum([
   'result',
   'replyContext',
-  'receipt',
 ]);
 export type AutomationReplyHandoffStoredEnvelopeContentV1 = z.infer<
   typeof AutomationReplyHandoffStoredEnvelopeContentV1Schema
@@ -1098,8 +1071,7 @@ export type AutomationReplyHandoffStoredEnvelopeOuterValidationV1 =
       kind: 'available';
       envelope:
         | AutomationRunResultStoredV1
-        | AutomationConversationReplyContextStoredV1
-        | AutomationReplyHandoffReceiptStoredV1;
+        | AutomationConversationReplyContextStoredV1;
     }>
   | Readonly<{ kind: 'modeMismatch' }>
   | Readonly<{ kind: 'legacyUnsupported' }>
@@ -1117,17 +1089,13 @@ export function validateAutomationReplyHandoffStoredEnvelopeOuterForModeV1(param
 }>): AutomationReplyHandoffStoredEnvelopeOuterValidationV1 {
   let parsed:
     | ReturnType<typeof AutomationRunResultStoredV1Schema.safeParse>
-    | ReturnType<typeof AutomationConversationReplyContextStoredV1Schema.safeParse>
-    | ReturnType<typeof AutomationReplyHandoffReceiptStoredV1Schema.safeParse>;
+    | ReturnType<typeof AutomationConversationReplyContextStoredV1Schema.safeParse>;
   switch (params.content) {
     case 'result':
       parsed = AutomationRunResultStoredV1Schema.safeParse(params.envelope);
       break;
     case 'replyContext':
       parsed = AutomationConversationReplyContextStoredV1Schema.safeParse(params.envelope);
-      break;
-    case 'receipt':
-      parsed = AutomationReplyHandoffReceiptStoredV1Schema.safeParse(params.envelope);
       break;
   }
   if (!parsed.success) return { kind: 'contentInvalid' };
@@ -1227,8 +1195,9 @@ export type AutomationReplyHandoffDispatchRequestV1 = z.infer<
 
 /**
  * The only settlement detail the ciphertext-blind server can act on. Action
- * custody ids, suppression reasons, block codes, and provider detail stay in
- * the sealed receipt envelope owned by the target daemon/plugin consumer.
+ * custody ids, suppression reasons, block codes, and provider detail never
+ * leave the target daemon: Channels owns that custody record, and the server
+ * settles the frozen handoff from this typed projection alone.
  */
 export const AutomationReplyHandoffSettlementV1Schema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('accepted') }).strict(),
@@ -1250,33 +1219,7 @@ export const AutomationReplyHandoffDispatchResultV1Schema = z.discriminatedUnion
     kind: z.literal('settled'),
     settlement: AutomationReplyHandoffSettlementV1Schema,
     accountCurrentness: AutomationAccountCurrentnessWitnessV1Schema,
-    /** Opaque to the server; validates only bounded mode-tagged outer shape. */
-    receiptEnvelope: AutomationStoredContentEnvelopeV1Schema.optional(),
-  }).strict().superRefine((value, context) => {
-    if (
-      value.receiptEnvelope !== undefined
-      && (
-        (value.accountCurrentness.mode === 'plain' && value.receiptEnvelope.t !== 'plain')
-        || (value.accountCurrentness.mode === 'e2ee' && value.receiptEnvelope.t !== 'encrypted')
-      )
-    ) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['receiptEnvelope', 't'],
-        message: 'Receipt envelope tag must match Account currentness mode',
-      });
-    }
-    if (
-      (value.settlement.kind === 'accepted' || value.settlement.kind === 'suppressed')
-      && value.receiptEnvelope === undefined
-    ) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['receiptEnvelope'],
-        message: 'Accepted and suppressed handoffs require their opaque receipt envelope',
-      });
-    }
-  }),
+  }).strict(),
   z.object({
     kind: z.literal('unavailable'),
     code: z.enum([

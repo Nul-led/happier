@@ -159,12 +159,6 @@ const FROZEN_CANONICAL_ACCOUNT_SCOPED_VECTORS = [
     payload: { slot: 15, source: 'event-automations-r0.22-reply-context' },
   },
   {
-    kind: 'automation_reply_handoff_receipt',
-    kindByte: 16,
-    ciphertext: 'oRAhIiMkJSYnKCkqKywtLi8wMTIzNDU2NzjYxvoLrTTsm7GzWRHJjtjVoIyVTXvA0HVj7XeYLkgdROdFOo0O2H0OODdqp8u6FMs1Ol0E3CTHHqrex15KrmIwUEkYFPKsW2ZQQoSUu2Q=',
-    payload: { slot: 16, source: 'event-automations-r0.22-handoff-receipt' },
-  },
-  {
     kind: 'plugin_collection_private_payload',
     kindByte: 17,
     ciphertext: 'oREhIiMkJSYnKCkqKywtLi8wMTIzNDU2NzgplMXbfMtVTx/6tBhnGzsV9ci80ZS1oMQcTKi9WTlab6oI/eR5OmMYtPIWsr5kYGoAHP6tFmYqEoWJtvULZiushUl1otpyegZu8jFOtzt+c8BwWg9SDGp5aV0=',
@@ -450,10 +444,6 @@ const CURRENT_ACCOUNT_SCOPED_KIND_ROLLBACK_DISPOSITIONS = {
   },
   automation_conversation_reply_context: {
     productionOwner: 'Automation reply-handoff context owner',
-    remoteDev165A: 'rollback_blocking',
-  },
-  automation_reply_handoff_receipt: {
-    productionOwner: 'Automation reply-handoff receipt owner',
     remoteDev165A: 'rollback_blocking',
   },
   plugin_collection_private_payload: {
@@ -943,7 +933,6 @@ describe('accountScopedCipher', () => {
       ['plugin_declarative_settings', 13],
       ['automation_run_result', 14],
       ['automation_conversation_reply_context', 15],
-      ['automation_reply_handoff_receipt', 16],
       ['plugin_collection_private_payload', 17],
       ['plugin_account_kv_private_payload', 18],
       ['automation_trigger_evidence', 19],
@@ -977,7 +966,9 @@ describe('accountScopedCipher', () => {
     expect(new Set(canonicalKindBytes).size).toBe(canonicalKindBytes.length);
     expect([...canonicalKindBytes].sort((left, right) => left - right)).toEqual(
       [
-        ...Array.from({ length: 24 }, (_, index) => index + 1),
+        // Byte 16 was the retired Automation reply-handoff receipt domain and
+        // byte 25 was never allocated. Neither is reissued.
+        ...Array.from({ length: 24 }, (_, index) => index + 1).filter((byte) => byte !== 16),
         26,
       ],
     );

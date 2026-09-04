@@ -91,6 +91,7 @@ export {
   formatPluginManifestIngestionDiagnostic,
   formatPluginManifestIngestionDiagnostics,
   ingestPluginManifestV2,
+  validatePublicPluginManifestPolicy,
   resolvePluginManifestSetReferencesV2,
   type PluginManifestIngestionDiagnostic,
   type PluginManifestIngestionResult,

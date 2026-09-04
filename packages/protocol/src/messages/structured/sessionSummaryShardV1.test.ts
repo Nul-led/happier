@@ -46,6 +46,32 @@ describe('session_summary_shard.v1 schema', () => {
     });
   });
 
+  it('accepts predecessor shards without provenance and round-trips current memory policy provenance', () => {
+    const base = {
+      v: 1 as const,
+      seqFrom: 1,
+      seqTo: 2,
+      createdAtFromMs: 100,
+      createdAtToMs: 200,
+      summary: 'Policy-aware summary.',
+    };
+    expect(SessionSummaryShardV1Schema.parse(base).memoryPolicy).toBeUndefined();
+
+    const memoryPolicy = {
+      coveragePolicy: { type: 'latest_messages' as const, maxSemanticMessagesPerSession: 25 },
+      contentPolicy: {
+        includeUserMessages: true,
+        includeAssistantMessages: false,
+        includeReasoning: false,
+        includeToolSummaries: true,
+        includeToolOutputs: false,
+      },
+      backfillPolicy: 'new_only' as const,
+      enabledAtMs: 123,
+    };
+    expect(SessionSummaryShardV1Schema.parse({ ...base, memoryPolicy }).memoryPolicy).toEqual(memoryPolicy);
+  });
+
   it('rejects invalid seq ranges', () => {
     const now = Date.now();
     expect(() => SessionSummaryShardV1Schema.parse({

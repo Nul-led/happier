@@ -22,7 +22,7 @@ const irohBinding: IrohPeerRouteBindingV2 = {
     machineId: 'machine-target',
     endpointId: targetEndpointId,
   },
-  operationKind: 'file_transfer',
+  operationKind: 'finite_transfer',
 };
 
 function payload() {
@@ -54,9 +54,7 @@ describe('DirectRouteGrantV2', () => {
   it('requires and signs the canonical machine/1 binding on iroh_peer requests and payloads', () => {
     const scope = {
       kind: 'bounded_transfer' as const,
-      mode: 'single' as const,
-      transferId: 'transfer-1',
-      maxBytes: 1_024,
+      mode: 'carrier' as const,
     };
     const request = {
       v: 2 as const,
@@ -107,9 +105,7 @@ describe('DirectRouteGrantV2', () => {
       ttlMs: 1_000,
       scope: {
         kind: 'bounded_transfer' as const,
-        mode: 'single' as const,
-        transferId: 'transfer-1',
-        maxBytes: 1_024,
+        mode: 'carrier' as const,
       },
       iroh: irohBinding,
     };
@@ -132,7 +128,7 @@ describe('DirectRouteGrantV2', () => {
     const accountClientBinding: IrohPeerRouteBindingV2 = {
       initiator: { kind: 'account_client', endpointId: sourceEndpointId },
       target: { machineId: 'machine-target', endpointId: targetEndpointId },
-      operationKind: 'attachment_transfer',
+      operationKind: 'finite_transfer',
     };
     const request = {
       v: 2 as const,
@@ -145,9 +141,7 @@ describe('DirectRouteGrantV2', () => {
       ttlMs: 1_000,
       scope: {
         kind: 'bounded_transfer' as const,
-        mode: 'single' as const,
-        transferId: 'transfer-1',
-        maxBytes: 1_024,
+        mode: 'carrier' as const,
       },
       iroh: accountClientBinding,
     };
@@ -159,6 +153,41 @@ describe('DirectRouteGrantV2', () => {
         ...accountClientBinding,
         initiator: { ...accountClientBinding.initiator, machineId: 'pseudo-machine' },
       },
+    }).success).toBe(false);
+  });
+
+  it('rejects operation and byte claims on a finite-transfer carrier grant', () => {
+    const request = {
+      v: 2 as const,
+      kind: 'ephemeral_ed25519' as const,
+      ephemeralPublicKeyBase64Url: publicKeyBase64Url,
+      machineId: irohBinding.target.machineId,
+      flowKind: 'bounded_transfer' as const,
+      routeKind: 'iroh_peer' as const,
+      endpointFingerprint: targetEndpointId,
+      ttlMs: 1_000,
+      scope: {
+        kind: 'bounded_transfer' as const,
+        mode: 'carrier' as const,
+      },
+      iroh: irohBinding,
+    };
+
+    expect(DirectRouteGrantRequestV2Schema.parse(request).scope).toEqual({
+      kind: 'bounded_transfer',
+      mode: 'carrier',
+    });
+    expect(DirectRouteGrantRequestV2Schema.safeParse({
+      ...request,
+      scope: { ...request.scope, transferId: 'transfer-1' },
+    }).success).toBe(false);
+    expect(DirectRouteGrantRequestV2Schema.safeParse({
+      ...request,
+      scope: { ...request.scope, maxBytes: 1_024 },
+    }).success).toBe(false);
+    expect(DirectRouteGrantRequestV2Schema.safeParse({
+      ...request,
+      iroh: { ...irohBinding, operationKind: 'file_transfer' },
     }).success).toBe(false);
   });
 

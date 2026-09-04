@@ -4,17 +4,14 @@ import { sealAccountScopedBlobCiphertext } from '../crypto/accountScopedCipher.j
 import {
   AutomationConversationReplyContextStoredV1Schema,
   MAX_AUTOMATION_STORED_ENVELOPE_UTF8_BYTES,
-  AutomationReplyHandoffReceiptStoredV1Schema,
   AutomationRunResultStoredV1Schema,
   validateAutomationReplyHandoffStoredEnvelopeOuterForModeV1,
 } from './automationEventV1.js';
 import {
   openAutomationConversationReplyContextStoredEnvelopeV1,
-  openAutomationReplyHandoffReceiptStoredEnvelopeV1,
   openAutomationRunResultStoredEnvelopeV1,
   parseAutomationRunResultStoredEnvelopeV1,
   sealAutomationConversationReplyContextStoredEnvelopeV1,
-  sealAutomationReplyHandoffReceiptStoredEnvelopeV1,
   sealAutomationRunResultStoredEnvelopeV1,
 } from './automationReplyHandoffStoredContent.js';
 
@@ -109,11 +106,6 @@ describe('Automation reply-handoff stored content', () => {
       correspondence: replyContextOccurrenceCorrespondence,
       opaqueContext,
     });
-    const receiptEnvelope = sealAutomationReplyHandoffReceiptStoredEnvelopeV1({
-      mode: 'plain',
-      correspondence,
-      result: { kind: 'accepted', custodyId: 'custody-1' },
-    });
 
     expect(AutomationRunResultStoredV1Schema.parse(resultEnvelope)).toEqual({
       t: 'plain',
@@ -134,14 +126,6 @@ describe('Automation reply-handoff stored content', () => {
       kind: 'available',
       correspondence: replyContextOccurrenceCorrespondence,
       opaqueContext,
-    });
-    expect(openAutomationReplyHandoffReceiptStoredEnvelopeV1({
-      mode: 'plain',
-      envelope: receiptEnvelope,
-    })).toEqual({
-      kind: 'available',
-      correspondence,
-      result: { kind: 'accepted', custodyId: 'custody-1' },
     });
   });
 
@@ -183,14 +167,6 @@ describe('Automation reply-handoff stored content', () => {
         opaqueContext,
       },
     }).success).toBe(false);
-    expect(AutomationReplyHandoffReceiptStoredV1Schema.safeParse({
-      t: 'plain',
-      v: {
-        v: 1,
-        correspondence: noHandoffCorrespondence,
-        result: { kind: 'accepted', custodyId: 'custody-1' },
-      },
-    }).success).toBe(false);
   });
 
   it('uses distinct encrypted domains and fails closed for wrong mode, key, and tampering', () => {
@@ -206,13 +182,6 @@ describe('Automation reply-handoff stored content', () => {
       mode: 'e2ee',
       correspondence: replyContextOccurrenceCorrespondence,
       opaqueContext,
-      material,
-      randomBytes: deterministicRandomBytes,
-    });
-    const receiptEnvelope = sealAutomationReplyHandoffReceiptStoredEnvelopeV1({
-      mode: 'e2ee',
-      correspondence,
-      result: { kind: 'retry', retryAfterMs: 1_000, code: 'temporarilyUnavailable' },
       material,
       randomBytes: deterministicRandomBytes,
     });
@@ -241,35 +210,6 @@ describe('Automation reply-handoff stored content', () => {
       material,
       envelope: resultEnvelope,
     }).kind).toBe('contentInvalid');
-    expect(openAutomationReplyHandoffReceiptStoredEnvelopeV1({
-      mode: 'e2ee',
-      material,
-      envelope: resultEnvelope,
-    }).kind).toBe('contentInvalid');
-    expect(openAutomationReplyHandoffReceiptStoredEnvelopeV1({
-      mode: 'e2ee',
-      material,
-      envelope: contextEnvelope,
-    }).kind).toBe('contentInvalid');
-    expect(openAutomationRunResultStoredEnvelopeV1({
-      mode: 'e2ee',
-      material,
-      envelope: receiptEnvelope,
-    }).kind).toBe('contentInvalid');
-    expect(openAutomationConversationReplyContextStoredEnvelopeV1({
-      mode: 'e2ee',
-      material,
-      envelope: receiptEnvelope,
-    }).kind).toBe('contentInvalid');
-    expect(openAutomationReplyHandoffReceiptStoredEnvelopeV1({
-      mode: 'e2ee',
-      material,
-      envelope: receiptEnvelope,
-    })).toEqual({
-      kind: 'available',
-      correspondence,
-      result: { kind: 'retry', retryAfterMs: 1_000, code: 'temporarilyUnavailable' },
-    });
     expect(openAutomationRunResultStoredEnvelopeV1({
       mode: 'plain',
       envelope: resultEnvelope,
@@ -311,14 +251,6 @@ describe('Automation reply-handoff stored content', () => {
       correspondence: replyContextOccurrenceCorrespondence,
       opaqueContext,
     });
-    const material = { type: 'dataKey' as const, machineKey: new Uint8Array(32).fill(7) };
-    const encryptedReceiptEnvelope = sealAutomationReplyHandoffReceiptStoredEnvelopeV1({
-      mode: 'e2ee',
-      correspondence,
-      result: { kind: 'accepted', custodyId: 'custody-1' },
-      material,
-      randomBytes: deterministicRandomBytes,
-    });
 
     expect(validateAutomationReplyHandoffStoredEnvelopeOuterForModeV1({
       content: 'result',
@@ -330,11 +262,6 @@ describe('Automation reply-handoff stored content', () => {
       mode: 'plain',
       envelope: plainContextEnvelope,
     })).toEqual({ kind: 'available', envelope: plainContextEnvelope });
-    expect(validateAutomationReplyHandoffStoredEnvelopeOuterForModeV1({
-      content: 'receipt',
-      mode: 'e2ee',
-      envelope: encryptedReceiptEnvelope,
-    })).toEqual({ kind: 'available', envelope: encryptedReceiptEnvelope });
 
     expect(validateAutomationReplyHandoffStoredEnvelopeOuterForModeV1({
       content: 'result',

@@ -42,7 +42,11 @@ export const DoctorSnapshotHomeTransportDiagnosticsSchema = z.object({
   effectiveConfiguration: z.object({
     policy: z.enum(['automatic', 'disabled']),
     relayUrls: z.array(z.string().trim().min(1).max(2_048)).max(16),
-    directAddressCount: z.number().int().nonnegative().max(256),
+    /** Total applied relays; present when relayUrls is a bounded projection. */
+    relayUrlCount: NonNegativeInteger.optional(),
+    /** Explicitly marks that relayUrls omits applied entries. */
+    relayUrlsTruncated: z.boolean().optional(),
+    directAddressCount: NonNegativeInteger,
   }).optional(),
   /** Current proven carrier/path facts. Unknown facts are omitted. */
   current: DoctorSnapshotTransportObservationSchema.optional(),
@@ -64,10 +68,23 @@ function sanitizeUrl(raw: string): string {
 }
 
 function redactDoctorDiagnosticSecrets(value: string): string {
-  return value.replace(
-    /\b(token|authorization|password|secret|private[-_ ]?key|proof)\b\s*[:=]\s*[^\s,;]+/giu,
-    '$1=[redacted]',
-  );
+  return value
+    // Complete Authorization values (`Authorization: Bearer <secret>`,
+    // `authorization=Basic <secret>`): consume the credential that follows the auth scheme.
+    // The keyed rule below alone would stop at the scheme word and publish the credential
+    // that follows it into the copied snapshot or UI projection.
+    .replace(
+      /(["']?)\b(authorization)\b\1\s*[:=]\s*(["']?)(?:(?:bearer|basic)\s+)?[^\s,;}"']+\3/giu,
+      '$2=[redacted]',
+    )
+    // Standalone Bearer/Basic credentials without an Authorization key.
+    .replace(/\b(bearer|basic)\s+[^\s,;]+/giu, '$1 [redacted]')
+    // Keyed secrets, including common compound and camel-case forms emitted by
+    // HTTP/OAuth libraries (`access_token`, `api_key`, `authToken`, ...).
+    .replace(
+      /(["']?)\b(access[-_]?token|refresh[-_]?token|auth[-_]?token|api[-_]?key|client[-_]?secret|token|password|secret|private[-_ ]?key|proof)\b\1\s*[:=]\s*(["']?)[^\s,;}"']+\3/giu,
+      '$2=[redacted]',
+    );
 }
 
 export function sanitizeDoctorDiagnosticErrorCode(code: string): string {
@@ -304,7 +321,7 @@ export const DoctorSnapshotSchema = z.object({
   automaticStartup: DoctorSnapshotAutomaticStartupSummarySchema.optional(),
   activeStack: DoctorSnapshotActiveStackSummarySchema.optional(),
   serviceHealth: DoctorSnapshotServiceHealthSchema.optional(),
-  homeTransports: z.array(DoctorSnapshotHomeTransportDiagnosticsSchema).max(64).optional(),
+  homeTransports: z.array(DoctorSnapshotHomeTransportDiagnosticsSchema).optional(),
   warnings: z.array(HappierDoctorWarningSchema).optional(),
 });
 

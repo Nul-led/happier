@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { sha256 } from '@noble/hashes/sha2';
 
 import { resolveEffectivePermissionMode } from '../../actions/permissionPrivilege.js';
+import type { ActionSurfaces } from '../../actions/metadata.js';
 import { encodeBase64 } from '../../crypto/base64.js';
 import { readConversationTurnOriginV1FromMessageMeta } from '../../messages/structured/conversationTurnOriginV1.js';
 import { SubagentLaunchV1Schema } from '../../messages/structured/subagentLaunchV1.js';
@@ -128,7 +129,6 @@ const DisplayNameSnapshotSchema = z.string()
 
 const SourceRefSchema = boundedNfcString(256, 'Source references');
 const SourceRevisionOrEpochSchema = boundedNfcString(128, 'Source revisions');
-const BoundedAgentIdSchema = boundedNfcString(256, 'Agent ids');
 const BoundedAutomationIdSchema = boundedNfcString(191, 'Automation ids');
 const BoundedAutomationRunIdSchema = boundedNfcString(191, 'Automation run ids');
 
@@ -288,23 +288,15 @@ const MessageProvenanceUnionSchema = z.discriminatedUnion('kind', [
   }).strict(),
   z.object({
     v: z.literal(1),
-    kind: z.literal('agentTerminal'),
-    agentId: BoundedAgentIdSchema,
-  }).strict(),
-  z.object({
-    v: z.literal(1),
     kind: z.literal('host'),
     producer: z.enum([
       'happierApp',
       'cli',
-      'daemonInitialPrompt',
       'sessionAction',
       'happierMcp',
       'pluginSession',
-      'connectedService',
       'automation',
       'voiceInput',
-      'agentTerminal',
       'externalSessionHistory',
       'runtimeTranscript',
       'executionRunVoice',
@@ -326,14 +318,11 @@ export type SessionMessageProvenanceV1 = z.infer<typeof SessionMessageProvenance
 export const SESSION_ROLE_USER_PRODUCER_KINDS_V1 = [
   'happierApp',
   'cli',
-  'daemonInitialPrompt',
   'sessionAction',
   'happierMcp',
   'pluginSession',
-  'connectedService',
   'automation',
   'voiceInput',
-  'agentTerminal',
   'externalSessionHistory',
   'runtimeTranscript',
   'executionRunVoice',
@@ -346,14 +335,11 @@ export type SessionRoleUserProducerKindV1 = z.infer<typeof SessionRoleUserProduc
 export const SESSION_ROLE_USER_PRODUCER_ADMISSION_MODES_V1 = Object.freeze({
   happierApp: 'pendingInput',
   cli: 'pendingInput',
-  daemonInitialPrompt: 'pendingInput',
   sessionAction: 'pendingInput',
   happierMcp: 'pendingInput',
   pluginSession: 'pendingInput',
-  connectedService: 'pendingInput',
   automation: 'pendingInput',
   voiceInput: 'pendingInput',
-  agentTerminal: 'directInput',
   externalSessionHistory: 'transcriptOnly',
   runtimeTranscript: 'transcriptOnly',
   executionRunVoice: 'transcriptOnly',
@@ -364,6 +350,23 @@ export type SessionRoleUserProducerAdmissionModeV1 =
   | 'pendingInput'
   | 'directInput'
   | 'transcriptOnly';
+
+export type SessionTranscriptMessageProducerKindV1 = {
+  [Producer in SessionRoleUserProducerKindV1]:
+    (typeof SESSION_ROLE_USER_PRODUCER_ADMISSION_MODES_V1)[Producer] extends 'transcriptOnly'
+      ? Producer
+      : never;
+}[SessionRoleUserProducerKindV1];
+
+/** Sole descriptive provenance builder for already-observed role-user transcript rows. */
+export function buildSessionTranscriptMessageProvenanceV1(
+  producer: SessionTranscriptMessageProducerKindV1,
+): SessionMessageProvenanceV1 {
+  if (SESSION_ROLE_USER_PRODUCER_ADMISSION_MODES_V1[producer] !== 'transcriptOnly') {
+    throw new TypeError(`Producer ${producer} is not transcript-only`);
+  }
+  return SessionMessageProvenanceV1Schema.parse({ v: 1, kind: 'host', producer });
+}
 
 const SessionInputCallerV1Schema = z.discriminatedUnion('kind', [
   z.object({
@@ -471,6 +474,41 @@ export const SessionInputRequestV1Schema = SessionInputProtectedCommonV1Schema.e
   }).strict(),
 }).strict().superRefine(refineProtectedInputCommon);
 export type SessionInputRequestV1 = z.infer<typeof SessionInputRequestV1Schema>;
+
+/**
+ * Sole builder for trusted host Pending admission. It stamps modality/source,
+ * never Account relationship; authenticated target settlement owns that fact.
+ */
+export function buildTrustedHostSessionInputAdmissionV1(
+  surface: keyof ActionSurfaces | null | undefined,
+): Readonly<{
+  provenance: SessionMessageProvenanceV1;
+  request: SessionInputRequestV1;
+}> {
+  const producer = surface === 'ui'
+    ? 'happierApp' as const
+    : surface === 'cli'
+      ? 'cli' as const
+      : surface === 'voice'
+        ? 'voiceInput' as const
+        : surface === 'mcp'
+          ? 'happierMcp' as const
+          : 'sessionAction' as const;
+  const provenance = surface === 'cli'
+    ? { v: 1 as const, kind: 'cli' as const }
+    : surface === 'voice'
+      ? { v: 1 as const, kind: 'voice' as const }
+      : { v: 1 as const, kind: 'host' as const, producer };
+  return Object.freeze({
+    provenance: SessionMessageProvenanceV1Schema.parse(provenance),
+    request: SessionInputRequestV1Schema.parse({
+      v: 1,
+      producer,
+      caller: { kind: 'host' },
+      permission: {},
+    }),
+  });
+}
 
 export const SessionInputAuthorityV1Schema = SessionInputProtectedCommonV1Schema.extend({
   permission: z.object({
@@ -586,6 +624,68 @@ export const SessionInputAdmissionReceiptV1Schema = z.discriminatedUnion('issuer
   }).strict(),
 ]);
 export type SessionInputAdmissionReceiptV1 = z.infer<typeof SessionInputAdmissionReceiptV1Schema>;
+
+function isRequestedProvenanceForSessionInputV1(
+  request: SessionInputRequestV1,
+  provenance: SessionMessageProvenanceV1,
+): boolean {
+  if (provenance.kind === 'host') return provenance.producer === request.producer;
+  if (provenance.kind === 'cli') return request.producer === 'cli';
+  if (provenance.kind === 'voice') return request.producer === 'voiceInput';
+  if (provenance.kind === 'happierSession') {
+    return request.sourceSession !== undefined
+      && request.sourceSession.sourceSessionId === provenance.sourceSessionId
+      && request.sourceSession.via === provenance.via;
+  }
+  if (provenance.kind === 'pluginSession') {
+    return request.producer === 'pluginSession'
+      && request.caller?.kind === 'plugin'
+      && request.caller.pluginId === provenance.pluginId
+      && request.caller.contributionLocalId === provenance.contributionLocalId;
+  }
+  if (provenance.kind === 'automation') {
+    return request.producer === 'automation'
+      && request.automation?.automationId === provenance.automationId
+      && request.automation.runId === provenance.runId;
+  }
+  return false;
+}
+
+/**
+ * Reconciles descriptive provenance beside protected authority. Only an
+ * authenticated Account receipt may decide owner versus collaborator.
+ */
+export function settleSessionMessageProvenanceV1(params: Readonly<{
+  request: SessionInputRequestV1;
+  requestedProvenance: unknown;
+  inputAdmissionReceipt: unknown;
+}>): SessionMessageProvenanceV1 {
+  const request = SessionInputRequestV1Schema.parse(params.request);
+  const inputAdmissionReceipt = assertSessionInputAdmissionReceiptForRequestV1({
+    request,
+    inputAdmissionReceipt: params.inputAdmissionReceipt,
+  });
+  if (request.producer === 'happierApp') {
+    return SessionMessageProvenanceV1Schema.parse(
+      inputAdmissionReceipt.issuer === 'authenticatedAccount'
+        ? {
+            v: 1,
+            kind: 'happierApp',
+            actor: {
+              kind: inputAdmissionReceipt.sessionRelationship === 'owner'
+                ? 'owner'
+                : 'sharedCollaborator',
+            },
+          }
+        : { v: 1, kind: 'host', producer: 'happierApp' },
+    );
+  }
+  const requestedProvenance = SessionMessageProvenanceV1Schema.safeParse(params.requestedProvenance);
+  return requestedProvenance.success
+    && isRequestedProvenanceForSessionInputV1(request, requestedProvenance.data)
+    ? requestedProvenance.data
+    : SessionMessageProvenanceV1Schema.parse({ v: 1, kind: 'host', producer: request.producer });
+}
 
 const Base64UrlSha256Schema = z.string().regex(
   /^[A-Za-z0-9_-]{43}$/u,

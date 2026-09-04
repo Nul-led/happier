@@ -7,7 +7,7 @@ const MAX_RELATIONSHIP_ID_LENGTH = 256;
 const MAX_MACHINE_ID_LENGTH = 256;
 const MAX_WORKSPACE_REF_ID_LENGTH = 256;
 const MAX_PATH_LENGTH = 4096;
-export const WORKSPACE_SYNC_MAX_PATTERN_LENGTH = 1024;
+export const WORKSPACE_SYNC_MAX_PATTERN_BYTES = 1024;
 export const WORKSPACE_SYNC_MAX_PATTERNS = 128;
 const MAX_DIGEST_LENGTH = 256;
 const MAX_ERROR_CODE_LENGTH = 256;
@@ -32,9 +32,11 @@ export type WorkspaceSyncPersistentModeV1 = z.infer<typeof WorkspaceSyncPersiste
 const WorkspaceContentPolicyV1FieldsSchema = z.object({
   v: z.literal(1),
   selection: z.enum(['git_worktree', 'all_files']),
-  extraIgnorePatterns: z.array(z.string().trim().min(1).max(WORKSPACE_SYNC_MAX_PATTERN_LENGTH)).max(WORKSPACE_SYNC_MAX_PATTERNS).readonly(),
-  extraIncludePatterns: z.array(z.string().trim().min(1).max(WORKSPACE_SYNC_MAX_PATTERN_LENGTH)).max(WORKSPACE_SYNC_MAX_PATTERNS).readonly(),
-  includeGitDirectory: z.boolean(),
+  extraIgnorePatterns: z.array(z.string().trim().min(1).max(WORKSPACE_SYNC_MAX_PATTERN_BYTES)
+    .refine((value) => utf8ToBytes(value).byteLength <= WORKSPACE_SYNC_MAX_PATTERN_BYTES, 'pattern exceeds UTF-8 byte limit')).max(WORKSPACE_SYNC_MAX_PATTERNS).readonly(),
+  extraIncludePatterns: z.array(z.string().trim().min(1).max(WORKSPACE_SYNC_MAX_PATTERN_BYTES)
+    .refine((value) => utf8ToBytes(value).byteLength <= WORKSPACE_SYNC_MAX_PATTERN_BYTES, 'pattern exceeds UTF-8 byte limit')
+    .refine((value) => !value.startsWith('!'), 'include patterns must be positive')).max(WORKSPACE_SYNC_MAX_PATTERNS).readonly(),
   policyDigest: z.string().regex(/^[a-f0-9]{64}$/u),
 }).strict();
 export const WorkspaceContentPolicyV1Schema = WorkspaceContentPolicyV1FieldsSchema.superRefine((value, context) => {
@@ -60,7 +62,6 @@ export function computeWorkspaceSyncPolicyDigest(
     // authorization/endpoint fingerprint.
     extraIgnorePatterns: [...policy.extraIgnorePatterns],
     extraIncludePatterns: [...policy.extraIncludePatterns],
-    includeGitDirectory: policy.includeGitDirectory,
   });
   return bytesToHex(sha256(utf8ToBytes(canonical)));
 }
@@ -307,6 +308,13 @@ export const WorkspaceSyncTargetBootstrapPrepareV1Schema = z.object({
   createIfMissing: z.boolean(),
   /** Explicit only for a new copy/relationship target; existing relationships rehydrate READY custody. */
   targetBootstrap: z.enum(['use_existing', 'materialize_from_source_workspace']).optional(),
+  /**
+   * Host-private proof for the destructive consequences of this destination.
+   * The target daemon derives the operation it must be stamped for from the
+   * bootstrap owner it resolves locally, so no accompanying caller-supplied
+   * operation field is carried here: a caller could align that field with a
+   * stolen proof, which would make the binding prove nothing.
+   */
   targetReplacementApproval: HandoffTargetReplacementApprovalV1Schema.optional(),
 }).strict().superRefine((value, context) => {
   const transient = value.transientRelationship;
@@ -444,6 +452,28 @@ export const WorkspaceSyncStatusV1Schema = z.object({
 }).strict();
 export type WorkspaceSyncStatusV1 = z.infer<typeof WorkspaceSyncStatusV1Schema>;
 
+/**
+ * One bounded derived-status publication carried by the existing Machine
+ * daemon-state channel. The enclosing daemon-state version provides ordering;
+ * this event deliberately carries no independent cursor or persisted history.
+ */
+export const WorkspaceSyncRuntimeEventV1Schema = z.object({
+  v: z.literal(1),
+  status: WorkspaceSyncStatusV1Schema,
+}).strict();
+export type WorkspaceSyncRuntimeEventV1 = z.infer<typeof WorkspaceSyncRuntimeEventV1Schema>;
+
+/**
+ * Post-commit cleanup debt. The operation succeeded and its durable state is
+ * published; only a best-effort release failed, so this is reported rather than
+ * turned into a failure.
+ */
+export const WorkspaceSyncCleanupWarningV1Schema = z.object({
+  code: z.string().trim().min(1).max(MAX_ERROR_CODE_LENGTH),
+  message: z.string().trim().min(1).max(2048),
+}).strict();
+export type WorkspaceSyncCleanupWarningV1 = z.infer<typeof WorkspaceSyncCleanupWarningV1Schema>;
+
 export const WorkspaceSyncLegacyStateInspectionV1Schema = z.discriminatedUnion('status', [
   z.object({ status: z.literal('absent') }).strict(),
   z.object({
@@ -459,6 +489,33 @@ export const WorkspaceSyncLegacyStateInspectionV1Schema = z.discriminatedUnion('
   }).strict(),
 ]);
 export type WorkspaceSyncLegacyStateInspectionV1 = z.infer<typeof WorkspaceSyncLegacyStateInspectionV1Schema>;
+
+/**
+ * The daemon's terminal, committed workspace result for one handoff. It is the
+ * only representation of the workspace outcome that crosses back to the UI:
+ * whether a copy was materialized, whether a persistent relationship was newly
+ * created or an exact existing definition was reused, the engine status the
+ * daemon observed at commit, and any post-commit cleanup debt. The UI renders
+ * this Action result directly and keeps no second workspace-outcome store.
+ */
+export const HandoffWorkspaceOutcomeV1Schema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('none') }).strict(),
+  z.object({
+    kind: z.literal('copied'),
+    operationId: z.string().trim().min(1).max(MAX_RELATIONSHIP_ID_LENGTH),
+    status: WorkspaceSyncStatusV1Schema.optional(),
+    cleanupWarning: WorkspaceSyncCleanupWarningV1Schema.optional(),
+  }).strict(),
+  z.object({
+    kind: z.literal('relationship'),
+    relationshipId: z.string().trim().min(1).max(MAX_RELATIONSHIP_ID_LENGTH),
+    /** `true` when this handoff persisted a new relationship; `false` when an exact existing definition was reused. */
+    created: z.boolean(),
+    status: WorkspaceSyncStatusV1Schema.optional(),
+    cleanupWarning: WorkspaceSyncCleanupWarningV1Schema.optional(),
+  }).strict(),
+]);
+export type HandoffWorkspaceOutcomeV1 = z.infer<typeof HandoffWorkspaceOutcomeV1Schema>;
 
 export const HandoffWorkspaceActionV1Schema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('none') }).strict(),

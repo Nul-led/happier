@@ -320,6 +320,10 @@ describe('plugin UI open and Action components', () => {
         fieldPath: 'credentialRef',
         ref: selectedAccount,
       },
+      presentation: {
+        connectedAccountLabel: 'Work account',
+        machineDisplayName: 'Development Mac',
+      },
     })).toMatchObject({
       kind: 'submitted',
       selection: admittedSelection,

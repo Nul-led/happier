@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { MAX_AGENT_ROUTING_ID_BYTES } from '../../agents/agentIdV1.js';
 import {
   DaemonMcpServersDetectRequestSchema,
   DaemonMcpServersDetectWarningV1Schema,
@@ -65,7 +66,8 @@ describe('MCP detection Agent identity on the V1 wire', () => {
   it('still rejects an unusable Agent id rather than accepting any string', () => {
     expect(McpDetectedProviderV1Schema.safeParse('').success).toBe(false);
     expect(McpDetectedProviderV1Schema.safeParse(' claude ').success).toBe(false);
-    expect(McpDetectedProviderV1Schema.safeParse('a'.repeat(129)).success).toBe(false);
+    expect(McpDetectedProviderV1Schema.safeParse('a'.repeat(MAX_AGENT_ROUTING_ID_BYTES)).success).toBe(true);
+    expect(McpDetectedProviderV1Schema.safeParse('a'.repeat(MAX_AGENT_ROUTING_ID_BYTES + 1)).success).toBe(false);
     expect(McpDetectedProviderV1Schema.safeParse(7).success).toBe(false);
   });
 

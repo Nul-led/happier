@@ -27,9 +27,7 @@ function grantPayload() {
     routeKind: 'iroh_peer' as const,
     scope: {
       kind: 'bounded_transfer' as const,
-      mode: 'single' as const,
-      transferId: 'operation-1',
-      maxBytes: 1024,
+      mode: 'carrier' as const,
     },
     iat: 1_000,
     exp: 10_000,
@@ -45,7 +43,7 @@ function grantPayload() {
         machineId: 'machine-2',
         endpointId: TARGET_ENDPOINT_ID,
       },
-      operationKind: 'file_transfer' as const,
+      operationKind: 'finite_transfer' as const,
     },
     proofKind: 'ephemeral_ed25519' as const,
     ephemeralPublicKeyBase64Url: EPHEMERAL_PUBLIC_KEY,
@@ -86,8 +84,7 @@ function handshake(overrides: Partial<IrohMachineHandshakeV1> = {}): IrohMachine
       machineId: 'machine-2',
       endpointId: TARGET_ENDPOINT_ID,
     },
-    flow: 'file_transfer',
-    operationId: 'operation-1',
+    flow: 'finite_transfer',
     grant: grant(),
     proof: proof(),
     ...overrides,
@@ -97,7 +94,7 @@ function handshake(overrides: Partial<IrohMachineHandshakeV1> = {}): IrohMachine
 describe('IrohMachineHandshakeV1 (canonical happier/machine/1 handshake)', () => {
   it('exposes the closed v1 wire version, carrier flows, and strict shape', () => {
     expect(IROH_MACHINE_HANDSHAKE_VERSION_V1).toBe(1);
-    expect(IROH_MACHINE_CARRIER_FLOWS_V1).toEqual(['file_transfer', 'attachment_transfer', 'workspace_sync']);
+    expect(IROH_MACHINE_CARRIER_FLOWS_V1).toEqual(['finite_transfer', 'workspace_sync']);
     expect(IrohMachineHandshakeV1Schema.parse(handshake())).toEqual(handshake());
   });
 
@@ -108,7 +105,7 @@ describe('IrohMachineHandshakeV1 (canonical happier/machine/1 handshake)', () =>
     expect(parsed.proof.nonceBase64Url).toBe(PROOF_NONCE);
   });
 
-  it('rejects any handshake identity, orientation, operation, or scope binding that differs from its signed grant', () => {
+  it('rejects any handshake identity, orientation, or purpose binding that differs from its signed grant', () => {
     expect(IrohMachineHandshakeV1Schema.safeParse({
       ...handshake(),
       initiator: { kind: 'machine', machineId: 'machine-inverted', endpointId: SOURCE_ENDPOINT_ID },
@@ -116,10 +113,6 @@ describe('IrohMachineHandshakeV1 (canonical happier/machine/1 handshake)', () =>
     expect(IrohMachineHandshakeV1Schema.safeParse({
       ...handshake(),
       initiator: { kind: 'account_client', endpointId: SOURCE_ENDPOINT_ID },
-    }).success).toBe(false);
-    expect(IrohMachineHandshakeV1Schema.safeParse({
-      ...handshake(),
-      operationId: 'operation-other',
     }).success).toBe(false);
     expect(IrohMachineHandshakeV1Schema.safeParse({
       ...handshake(),
@@ -154,7 +147,7 @@ describe('IrohMachineHandshakeV1 (canonical happier/machine/1 handshake)', () =>
       ...handshake(),
       target: { machineId: 'machine-2', endpointId: 'A'.repeat(64) },
     }).success).toBe(false);
-    expect(IrohMachineHandshakeV1Schema.safeParse({ ...handshake(), flow: 'tcp_tunnel' }).success).toBe(false);
+    expect(IrohMachineHandshakeV1Schema.safeParse({ ...handshake(), flow: 'file_transfer' }).success).toBe(false);
   });
 
   it('supports an authenticated Account client initiator without source Machine fields', () => {
@@ -167,7 +160,7 @@ describe('IrohMachineHandshakeV1 (canonical happier/machine/1 handshake)', () =>
           iroh: {
             initiator: { kind: 'account_client', endpointId: SOURCE_ENDPOINT_ID },
             target: { machineId: 'machine-2', endpointId: TARGET_ENDPOINT_ID },
-            operationKind: 'file_transfer',
+            operationKind: 'finite_transfer',
           },
         },
       },
@@ -183,9 +176,46 @@ describe('IrohMachineHandshakeV1 (canonical happier/machine/1 handshake)', () =>
     }).success).toBe(false);
   });
 
-  it('rejects an empty or missing operation binding', () => {
-    expect(IrohMachineHandshakeV1Schema.safeParse({ ...handshake(), operationId: '' }).success).toBe(false);
-    expect(IrohMachineHandshakeV1Schema.safeParse({ ...handshake(), operationId: undefined }).success).toBe(false);
+  it('does not carry transfer operation or byte authority in the finite-transfer handshake', () => {
+    expect(IrohMachineHandshakeV1Schema.safeParse({ ...handshake(), operationId: 'transfer-1' }).success).toBe(false);
+    expect(IrohMachineHandshakeV1Schema.safeParse({ ...handshake(), maxBytes: 1_024 }).success).toBe(false);
+  });
+
+  it('retains the consumed signed operation binding for workspace sync', () => {
+    const workspaceGrant = {
+      ...grant(),
+      payload: {
+        ...grantPayload(),
+        flowKind: 'machine_rpc' as const,
+        scope: {
+          kind: 'machine_rpc' as const,
+          rpcScopeId: 'workspace-1',
+          allowedMethods: ['workspace.sync'],
+          maxCalls: 1,
+          maxIdleMs: 1_000,
+        },
+        iroh: {
+          ...grantPayload().iroh,
+          operationKind: 'workspace_sync' as const,
+        },
+      },
+    };
+    const workspaceHandshake = {
+      ...handshake(),
+      flow: 'workspace_sync' as const,
+      operationId: 'workspace-1',
+      grant: workspaceGrant,
+    };
+
+    expect(IrohMachineHandshakeV1Schema.parse(workspaceHandshake).operationId).toBe('workspace-1');
+    expect(IrohMachineHandshakeV1Schema.safeParse({
+      ...workspaceHandshake,
+      operationId: 'workspace-other',
+    }).success).toBe(false);
+    expect(IrohMachineHandshakeV1Schema.safeParse({
+      ...workspaceHandshake,
+      operationId: undefined,
+    }).success).toBe(false);
   });
 
   it('parses strictly through the canonical helper and throws on invalid input', () => {

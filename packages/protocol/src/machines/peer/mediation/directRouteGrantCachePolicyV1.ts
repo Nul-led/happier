@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 export const DIRECT_ROUTE_GRANT_TTL_MS = Object.freeze({
   boundedTransferSingle: 10 * 60_000,
+  finiteTransferCarrier: 10 * 60_000,
   boundedTransferScopedDefault: 10 * 60_000,
   boundedTransferScopedMin: 5 * 60_000,
   boundedTransferScopedMax: 30 * 60_000,

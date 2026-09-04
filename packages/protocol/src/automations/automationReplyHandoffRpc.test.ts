@@ -70,39 +70,21 @@ describe('Automation reply-handoff daemon RPC contract', () => {
       'daemon.automations.replyHandoff.dispatch',
     );
     expect(AutomationReplyHandoffDispatchRequestV1Schema.parse(request)).toEqual(request);
-    expect(AutomationReplyHandoffDispatchResultV1Schema.parse({
-      kind: 'settled',
-      settlement: { kind: 'accepted' },
-      accountCurrentness: {
-        mode: 'plain',
-        version: 7,
-        contentKeyFingerprint: null,
-      },
-      receiptEnvelope: {
-        t: 'plain',
-        v: {
-          v: 1,
-          correspondence: request.handoff.resultEnvelope.v.correspondence,
-          result: { kind: 'accepted', custodyId: 'custody-1' },
+    // Terminal custody settles on the coarse projection plus the post-effect
+    // Account witness alone. No proof blob accompanies it, and Channels keeps
+    // every custody id, suppression reason and provider detail.
+    for (const settlement of [{ kind: 'accepted' }, { kind: 'suppressed' }] as const) {
+      const settled = {
+        kind: 'settled',
+        settlement,
+        accountCurrentness: {
+          mode: 'plain',
+          version: 7,
+          contentKeyFingerprint: null,
         },
-      },
-    })).toEqual({
-      kind: 'settled',
-      settlement: { kind: 'accepted' },
-      accountCurrentness: {
-        mode: 'plain',
-        version: 7,
-        contentKeyFingerprint: null,
-      },
-      receiptEnvelope: {
-        t: 'plain',
-        v: {
-          v: 1,
-          correspondence: request.handoff.resultEnvelope.v.correspondence,
-          result: { kind: 'accepted', custodyId: 'custody-1' },
-        },
-      },
-    });
+      };
+      expect(AutomationReplyHandoffDispatchResultV1Schema.parse(settled)).toEqual(settled);
+    }
     expect(AutomationReplyHandoffDispatchResultV1Schema.parse({
       kind: 'unavailable',
       code: 'actionExecutionFailed',
@@ -148,14 +130,12 @@ describe('Automation reply-handoff daemon RPC contract', () => {
       kind: 'settled',
       settlement: { kind: 'accepted', custodyId: 'custody-1' },
       accountCurrentness: { mode: 'plain', version: 7, contentKeyFingerprint: null },
-      receiptEnvelope: { t: 'encrypted', c: 'ciphertext' },
     }).success).toBe(false);
     expect(AutomationReplyHandoffDispatchResultV1Schema.safeParse({
       kind: 'settled',
       settlement: { kind: 'accepted' },
       accountCurrentness: { mode: 'plain', version: 7, contentKeyFingerprint: null },
       custodyId: 'custody-1',
-      receiptEnvelope: { t: 'encrypted', c: 'ciphertext' },
     }).success).toBe(false);
     expect(AutomationReplyHandoffDispatchResultV1Schema.safeParse({
       kind: 'settled',
@@ -180,21 +160,30 @@ describe('Automation reply-handoff daemon RPC contract', () => {
         contentKeyFingerprint: 'aemk1_content',
       },
     }).success).toBe(false);
+    // The removed receipt envelope cannot return through the strict result:
+    // no private handoff bytes may cross this seam in either Account mode.
     expect(AutomationReplyHandoffDispatchResultV1Schema.safeParse({
       kind: 'settled',
       settlement: { kind: 'accepted' },
       accountCurrentness: { mode: 'plain', version: 8, contentKeyFingerprint: null },
-      receiptEnvelope: { t: 'encrypted', c: 'ciphertext' },
+      receiptEnvelope: {
+        t: 'plain',
+        v: {
+          v: 1,
+          correspondence: request.handoff.resultEnvelope.v.correspondence,
+          result: { kind: 'accepted', custodyId: 'custody-1' },
+        },
+      },
     }).success).toBe(false);
     expect(AutomationReplyHandoffDispatchResultV1Schema.safeParse({
       kind: 'settled',
-      settlement: { kind: 'accepted' },
+      settlement: { kind: 'suppressed' },
       accountCurrentness: {
         mode: 'e2ee',
         version: 8,
         contentKeyFingerprint: 'aemk1_content',
       },
-      receiptEnvelope: { t: 'plain', v: {} },
+      receiptEnvelope: { t: 'encrypted', c: 'ciphertext' },
     }).success).toBe(false);
   });
 });

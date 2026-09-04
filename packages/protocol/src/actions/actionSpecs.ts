@@ -367,6 +367,7 @@ import {
   SessionHandoffPrepareTargetResumeRequestSchema,
   SessionHandoffPrepareTargetResumeResponseSchema,
   SessionHandoffStatusGetRequestSchema,
+  SessionHandoffActionResultV1Schema,
 } from '../sessions/control/handoff/handoffSchemas.js';
 import { HandoffWorkspaceActionV1Schema } from '../sessions/control/handoff/workspaceSyncSchemas.js';
 import { SessionContinueWithReplayRpcParamsSchema } from '../sessions/continueWithReplay.js';
@@ -1280,15 +1281,18 @@ const SessionRollbackInputSchema = z.object({
   target: SessionRollbackTargetSchema.optional(),
 }).passthrough();
 
+/**
+ * Outcome-oriented public handoff input. Workspace endpoint identity and the
+ * settings version that proves it are daemon-owned: the coordinator resolves or
+ * materializes both `WorkspaceRef` values from the Account settings owner, so a
+ * caller can neither name nor pin them here.
+ */
 const SessionHandoffInputSchema = z.object({
   sessionId: z.string().min(1).optional(),
   targetMachineId: z.string().min(1).optional(),
   targetPath: z.string().min(1).optional(),
   targetSessionStorageMode: z.enum(['direct', 'persisted']).optional(),
   workspaceAction: HandoffWorkspaceActionV1Schema.optional(),
-  workspaceSyncSourceWorkspaceRefId: z.string().trim().min(1).max(512).optional(),
-  workspaceSyncTargetWorkspaceRefId: z.string().trim().min(1).max(512).optional(),
-  workspaceSyncSettingsVersion: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
 }).passthrough();
 
 const SessionSpawnNewInputSchema = SessionSpawnNewInputV2Schema;
@@ -1733,6 +1737,9 @@ const SessionPermissionRespondInputSchema = z.object({
   sessionId: z.string().min(1).optional(),
   decision: z.enum(['allow', 'deny']),
   requestId: z.string().min(1).optional(),
+  // Optional only at the released action compatibility boundary. Current UI
+  // producers stamp it and current host requests require an exact match.
+  turnId: z.string().trim().min(1).optional(),
 }).passthrough();
 
 const SessionUserActionAnswerItemSchema = z.object({
@@ -5034,7 +5041,7 @@ const ACTION_SPECS_WITHOUT_APPROVAL = Object.freeze(defineActionSpecs([
         { path: 'targetMachineId', title: 'Target machine id', widget: 'text' },
       ],
     },
-    outputSchema: StrictJsonValueSchema,
+    outputSchema: SessionHandoffActionResultV1Schema,
     inputSchema: SessionHandoffInputSchema,
   },
   {
@@ -6459,6 +6466,7 @@ const ACTION_SPECS_WITHOUT_APPROVAL = Object.freeze(defineActionSpecs([
           ],
         },
         { path: 'requestId', title: 'Request id', widget: 'text' },
+        { path: 'turnId', title: 'Turn id', widget: 'text' },
       ],
     },
     outputSchema: SessionInteractionResponseSuccessSchema,

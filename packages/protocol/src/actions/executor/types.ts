@@ -755,9 +755,6 @@ export type ActionExecutorDeps = Readonly<{
     targetPath?: string;
     targetSessionStorageMode?: 'direct' | 'persisted';
     workspaceAction?: HandoffWorkspaceActionV1;
-    workspaceSyncSourceWorkspaceRefId?: string;
-    workspaceSyncTargetWorkspaceRefId?: string;
-    workspaceSyncSettingsVersion?: number;
     serverId?: string | null;
     actionRequestId?: string | null;
     handoffTargetReplacementApproval?: HandoffTargetReplacementApprovalV1 | null;
@@ -1082,6 +1079,7 @@ export type ActionExecutorDeps = Readonly<{
     sessionId: string;
     decision: 'allow' | 'deny';
     requestId?: string | null;
+    turnId?: string | null;
     allowedTools?: readonly string[];
     updatedPermissions?: unknown;
     execPolicyAmendment?: unknown;
@@ -1133,13 +1131,19 @@ export type ActionExecutorDeps = Readonly<{
   teleportVoiceAgentToSessionRoot?: (args: Readonly<{ sessionId: string }>) => Promise<unknown>;
 
   // Daemon-local memory (machine-scoped RPC)
-  daemonMemorySearch: (args: Readonly<{ machineId: string; query: MemorySearchQueryV1; serverId?: string | null }>) => Promise<MemorySearchResultV1>;
+  daemonMemorySearch: (args: Readonly<{
+    machineId: string;
+    query: MemorySearchQueryV1;
+    serverId?: string | null;
+    signal?: AbortSignal;
+  }>) => Promise<MemorySearchResultV1>;
   daemonMemoryGetWindow: (args: Readonly<{
     machineId: string;
     sessionId: string;
     seqFrom: number;
     seqTo: number;
     serverId?: string | null;
+    signal?: AbortSignal;
   }>) => Promise<MemoryWindowV1>;
   daemonMemoryEnsureUpToDate: (args: Readonly<{ machineId: string; sessionId?: string; serverId?: string | null }>) => Promise<unknown>;
 

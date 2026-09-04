@@ -258,6 +258,7 @@ const RESULT_NONE_DEFERRED_ACTION_IDS = [
   'plugins.permissions.grants.grant',
   'plugins.permissions.grants.revoke',
   'plugins.permissions.grants.dismissRequest',
+  'plugin.webhook.endpoint.convergeTarget',
   'plugin.webhook.endpoint.ensure',
   'plugin.webhook.endpoint.revoke',
   'plugin.webhook.endpoint.retarget',
@@ -3606,6 +3607,19 @@ describe('Action Spec Registry', () => {
     expect(spec.surfaces.ui).toBe(true);
     expect(spec.placements).toContain('command_palette');
     expect(spec.placements).toContain('session_info');
+  });
+
+  it('keeps daemon-owned workspace endpoint identity out of the public handoff input', () => {
+    const inputSchema = PUBLIC_ACTION_INPUT_SCHEMAS['session.handoff'];
+    const declaredKeys = Object.keys((inputSchema as unknown as { shape: Record<string, unknown> }).shape);
+
+    expect(declaredKeys).toEqual([
+      'sessionId',
+      'targetMachineId',
+      'targetPath',
+      'targetSessionStorageMode',
+      'workspaceAction',
+    ]);
   });
 
   it('binds session lifecycle RPC wire methods to ActionSpec rows', () => {

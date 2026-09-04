@@ -267,4 +267,8 @@ export {
   type ConnectedServicesCapabilities,
 } from './features/payload/capabilities/connectedServicesCapabilities.js';
 export { FeatureGatesSchema, type FeatureGates } from './features/payload/featureGatesSchema.js';
-export { FeaturesResponseSchema, type FeaturesResponse } from './features/payload/featuresResponseSchema.js';
+export {
+  FEATURES_RESPONSE_MAX_UTF8_BYTES_V1,
+  FeaturesResponseSchema,
+  type FeaturesResponse,
+} from './features/payload/featuresResponseSchema.js';

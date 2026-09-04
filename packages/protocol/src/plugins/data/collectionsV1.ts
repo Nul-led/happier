@@ -51,6 +51,7 @@ import {
   PluginCollectionRowIdV1Schema,
   PluginCollectionUiQueryErrorCodeV1Schema,
   PluginCollectionUiQueryErrorV1Schema,
+  PluginCollectionUiQueryInputV1Schema,
   PluginCollectionUiQueryRequestV1Schema,
   PluginCollectionUiQueryResultV1Schema,
   PluginCollectionUiRowContextV1Schema,
@@ -58,11 +59,18 @@ import {
   type PluginCollectionRowIdV1,
   type PluginCollectionUiQueryErrorCodeV1,
   type PluginCollectionUiQueryErrorV1,
+  type PluginCollectionUiQueryInputV1,
   type PluginCollectionUiQueryRequestV1,
   type PluginCollectionUiQueryResultV1,
   type PluginCollectionUiRowContextV1,
   type PluginCollectionUiRowV1,
 } from './collectionUiQueryWireV1.js';
+import {
+  PluginCollectionContractDigestV1Schema,
+  PluginCollectionContractRefV1Schema,
+  type PluginCollectionContractDigestV1,
+  type PluginCollectionContractRefV1,
+} from './collectionContractRefV1.js';
 import {
   PLUGIN_COLLECTION_DEFAULT_DEPLOYMENT_LIMITS_V1,
   PLUGIN_COLLECTION_LIMITS_V1,
@@ -109,6 +117,7 @@ export {
   PluginCollectionRowIdV1Schema,
   PluginCollectionUiQueryErrorCodeV1Schema,
   PluginCollectionUiQueryErrorV1Schema,
+  PluginCollectionUiQueryInputV1Schema,
   PluginCollectionUiQueryRequestV1Schema,
   PluginCollectionUiQueryResultV1Schema,
   PluginCollectionUiRowContextV1Schema,
@@ -116,11 +125,18 @@ export {
   type PluginCollectionRowIdV1,
   type PluginCollectionUiQueryErrorCodeV1,
   type PluginCollectionUiQueryErrorV1,
+  type PluginCollectionUiQueryInputV1,
   type PluginCollectionUiQueryRequestV1,
   type PluginCollectionUiQueryResultV1,
   type PluginCollectionUiRowContextV1,
   type PluginCollectionUiRowV1,
 } from './collectionUiQueryWireV1.js';
+export {
+  PluginCollectionContractDigestV1Schema,
+  PluginCollectionContractRefV1Schema,
+  type PluginCollectionContractDigestV1,
+  type PluginCollectionContractRefV1,
+} from './collectionContractRefV1.js';
 
 const FiniteNumberSchema = PluginCollectionFiniteNumberV1Schema;
 const MAX_COLLECTION_INDEXED_STRING_UTF8_BYTES = 256;
@@ -266,17 +282,6 @@ function compareCanonicalText(left: string, right: string): number {
 
 const OpaqueCollectionCursorSchema = asProtocolZod(PluginCollectionOpaqueCursorV1Schema);
 const ProjectedScalarValueSchema = PluginCollectionProjectedScalarValueV1Schema;
-
-export const PluginCollectionContractDigestV1Schema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
-export type PluginCollectionContractDigestV1 = z.infer<typeof PluginCollectionContractDigestV1Schema>;
-
-export const PluginCollectionContractRefV1Schema = z.object({
-  pluginId: asProtocolZod(PluginIdSchema),
-  collectionId: asProtocolZod(PluginContributionLocalIdSchema),
-  schemaVersion: PluginCollectionSchemaVersionV1Schema,
-  contractDigest: PluginCollectionContractDigestV1Schema,
-}).strict();
-export type PluginCollectionContractRefV1 = z.infer<typeof PluginCollectionContractRefV1Schema>;
 
 export const PluginCollectionWriterContextV1Schema = z.object({
   schemaVersion: PluginCollectionSchemaVersionV1Schema,
@@ -923,6 +928,7 @@ export type PluginCollectionCandidatePreparationErrorV1 = z.infer<
 export const PluginCollectionGetRequestV1Schema = z.object({
   pluginId: asProtocolZod(PluginIdSchema),
   collectionId: asProtocolZod(PluginContributionLocalIdSchema),
+  readerContext: PluginCollectionContractRefV1Schema,
   rowId: PluginCollectionRowIdV1Schema,
 }).strict();
 export type PluginCollectionGetRequestV1 = z.infer<typeof PluginCollectionGetRequestV1Schema>;
@@ -952,6 +958,7 @@ export type PluginCollectionQueryRangeV1 = z.infer<typeof PluginCollectionQueryR
 export const PluginCollectionQueryRequestV1Schema = z.object({
   pluginId: asProtocolZod(PluginIdSchema),
   collectionId: asProtocolZod(PluginContributionLocalIdSchema),
+  readerContext: PluginCollectionContractRefV1Schema,
   indexId: PluginCollectionMemberNameV1Schema,
   prefix: z.array(PluginCollectionIndexScalarValueV1Schema).max(4).default([]),
   range: PluginCollectionQueryRangeV1Schema.optional(),
@@ -1143,9 +1150,61 @@ export const PluginCollectionContractReadRequestV1Schema = z.object({
 export type PluginCollectionContractReadRequestV1 = z.infer<typeof PluginCollectionContractReadRequestV1Schema>;
 
 export const PluginCollectionContractReadResultV1Schema = z.object({
+  access: z.enum(['readOnly', 'writable']),
   contract: NormalizedPluginAccountCollectionContractV1Schema,
 }).strict();
 export type PluginCollectionContractReadResultV1 = z.infer<typeof PluginCollectionContractReadResultV1Schema>;
+
+export type PluginCollectionContractAccessV1 = PluginCollectionContractReadResultV1['access'];
+
+/**
+ * Data's sole compatibility decision for a retained exact Collection ref.
+ * Schema compatibility grants reads only; write authority requires the exact
+ * current writer ref, including its immutable contract digest.
+ */
+export function resolvePluginCollectionContractAccessV1(input: Readonly<{
+  currentWriter: NormalizedPluginAccountCollectionContractV1;
+  requested: NormalizedPluginAccountCollectionContractV1;
+}>): PluginCollectionContractAccessV1 | null {
+  const sameCollection = input.currentWriter.pluginId === input.requested.pluginId
+    && input.currentWriter.collectionId === input.requested.collectionId;
+  if (!sameCollection) return null;
+  if (
+    input.currentWriter.schemaVersion === input.requested.schemaVersion
+    && input.currentWriter.contractDigest === input.requested.contractDigest
+  ) return 'writable';
+  if (input.currentWriter.schemaVersion === input.requested.schemaVersion) return null;
+  if (!input.requested.readableSchemaVersions.includes(input.currentWriter.schemaVersion)) return null;
+
+  // A forward-readable logical schema declaration is necessary but cannot by
+  // itself prove that an older artifact's physical query vocabulary still
+  // names the current writer's indexes and server projection with the same
+  // meanings. Prove only the semantics represented by the normalized model;
+  // anything else fails closed instead of inventing a mapper.
+  if (input.requested.rowIdField !== input.currentWriter.rowIdField) return null;
+  for (const field of input.requested.serverReadable) {
+    if (!input.currentWriter.serverReadable.includes(field)) return null;
+    if (
+      getPluginCollectionScalarKindV1({ schema: input.requested.schema, field })
+      !== getPluginCollectionScalarKindV1({ schema: input.currentWriter.schema, field })
+    ) return null;
+  }
+  for (const requestedIndex of input.requested.indexes) {
+    const currentIndex = input.currentWriter.indexes.find((candidate) => candidate.id === requestedIndex.id);
+    if (!currentIndex || canonicalJson(currentIndex) !== canonicalJson(requestedIndex)) return null;
+    for (const indexField of requestedIndex.fields) {
+      if (
+        getPluginCollectionScalarKindV1({ schema: input.requested.schema, field: indexField.field })
+        !== getPluginCollectionScalarKindV1({ schema: input.currentWriter.schema, field: indexField.field })
+      ) return null;
+    }
+  }
+  for (const requestedQuery of input.requested.uiQueries) {
+    const currentQuery = input.currentWriter.uiQueries.find((candidate) => candidate.id === requestedQuery.id);
+    if (!currentQuery || canonicalJson(currentQuery) !== canonicalJson(requestedQuery)) return null;
+  }
+  return 'readOnly';
+}
 
 type ScalarKind = PluginCollectionScalarKindV1;
 

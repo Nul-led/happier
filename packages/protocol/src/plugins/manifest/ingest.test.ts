@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { ingestPluginManifestV2, resolvePluginManifestSetReferencesV2 } from './ingest.js';
+import {
+  ingestPluginManifestV2,
+  resolvePluginManifestSetReferencesV2,
+  validatePublicPluginManifestPolicy,
+} from './ingest.js';
 import {
   PLUGIN_HOST_ACCESS_CAPABILITY_CATALOG_V2,
   PluginManifestHostAccessV2Schema,
@@ -159,6 +163,33 @@ function automationEvent(overrides: Record<string, unknown> = {}): Record<string
 }
 
 describe('canonical plugin manifest ingestion', () => {
+  it('keeps public semantic policy separate from broad internal manifest ingestion', () => {
+    const admitted = ingestPluginManifestV2(manifest({
+      hostAccess: {
+        required: [{ id: 'terminal', capability: 'terminal', reason: 'Open terminal', scope: { operations: ['open'] } }],
+        optional: [],
+      },
+    }));
+    expect(admitted).toMatchObject({ ok: true });
+    if (!admitted.ok) return;
+    expect(validatePublicPluginManifestPolicy(admitted.manifest)).toEqual([]);
+
+    const deferred = ingestPluginManifestV2(manifest({
+      hostAccess: {
+        required: [{ id: 'browser', capability: 'browser', reason: 'Open browser', scope: { operations: ['read'] } }],
+        optional: [],
+      },
+    }));
+    expect(deferred).toMatchObject({ ok: true });
+    if (!deferred.ok) return;
+    expect(validatePublicPluginManifestPolicy(deferred.manifest)).toEqual([
+      expect.objectContaining({
+        code: 'plugin_manifest_invalid',
+        path: ['hostAccess', 'required', 0, 'capability'],
+      }),
+    ]);
+  });
+
   it('admits an Event Automation setup Action only through its exact qualified same-plugin declaration', () => {
     const parsed = ingestPluginManifestV2(manifest({
       contributes: {

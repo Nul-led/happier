@@ -1176,6 +1176,10 @@ describe('daemon contribution registry projection (wire)', () => {
             accountId: 'account-b',
           },
         },
+        presentation: {
+          connectedAccountLabel: 'Work account',
+          machineDisplayName: 'Development Mac',
+        },
       },
     };
 
@@ -3111,6 +3115,46 @@ describe('daemon contribution registry projection (wire)', () => {
         },
       },
     }).success).toBe(false);
+  });
+
+  it('admits search providers only through their closed same-plugin identity and Action arm', () => {
+    const entry = {
+      id: 'searchProvider:acme.search:entries',
+      pluginId: 'acme.search',
+      contributionKind: 'searchProvider',
+      descriptorId: 'entries',
+      identity: { pluginId: 'acme.search', localId: 'entries' },
+      action: { pluginId: 'acme.search', localId: 'entries/search-v1' },
+    } as const;
+    const projection = {
+      v: 2,
+      generation: 1,
+      familiesById: {
+        pluginUi: {
+          family: 'pluginUi',
+          entriesById: { [entry.id]: entry },
+        },
+      },
+    } as const;
+
+    expect(PluginProjectionV2Schema.safeParse(projection).success).toBe(true);
+
+    for (const invalidEntry of [
+      { ...entry, action: 'entries/search-v1' },
+      { ...entry, action: { pluginId: 'other.plugin', localId: 'entries/search-v1' } },
+      { ...entry, identity: { pluginId: 'acme.search', localId: 'other' } },
+      { ...entry, title: 'Unrelated duplicate Action presentation' },
+    ]) {
+      expect(PluginProjectionV2Schema.safeParse({
+        ...projection,
+        familiesById: {
+          pluginUi: {
+            ...projection.familiesById.pluginUi,
+            entriesById: { [entry.id]: invalidEntry },
+          },
+        },
+      }).success).toBe(false);
+    }
   });
 
   it('uses a closed React Native artifact-owner union and reserves crash tokens for renderers', () => {

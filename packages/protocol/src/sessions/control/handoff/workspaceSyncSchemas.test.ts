@@ -6,6 +6,7 @@ import {
   DeleteWorkspaceSyncConflictLoserV1Schema,
   HandoffTargetReplacementPreflightV1Schema,
   HandoffWorkspaceActionV1Schema,
+  HandoffWorkspaceOutcomeV1Schema,
   ReadWorkspaceSyncFileV1Schema,
   ReadWorkspaceSyncFileResultV1Schema,
   WorkspaceContentPolicyV1Schema,
@@ -19,6 +20,7 @@ import {
   WorkspaceSyncTargetConflictDeleteV1Schema,
   WorkspaceSyncTargetFileReadV1Schema,
   WorkspaceSyncStatusV1Schema,
+  WorkspaceSyncRuntimeEventV1Schema,
 } from './workspaceSyncSchemas.js';
 import {
   SessionHandoffPrepareTargetResultGetResponseSchema,
@@ -34,11 +36,28 @@ const contentPolicyInput = {
   selection: 'git_worktree' as const,
   extraIgnorePatterns: [],
   extraIncludePatterns: [],
-  includeGitDirectory: false,
 };
 const contentPolicy = { ...contentPolicyInput, policyDigest: computeWorkspaceSyncPolicyDigest(contentPolicyInput) };
 
 describe('workspace sync protocol schemas', () => {
+  it('bounds content policy patterns by UTF-8 bytes as well as count', () => {
+    const accepted = { ...contentPolicyInput, extraIgnorePatterns: ['x'.repeat(1024)] };
+    expect(WorkspaceContentPolicyV1Schema.safeParse({
+      ...accepted, policyDigest: computeWorkspaceSyncPolicyDigest(accepted),
+    }).success).toBe(true);
+    const oversized = { ...contentPolicyInput, extraIgnorePatterns: ['😀'.repeat(1024)] };
+    expect(WorkspaceContentPolicyV1Schema.safeParse({
+      ...oversized, policyDigest: computeWorkspaceSyncPolicyDigest(oversized),
+    }).success).toBe(false);
+  });
+
+  it('rejects negated extra include patterns because includes are positive paths', () => {
+    const negatedInclude = { ...contentPolicyInput, extraIncludePatterns: ['!src/generated.ts'] };
+    expect(WorkspaceContentPolicyV1Schema.safeParse({
+      ...negatedInclude, policyDigest: computeWorkspaceSyncPolicyDigest(negatedInclude),
+    }).success).toBe(false);
+  });
+
   it('publishes only strict read-only legacy-state inspection results', () => {
     expect(WorkspaceSyncLegacyStateInspectionV1Schema.parse({ status: 'absent' })).toEqual({ status: 'absent' });
     expect(WorkspaceSyncLegacyStateInspectionV1Schema.parse({
@@ -93,7 +112,6 @@ describe('workspace sync protocol schemas', () => {
       v: 1 as const,
       selection: 'git_worktree' as const,
       extraIncludePatterns: [],
-      includeGitDirectory: false,
     };
     const includeAfterIgnore = computeWorkspaceSyncPolicyDigest({
       ...shared,
@@ -105,6 +123,24 @@ describe('workspace sync protocol schemas', () => {
     });
 
     expect(includeAfterIgnore).not.toBe(ignoreAfterInclude);
+  });
+
+  it('always excludes the Git directory and cannot represent includeGitDirectory', () => {
+    const base = {
+      v: 1 as const,
+      selection: 'git_worktree' as const,
+      extraIgnorePatterns: [],
+      extraIncludePatterns: [],
+    };
+    const policy = { ...base, policyDigest: computeWorkspaceSyncPolicyDigest(base) };
+
+    expect(WorkspaceContentPolicyV1Schema.parse(policy)).toEqual(policy);
+    expect(WorkspaceContentPolicyV1Schema.safeParse({ ...policy, includeGitDirectory: false }).success).toBe(false);
+    expect(WorkspaceContentPolicyV1Schema.safeParse({ ...policy, includeGitDirectory: true }).success).toBe(false);
+    expect(HandoffWorkspaceActionV1Schema.safeParse({
+      kind: 'copy_once' as const,
+      contentPolicy: { ...policy, includeGitDirectory: false },
+    }).success).toBe(false);
   });
 
   it('accepts the four product modes and rejects copy_once relationships', () => {
@@ -221,6 +257,36 @@ describe('workspace sync protocol schemas', () => {
       changedFiles: 0,
       conflictCount: 0,
       lastSuccessfulSyncAtMs: null,
+      unexpected: true,
+    }).success).toBe(false);
+
+    expect(WorkspaceSyncRuntimeEventV1Schema.parse({
+      v: 1,
+      status: {
+        relationshipId: 'rel-1',
+        controllerMachineId: 'machine-a',
+        state: 'paused',
+        alphaPath: '/repo/a',
+        betaPath: '/repo/b',
+        mode: 'keep_synced',
+        changedFiles: 0,
+        conflictCount: 0,
+        lastSuccessfulSyncAtMs: null,
+      },
+    })).toMatchObject({ v: 1, status: { state: 'paused' } });
+    expect(WorkspaceSyncRuntimeEventV1Schema.safeParse({
+      v: 1,
+      status: {
+        relationshipId: 'rel-1',
+        controllerMachineId: 'machine-a',
+        state: 'paused',
+        alphaPath: '/repo/a',
+        betaPath: '/repo/b',
+        mode: 'keep_synced',
+        changedFiles: 0,
+        conflictCount: 0,
+        lastSuccessfulSyncAtMs: null,
+      },
       unexpected: true,
     }).success).toBe(false);
   });
@@ -581,6 +647,45 @@ describe('workspace sync protocol schemas', () => {
       ...request,
       activatesExactMirror: 'yes',
     }).success).toBe(false);
+  });
+
+  it('carries the committed workspace outcome as one strict terminal result', () => {
+    const status = {
+      relationshipId: 'relationship-1',
+      controllerMachineId: 'machine-alpha',
+      state: 'watching' as const,
+      alphaPath: '/workspace/alpha',
+      betaPath: '/workspace/beta',
+      mode: 'keep_synced' as const,
+      changedFiles: 0,
+      conflictCount: 0,
+      lastSuccessfulSyncAtMs: 1,
+    };
+    const created = {
+      kind: 'relationship' as const,
+      relationshipId: 'relationship-1',
+      created: true,
+      status,
+    };
+    expect(HandoffWorkspaceOutcomeV1Schema.parse(created)).toEqual(created);
+    const reused = { ...created, created: false };
+    expect(HandoffWorkspaceOutcomeV1Schema.parse(reused)).toEqual(reused);
+    const copied = {
+      kind: 'copied' as const,
+      operationId: 'handoff-1',
+      status: { ...status, mode: 'copy_once' as const },
+      cleanupWarning: { code: 'workspace_sync_commit_failed', message: 'fence release failed' },
+    };
+    expect(HandoffWorkspaceOutcomeV1Schema.parse(copied)).toEqual(copied);
+    expect(HandoffWorkspaceOutcomeV1Schema.parse({ kind: 'none' })).toEqual({ kind: 'none' });
+    // `created` distinguishes a newly persisted relationship from a reused one
+    // and is therefore required, and unknown fields never survive the seam.
+    expect(HandoffWorkspaceOutcomeV1Schema.safeParse({
+      kind: 'relationship',
+      relationshipId: 'relationship-1',
+    }).success).toBe(false);
+    expect(HandoffWorkspaceOutcomeV1Schema.safeParse({ ...created, mutagenSessionId: 'opaque' }).success).toBe(false);
+    expect(HandoffWorkspaceOutcomeV1Schema.safeParse({ kind: 'none', cleanupWarning: { code: 'x', message: 'y' } }).success).toBe(false);
   });
 
   it('fails closed on the retired workspaceTransfer request field', () => {

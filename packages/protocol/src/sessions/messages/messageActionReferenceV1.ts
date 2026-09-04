@@ -76,13 +76,10 @@ export function projectMessageActionProvenanceCategoryV1(
       return provenance.externalActor?.kind === 'human' ? 'external_human' : 'plugin';
     case 'automation':
       return 'automation';
-    case 'agentTerminal':
-      return 'terminal';
     case 'host':
       switch (provenance.producer) {
         case 'happierApp':
         case 'cli':
-        case 'daemonInitialPrompt':
           return 'owner';
         case 'pluginSession':
           return 'plugin';
@@ -91,14 +88,11 @@ export function projectMessageActionProvenanceCategoryV1(
         case 'voiceInput':
         case 'executionRunVoice':
           return 'voice';
-        case 'agentTerminal':
-          return 'terminal';
         case 'externalSessionHistory':
         case 'runtimeTranscript':
           return 'recovered_history';
         case 'sessionAction':
         case 'happierMcp':
-        case 'connectedService':
         case 'agentRuntimeFirstInput':
           return 'unknown';
       }

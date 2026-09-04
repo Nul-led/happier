@@ -82,10 +82,8 @@ export {
   ACCOUNT_DIRECTORY_LINKS_HTTP_PATH_V1,
   ACCOUNT_DIRECTORY_ME_HTTP_PATH_V1,
   ACCOUNT_DIRECTORY_PREFERRED_HOME_HTTP_PATH_V1,
-  ACCOUNT_DIRECTORY_MAX_DIRECT_ADDRESSES,
   ACCOUNT_DIRECTORY_MAX_ENDPOINTS,
   ACCOUNT_DIRECTORY_MAX_LABEL_UTF8_BYTES,
-  ACCOUNT_DIRECTORY_MAX_RELAY_URLS,
   ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_CREDENTIAL_PLAINTEXT_BYTES,
   ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_TOKEN_UTF8_BYTES,
   ACCOUNT_DIRECTORY_MAX_SEALED_TOKEN_BYTES,
@@ -182,8 +180,21 @@ export {
 } from './auth/accountDirectory.js';
 
 export {
-  IROH_DESCRIPTOR_MAX_DIRECT_ADDRESSES,
-  IROH_DESCRIPTOR_MAX_RELAY_URLS,
+  TERMINAL_CONNECT_LINK_WIRE_VERSION_V4,
+  TerminalConnectLinkV4EnvelopeSchema,
+  TerminalConnectPairingContextV3Schema,
+  classifyTerminalConnectLinkParameters,
+  decodeTerminalConnectLinkV4Payload,
+  encodeTerminalConnectLinkV4Payload,
+  parseTerminalConnectLinkV4Parameters,
+  readTerminalConnectLinkV4CredentialDestination,
+  type TerminalConnectLinkParameterClassification,
+  type TerminalConnectLinkV4CredentialDestination,
+  type TerminalConnectLinkV4Envelope,
+  type TerminalConnectPairingContextV3,
+} from './auth/terminalConnectLinkV4.js';
+
+export {
   IROH_ENDPOINT_DESCRIPTOR_VERSION_V1,
   IrohEndpointDescriptorV1Schema,
   IrohEndpointIdV1Schema,
@@ -655,6 +666,7 @@ export {
   isLegacyCustomAcpId,
   isLegacyConfiguredAcpFlavorCarrier,
   isLegacyConfiguredAcpCompatible,
+  isInvalidNestedLegacyCustomAcpPlaceholder,
   readLegacyConfiguredAcpBackendId,
 } from './backends/targets/compat/customAcp.js';
 export {
@@ -1726,6 +1738,7 @@ export {
   formatPluginManifestIngestionDiagnostic,
   formatPluginManifestIngestionDiagnostics,
   ingestPluginManifestV2,
+  validatePublicPluginManifestPolicy,
   resolvePluginManifestSetReferencesV2,
   type PluginManifestIngestionDiagnostic,
   type PluginManifestIngestionResult,
@@ -2888,6 +2901,17 @@ export {
   type MachineFileBrowserDirectoryEntry,
   type MachineFileBrowserRoot,
 } from './machines/fileBrowser.js';
+export {
+  DaemonWorkspaceFileListErrorCodeSchema,
+  DaemonWorkspaceFileListRequestSchema,
+  DaemonWorkspaceFileListResponseSchema,
+  WORKSPACE_FILE_LIST_MAX_QUERY_CODE_UNITS,
+  WORKSPACE_FILE_LIST_MAX_RESPONSE_UTF8_BYTES,
+  WORKSPACE_FILE_LIST_MAX_RESULTS,
+  type DaemonWorkspaceFileListErrorCode,
+  type DaemonWorkspaceFileListRequest,
+  type DaemonWorkspaceFileListResponse,
+} from './machines/workspaceFiles.js';
 
 // Canonical create-or-rejoin vocabulary shared with host consumers. The
 // strict Action input itself excludes predecessor metadata labels.
@@ -3772,6 +3796,14 @@ export {
 } from './sessions/control/pendingInputInterruptAndRunV1.js';
 
 export {
+  SessionInputCancelExactTurnRequestV1Schema,
+  SessionInputCancelExactTurnResultV1Schema,
+  buildUnsupportedSessionInputCancelExactTurnResultV1,
+  type SessionInputCancelExactTurnRequestV1,
+  type SessionInputCancelExactTurnResultV1,
+} from './sessions/control/exactTurnCancellationV1.js';
+
+export {
   SESSION_RUNNER_RESTART_DISABLED_REASONS,
   SESSION_RUNNER_RESTART_MODES_V1,
   SESSION_RUNNER_RESTART_REASONS_V1,
@@ -4023,6 +4055,8 @@ export {
   SessionInputSourceAuthorityV1Schema,
   SessionMessageProvenanceV1Schema,
   SessionRoleUserProducerKindV1Schema,
+  buildSessionTranscriptMessageProvenanceV1,
+  buildTrustedHostSessionInputAdmissionV1,
   readSessionInputAuthorityV1,
   readSessionInputCausalPermissionAuthorityV1,
   materializeSessionInputCausalPermissionAuthorityV1,
@@ -4030,6 +4064,7 @@ export {
   requiresAuthenticatedMachineAdmissionForSessionInputV1,
   serializeSessionInputRequestEqualityIntentV1,
   settleSessionInputRequestV1,
+  settleSessionMessageProvenanceV1,
   readSessionMessageProvenanceV1,
   readSessionPermissionSourceAuthorityV1,
   derivePluginSessionInputLocalIdV1,
@@ -4060,6 +4095,7 @@ export {
   type SessionPermissionSourceAuthorityV1,
   type SessionRoleUserProducerAdmissionModeV1,
   type SessionRoleUserProducerKindV1,
+  type SessionTranscriptMessageProducerKindV1,
 } from './sessions/messages/sessionInputAdmission.js';
 export {
   EXTERNAL_SHAREABLE_TRANSCRIPT_MAX_CONSUMED_INPUTS_V1,
@@ -5661,6 +5697,7 @@ export {
   SESSION_HANDOFF_PROGRESS_TIMELINES_V1,
   SessionHandoffStartRequestSchema,
   SessionHandoffStartResponseSchema,
+  SessionHandoffActionResultV1Schema,
   SessionHandoffStatusGetRequestSchema,
   SessionHandoffStatusSchema,
   SessionHandoffMetadataV2Schema,
@@ -5686,6 +5723,7 @@ export {
   type SessionHandoffResumePlan,
   type SessionHandoffStartRequest,
   type SessionHandoffStartResponse,
+  type SessionHandoffActionResultV1,
   type SessionHandoffStatus,
   type SessionHandoffStatusGetRequest,
   type SessionHandoffStorageMode,
@@ -5701,6 +5739,7 @@ export {
   areWorkspaceSyncRelationshipDefinitionsEqual,
   DeleteWorkspaceSyncConflictLoserV1Schema,
   HandoffWorkspaceActionV1Schema,
+  HandoffWorkspaceOutcomeV1Schema,
   HandoffTargetReplacementPreflightResultV1Schema,
   HandoffTargetReplacementPreflightV1Schema,
   HANDOFF_TARGET_APPROVAL_CONSEQUENCES_V1,
@@ -5708,6 +5747,8 @@ export {
   sameHandoffTargetReplacementApproval,
   ReadWorkspaceSyncFileResultV1Schema,
   ReadWorkspaceSyncFileV1Schema,
+  WORKSPACE_SYNC_MAX_PATTERN_BYTES,
+  WORKSPACE_SYNC_MAX_PATTERNS,
   WORKSPACE_SYNC_FILE_PREVIEW_MAX_BYTES,
   WorkspaceContentPolicyV1Schema,
   WorkspaceSyncEndpointEntryKindV1Schema,
@@ -5716,8 +5757,10 @@ export {
   WorkspaceSyncCopyOnceV1Schema,
   WorkspaceSyncRelationshipV1Schema,
   WorkspaceSyncRelationshipIdV1Schema,
+  WorkspaceSyncCleanupWarningV1Schema,
   WorkspaceSyncLegacyStateInspectionV1Schema,
   WorkspaceSyncStatusV1Schema,
+  WorkspaceSyncRuntimeEventV1Schema,
   WorkspaceSyncTargetBootstrapOwnerV1Schema,
   WorkspaceSyncTargetBootstrapPrepareResultV1Schema,
   WorkspaceSyncTargetBootstrapPrepareV1Schema,
@@ -5730,6 +5773,7 @@ export {
   computeWorkspaceSyncPolicyDigest,
   type DeleteWorkspaceSyncConflictLoserV1,
   type HandoffWorkspaceActionV1,
+  type HandoffWorkspaceOutcomeV1,
   type HandoffTargetReplacementPreflightResultV1,
   type HandoffTargetReplacementPreflightV1,
   type HandoffTargetApprovalConsequenceV1,
@@ -5745,8 +5789,10 @@ export {
   type WorkspaceSyncEndpointEntryKindV1,
   type WorkspaceSyncRelationshipV1,
   type WorkspaceSyncRelationshipIdV1,
+  type WorkspaceSyncCleanupWarningV1,
   type WorkspaceSyncLegacyStateInspectionV1,
   type WorkspaceSyncStatusV1,
+  type WorkspaceSyncRuntimeEventV1,
   type WorkspaceSyncTargetBootstrapOwnerV1,
   type WorkspaceSyncTargetBootstrapPrepareResultV1,
   type WorkspaceSyncTargetBootstrapPrepareV1,
@@ -6327,6 +6373,7 @@ export {
   MemoryEmbeddingsBlendSchema,
   MemoryContentPolicyV1Schema,
   MemoryCoveragePolicyV1Schema,
+  MemoryIndexPolicyV1Schema,
   MemoryEmbeddingsCustomConfigSchema,
   MemoryEmbeddingsLocalTransformersConfigSchema,
   MemoryEmbeddingsModeSchema,
@@ -6344,6 +6391,7 @@ export {
   type MemoryEmbeddingsBlend,
   type MemoryContentPolicyV1,
   type MemoryCoveragePolicyV1,
+  type MemoryIndexPolicyV1,
   type MemoryEmbeddingsCustomConfig,
   type MemoryEmbeddingsLocalTransformersConfig,
   type MemoryEmbeddingsMode,
@@ -6848,6 +6896,7 @@ export {
   type DeviceSimulatorPreviewCapabilities,
   type FeatureGate,
   type FeatureGates,
+  FEATURES_RESPONSE_MAX_UTF8_BYTES_V1,
   type FeaturesResponse,
   type HomeSearchCapabilities,
   type LocalServiceActionCapabilities,
@@ -7269,6 +7318,7 @@ export {
   AccountApiTokenIntrospectionRequestV1Schema,
   AccountApiTokenIntrospectionSuccessV1Schema,
   AccountApiTokenIntrospectionSubjectFailureV1Schema,
+  AccountApiTokenIntrospectionConnectionFailureV1Schema,
   AccountApiTokenSummaryV1Schema,
   AccountApiTokensCreateActionInputV1Schema,
   AccountApiTokensCreateActionOutputV1Schema,
@@ -7294,6 +7344,7 @@ export {
   type AccountApiTokenIntrospectionRequestV1,
   type AccountApiTokenIntrospectionSuccessV1,
   type AccountApiTokenIntrospectionSubjectFailureV1,
+  type AccountApiTokenIntrospectionConnectionFailureV1,
 } from './auth/accountApiTokens.js';
 export {
   ExternalOAuthErrorResponseSchema,
@@ -7513,11 +7564,9 @@ export {
 } from './automations/automationTriggerDefinitionStoredContent.js';
 export {
   openAutomationConversationReplyContextStoredEnvelopeV1,
-  openAutomationReplyHandoffReceiptStoredEnvelopeV1,
   openAutomationRunResultStoredEnvelopeV1,
   parseAutomationRunResultStoredEnvelopeV1,
   sealAutomationConversationReplyContextStoredEnvelopeV1,
-  sealAutomationReplyHandoffReceiptStoredEnvelopeV1,
   sealAutomationRunResultStoredEnvelopeV1,
 } from './automations/automationReplyHandoffStoredContent.js';
 export * from './automations/automationColumnBoundsV1.js';
@@ -7968,6 +8017,7 @@ export {
   PluginCollectionUiQueryDescriptorV1Schema,
   PluginCollectionUiQueryErrorCodeV1Schema,
   PluginCollectionUiQueryErrorV1Schema,
+  PluginCollectionUiQueryInputV1Schema,
   PluginCollectionUiQueryParameterV1Schema,
   PluginCollectionUiQueryRequestV1Schema,
   PluginCollectionUiQueryResultV1Schema,
@@ -7989,6 +8039,7 @@ export {
   openPluginCollectionPrivatePayloadV1,
   resolveEffectivePluginCollectionLimitsV1,
   resolvePluginCollectionIdentityTagV1,
+  resolvePluginCollectionContractAccessV1,
   sealPluginCollectionPrivatePayloadV1,
   splitPluginCollectionCandidatePreparationStageRequestsForKnownLimitsV1,
   PLUGIN_COLLECTION_INDEX_SORT_KEY_MAX_BYTES_V1,
@@ -8009,6 +8060,7 @@ export {
   type PluginCollectionCandidatePreparationRetireResultV1,
   type PluginCollectionContentEnvelopeV1,
   type PluginCollectionContractDigestV1,
+  type PluginCollectionContractAccessV1,
   type PluginCollectionContractReadRequestV1,
   type PluginCollectionContractReadResultV1,
   type PluginCollectionContractRefV1,
@@ -8052,6 +8104,7 @@ export {
   type PluginCollectionUiQueryDescriptorV1,
   type PluginCollectionUiQueryErrorCodeV1,
   type PluginCollectionUiQueryErrorV1,
+  type PluginCollectionUiQueryInputV1,
   type PluginCollectionIndexScalarV1,
   type PluginCollectionIndexScalarValueV1,
   type PluginCollectionUiQueryParameterV1,

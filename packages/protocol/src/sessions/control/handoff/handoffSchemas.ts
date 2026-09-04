@@ -10,7 +10,10 @@ import {
   SessionHandoffStorageModeSchema,
   SessionHandoffTransportStrategySchema,
 } from './handoffTypes.js';
-import { HandoffWorkspaceActionV1Schema } from './workspaceSyncSchemas.js';
+import {
+  HandoffWorkspaceActionV1Schema,
+  HandoffWorkspaceOutcomeV1Schema,
+} from './workspaceSyncSchemas.js';
 import {
   SESSION_HANDOFF_PREPARE_TARGET_FAILURE_MESSAGE_MAX_LENGTH,
   SessionHandoffProgressCheckpointSchema,
@@ -295,6 +298,27 @@ export const SessionHandoffStartResponseSchema = z
   .passthrough()
   .superRefine(rejectLegacyInlineTransferFields);
 export type SessionHandoffStartResponse = z.infer<typeof SessionHandoffStartResponseSchema>;
+
+/**
+ * The single public terminal result of the `session.handoff` Action. Transport
+ * and coordinator success envelopes stay behind their owning adapters; Action
+ * callers receive the committed handoff state and any bounded recovery facts.
+ */
+export const SessionHandoffActionResultV1Schema = z
+  .object({
+    handoffId: z.string().min(1).max(MAX_HANDOFF_ID_LENGTH),
+    status: SessionHandoffStatusSchema,
+    workspace: HandoffWorkspaceOutcomeV1Schema.optional(),
+    warning: z
+      .object({
+        code: z.string().trim().min(1).max(128),
+        message: z.string().trim().min(1).max(SESSION_HANDOFF_PREPARE_TARGET_FAILURE_MESSAGE_MAX_LENGTH),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+export type SessionHandoffActionResultV1 = z.infer<typeof SessionHandoffActionResultV1Schema>;
 
 export const SessionHandoffPrepareTargetResponseSchema = z
   .object({

@@ -241,7 +241,22 @@ describe('createActionExecutor (runtime-unification actions)', () => {
     const executionRunWait = vi.fn(async () => ({
       ok: true as const,
       status: 'succeeded' as const,
-      result: { run: { runId: 'run-1', status: 'succeeded' as const } },
+      result: {
+        run: {
+          runId: 'run-1',
+          callId: 'call-1',
+          sidechainId: 'sidechain-1',
+          intent: 'task' as const,
+          backendTarget: { kind: 'builtInAgent' as const, agentId: 'codex' },
+          permissionMode: 'read_only',
+          retentionPolicy: 'ephemeral' as const,
+          runClass: 'bounded' as const,
+          ioMode: 'request_response' as const,
+          status: 'succeeded' as const,
+          startedAtMs: 1,
+          finishedAtMs: 2,
+        },
+      },
     }));
     const interceptActionExecution = vi.fn(async ({ input }: Readonly<{ input: unknown }>) => ({
       status: 'continue' as const,

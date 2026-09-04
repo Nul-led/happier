@@ -299,9 +299,6 @@ export const ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS = {
   replyContextEnvelope: z.string()
     .min(1)
     .max(MAX_AUTOMATION_STORED_ENVELOPE_UTF8_BYTES),
-  replyHandoffReceiptEnvelope: z.string()
-    .min(1)
-    .max(MAX_AUTOMATION_STORED_ENVELOPE_UTF8_BYTES),
   failureDetailEnvelope: z.string()
     .min(1)
     .max(MAX_AUTOMATION_STORED_ENVELOPE_UTF8_BYTES),
@@ -370,8 +367,6 @@ const AutomationRunMigrationItemSchema = z
       ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.resultEnvelope.nullable(),
     replyContextEnvelope:
       ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.replyContextEnvelope.nullable(),
-    replyHandoffReceiptEnvelope:
-      ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.replyHandoffReceiptEnvelope.nullable(),
     failureDetailEnvelope:
       ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.failureDetailEnvelope.nullable(),
   })
@@ -1209,8 +1204,6 @@ const AccountEncryptionMigrateAutomationRunSourceContentSchema = z
       ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.resultEnvelope.nullable(),
     replyContextEnvelope:
       ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.replyContextEnvelope.nullable(),
-    replyHandoffReceiptEnvelope:
-      ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.replyHandoffReceiptEnvelope.nullable(),
     failureDetailEnvelope:
       ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.failureDetailEnvelope.nullable(),
     summaryCiphertext:
@@ -1230,8 +1223,6 @@ const AccountEncryptionMigrateAutomationRunTargetContentSchema = z
       ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.resultEnvelope.nullable(),
     replyContextEnvelope:
       ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.replyContextEnvelope.nullable(),
-    replyHandoffReceiptEnvelope:
-      ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.replyHandoffReceiptEnvelope.nullable(),
     failureDetailEnvelope:
       ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.failureDetailEnvelope.nullable(),
   })
@@ -1599,16 +1590,18 @@ function normalizeAccountEncryptionMigrateRequestBindingV1(
         // This is the only unstable outer signature in the current request
         // schema. Future outer authorization artifacts must be excluded here
         // explicitly rather than acquiring a second request serializer.
-        keyProof: signedRequest.data.keyProof
+        ...(signedRequest.data.keyProof
           ? {
-              v: signedRequest.data.keyProof.v,
-              publicKey: signedRequest.data.keyProof.publicKey,
-              contentPublicKey:
-                signedRequest.data.keyProof.contentPublicKey,
-              contentPublicKeySig:
-                signedRequest.data.keyProof.contentPublicKeySig,
+              keyProof: {
+                v: signedRequest.data.keyProof.v,
+                publicKey: signedRequest.data.keyProof.publicKey,
+                contentPublicKey:
+                  signedRequest.data.keyProof.contentPublicKey,
+                contentPublicKeySig:
+                  signedRequest.data.keyProof.contentPublicKeySig,
+              },
             }
-          : undefined,
+          : {}),
       })
     : AccountEncryptionMigrateUnsignedRequestSchema.parse(
         requestWithoutExternalAuthProof,

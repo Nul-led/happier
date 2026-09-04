@@ -25,6 +25,12 @@ function uiQueryRequestWith(cursor: unknown): Readonly<Record<string, unknown>> 
   return {
     pluginId: 'happier.example.plugin',
     collectionId: 'examples',
+    readerContext: {
+      pluginId: 'happier.example.plugin',
+      collectionId: 'examples',
+      schemaVersion: 1,
+      contractDigest: 'a'.repeat(43),
+    },
     uiQueryId: 'page',
     parameters: {},
     cursor,

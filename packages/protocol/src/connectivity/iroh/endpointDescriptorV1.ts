@@ -17,9 +17,6 @@ import { z } from 'zod';
 
 export const IROH_ENDPOINT_DESCRIPTOR_VERSION_V1 = 1 as const;
 
-export const IROH_DESCRIPTOR_MAX_RELAY_URLS = 8;
-export const IROH_DESCRIPTOR_MAX_DIRECT_ADDRESSES = 16;
-export const IROH_DESCRIPTOR_MAX_ENDPOINT_ID_UTF8_BYTES = 256;
 export const IROH_DESCRIPTOR_MAX_URL_UTF8_BYTES = 512;
 
 const UTF8_ENCODER = new TextEncoder();
@@ -29,13 +26,12 @@ function boundedUtf8(value: string, maxBytes: number): boolean {
 }
 
 /**
- * Lexical transport-identity grammar. The canonical Iroh 1.1 `EndpointId` string
- * is a 32-byte key as unpadded lowercase RFC4648 base32 of the exact decoded
- * length (52 chars = 32 bytes) — that is what iroh's FromStr/Display own. The
- * protocol additionally admits 64 lowercase hex characters; the native
- * validator accepts that form explicitly before delegating to the Iroh parser
- * (`validate_endpoint_id`). This is layered validation only: the native Iroh
- * parser remains the final cryptographic authority.
+ * Lexical transport-identity grammar. Iroh 1.1 `EndpointId::Display` emits a
+ * 32-byte key as 64 lowercase hex characters, while `FromStr` also admits the
+ * exact-length unpadded RFC4648 base32 form (52 chars = 32 bytes). The native
+ * validator delegates to that parser after this wire-level lexical check. This
+ * is layered validation only: the native Iroh parser remains the final
+ * cryptographic authority.
  */
 const IROH_ENDPOINT_ID_HEX_PATTERN = /^[0-9a-f]{64}$/u;
 const IROH_ENDPOINT_ID_BASE32_PATTERN = /^[a-z2-7]{52}$/u;
@@ -137,15 +133,11 @@ const IrohDescriptorUrlSchema = z.string()
     }
   });
 
-/** Bounded transport identifier; an Iroh EndpointId is transport identity, not Home identity. */
+/** Exact transport identifier; its 52/64-character grammar is already its complete bound. */
 export const IrohEndpointIdV1Schema = z.string()
   .trim()
   .min(1)
-  .max(IROH_DESCRIPTOR_MAX_ENDPOINT_ID_UTF8_BYTES)
   .superRefine((value, context) => {
-    if (!boundedUtf8(value, IROH_DESCRIPTOR_MAX_ENDPOINT_ID_UTF8_BYTES)) {
-      context.addIssue({ code: z.ZodIssueCode.custom, message: 'EndpointId exceeds its UTF-8 byte limit' });
-    }
     if (!isValidIrohEndpointIdEncoding(value)) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -177,17 +169,16 @@ function canonicalRelayUrl(value: string): string {
 }
 
 /**
- * Strict bounded hint list: non-empty, within the shared protocol bounds, and
- * free of duplicate entries, compared through `canonical` (identity unless the
- * item type has a normalized form). Empty or duplicated hint lists are
- * ambiguous transport facts and are never admitted into a descriptor.
+ * Strict hint list: non-empty and free of duplicate entries, compared through
+ * `canonical` (identity unless the item type has a normalized form). Item
+ * grammar and length stay bounded here; the actual HTTP and QR decoders own
+ * their total encoded-body budgets. There is no unrelated semantic item quota.
  */
 function IrohHintListSchema(
   item: z.ZodType<string>,
-  maxItems: number,
   canonical: (value: string) => string = (value) => value,
 ) {
-  return z.array(item).min(1).max(maxItems).superRefine((values, context) => {
+  return z.array(item).min(1).superRefine((values, context) => {
     if (new Set(values.map(canonical)).size !== values.length) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -201,7 +192,6 @@ export const IrohEndpointDescriptorV1Schema = z.object({
   endpointId: IrohEndpointIdV1Schema,
   relayUrls: IrohHintListSchema(
     IrohDescriptorUrlSchema,
-    IROH_DESCRIPTOR_MAX_RELAY_URLS,
     canonicalRelayUrl,
   ).optional(),
   directAddresses: IrohHintListSchema(
@@ -213,7 +203,6 @@ export const IrohEndpointDescriptorV1Schema = z.object({
         });
       }
     }),
-    IROH_DESCRIPTOR_MAX_DIRECT_ADDRESSES,
   ).optional(),
 }).strict();
 

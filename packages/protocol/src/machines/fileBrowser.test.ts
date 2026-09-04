@@ -5,6 +5,11 @@ import {
   DaemonFilesystemListDirectoryResponseSchema,
   DaemonFilesystemListRootsResponseSchema,
 } from './fileBrowser.js';
+import {
+  DaemonWorkspaceFileListRequestSchema,
+  DaemonWorkspaceFileListResponseSchema,
+  WORKSPACE_FILE_LIST_MAX_RESULTS,
+} from './workspaceFiles.js';
 
 describe('machineFileBrowser', () => {
   it('parses successful list roots responses', () => {
@@ -48,5 +53,48 @@ describe('machineFileBrowser', () => {
       expect(parsed.entries[0]?.type).toBe('directory');
       expect(parsed.truncated).toBe(false);
     }
+  });
+});
+
+describe('workspace file-list protocol', () => {
+  it('accepts only the typed workspace root, query, visibility, and result limit', () => {
+    expect(DaemonWorkspaceFileListRequestSchema.parse({
+      rootPath: '/repo',
+      query: 'readme',
+      includeHidden: true,
+      limit: 50,
+    })).toEqual({ rootPath: '/repo', query: 'readme', includeHidden: true, limit: 50 });
+
+    expect(DaemonWorkspaceFileListRequestSchema.safeParse({
+      rootPath: '/repo',
+      args: ['--files', '/etc'],
+    }).success).toBe(false);
+    expect(DaemonWorkspaceFileListRequestSchema.safeParse({
+      rootPath: '/repo',
+      cwd: '/etc',
+    }).success).toBe(false);
+  });
+
+  it('bounds results and represents truncation and process failure explicitly', () => {
+    expect(DaemonWorkspaceFileListResponseSchema.parse({
+      ok: true,
+      paths: ['README.md'],
+      truncated: true,
+    })).toEqual({ ok: true, paths: ['README.md'], truncated: true });
+    expect(DaemonWorkspaceFileListResponseSchema.safeParse({
+      ok: true,
+      paths: Array.from({ length: WORKSPACE_FILE_LIST_MAX_RESULTS + 1 }, (_, index) => `f-${index}`),
+      truncated: true,
+    }).success).toBe(false);
+    expect(DaemonWorkspaceFileListResponseSchema.safeParse({
+      ok: true,
+      paths: Array.from({ length: 300 }, (_, index) => `${index}-${'x'.repeat(1_000)}`),
+      truncated: true,
+    }).success).toBe(false);
+    expect(DaemonWorkspaceFileListResponseSchema.parse({
+      ok: false,
+      errorCode: 'ripgrep_failed',
+      exitCode: 2,
+    })).toEqual({ ok: false, errorCode: 'ripgrep_failed', exitCode: 2 });
   });
 });

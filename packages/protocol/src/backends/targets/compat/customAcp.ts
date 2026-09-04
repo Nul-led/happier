@@ -23,7 +23,7 @@ function readLegacyConfiguredAcpBackendIdRaw(value: unknown): string | null {
   return backendId || null;
 }
 
-function isInvalidNestedLegacyCustomAcpPlaceholder(value: unknown): boolean {
+export function isInvalidNestedLegacyCustomAcpPlaceholder(value: unknown): boolean {
   return readLegacyConfiguredAcpBackendIdRaw(value) === 'customAcp';
 }
 

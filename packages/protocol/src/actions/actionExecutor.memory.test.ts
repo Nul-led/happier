@@ -58,4 +58,36 @@ describe('createActionExecutor (memory)', () => {
       serverId: null,
     });
   });
+
+  it('threads Action cancellation into the authorized memory-search dependency', async () => {
+    const deps = createDeps();
+    const executor = createActionExecutor(deps);
+    const controller = new AbortController();
+
+    await executor.execute('memory.search', {
+      machineId: 'm1',
+      query: { v: 1, query: 'openclaw', scope: { type: 'global' }, mode: 'hints' },
+    }, { surface: 'agent', signal: controller.signal });
+
+    expect(deps.daemonMemorySearch).toHaveBeenCalledWith(expect.objectContaining({
+      signal: controller.signal,
+    }));
+  });
+
+  it('threads Action cancellation into the authorized memory-window dependency', async () => {
+    const deps = createDeps();
+    const executor = createActionExecutor(deps);
+    const controller = new AbortController();
+
+    await executor.execute('memory.get_window', {
+      machineId: 'm1',
+      sessionId: 'session-1',
+      seqFrom: 1,
+      seqTo: 2,
+    }, { surface: 'agent', signal: controller.signal });
+
+    expect(deps.daemonMemoryGetWindow).toHaveBeenCalledWith(expect.objectContaining({
+      signal: controller.signal,
+    }));
+  });
 });

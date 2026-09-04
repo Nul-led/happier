@@ -633,12 +633,18 @@ const PluginUiSelectActionInputConnectedAccountV1Schema = z.discriminatedUnion('
   }).strict(),
 ]);
 
+const PluginUiSelectActionInputPresentationV1Schema = z.object({
+  connectedAccountLabel: z.string().trim().min(1).max(512).nullable(),
+  machineDisplayName: z.string().trim().min(1).max(512).nullable(),
+}).strict();
+
 export const PluginUiSelectActionInputTargetedSubmittedV1Schema = z.object({
   kind: z.literal('submitted'),
   action: asProtocolZod(PluginUiQualifiedActionReferenceV1Schema),
   input: PluginUiJsonObjectV1Schema,
   selection: asProtocolZod(PluginTargetedContributionSelectionV1Schema),
   connectedAccount: PluginUiSelectActionInputConnectedAccountV1Schema,
+  presentation: PluginUiSelectActionInputPresentationV1Schema,
 }).strict();
 export type PluginUiSelectActionInputTargetedSubmittedV1 =
   z.infer<typeof PluginUiSelectActionInputTargetedSubmittedV1Schema>;

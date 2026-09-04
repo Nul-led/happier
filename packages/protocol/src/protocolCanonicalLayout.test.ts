@@ -333,6 +333,7 @@ describe('protocol canonical layout', () => {
             './plugins/contributions/composer-attachments',
             './plugins/contributions/composer-reference-candidate-id',
             './plugins/contributions/composer-reference-providers',
+            './plugins/contributions/search-providers',
             './plugins/contributions/voice',
             './plugins/contributions/ui',
             './plugins/contributions/ui/declarative-document-authoring',

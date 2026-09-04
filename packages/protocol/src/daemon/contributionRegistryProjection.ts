@@ -42,6 +42,9 @@ import { PluginDiagnosticRemediationV1Schema } from './pluginContributionIntrosp
 import { PluginUiArtifactDigestV1Schema } from '../plugins/ui/artifactIntegrity.js';
 import { PluginUiExactRuntimeVersionV1Schema } from '../plugins/ui/artifactCompatibility.js';
 import { PluginUiHostMethodV1Schema } from '../plugins/ui/hostApiDefinition.js';
+import {
+  PluginUiQualifiedActionReferenceV1Schema as CanonicalPluginUiQualifiedActionReferenceV1Schema,
+} from '../plugins/ui/hostApiRequests.js';
 import { PluginUiResourceSubscriptionEventV1Schema } from '../plugins/ui/subscriptions.js';
 import { PluginUiResolvedSemanticCommandV1Schema } from '../plugins/ui/semanticCommands.js';
 import {
@@ -137,6 +140,9 @@ const QualifiedConnectedAccountRefSchema = asProtocolZod(CanonicalQualifiedConne
 const PluginContributionIdentityV1Schema = asProtocolZod(CanonicalPluginContributionIdentityV1Schema);
 const PluginContributionLocalIdSchema = asProtocolZod(CanonicalPluginContributionLocalIdSchema);
 const PluginIdSchema = asProtocolZod(CanonicalPluginIdSchema);
+const PluginUiQualifiedActionReferenceV1Schema = asProtocolZod(
+  CanonicalPluginUiQualifiedActionReferenceV1Schema,
+);
 const PluginUiImmutableGenerationIdV1Schema = asProtocolZod(
   CanonicalPluginUiImmutableGenerationIdV1Schema,
 );
@@ -1051,7 +1057,7 @@ const DaemonPluginReactNativeArtifactBytesReadRequestBaseShape = {
  */
 const DaemonPluginReactNativeClientContributionIdentityV1Schema = z.object({
   family: z.literal('actions'),
-  action: PluginContributionIdentityV1Schema,
+  action: PluginUiQualifiedActionReferenceV1Schema,
 }).strict();
 
 const DaemonPluginReactNativeRendererArtifactBytesReadRequestSchema = z.object({
@@ -2308,7 +2314,41 @@ const PROJECTED_OPENABLE_CONTENT_VIEWER_FIELDS = new Set([
   'materializationRef',
 ]);
 
-const PluginProjectedUiEntryV2Schema = strictProjectedFamilyEntrySchema([
+const PluginProjectedSearchProviderEntryV1Schema = z.object({
+  id: z.string().trim().min(1),
+  pluginId: PluginIdSchema,
+  contributionKind: z.literal('searchProvider'),
+  descriptorId: PluginContributionLocalIdSchema,
+  identity: PluginContributionIdentityV1Schema,
+  action: PluginContributionIdentityV1Schema,
+}).strict().superRefine((value, context) => {
+  if (value.id !== `searchProvider:${value.pluginId}:${value.descriptorId}`) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['id'],
+      message: 'Projected search-provider id must match its qualified contribution identity.',
+    });
+  }
+  if (
+    value.identity.pluginId !== value.pluginId
+    || value.identity.localId !== value.descriptorId
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['identity'],
+      message: 'Projected search-provider identity must match its pluginId and descriptorId.',
+    });
+  }
+  if (value.action.pluginId !== value.pluginId) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['action', 'pluginId'],
+      message: 'Projected search-provider Action must belong to the declaring plugin.',
+    });
+  }
+});
+
+const PluginProjectedUiGenericEntryV2Schema = strictProjectedFamilyEntrySchema([
   'contributionKind',
   'pluginVersion',
   'descriptorId',
@@ -2400,6 +2440,14 @@ const PluginProjectedUiEntryV2Schema = strictProjectedFamilyEntrySchema([
   serverIdentityId: PluginMachineExecutionOriginV1Schema.shape.serverIdentityId.optional(),
   materializationRef: PluginMachineExecutionOriginV1Schema.shape.materializationRef.optional(),
 }).strict().superRefine((value, context) => {
+  if (value.contributionKind === 'searchProvider') {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['contributionKind'],
+      message: 'Projected search providers must use the closed typed search-provider arm.',
+    });
+    return;
+  }
   const hasServerIdentity = value.serverIdentityId !== undefined;
   const hasMaterializationRef = value.materializationRef !== undefined;
   if (hasServerIdentity !== hasMaterializationRef) {
@@ -2481,6 +2529,11 @@ const PluginProjectedUiEntryV2Schema = strictProjectedFamilyEntrySchema([
   }
 });
 
+const PluginProjectedUiEntryV2Schema = z.union([
+  PluginProjectedSearchProviderEntryV1Schema,
+  PluginProjectedUiGenericEntryV2Schema,
+]);
+
 /**
  * A normalized renderer reference already prepared by the canonical plugin-UI
  * projection. Declarative models use the strict Protocol-owned projected
@@ -2534,7 +2587,7 @@ export const DaemonPluginUiTargetedSurfaceSelectedRendererV1Schema = z.object({
   renderer: DaemonPluginUiTargetedSurfaceRendererRefV1Schema,
   availability: DaemonPluginUiTargetedSurfaceRendererAvailabilityV1Schema,
   /** Reuses the existing normalized broad UI artifact projection verbatim. */
-  artifactProjection: PluginProjectedUiEntryV2Schema.optional(),
+  artifactProjection: PluginProjectedUiGenericEntryV2Schema.optional(),
   crashState: DaemonPluginReactNativeCrashStateV1Schema.optional(),
 }).strict();
 export type DaemonPluginUiTargetedSurfaceSelectedRendererV1 = z.infer<

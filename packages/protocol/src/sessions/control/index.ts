@@ -6,4 +6,5 @@ export * from './sessionRunnerRuntimeV2.js';
 export * from './checkpoints/index.js';
 export * from './terminalComposerClearV1.js';
 export * from './pendingInputInterruptAndRunV1.js';
+export * from './exactTurnCancellationV1.js';
 export * from './machineSessionTerminalV1.js';

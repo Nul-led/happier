@@ -1688,6 +1688,22 @@ function completeActionResult(
   return failure ?? { ok: true, result };
 }
 
+/** Keep coordinator/RPC success envelopes internal to their host adapter. */
+function completeSessionHandoffActionResult(result: unknown): ActionExecuteResult {
+  const failure = readActionFailureEnvelope(result);
+  if (failure) return failure;
+
+  const record = readRecord(result);
+  if (record.ok === true && Object.prototype.hasOwnProperty.call(record, 'result')) {
+    return completeActionResult(record.result);
+  }
+  if (record.ok === true) {
+    const { ok: _ok, ...terminalResult } = record;
+    return completeActionResult(terminalResult);
+  }
+  return completeActionResult(result);
+}
+
 /**
  * Execution-run services keep their RPC compatibility envelope internal. The
  * public Action boundary projects its payload or failure into the canonical
@@ -4178,20 +4194,12 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
               : undefined;
           const targetPath = normalizeId(data.targetPath);
           const workspaceAction = data.workspaceAction as HandoffWorkspaceActionV1 | undefined;
-          const workspaceSyncSourceWorkspaceRefId = normalizeId(data.workspaceSyncSourceWorkspaceRefId);
-          const workspaceSyncTargetWorkspaceRefId = normalizeId(data.workspaceSyncTargetWorkspaceRefId);
-          const workspaceSyncSettingsVersion = typeof data.workspaceSyncSettingsVersion === 'number'
-            ? data.workspaceSyncSettingsVersion
-            : undefined;
           const res = await deps.sessionHandoffStart({
             sessionId,
             targetMachineId,
             ...(targetPath ? { targetPath } : {}),
             ...(targetSessionStorageMode ? { targetSessionStorageMode } : {}),
             ...(workspaceAction ? { workspaceAction } : {}),
-            ...(workspaceSyncSourceWorkspaceRefId ? { workspaceSyncSourceWorkspaceRefId } : {}),
-            ...(workspaceSyncTargetWorkspaceRefId ? { workspaceSyncTargetWorkspaceRefId } : {}),
-            ...(workspaceSyncSettingsVersion === undefined ? {} : { workspaceSyncSettingsVersion }),
             ...(serverId ? { serverId } : {}),
             ...(ctx.actionRequestId ? { actionRequestId: ctx.actionRequestId } : {}),
             ...(ctx.handoffTargetReplacementApproval
@@ -4199,7 +4207,7 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
               : {}),
             ...(ctx.signal ? { signal: ctx.signal } : {}),
           });
-          return completeActionResult(res);
+          return completeSessionHandoffActionResult(res);
         }
 
         if (actionId === 'session.handoff.prepare_target') {
@@ -5039,6 +5047,7 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
             sessionId,
             decision,
             requestId: hasOwn(data, 'requestId') ? readNullableString(data.requestId) : null,
+            turnId: hasOwn(data, 'turnId') ? readNullableString(data.turnId) : null,
             ...(Array.isArray(data.allowedTools) ? { allowedTools: data.allowedTools } : {}),
             ...(hasOwn(data, 'updatedPermissions') ? { updatedPermissions: data.updatedPermissions } : {}),
             ...(hasOwn(data, 'execPolicyAmendment') ? { execPolicyAmendment: data.execPolicyAmendment } : {}),
@@ -5174,7 +5183,12 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
           const machineId = normalizeId(data.machineId);
           if (!machineId) return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
           const query = data.query as MemorySearchQueryV1;
-          const res = await deps.daemonMemorySearch({ machineId, query, serverId: normalizeId(ctx.serverId) || null });
+          const res = await deps.daemonMemorySearch({
+            machineId,
+            query,
+            serverId: normalizeId(ctx.serverId) || null,
+            ...(ctx.signal ? { signal: ctx.signal } : {}),
+          });
           return completeActionResult(res);
         }
 
@@ -5188,6 +5202,7 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
             seqFrom: Number(data.seqFrom ?? 0),
             seqTo: Number(data.seqTo ?? 0),
             serverId: normalizeId(ctx.serverId) || null,
+            ...(ctx.signal ? { signal: ctx.signal } : {}),
           });
           return completeActionResult(res);
         }

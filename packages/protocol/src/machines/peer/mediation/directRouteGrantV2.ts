@@ -10,8 +10,8 @@ import { IrohEndpointIdV1Schema } from '../../../connectivity/iroh/endpointDescr
 
 export const PEER_ROUTE_EPHEMERAL_ED25519_KIND_V2 = 'ephemeral_ed25519' as const;
 
-/** Machine/1 operation kinds bound to the existing grant flow and scope below. */
-export const IROH_PEER_ROUTE_OPERATION_KINDS_V2 = ['file_transfer', 'attachment_transfer', 'workspace_sync'] as const;
+/** Machine/1 purposes bound to the existing grant flow and scope below. */
+export const IROH_PEER_ROUTE_OPERATION_KINDS_V2 = ['finite_transfer', 'workspace_sync'] as const;
 export const IrohPeerRouteOperationKindV2Schema = z.enum(IROH_PEER_ROUTE_OPERATION_KINDS_V2);
 
 /** Closed application/transport identity of the party that opens `happier/machine/1`. */
@@ -67,11 +67,28 @@ export type IrohPeerInitiatorV2 = z.infer<typeof IrohPeerInitiatorV2Schema>;
 export type IrohPeerTargetV2 = z.infer<typeof IrohPeerTargetV2Schema>;
 export type IrohPeerRouteBindingV2 = z.infer<typeof IrohPeerRouteBindingV2Schema>;
 
+/**
+ * Iroh finite-transfer admission authorizes the carrier only. The prepared
+ * transfer capability remains the sole operation and payload-size authority.
+ */
+export const IrohFiniteTransferCarrierGrantScopeV2Schema = z.object({
+  kind: z.literal('bounded_transfer'),
+  mode: z.literal('carrier'),
+}).strict();
+
+export const DirectRouteGrantScopeV2Schema = z.union([
+  DirectRouteGrantScopeV1Schema,
+  IrohFiniteTransferCarrierGrantScopeV2Schema,
+]);
+
+export type DirectRouteGrantScopeV2 = z.infer<typeof DirectRouteGrantScopeV2Schema>;
+
 type IrohPeerRouteGrantBindingFieldsV2 = Readonly<{
   machineId: string;
   flowKind: z.infer<typeof PeerFlowKindV1Schema>;
   routeKind: z.infer<typeof AuthorizedPeerEndpointRouteKindV1Schema>;
   endpointFingerprint?: string;
+  scope: DirectRouteGrantScopeV2;
   iroh?: IrohPeerRouteBindingV2;
 }>;
 
@@ -105,19 +122,25 @@ function addIrohPeerRouteGrantBindingIssuesV2(
       });
     }
     if (
-      (iroh.operationKind === 'file_transfer' || iroh.operationKind === 'attachment_transfer')
-      && payload.flowKind !== 'bounded_transfer'
+      iroh.operationKind === 'finite_transfer'
+      && (
+        payload.flowKind !== 'bounded_transfer'
+        || payload.scope.kind !== 'bounded_transfer'
+        || payload.scope.mode !== 'carrier'
+      )
     ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['iroh', 'operationKind'],
-        message: 'File and attachment transfers require the bounded_transfer flow',
+        message: 'Finite transfers require the carrier-only bounded_transfer scope',
       });
     }
     if (
       iroh.operationKind === 'workspace_sync'
-      && payload.flowKind !== 'bounded_transfer'
-      && payload.flowKind !== 'machine_rpc'
+      && (
+        (payload.flowKind !== 'bounded_transfer' && payload.flowKind !== 'machine_rpc')
+        || (payload.scope.kind === 'bounded_transfer' && payload.scope.mode === 'carrier')
+      )
     ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -130,6 +153,12 @@ function addIrohPeerRouteGrantBindingIssuesV2(
       code: z.ZodIssueCode.custom,
       path: ['iroh'],
       message: 'The machine/1 binding is only valid on iroh_peer grants',
+    });
+  } else if (payload.scope.kind === 'bounded_transfer' && payload.scope.mode === 'carrier') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['scope'],
+      message: 'The carrier-only scope is valid only on iroh_peer grants',
     });
   }
 }
@@ -150,7 +179,7 @@ export const DirectRouteGrantPayloadV2Schema = z
     machineId: z.string().min(1),
     flowKind: PeerFlowKindV1Schema,
     routeKind: AuthorizedPeerEndpointRouteKindV1Schema,
-    scope: DirectRouteGrantScopeV1Schema,
+    scope: DirectRouteGrantScopeV2Schema,
     iat: z.number().int().nonnegative(),
     exp: z.number().int().positive(),
     aud: z.literal(DIRECT_ROUTE_GRANT_AUDIENCE_V1),
@@ -203,7 +232,7 @@ export const DirectRouteGrantRequestV2Schema = z
     routeKind: AuthorizedPeerEndpointRouteKindV1Schema,
     endpointFingerprint: z.string().min(1),
     ttlMs: z.number().int().positive(),
-    scope: DirectRouteGrantScopeV1Schema,
+    scope: DirectRouteGrantScopeV2Schema,
     iroh: IrohPeerRouteBindingV2Schema.optional(),
   })
   .strict()

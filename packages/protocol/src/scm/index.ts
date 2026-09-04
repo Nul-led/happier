@@ -370,7 +370,7 @@ export const ScmLogEntrySchema = z.object({
   timestamp: z.number().int(),
   subject: z.string(),
   body: z.string(),
-});
+}).strict();
 export type ScmLogEntry = z.infer<typeof ScmLogEntrySchema>;
 
 export const ScmLogListRequestSchema = ScmRequestBaseSchema.extend({
@@ -378,11 +378,12 @@ export const ScmLogListRequestSchema = ScmRequestBaseSchema.extend({
   skip: z.number().int().min(0).optional(),
   /**
    * Bounded commit search over the repository addressed by `cwd` (the explicit workspace
-   * scope), matching SHA prefixes, subject/body text, and author name/email. Additive-open:
-   * older daemons ignore this field, which is why the response carries `queryApplied`.
+   * scope), matching SHA prefixes, subject/body text, and author name/email. The current
+   * routing envelope is closed; older daemons may ignore this new optional field, which is
+   * why the response carries `queryApplied`.
    */
   query: z.string().max(SCM_LOG_QUERY_MAX_LENGTH).optional(),
-});
+}).strict();
 export type ScmLogListRequest = z.infer<typeof ScmLogListRequestSchema>;
 
 export const ScmLogListResponseSchema = z.object({
@@ -396,7 +397,7 @@ export const ScmLogListResponseSchema = z.object({
   queryApplied: z.boolean().optional(),
   error: z.string().optional(),
   errorCode: ScmOperationErrorCodeSchema.optional(),
-});
+}).strict();
 export type ScmLogListResponse = z.infer<typeof ScmLogListResponseSchema>;
 
 export const ScmCommitBackoutRequestSchema = ScmRequestBaseSchema.extend({

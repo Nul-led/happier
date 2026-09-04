@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MemoryIndexPolicyV1Schema } from '../../memory/memorySettings.js';
 
 /**
  * Structured meta payload for an encrypted summary shard covering a transcript seq window.
@@ -18,6 +19,7 @@ export const SessionSummaryShardV1Schema = z.object({
   keywords: z.array(z.string().min(1)).default([]),
   entities: z.array(z.string().min(1)).default([]),
   decisions: z.array(z.string().min(1)).default([]),
+  memoryPolicy: MemoryIndexPolicyV1Schema.optional(),
 }).passthrough().superRefine((value, ctx) => {
   if (value.seqFrom > value.seqTo) {
     ctx.addIssue({
@@ -36,4 +38,3 @@ export const SessionSummaryShardV1Schema = z.object({
 });
 
 export type SessionSummaryShardV1 = z.infer<typeof SessionSummaryShardV1Schema>;
-

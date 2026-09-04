@@ -1,7 +1,11 @@
 import { z } from 'zod';
 
 import { PluginContributionLocalIdSchema } from '../contributionIdentity.js';
-import { PLUGIN_COLLECTION_LIMITS_V1, PLUGIN_COLLECTION_SCHEMA_VERSION_MAX } from './collectionLimitsV1.js';
+import { PLUGIN_COLLECTION_LIMITS_V1 } from './collectionLimitsV1.js';
+import {
+  PluginCollectionSchemaVersionV1Schema,
+  type PluginCollectionSchemaVersionV1,
+} from './collectionContractRefV1.js';
 import { PluginJsonSchemaV2Schema, type PluginJsonSchemaV2 } from '../contributions/publicTypes.js';
 import { MAX_PLUGIN_IDENTIFIER_BYTES } from '../pluginId.js';
 import { asProtocolZod } from "../actions/internalProtocolZodAdapter.js";
@@ -225,10 +229,7 @@ export type PluginCollectionProjectedScalarFieldRefV1 = z.infer<
  * so the author's declaration, an admitted contract ref, a writer context, the stored
  * contract and the UI projection cannot disagree about which versions exist.
  */
-export const PluginCollectionSchemaVersionV1Schema = z.number().int()
-  .min(1)
-  .max(PLUGIN_COLLECTION_SCHEMA_VERSION_MAX);
-export type PluginCollectionSchemaVersionV1 = z.infer<typeof PluginCollectionSchemaVersionV1Schema>;
+export { PluginCollectionSchemaVersionV1Schema, type PluginCollectionSchemaVersionV1 } from './collectionContractRefV1.js';
 
 /** Static, descriptor-only contribution. Runtime collection registration is intentionally absent. */
 export const PluginAccountCollectionContributionV1Schema = z.object({
@@ -303,21 +304,25 @@ export const PluginAccountCollectionContributionV1Schema = z.object({
   if (value.readableSchemaVersions && new Set(value.readableSchemaVersions).size !== value.readableSchemaVersions.length) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['readableSchemaVersions'], message: 'Readable schema versions must be unique.' });
   }
-  if (value.readableSchemaVersions?.some((version) => version > value.schemaVersion)) {
-    context.addIssue({ code: z.ZodIssueCode.custom, path: ['readableSchemaVersions'], message: 'Readable schema versions cannot exceed the current schema version.' });
-  }
   const readableSchemaVersions = [...new Set([
     value.schemaVersion,
     ...(value.readableSchemaVersions ?? []),
   ])].sort((left, right) => left - right);
+  // A retained reader may explicitly promise that its logical decoder accepts
+  // a later schema version. Forward-readable declarations do not imply a
+  // migration callback: only versions at or below this artifact's own schema
+  // can be source rows that this artifact migrates into its current shape.
+  const migrationSchemaVersions = readableSchemaVersions.filter(
+    (version) => version <= value.schemaVersion,
+  );
   const migrationIds = new Set<string>();
   value.migrations.forEach((migration, position) => {
     if (migrationIds.has(migration.id)) {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ['migrations', position, 'id'], message: 'Migration ids must be unique.' });
     }
     migrationIds.add(migration.id);
-    const fromSchemaVersion = readableSchemaVersions[position];
-    const toSchemaVersion = readableSchemaVersions[position + 1];
+    const fromSchemaVersion = migrationSchemaVersions[position];
+    const toSchemaVersion = migrationSchemaVersions[position + 1];
     if (migration.fromSchemaVersion !== fromSchemaVersion || migration.toSchemaVersion !== toSchemaVersion) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -326,7 +331,7 @@ export const PluginAccountCollectionContributionV1Schema = z.object({
       });
     }
   });
-  if (value.migrations.length !== readableSchemaVersions.length - 1) {
+  if (value.migrations.length !== migrationSchemaVersions.length - 1) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['migrations'],

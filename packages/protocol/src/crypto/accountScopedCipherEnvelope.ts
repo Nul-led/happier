@@ -10,7 +10,6 @@ export type AccountScopedBlobKind =
   | 'account_session_draft_private_payload'
   | 'action_operation_snapshot'
   | 'automation_conversation_reply_context'
-  | 'automation_reply_handoff_receipt'
   | 'automation_run_result'
   | 'automation_run_failure_detail'
   | 'automation_session_start_request'
@@ -53,7 +52,6 @@ const ACCOUNT_SCOPED_KIND_BYTE = Object.freeze({
   plugin_declarative_settings: 13,
   automation_run_result: 14,
   automation_conversation_reply_context: 15,
-  automation_reply_handoff_receipt: 16,
   plugin_collection_private_payload: 17,
   plugin_account_kv_private_payload: 18,
   automation_trigger_evidence: 19,

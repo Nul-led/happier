@@ -49,6 +49,10 @@ const selectedActionInput = {
       accountId: 'account-1',
     },
   },
+  presentation: {
+    connectedAccountLabel: 'Work account',
+    machineDisplayName: 'Development Mac',
+  },
 } as const;
 
 describe('plugin UI host API wire envelope', () => {

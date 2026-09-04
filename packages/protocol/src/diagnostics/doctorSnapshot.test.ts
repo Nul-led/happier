@@ -199,6 +199,187 @@ describe('DoctorSnapshotSchema', () => {
     expect(parsed.snapshot.warnings?.[0]?.code).toBe('MULTIPLE_HAPPIER_INSTALLATIONS_ON_PATH');
   });
 
+  it('parseDoctorSnapshotSafe removes complete Authorization Bearer/Basic credentials from transport diagnostics', () => {
+    const bearerSecret = 'sk-live-9f2c61ab47e0';
+    const basicSecret = 'dXNlcjpwYXNzd29yZA==';
+    const raw = JSON.stringify({
+      capturedAt: '2026-02-23T00:00:00.000Z',
+      server: {
+        activeServerId: 'cloud',
+        serverUrl: 'https://api.happier.dev',
+        publicServerUrl: 'https://api.happier.dev',
+        webappUrl: 'https://app.happier.dev',
+      },
+      accountId: null,
+      settings: { activeServerId: null, servers: [], knownAccountIds: [] },
+      homeTransports: [
+        {
+          homeServerIdentityId: 'home_leak',
+          state: 'unavailable',
+          diagnosticError: {
+            code: `transport_closed Authorization: Bearer ${bearerSecret}`,
+            message: `Home rejected authorization=Basic ${basicSecret}; retry scheduled`,
+            atMs: 1_788_200_000_000,
+          },
+        },
+      ],
+    });
+
+    const parsed = parseDoctorSnapshotSafe(raw);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error('expected ok');
+
+    // The credential after the auth scheme is the secret; redacting only the scheme word
+    // would publish it. The scheme word itself is not a secret and may survive.
+    expect(parsed.snapshot.homeTransports?.[0]?.diagnosticError).toMatchObject({
+      code: 'transport_closed Authorization=[redacted]',
+      message: 'Home rejected authorization=[redacted]; retry scheduled',
+    });
+    const serialized = JSON.stringify(parsed.snapshot);
+    expect(serialized).not.toContain(bearerSecret);
+    expect(serialized).not.toContain(basicSecret);
+    expect(serialized).toContain('retry scheduled');
+  });
+
+  it('parseDoctorSnapshotSafe removes standalone bearer-shaped tokens from transport diagnostics', () => {
+    const bearerToken =
+      'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJob21lX2xlYWt9.tL2V4kQGz6rRkM8B1eBqFjJZuC9pXwYy3nSaH0cVdZk';
+    const raw = JSON.stringify({
+      capturedAt: '2026-02-23T00:00:00.000Z',
+      server: {
+        activeServerId: 'cloud',
+        serverUrl: 'https://api.happier.dev',
+        publicServerUrl: 'https://api.happier.dev',
+        webappUrl: 'https://app.happier.dev',
+      },
+      accountId: null,
+      settings: { activeServerId: null, servers: [], knownAccountIds: [] },
+      homeTransports: [
+        {
+          homeServerIdentityId: 'home_leak',
+          state: 'reconnecting',
+          diagnosticError: {
+            code: 'transport_closed',
+            message: `Handshake aborted while sending Bearer ${bearerToken} to the relay`,
+            atMs: 1_788_200_000_000,
+          },
+        },
+      ],
+    });
+
+    const parsed = parseDoctorSnapshotSafe(raw);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error('expected ok');
+
+    expect(parsed.snapshot.homeTransports?.[0]?.diagnosticError).toMatchObject({
+      code: 'transport_closed',
+      message: 'Handshake aborted while sending Bearer [redacted] to the relay',
+    });
+    expect(JSON.stringify(parsed.snapshot)).not.toContain(bearerToken);
+  });
+
+  it('parseDoctorSnapshotSafe removes common compound credential keys from plain and JSON-like transport diagnostics', () => {
+    const secrets = [
+      'access-secret',
+      'refresh-secret',
+      'api-secret',
+      'auth-secret',
+      'client-secret',
+      'quoted-access-secret',
+      'quoted-authorization-secret',
+    ];
+    const raw = JSON.stringify({
+      capturedAt: '2026-02-23T00:00:00.000Z',
+      server: {
+        activeServerId: 'cloud',
+        serverUrl: 'https://api.happier.dev',
+        publicServerUrl: 'https://api.happier.dev',
+        webappUrl: 'https://app.happier.dev',
+      },
+      accountId: null,
+      settings: { activeServerId: null, servers: [], knownAccountIds: [] },
+      homeTransports: [{
+        homeServerIdentityId: 'home_compound_keys',
+        state: 'unavailable',
+        diagnosticError: {
+          code: `access_token=${secrets[0]} "access_token": "${secrets[5]}"`,
+          message: `refresh-token:${secrets[1]}; api_key=${secrets[2]}, authToken=${secrets[3]} clientSecret=${secrets[4]} "Authorization": "Bearer ${secrets[6]}"`,
+          atMs: 1_788_200_000_000,
+        },
+      }],
+    });
+
+    const parsed = parseDoctorSnapshotSafe(raw);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error('expected ok');
+    const serialized = JSON.stringify(parsed.snapshot);
+    for (const secret of secrets) expect(serialized).not.toContain(secret);
+    expect(parsed.snapshot.homeTransports?.[0]?.diagnosticError).toMatchObject({
+      code: 'access_token=[redacted] access_token=[redacted]',
+      message: 'refresh-token=[redacted]; api_key=[redacted], authToken=[redacted] clientSecret=[redacted] Authorization=[redacted]',
+    });
+  });
+
+  it('parseDoctorSnapshotSafe keeps ordinary nonsecret diagnostic text intact', () => {
+    const raw = JSON.stringify({
+      capturedAt: '2026-02-23T00:00:00.000Z',
+      server: {
+        activeServerId: 'cloud',
+        serverUrl: 'https://api.happier.dev',
+        publicServerUrl: 'https://api.happier.dev',
+        webappUrl: 'https://app.happier.dev',
+      },
+      accountId: null,
+      settings: { activeServerId: null, servers: [], knownAccountIds: [] },
+      homeTransports: [
+        {
+          homeServerIdentityId: 'home_plain',
+          state: 'reconnecting',
+          diagnosticError: {
+            code: 'transport_closed',
+            message: 'Relay connect failed: authorization required by Home; retry scheduled',
+            atMs: 1_788_200_000_000,
+          },
+        },
+      ],
+    });
+
+    const parsed = parseDoctorSnapshotSafe(raw);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error('expected ok');
+
+    expect(parsed.snapshot.homeTransports?.[0]?.diagnosticError).toEqual({
+      code: 'transport_closed',
+      message: 'Relay connect failed: authorization required by Home; retry scheduled',
+      atMs: 1_788_200_000_000,
+    });
+  });
+
+  it('preserves every Home transport entry instead of rejecting an arbitrary Home count', () => {
+    const raw = JSON.stringify({
+      capturedAt: '2026-02-23T00:00:00.000Z',
+      server: {
+        activeServerId: 'cloud',
+        serverUrl: 'https://api.happier.dev',
+        publicServerUrl: 'https://api.happier.dev',
+        webappUrl: 'https://app.happier.dev',
+      },
+      accountId: null,
+      settings: { activeServerId: null, servers: [], knownAccountIds: [] },
+      homeTransports: Array.from({ length: 70 }, (_, index) => ({
+        homeServerIdentityId: `home_${index}`,
+        state: 'disconnected',
+        lastKnown: { carrier: 'iroh', observedPath: 'relay' },
+        lastTransitionAtMs: index,
+      })),
+    });
+
+    const parsed = parseDoctorSnapshotSafe(raw);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error('expected ok');
+    expect(parsed.snapshot.homeTransports).toHaveLength(70);
+  });
+
   it('returns a stable error for invalid JSON', () => {
     const parsed = parseDoctorSnapshotSafe('{not json}');
     expect(parsed.ok).toBe(false);

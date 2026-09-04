@@ -524,15 +524,14 @@ describe('session input admission metadata', () => {
       contributionLocalId: 'ordinary-input',
       surface: 'ui',
     });
-    expect(protocol.SessionMessageProvenanceV1Schema.parse({
+    expect(protocol.SessionMessageProvenanceV1Schema.safeParse({
       v: 1,
       kind: 'agentTerminal',
       agentId: 'codex',
-    })).toEqual({
-      v: 1,
-      kind: 'agentTerminal',
-      agentId: 'codex',
-    });
+    }).success).toBe(false);
+    expect(protocol.SessionRoleUserProducerKindV1Schema.safeParse('daemonInitialPrompt').success).toBe(false);
+    expect(protocol.SessionRoleUserProducerKindV1Schema.safeParse('connectedService').success).toBe(false);
+    expect(protocol.SessionRoleUserProducerKindV1Schema.safeParse('agentTerminal').success).toBe(false);
   });
 
   it('settles a protected request only by narrowing against the current Session ceiling', () => {
@@ -564,6 +563,66 @@ describe('session input admission metadata', () => {
       currentSessionPermissionCeiling: 'yolo',
       inputAdmissionReceipt: { v: 1, issuer: 'authenticatedMachine' },
     }).permission.admittedPermissionCeiling).toBe('read-only');
+  });
+
+  it('builds trusted host admission for ordinary UI and Voice without asserting Account relationship', () => {
+    expect(protocol.buildTrustedHostSessionInputAdmissionV1('ui')).toEqual({
+      provenance: { v: 1, kind: 'host', producer: 'happierApp' },
+      request: {
+        v: 1,
+        producer: 'happierApp',
+        caller: { kind: 'host' },
+        permission: {},
+      },
+    });
+    expect(protocol.buildTrustedHostSessionInputAdmissionV1('voice')).toEqual({
+      provenance: { v: 1, kind: 'voice' },
+      request: {
+        v: 1,
+        producer: 'voiceInput',
+        caller: { kind: 'host' },
+        permission: {},
+      },
+    });
+  });
+
+  it.each([
+    ['owner', 'owner'],
+    ['sharedEditor', 'sharedCollaborator'],
+    ['sharedAdmin', 'sharedCollaborator'],
+  ] as const)('derives the descriptive Happier App actor from an authenticated %s receipt', (
+    sessionRelationship,
+    actorKind,
+  ) => {
+    const admission = protocol.buildTrustedHostSessionInputAdmissionV1('ui');
+    expect(protocol.settleSessionMessageProvenanceV1({
+      request: admission.request,
+      requestedProvenance: { v: 1, kind: 'happierApp', actor: { kind: 'owner' } },
+      inputAdmissionReceipt: {
+        v: 1,
+        issuer: 'authenticatedAccount',
+        actorAccountId: 'account-1',
+        sessionRelationship,
+      },
+    })).toEqual({ v: 1, kind: 'happierApp', actor: { kind: actorKind } });
+  });
+
+  it('builds transcript-only provenance only for live transcript producers', () => {
+    expect(protocol.buildSessionTranscriptMessageProvenanceV1('externalSessionHistory')).toEqual({
+      v: 1,
+      kind: 'host',
+      producer: 'externalSessionHistory',
+    });
+    expect(protocol.buildSessionTranscriptMessageProvenanceV1('runtimeTranscript')).toEqual({
+      v: 1,
+      kind: 'host',
+      producer: 'runtimeTranscript',
+    });
+    expect(protocol.buildSessionTranscriptMessageProvenanceV1('executionRunVoice')).toEqual({
+      v: 1,
+      kind: 'host',
+      producer: 'executionRunVoice',
+    });
   });
 
   it.each([

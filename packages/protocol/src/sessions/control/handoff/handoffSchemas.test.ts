@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { computeWorkspaceSyncPolicyDigest } from './workspaceSyncSchemas.js';
 
 const gitWorktreePolicyDigest = computeWorkspaceSyncPolicyDigest({
-  v: 1, selection: 'git_worktree', extraIgnorePatterns: [], extraIncludePatterns: [], includeGitDirectory: false,
+  v: 1, selection: 'git_worktree', extraIgnorePatterns: [], extraIncludePatterns: [],
 });
 
 async function loadHandoffModule() {
@@ -258,7 +258,6 @@ describe('session handoff schemas', () => {
           selection: 'git_worktree',
           extraIgnorePatterns: [],
           extraIncludePatterns: [],
-          includeGitDirectory: false,
           policyDigest: gitWorktreePolicyDigest,
         },
       },
@@ -464,7 +463,6 @@ describe('session handoff schemas', () => {
           selection: 'git_worktree',
           extraIgnorePatterns: [],
           extraIncludePatterns: [],
-          includeGitDirectory: false,
           policyDigest: gitWorktreePolicyDigest,
         },
       },
@@ -478,7 +476,6 @@ describe('session handoff schemas', () => {
         selection: 'git_worktree',
         extraIgnorePatterns: [],
         extraIncludePatterns: [],
-        includeGitDirectory: false,
         policyDigest: gitWorktreePolicyDigest,
       },
     });
@@ -613,6 +610,42 @@ describe('session handoff schemas', () => {
         handoffMetadataV2,
       }).success,
     ).toBe(true);
+
+    const terminalStatus = {
+      handoffId: 'handoff_1',
+      status: 'completed' as const,
+      phase: 'finalizing' as const,
+      recoveryActions: [],
+    };
+    expect(mod.SessionHandoffActionResultV1Schema.parse({
+      handoffId: 'handoff_1',
+      status: terminalStatus,
+      workspace: {
+        kind: 'relationship',
+        relationshipId: 'relationship_1',
+        created: true,
+      },
+      warning: { code: 'source_cleanup_failed', message: 'Source cleanup needs attention.' },
+    })).toEqual({
+      handoffId: 'handoff_1',
+      status: terminalStatus,
+      workspace: {
+        kind: 'relationship',
+        relationshipId: 'relationship_1',
+        created: true,
+      },
+      warning: { code: 'source_cleanup_failed', message: 'Source cleanup needs attention.' },
+    });
+    expect(mod.SessionHandoffActionResultV1Schema.safeParse({
+      handoffId: 'handoff_1',
+      status: terminalStatus,
+      workspace: { kind: 'create_relationship', relationshipId: 'relationship_1' },
+    }).success).toBe(false);
+    expect(mod.SessionHandoffActionResultV1Schema.safeParse({
+      handoffId: 'handoff_1',
+      status: terminalStatus,
+      unexpected: true,
+    }).success).toBe(false);
 
     expect(
       mod.SessionHandoffPrepareTargetRequestSchema.safeParse({

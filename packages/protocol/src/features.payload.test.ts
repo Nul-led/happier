@@ -85,6 +85,7 @@ describe('FeaturesResponseSchema', () => {
     // Default to enabled unless a server explicitly disables it.
     expect(parsed.features.auth.login.keyChallenge.enabled).toBe(true);
     expect((parsed as any).features.auth.pairing.desktopQrMobileScan.enabled).toBe(false);
+    expect((parsed as any).features.auth.pairing.boundQrV2.enabled).toBe(false);
     expect(parsed.features.auth.ui.recoveryKeyReminder.enabled).toBe(false);
     expect((parsed as any).features.e2ee.keylessAccounts.enabled).toBe(false);
 

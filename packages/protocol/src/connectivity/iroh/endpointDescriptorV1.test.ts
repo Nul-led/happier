@@ -139,19 +139,15 @@ describe('IrohEndpointDescriptorV1 (canonical Iroh endpoint sub-descriptor)', ()
     }
   });
 
-  it('enforces the shared protocol bounds for lists', () => {
-    expect(IrohEndpointDescriptorV1Schema.safeParse({
-      ...VALID_DESCRIPTOR,
-      directAddresses: Array.from({ length: 16 }, (_, index) => `192.0.2.${index + 1}:443`),
-    }).success).toBe(true);
+  it('accepts valid unique hint lists beyond the former arbitrary item ceilings', () => {
     expect(IrohEndpointDescriptorV1Schema.safeParse({
       ...VALID_DESCRIPTOR,
       directAddresses: Array.from({ length: 17 }, (_, index) => `192.0.2.${index + 1}:443`),
-    }).success).toBe(false);
+    }).success).toBe(true);
     expect(IrohEndpointDescriptorV1Schema.safeParse({
       ...VALID_DESCRIPTOR,
-      relayUrls: Array.from({ length: 9 }, () => 'https://relay.example.test'),
-    }).success).toBe(false);
+      relayUrls: Array.from({ length: 9 }, (_, index) => `https://relay-${index}.example.test`),
+    }).success).toBe(true);
   });
 
   it('keeps relay URL strictness intact alongside the address grammar', () => {

@@ -554,6 +554,12 @@ const FEATURE_CATALOG_DEFINITION = {
     dependencies: [],
     representation: 'server',
   },
+  'auth.pairing.boundQrV2': {
+    description: 'Direction- and Home-bound QR pairing v2 wire semantics.',
+    defaultFailMode: 'fail_closed',
+    dependencies: ['auth.pairing.desktopQrMobileScan'],
+    representation: 'server',
+  },
   'encryption.plaintextStorage': {
     description: 'Plaintext session storage support (no E2EE at rest).',
     defaultFailMode: 'fail_closed',
@@ -729,7 +735,7 @@ const FEATURE_CATALOG_DEFINITION = {
     representation: 'client',
   },
   search: {
-    description: 'Server-owned search providers and authenticated search routes.',
+    description: 'Personal Home plaintext transcript search indexing and authenticated query route.',
     defaultFailMode: 'fail_closed',
     dependencies: [],
     representation: 'server',

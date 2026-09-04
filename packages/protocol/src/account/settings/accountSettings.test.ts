@@ -1186,7 +1186,6 @@ describe('accountSettings', () => {
       selection: 'git_worktree' as const,
       extraIgnorePatterns: [],
       extraIncludePatterns: [],
-      includeGitDirectory: false,
     };
     const contentPolicy = {
       ...policyFields,

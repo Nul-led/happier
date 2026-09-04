@@ -624,6 +624,7 @@ describe('Account Directory protocol DTOs', () => {
 
   it('exposes typed route errors without leaking credentials', () => {
     expect(ACCOUNT_DIRECTORY_ERROR_CODES_V1).toMatchObject({
+      invalidToken: 'invalid_token',
       invalidAssertionSignature: 'invalid_assertion_signature',
       descriptorRevisionConflict: 'descriptor_revision_conflict',
       approvalRejected: 'approval_rejected',
@@ -635,6 +636,9 @@ describe('Account Directory protocol DTOs', () => {
     });
     expect(AccountDirectoryRouteErrorResponseV1Schema.parse({ error: 'rate_limited' })).toEqual({
       error: 'rate_limited',
+    });
+    expect(AccountDirectoryRouteErrorResponseV1Schema.parse({ error: 'invalid_token' })).toEqual({
+      error: 'invalid_token',
     });
     expect(AccountDirectoryRouteErrorResponseV1Schema.parse({ error: 'approval_rejected' })).toEqual({
       error: 'approval_rejected',

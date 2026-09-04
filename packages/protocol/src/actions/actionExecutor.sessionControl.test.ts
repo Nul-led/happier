@@ -1705,6 +1705,24 @@ describe('createActionExecutor (session control)', () => {
     expect(res).toEqual({ ok: false, errorCode: 'unsupported_action', error: 'unsupported_action:session.permission.respond' });
   });
 
+  it('carries present-user permission turn custody to the session RPC dependency', async () => {
+    const sessionPermissionRespond = vi.fn(async () => ({ ok: true }));
+    const executor = createExecutor({ sessionPermissionRespond });
+
+    await expect(executor.execute(
+      'session.permission.respond' as any,
+      { sessionId: 's1', requestId: 'request-1', turnId: 'turn-1', decision: 'allow' },
+      { surface: 'ui', authority: 'present_user', defaultSessionId: null },
+    )).resolves.toEqual({ ok: true, result: { ok: true } });
+
+    expect(sessionPermissionRespond).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 's1',
+      requestId: 'request-1',
+      turnId: 'turn-1',
+      decision: 'allow',
+    }));
+  });
+
   it('routes a host-stamped mediator plugin to the canonical remote permission owner', async () => {
     // PERM-03: the mediated arm is the plugin's only way to answer, so the
     // Action authority minimum must be Account automation. A present-user

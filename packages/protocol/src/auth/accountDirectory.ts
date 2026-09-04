@@ -9,15 +9,11 @@ import { BOX_BUNDLE_MIN_BYTES } from '../crypto/boxBundle.js';
 import { normalizeServerIdentityIdCapability } from '../features/payload/capabilities/serverIdentityCapabilities.js';
 import { isLoopbackHostname } from '../server/urls/loopbackHostname.js';
 import {
-  IROH_DESCRIPTOR_MAX_DIRECT_ADDRESSES,
-  IROH_DESCRIPTOR_MAX_RELAY_URLS,
   IrohEndpointDescriptorV1Schema,
   IrohEndpointIdV1Schema,
 } from '../connectivity/iroh/endpointDescriptorV1.js';
 
 export {
-  IROH_DESCRIPTOR_MAX_DIRECT_ADDRESSES,
-  IROH_DESCRIPTOR_MAX_RELAY_URLS,
   IrohEndpointDescriptorV1Schema,
   parseIrohEndpointDescriptorV1,
   type IrohEndpointDescriptorV1,
@@ -70,8 +66,6 @@ export const ACCOUNT_DIRECTORY_ASSERTION_MAX_LIFETIME_MS = 5 * 60 * 1000;
 export const ACCOUNT_DIRECTORY_ASSERTION_CLOCK_SKEW_MS = 30 * 1000;
 
 export const ACCOUNT_DIRECTORY_MAX_ENDPOINTS = 16;
-export const ACCOUNT_DIRECTORY_MAX_RELAY_URLS = IROH_DESCRIPTOR_MAX_RELAY_URLS;
-export const ACCOUNT_DIRECTORY_MAX_DIRECT_ADDRESSES = IROH_DESCRIPTOR_MAX_DIRECT_ADDRESSES;
 export const ACCOUNT_DIRECTORY_MAX_LABEL_UTF8_BYTES = 128;
 export const ACCOUNT_DIRECTORY_MAX_ID_UTF8_BYTES = 256;
 export const ACCOUNT_DIRECTORY_MAX_URL_UTF8_BYTES = 512;
@@ -648,6 +642,7 @@ export type HomeDeviceApprovalDecisionResponseV1 = z.infer<
 export type HomeLoginRedemptionResultV1 = z.infer<typeof HomeLoginRedemptionResultV1Schema>;
 
 export const ACCOUNT_DIRECTORY_ERROR_CODES_V1 = {
+  invalidToken: 'invalid_token',
   invalidRequest: 'invalid_request',
   unsupportedVersion: 'unsupported_version',
   unsupportedCapability: 'unsupported_capability',
@@ -670,6 +665,7 @@ export const ACCOUNT_DIRECTORY_ERROR_CODES_V1 = {
 } as const;
 
 export const AccountDirectoryErrorCodeV1Schema = z.enum([
+  ACCOUNT_DIRECTORY_ERROR_CODES_V1.invalidToken,
   ACCOUNT_DIRECTORY_ERROR_CODES_V1.invalidRequest,
   ACCOUNT_DIRECTORY_ERROR_CODES_V1.unsupportedVersion,
   ACCOUNT_DIRECTORY_ERROR_CODES_V1.unsupportedCapability,

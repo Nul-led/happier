@@ -133,6 +133,14 @@ export type AccountApiTokenIntrospectionSubjectFailureV1 = z.infer<
   typeof AccountApiTokenIntrospectionSubjectFailureV1Schema
 >;
 
+/** Closed connection-authentication failures emitted before the PAT body is admitted. */
+export const AccountApiTokenIntrospectionConnectionFailureV1Schema = z.object({
+  error: z.enum(['Missing authorization header', 'authentication_failed', 'Authentication failed']),
+}).strict();
+export type AccountApiTokenIntrospectionConnectionFailureV1 = z.infer<
+  typeof AccountApiTokenIntrospectionConnectionFailureV1Schema
+>;
+
 export const AccountApiTokensServerErrorV1Schema = z.object({
   error: z.enum(['invalid_request', 'present_user_required']),
 }).strict();

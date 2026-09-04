@@ -697,10 +697,6 @@ describe('account/encryptionMigrate', () => {
         t: 'encrypted',
         c: 'reply-context-ciphertext',
       }),
-      replyHandoffReceiptEnvelope: JSON.stringify({
-        t: 'encrypted',
-        c: 'reply-receipt-ciphertext',
-      }),
       failureDetailEnvelope: JSON.stringify({
         t: 'encrypted',
         c: 'failure-detail-ciphertext',
@@ -727,6 +723,21 @@ describe('account/encryptionMigrate', () => {
         .safeParse({
           ...directive,
           runs: [{ ...scheduledRun, legacySummaryCiphertext: 'predecessor-only' }],
+        }).success,
+    ).toBe(false);
+    // The retired reply-handoff receipt is no longer a retained private field,
+    // so it cannot re-enter the Account transition as an extra wire member.
+    expect(
+      migrationContract.AccountEncryptionMigrateAutomationsDirectiveSchema
+        .safeParse({
+          ...directive,
+          runs: [{
+            ...scheduledRun,
+            replyHandoffReceiptEnvelope: JSON.stringify({
+              t: 'encrypted',
+              c: 'reply-receipt-ciphertext',
+            }),
+          }],
         }).success,
     ).toBe(false);
   });

@@ -26,8 +26,7 @@ export const IROH_MACHINE_HANDSHAKE_VERSION_V1 = 1 as const;
 
 /** Machine-carrier operation flows admitted on `happier/machine/1`. */
 export const IROH_MACHINE_CARRIER_FLOWS_V1 = [
-  'file_transfer',
-  'attachment_transfer',
+  'finite_transfer',
   'workspace_sync',
 ] as const;
 
@@ -39,18 +38,25 @@ function equalInitiator(left: IrohPeerInitiatorV2, right: IrohPeerInitiatorV2): 
     && (left.kind !== 'machine' || (right.kind === 'machine' && left.machineId === right.machineId));
 }
 
-export const IrohMachineHandshakeV1Schema = z
-  .object({
+const IrohMachineHandshakeCommonV1Schema = z.object({
     v: z.literal(IROH_MACHINE_HANDSHAKE_VERSION_V1),
     accountId: z.string().min(1),
     initiator: IrohPeerInitiatorV2Schema,
     target: IrohPeerTargetV2Schema,
-    flow: IrohMachineCarrierFlowV1Schema,
-    operationId: z.string().min(1),
     grant: SignedDirectRouteGrantV2Schema,
     proof: PeerRouteEphemeralProofV2Schema,
-  })
-  .strict()
+  }).strict();
+
+export const IrohMachineHandshakeV1Schema = z
+  .discriminatedUnion('flow', [
+    IrohMachineHandshakeCommonV1Schema.extend({
+      flow: z.literal('finite_transfer'),
+    }).strict(),
+    IrohMachineHandshakeCommonV1Schema.extend({
+      flow: z.literal('workspace_sync'),
+      operationId: z.string().min(1),
+    }).strict(),
+  ])
   .superRefine((handshake, ctx) => {
     const payload = handshake.grant.payload;
     const binding = payload.iroh;
@@ -74,6 +80,9 @@ export const IrohMachineHandshakeV1Schema = z
         path: ['grant', 'payload', 'iroh'],
         message: 'Machine/1 handshake fields must equal the signed absolute Iroh binding',
       });
+    }
+    if (handshake.flow !== 'workspace_sync') {
+      return;
     }
     const scopeOperationId = payload.scope.kind === 'bounded_transfer'
       ? payload.scope.mode === 'single' ? payload.scope.transferId : undefined

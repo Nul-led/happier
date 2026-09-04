@@ -20,6 +20,7 @@ import {
 } from './daemonRpcV1';
 import * as daemonRpcV1 from './daemonRpcV1';
 import { AgentProviderIdV1Schema } from '../../generated/providers/agentProviderIdsV1';
+import { MAX_AGENT_ROUTING_ID_BYTES } from '../../agents/agentIdV1.js';
 import { SessionIndexedIdentifierMaxLengthV1 } from '../idsV1';
 import { resolveExternalSessionsSourceKey } from './sourceCatalog';
 
@@ -35,7 +36,8 @@ describe('ExternalSessionsAgentIdSchema', () => {
     expect(ExternalSessionsAgentIdSchema.parse('external-only-agent')).toBe('external-only-agent');
     expect(ExternalSessionsAgentIdSchema.safeParse('   ').success).toBe(false);
     expect(ExternalSessionsAgentIdSchema.safeParse(' codex ').success).toBe(false);
-    expect(ExternalSessionsAgentIdSchema.safeParse('a'.repeat(129)).success).toBe(false);
+    expect(ExternalSessionsAgentIdSchema.safeParse('a'.repeat(MAX_AGENT_ROUTING_ID_BYTES)).success).toBe(true);
+    expect(ExternalSessionsAgentIdSchema.safeParse('a'.repeat(MAX_AGENT_ROUTING_ID_BYTES + 1)).success).toBe(false);
   });
 });
 

@@ -6,6 +6,7 @@ import {
   AccountApiTokenSummaryV1Schema,
   AccountApiTokenIntrospectionRequestV1Schema,
   AccountApiTokenIntrospectionSubjectFailureV1Schema,
+  AccountApiTokenIntrospectionConnectionFailureV1Schema,
   AccountApiTokenIntrospectionSuccessV1Schema,
   parseAccountApiTokenBearerV1,
 } from './accountApiTokens.js';
@@ -122,6 +123,16 @@ describe('auth/accountApiTokens PAT introspection', () => {
         error: 'invalid_token',
       }),
     ).toEqual({ error: 'invalid_token' });
+    expect(
+      AccountApiTokenIntrospectionConnectionFailureV1Schema.safeParse({
+        error: 'authentication_failed',
+      }).success,
+    ).toBe(true);
+    expect(
+      AccountApiTokenIntrospectionConnectionFailureV1Schema.safeParse({
+        error: 'invalid_token',
+      }).success,
+    ).toBe(false);
     expect(
       AccountApiTokenIntrospectionSubjectFailureV1Schema.safeParse({
         error: 'authentication_failed',
