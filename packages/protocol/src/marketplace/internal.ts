@@ -31,3 +31,8 @@ export {
   HostPrivateMarketplaceSourceRegistryMutationResponseV1Schema,
   type HostPrivateMarketplaceSourceRegistryMutationResponseV1,
 } from './marketplaceSourceRegistryMutationResponseV1.js';
+
+export {
+  readMarketplaceNpmDiscoveryProjectionV1,
+  type MarketplaceNpmDiscoveryProjectionReadV1Result,
+} from './marketplaceIndexV1.js';

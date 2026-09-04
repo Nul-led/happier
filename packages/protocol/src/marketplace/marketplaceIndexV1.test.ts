@@ -8,6 +8,8 @@ import {
   MarketplaceIndexQueryV1Schema,
   MarketplaceNpmDiscoveryProjectionV1Schema,
   MarketplaceIndexSourceSnapshotV1Schema,
+  marketplaceNpmDiscoveryProjectionEqualV1,
+  readMarketplaceNpmDiscoveryProjectionV1,
   type MarketplaceIndexItemV1,
   type MarketplaceListingInstallDecisionV1,
 } from './marketplaceIndexV1.js';
@@ -62,6 +64,18 @@ describe('MarketplaceIndexV1', () => {
       ...projection,
       compatibility: compatibility.manifest.engines,
     }).success).toBe(false);
+  });
+
+  it('keeps the canonical pack projection closed while the reader admits additive fields', () => {
+    const projection = {
+      version: 1,
+      pluginId: 'acme.community',
+      manifestDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      display: { title: 'Community', description: null },
+      summary: { contributions: [], requiredHostAccess: [], optionalHostAccess: [], executableRealms: ['daemon'] },
+    };
+    expect(MarketplaceNpmDiscoveryProjectionV1Schema.safeParse({ ...projection, futureListingFact: { addedIn: 2 } }).success).toBe(false);
+    expect(MarketplaceNpmDiscoveryProjectionV1Schema.safeParse(projection).success).toBe(true);
   });
 
   it('bounds query pagination and source documents', () => {
@@ -192,6 +206,74 @@ describe('MarketplaceIndexV1', () => {
       categories: [], media: [], updatePolicy: 'reviewSensitiveChanges', links: {},
     };
     expect(MarketplaceIndexSourceSnapshotV1Schema.safeParse({ source: { id: 'curated', title: 'Curated', kind: 'curated', sourceUrl: 'https://catalog.example/index.json' }, freshness: { state: 'fresh', fetchedAtMs: 1 }, entries: [entry], diagnostics: [] }).success).toBe(false);
+  });
+});
+
+describe('readMarketplaceNpmDiscoveryProjectionV1', () => {
+  const CORE_PROJECTION = {
+    version: 1,
+    pluginId: 'acme.community',
+    manifestDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    display: { title: 'Community', description: null },
+    summary: { contributions: [], requiredHostAccess: [], optionalHostAccess: [], executableRealms: ['daemon'] },
+  } as const;
+
+  it('admits unknown additive fields at the top level and inside known objects, and normalizes them away', () => {
+    const additive = {
+      ...CORE_PROJECTION,
+      futureListingFact: { addedIn: 2, notes: ['ignored'] },
+      display: { ...CORE_PROJECTION.display, badgeUrl: 'https://cdn.example/badge.png' },
+      summary: { ...CORE_PROJECTION.summary, installFootprint: { bytes: 1_024 } },
+    };
+    expect(readMarketplaceNpmDiscoveryProjectionV1(additive)).toEqual({ status: 'parsed', projection: CORE_PROJECTION });
+  });
+
+  it('rejects malformed known fields and missing security- or compatibility-critical fields', () => {
+    expect(readMarketplaceNpmDiscoveryProjectionV1({
+      ...CORE_PROJECTION,
+      display: { title: 42, description: null },
+    }).status).toBe('invalid');
+    expect(readMarketplaceNpmDiscoveryProjectionV1({
+      ...CORE_PROJECTION,
+      summary: { ...CORE_PROJECTION.summary, requiredHostAccess: 'network' },
+    }).status).toBe('invalid');
+    expect(readMarketplaceNpmDiscoveryProjectionV1({
+      version: 1,
+      pluginId: 'acme.community',
+      display: CORE_PROJECTION.display,
+      summary: CORE_PROJECTION.summary,
+    }).status).toBe('invalid');
+    expect(readMarketplaceNpmDiscoveryProjectionV1({
+      ...CORE_PROJECTION,
+      version: '1',
+    }).status).toBe('invalid');
+    expect(readMarketplaceNpmDiscoveryProjectionV1(null).status).toBe('invalid');
+  });
+
+  it('reports numeric projection versions other than one as unsupported rather than malformed', () => {
+    expect(readMarketplaceNpmDiscoveryProjectionV1({ ...CORE_PROJECTION, version: 2 })).toEqual({ status: 'unsupported-version' });
+    expect(readMarketplaceNpmDiscoveryProjectionV1({ ...CORE_PROJECTION, version: 0 }).status).toBe('unsupported-version');
+  });
+
+  it('compares the normalized known core, ignoring additive fields and malformed inputs', () => {
+    const additive = {
+      ...CORE_PROJECTION,
+      futureListingFact: { addedIn: 2 },
+      display: { ...CORE_PROJECTION.display, badgeUrl: 'https://cdn.example/badge.png' },
+      summary: { ...CORE_PROJECTION.summary, installFootprint: { bytes: 1_024 } },
+    };
+    expect(marketplaceNpmDiscoveryProjectionEqualV1(additive, CORE_PROJECTION)).toBe(true);
+    expect(marketplaceNpmDiscoveryProjectionEqualV1(
+      { ...CORE_PROJECTION, display: { title: '  Community  ', description: null } },
+      CORE_PROJECTION,
+    )).toBe(true);
+    expect(marketplaceNpmDiscoveryProjectionEqualV1(
+      { ...CORE_PROJECTION, display: { title: 'Other', description: null } },
+      CORE_PROJECTION,
+    )).toBe(false);
+    expect(marketplaceNpmDiscoveryProjectionEqualV1({ ...CORE_PROJECTION, version: 2 }, CORE_PROJECTION)).toBe(false);
+    expect(marketplaceNpmDiscoveryProjectionEqualV1({ ...CORE_PROJECTION, manifestDigest: 'sha256:bbbb' }, CORE_PROJECTION)).toBe(false);
+    expect(marketplaceNpmDiscoveryProjectionEqualV1(null, CORE_PROJECTION)).toBe(false);
   });
 });
 

@@ -1,6 +1,11 @@
 export * from './marketplaceIndexV1.js';
 
 export {
+  readMarketplaceNpmDiscoveryProjectionV1,
+  type MarketplaceNpmDiscoveryProjectionReadV1Result,
+} from './marketplaceIndexV1.js';
+
+export {
   PluginUpdatePolicyV1Schema,
   type PluginUpdatePolicyV1,
 } from './pluginUpdatePolicyV1.js';

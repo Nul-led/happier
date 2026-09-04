@@ -31,10 +31,28 @@ export type MarketplaceIndexSourceKindV1 = z.infer<typeof MarketplaceIndexSource
 export const MarketplaceReviewStatusV1Schema = z.enum(['approved', 'withdrawn', 'blocked', 'unreviewed']);
 export type MarketplaceReviewStatusV1 = z.infer<typeof MarketplaceReviewStatusV1Schema>;
 
+/**
+ * Listing presentation and bounded contribution-summary shapes shared by the
+ * catalog entry and the npm discovery projection. Each owner chooses its own
+ * unknown-key policy: the catalog entry and the canonical pack projection stay
+ * closed, while the marketplaceDiscovery reader admits additive unknown
+ * fields for forward compatibility.
+ */
+const ListingDisplayShapeV1 = {
+  title: BoundedText,
+  description: z.string().trim().max(4_096).nullable(),
+};
+const ListingSummaryShapeV1 = {
+  contributions: z.array(OpaqueId).max(64),
+  requiredHostAccess: z.array(OpaqueId).max(64),
+  optionalHostAccess: z.array(OpaqueId).max(64),
+  executableRealms: z.array(z.enum(['daemon', 'client', 'hosted-web'])).max(3),
+};
+
 export const MarketplaceIndexEntryV1Schema = z.object({
   pluginId: asProtocolZod(PluginIdSchema),
   publisher: z.object({ id: Identifier, displayName: BoundedText }).strict(),
-  display: z.object({ title: BoundedText, description: z.string().trim().max(4_096).nullable() }).strict(),
+  display: z.object(ListingDisplayShapeV1).strict(),
   distribution: z.object({
     kind: z.literal('npm'),
     registryOrigin: NpmRegistryOriginV1Schema,
@@ -48,12 +66,7 @@ export const MarketplaceIndexEntryV1Schema = z.object({
     happier: z.string().trim().min(1).max(256),
     platforms: z.array(z.enum(['darwin', 'linux', 'windows', 'web', 'ios', 'android'])).max(6),
   }).strict(),
-  summary: z.object({
-    contributions: z.array(OpaqueId).max(64),
-    requiredHostAccess: z.array(OpaqueId).max(64),
-    optionalHostAccess: z.array(OpaqueId).max(64),
-    executableRealms: z.array(z.enum(['daemon', 'client', 'hosted-web'])).max(3),
-  }).strict(),
+  summary: z.object(ListingSummaryShapeV1).strict(),
   review: z.object({
     status: MarketplaceReviewStatusV1Schema,
     reviewedAt: z.string().datetime().nullable(),
@@ -81,10 +94,43 @@ export const MarketplaceNpmDiscoveryProjectionV1Schema = z.object({
   version: z.literal(1),
   pluginId: asProtocolZod(PluginIdSchema),
   manifestDigest: ManifestDigest,
-  display: MarketplaceIndexEntryV1Schema.shape.display,
-  summary: MarketplaceIndexEntryV1Schema.shape.summary,
+  display: z.object(ListingDisplayShapeV1).strict(),
+  summary: z.object(ListingSummaryShapeV1).strict(),
 }).strict();
 export type MarketplaceNpmDiscoveryProjectionV1 = z.infer<typeof MarketplaceNpmDiscoveryProjectionV1Schema>;
+
+/**
+ * Reader-side admission for a published `happier.marketplaceDiscovery` fact.
+ * It is forward-compatible for additive evolution only: unknown fields at the
+ * top level and inside `display`/`summary` are admitted and normalized away,
+ * every known V1 core field keeps its exact validation and remains required,
+ * and a numeric projection version other than `1` is reported as unsupported
+ * so callers can skip the package diagnostically. The canonical pack writer
+ * keeps emitting the closed {@link MarketplaceNpmDiscoveryProjectionV1Schema}.
+ */
+const MarketplaceNpmDiscoveryProjectionReaderV1Schema = z.object({
+  version: z.literal(1),
+  pluginId: asProtocolZod(PluginIdSchema),
+  manifestDigest: ManifestDigest,
+  display: z.object(ListingDisplayShapeV1),
+  summary: z.object(ListingSummaryShapeV1),
+});
+
+export type MarketplaceNpmDiscoveryProjectionReadV1Result =
+  | Readonly<{ status: 'parsed'; projection: MarketplaceNpmDiscoveryProjectionV1 }>
+  | Readonly<{ status: 'unsupported-version' }>
+  | Readonly<{ status: 'invalid' }>;
+
+export function readMarketplaceNpmDiscoveryProjectionV1(value: unknown): MarketplaceNpmDiscoveryProjectionReadV1Result {
+  if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+    const version = (value as Readonly<Record<string, unknown>>).version;
+    if (typeof version === 'number' && version !== 1) return { status: 'unsupported-version' };
+  }
+  const parsed = MarketplaceNpmDiscoveryProjectionReaderV1Schema.safeParse(value);
+  return parsed.success
+    ? { status: 'parsed', projection: parsed.data }
+    : { status: 'invalid' };
+}
 
 function localizedFallback(value: string | Readonly<{ fallback: string }>): string {
   return typeof value === 'string' ? value : value.fallback;
@@ -136,9 +182,18 @@ export function createMarketplaceNpmDiscoveryProjectionV1(input: Readonly<{
   });
 }
 
+/**
+ * Equality of the normalized known V1 core: additive unknown fields are
+ * normalized away before comparison, and any input the reader cannot admit —
+ * malformed known fields, missing critical fields, or an unsupported
+ * projection version — compares unequal instead of throwing.
+ */
 export function marketplaceNpmDiscoveryProjectionEqualV1(left: unknown, right: unknown): boolean {
-  return createCanonicalJsonSigningInput(MarketplaceNpmDiscoveryProjectionV1Schema.parse(left))
-    === createCanonicalJsonSigningInput(MarketplaceNpmDiscoveryProjectionV1Schema.parse(right));
+  const leftRead = readMarketplaceNpmDiscoveryProjectionV1(left);
+  const rightRead = readMarketplaceNpmDiscoveryProjectionV1(right);
+  if (leftRead.status !== 'parsed' || rightRead.status !== 'parsed') return false;
+  return createCanonicalJsonSigningInput(leftRead.projection)
+    === createCanonicalJsonSigningInput(rightRead.projection);
 }
 
 /** Platform availability comes from the generated compatibility inventory, not npm search metadata. */
