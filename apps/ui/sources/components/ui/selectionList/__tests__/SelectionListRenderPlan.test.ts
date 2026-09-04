@@ -14,6 +14,28 @@ import type { DynamicSectionState } from '../useSelectionListDynamicSections';
  * These tests pin the contract independent of the React orchestrator.
  */
 describe('SelectionListRenderPlan (R14 extracted)', () => {
+    it('retains a static section status hint even when matching produced no rows', async () => {
+        const { synthesizeSelectionListRenderPlan } = await import('../SelectionListRenderPlan');
+        const plan = synthesizeSelectionListRenderPlan({
+            sections: [{
+                kind: 'static',
+                id: 'sessions',
+                title: 'Sessions',
+                options: [],
+                resultHint: 'Some Sessions could not be loaded.',
+            }],
+            inputValue: 'query',
+            filterQuery: 'query',
+            dynamicSectionStates: new Map(),
+        });
+
+        expect(plan).toEqual([expect.objectContaining({
+            id: 'sessions',
+            options: [],
+            resultHint: 'Some Sessions could not be loaded.',
+        })]);
+    });
+
     it('renders an opted-in first-load skeleton during the initial idle state instead of the global empty state', async () => {
         const { synthesizeSelectionListRenderPlan } = await import('../SelectionListRenderPlan');
         const states = new Map<string, DynamicSectionState>();
@@ -363,6 +385,30 @@ describe('SelectionListRenderPlan (R14 extracted)', () => {
         // Tier 3: Bananas (subtitle contains)
         // Cranberry has no match → dropped
         expect(ranked.map((o) => o.label)).toEqual(['Apples', 'Pineapple', 'Bananas']);
+    });
+
+    it('rankOptionsByQuery keeps hidden canonical metadata after title and subtitle bands', async () => {
+        const { rankOptionsByQuery } = await import('../SelectionListRenderPlan');
+        const options = [
+            { id: 'metadata', label: 'Build lane', searchText: 'release Payments workspace' },
+            { id: 'title', label: 'Payments workspace review' },
+            { id: 'subtitle', label: 'Other lane', subtitle: 'Payments workspace' },
+        ];
+
+        expect(rankOptionsByQuery(options, 'Payments workspace').map((option) => option.id))
+            .toEqual(['title', 'subtitle', 'metadata']);
+    });
+
+    it('rankOptionsByQuery promotes exact canonical identity metadata into the first band', async () => {
+        const { rankOptionsByQuery } = await import('../SelectionListRenderPlan');
+        const options = [
+            { id: 'title-prefix', label: 'session-123 follow-up' },
+            { id: 'identity', label: 'Build lane', exactSearchText: 'session-123\nPayments workspace' },
+            { id: 'metadata', label: 'Other lane', searchText: 'session-123 release' },
+        ];
+
+        expect(rankOptionsByQuery(options, 'session-123').map((option) => option.id))
+            .toEqual(['title-prefix', 'identity', 'metadata']);
     });
 
     it('rankOptionsByQuery returns the original array reference unchanged for empty queries', async () => {

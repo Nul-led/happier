@@ -40,7 +40,7 @@ export function filterSelectionListSections(
             normalized,
             section.disableSubtitleRanking === true,
         );
-        if (matchedOptions.length === 0) continue;
+        if (matchedOptions.length === 0 && !section.resultHint) continue;
         result.push({
             ...section,
             options: matchedOptions,

@@ -57,7 +57,9 @@ export function PluginDetailSummaryGrid(props: Readonly<{
     projection: PluginProjectionEntry | null;
 }>) {
     const provenance = props.projection?.provenance;
-    const trustPolicy = provenance?.trustPolicy ?? props.installed.source.trustPolicy;
+    const trustPolicy = props.installed.install.trust?.state === 'trusted'
+        ? 'trusted'
+        : provenance?.trustPolicy ?? props.installed.source.trustPolicy;
     const sourceKind = provenance?.sourceKind ?? props.installed.source.kind;
     const items = React.useMemo<BadgeGridItem[]>(() => {
         const summaryItems: BadgeGridItem[] = [

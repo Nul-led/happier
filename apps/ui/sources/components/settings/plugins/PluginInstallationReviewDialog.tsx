@@ -535,6 +535,7 @@ export async function showPluginInstallationReviewDialog(params: Readonly<{
             onResolve: deferred.resolve,
         },
         onRequestClose: () => deferred.resolve({ approved: false, optionalSelections: [] }),
+        onHostUnmount: () => deferred.resolve({ approved: false, optionalSelections: [] }),
         chrome: {
             kind: 'card',
             title: params.title,

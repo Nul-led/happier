@@ -659,7 +659,7 @@ async function loadPageHost(): Promise<React.ComponentType<PageHostProps>> {
                 sessionsById: {},
                 isDev: false,
                 activeSessionId: null,
-                features: { executionRunsEnabled: false, voiceEnabled: false, memorySearchEnabled: false },
+                features: { executionRunsEnabled: false, voiceEnabled: false },
                 compactAppDestinations: compactDestinationState.destinations,
                 onActivateCompactAppDestination: (destination: CompactAppDestination) => {
                     if (destination.kind !== 'plugin' || destination.container !== 'appPage') {
@@ -672,7 +672,6 @@ async function loadPageHost(): Promise<React.ComponentType<PageHostProps>> {
                     openNewSession: () => {},
                     navigateToSession: () => {},
                 },
-                auth: { logout: async () => {} },
                 actions: { execute: async () => ({ ok: true, result: {} }) },
                 alert: async () => {},
             };

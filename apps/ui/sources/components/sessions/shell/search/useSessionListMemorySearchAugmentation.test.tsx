@@ -7,14 +7,66 @@ import type { MachineAdministrationTargetSelectionMockController } from '@/dev/t
 
 const machineRpcWithServerScopeMock = vi.hoisted(() => vi.fn());
 const homeSearchMock = vi.hoisted(() => vi.fn());
-const ensureSessionVisibleMock = vi.hoisted(() => vi.fn());
+const ensureSessionVisibleMock = vi.hoisted(() => vi.fn(async () => ({ kind: 'available' as const })));
+const unavailableSessionIds = vi.hoisted(() => new Set<string>());
+const scopedSessionRequestMock = vi.hoisted(() => vi.fn(async (path: string) => {
+    const detailMatch = path.match(/^\/v2\/sessions\/([^/?]+)$/);
+    if (detailMatch) {
+        const sessionId = decodeURIComponent(detailMatch[1]!);
+        if (unavailableSessionIds.has(sessionId)) {
+            return new Response(JSON.stringify({ error: 'Unavailable' }), { status: 500 });
+        }
+        return new Response(JSON.stringify({
+            session: {
+                id: sessionId,
+                createdAt: 1,
+                updatedAt: 2,
+                seq: 3,
+                active: true,
+                activeAt: 2,
+                encryptionMode: 'plain',
+                dataEncryptionKey: null,
+                metadataVersion: 1,
+                metadata: JSON.stringify({ path: `/work/${sessionId}` }),
+                agentStateVersion: 1,
+                agentState: null,
+                share: null,
+            },
+        }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ sessions: [], nextCursor: null, hasNext: false }), { status: 200 });
+}));
+const captureSessionRequestAuthorityMock = vi.hoisted(() => vi.fn(async ({ scope }: { scope: { serverId: string; accountId: string } }) => ({
+    scope,
+    context: { scope: 'scoped', credentials: { token: scope.accountId } },
+    request: scopedSessionRequestMock,
+    release: async () => undefined,
+})));
 const featureEnabledState = vi.hoisted(() => ({ memorySearch: true, search: false }));
 const activeServerState = vi.hoisted(() => ({ serverId: 'server-a' as string | null }));
 const accountScopeState = vi.hoisted(() => ({
     current: { serverId: 'server-a', accountId: 'account-a' } as { serverId: string; accountId: string } | null,
 }));
 const featureRuntimeState = vi.hoisted(() => ({ homeSearch: undefined as unknown }));
-const storageState = vi.hoisted(() => ({ sessions: {} as Record<string, { id: string; serverId?: string }> }));
+const storageState = vi.hoisted(() => {
+    const state = {
+        sessions: {} as Record<string, { id: string; serverId?: string }>,
+        sessionListRowStateByServerId: {} as Record<string, Record<string, unknown>>,
+        clearSessionListRowsForServerScope: vi.fn((serverId: string) => {
+            delete state.sessionListRowStateByServerId[serverId];
+        }),
+        reconcileSessionListRowsForServerScope: vi.fn((serverId: string, rows: ReadonlyArray<{ id: string }>) => {
+            state.sessionListRowStateByServerId[serverId] = Object.fromEntries(rows.map((row) => [row.id, row]));
+        }),
+        mergeSessionListRowsForServerScope: vi.fn((serverId: string, rows: ReadonlyArray<{ id: string }>) => {
+            state.sessionListRowStateByServerId[serverId] = {
+                ...state.sessionListRowStateByServerId[serverId],
+                ...Object.fromEntries(rows.map((row) => [row.id, row])),
+            };
+        }),
+    };
+    return state;
+});
 const selectionHolder = vi.hoisted(() => ({
     controller: null as MachineAdministrationTargetSelectionMockController | null,
 }));
@@ -36,7 +88,14 @@ vi.mock('@/sync/domains/memory/searchHomeMemory', () => ({
 // The genuine boundary under the materialization owner: the sync engine's
 // explicit-server session reader. Everything above it stays real.
 vi.mock('@/sync/runtime/getSyncSingleton', () => ({
-    getSyncSingleton: () => ({ ensureSessionVisibleForMessageRoute: ensureSessionVisibleMock }),
+    getSyncSingleton: () => ({
+        ensureSessionVisibleForMessageRoute: ensureSessionVisibleMock,
+        getSyncTuning: () => ({ sessionListHydrationConcurrencyLimit: 2 }),
+    }),
+}));
+
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope', () => ({
+    captureSessionRequestAuthorityForServerAccountScope: captureSessionRequestAuthorityMock,
 }));
 
 vi.mock('@/sync/domains/state/storageStore', () => ({
@@ -186,12 +245,25 @@ afterEach(() => {
     homeSearchMock.mockReset();
     ensureSessionVisibleMock.mockReset();
     ensureSessionVisibleMock.mockResolvedValue({ kind: 'available' });
+    unavailableSessionIds.clear();
+    scopedSessionRequestMock.mockClear();
+    captureSessionRequestAuthorityMock.mockReset();
+    captureSessionRequestAuthorityMock.mockImplementation(async ({ scope }: { scope: { serverId: string; accountId: string } }) => ({
+        scope,
+        context: { scope: 'scoped', credentials: { token: scope.accountId } },
+        request: scopedSessionRequestMock,
+        release: async () => undefined,
+    }));
     featureEnabledState.memorySearch = true;
     featureEnabledState.search = false;
     activeServerState.serverId = 'server-a';
     accountScopeState.current = { serverId: 'server-a', accountId: 'account-a' };
     featureRuntimeState.homeSearch = undefined;
     storageState.sessions = {};
+    storageState.sessionListRowStateByServerId = {};
+    storageState.clearSessionListRowsForServerScope.mockClear();
+    storageState.reconcileSessionListRowsForServerScope.mockClear();
+    storageState.mergeSessionListRowsForServerScope.mockClear();
     selectionHolder.controller?.reset();
     credentialMutationListeners.clear();
     credentialAccounts.clear();
@@ -202,6 +274,75 @@ afterEach(() => {
 });
 
 describe('useSessionListMemorySearchAugmentation', () => {
+    it('surfaces real metadata-inventory failure as retryable and clears it when the query retires', async () => {
+        featureEnabledState.memorySearch = false;
+        featureEnabledState.search = false;
+        captureSessionRequestAuthorityMock.mockRejectedValue(new Error('inventory unavailable'));
+        const {
+            useSessionListMemorySearchAugmentationForContext,
+            useSessionListMemorySearchContext,
+        } = await import('./useSessionListMemorySearchAugmentation');
+        const hook = await renderHook(
+            (props: { searchQuery: string }) => useSessionListMemorySearchAugmentationForContext(
+                props,
+                useSessionListMemorySearchContext({ serverId: 'server-a' }),
+            ),
+            { initialProps: { searchQuery: 'payments' } },
+        );
+        await flushHookEffects({ cycles: 4 });
+
+        expect(hook.getCurrent().sessionInventoryStatus).toBe('error');
+        expect(captureSessionRequestAuthorityMock).toHaveBeenCalledTimes(1);
+
+        await act(async () => hook.getCurrent().retrySessionInventory());
+        await flushHookEffects({ cycles: 4 });
+        expect(hook.getCurrent().sessionInventoryStatus).toBe('error');
+        expect(captureSessionRequestAuthorityMock).toHaveBeenCalledTimes(2);
+
+        await hook.rerender({ searchQuery: '' });
+        await flushHookEffects({ cycles: 2 });
+        expect(hook.getCurrent().sessionInventoryStatus).toBe('idle');
+    });
+
+    it('keeps an aborted metadata inventory silent after the contextual query retires', async () => {
+        featureEnabledState.memorySearch = false;
+        featureEnabledState.search = false;
+        const pendingAuthority = createDeferred<{
+            scope: { serverId: string; accountId: string };
+            context: { scope: string };
+            request: () => Promise<Response>;
+            release: () => Promise<void>;
+        }>();
+        captureSessionRequestAuthorityMock.mockImplementationOnce(async () => pendingAuthority.promise);
+        const {
+            useSessionListMemorySearchAugmentationForContext,
+            useSessionListMemorySearchContext,
+        } = await import('./useSessionListMemorySearchAugmentation');
+        const hook = await renderHook(
+            (props: { searchQuery: string }) => useSessionListMemorySearchAugmentationForContext(
+                props,
+                useSessionListMemorySearchContext({ serverId: 'server-a' }),
+            ),
+            { initialProps: { searchQuery: 'payments' } },
+        );
+        await flushHookEffects({ cycles: 3 });
+        expect(hook.getCurrent().sessionInventoryStatus).toBe('loading');
+
+        await hook.rerender({ searchQuery: '' });
+        await flushHookEffects({ cycles: 2 });
+        expect(hook.getCurrent().sessionInventoryStatus).toBe('idle');
+
+        pendingAuthority.resolve({
+            scope: { serverId: 'server-a', accountId: 'account-a' },
+            context: { scope: 'scoped' },
+            request: async () => new Response('{}'),
+            release: async () => undefined,
+        });
+        await flushHookEffects({ cycles: 3 });
+        expect(hook.getCurrent().sessionInventoryStatus).toBe('idle');
+    });
+
+
     it('keys results by Account, provider, exact Home/server, and daemon machine', async () => {
         const { buildSessionListMemorySearchScopeKey } = await import('./useSessionListMemorySearchAugmentation');
         const base = {
@@ -412,13 +553,16 @@ describe('useSessionListMemorySearchAugmentation', () => {
             method: RPC_METHODS.DAEMON_MEMORY_SEARCH,
             payload: expect.objectContaining({ query: 'vector', maxResults: 50 }),
         }));
-        // The augmentation no longer clamps to already-rendered sessions: the absent
-        // identity is materialized through the canonical explicit-server reader.
-        expect(ensureSessionVisibleMock).toHaveBeenCalledTimes(1);
-        expect(ensureSessionVisibleMock).toHaveBeenCalledWith('session-2', expect.objectContaining({
-            serverId: 'server-a',
-            forceRefresh: true,
-        }));
+        // Local presence is not Account authorization: every derived-index hit is
+        // read through the exact captured Account authority, not the ambient Sync
+        // singleton's visibility helper.
+        expect(ensureSessionVisibleMock).not.toHaveBeenCalled();
+        expect(captureSessionRequestAuthorityMock).toHaveBeenCalledWith({
+            scope: { serverId: 'server-a', accountId: 'account-a' },
+            activeRequest: expect.any(Function),
+        });
+        expect(scopedSessionRequestMock).toHaveBeenCalledWith('/v2/sessions/session-1', expect.any(Object));
+        expect(scopedSessionRequestMock).toHaveBeenCalledWith('/v2/sessions/session-2', expect.any(Object));
         expect([...hook.getCurrent().memoryMatchedSessionKeys]).toEqual([
             'server-a:session-1',
             'server-a:session-2',
@@ -446,7 +590,7 @@ describe('useSessionListMemorySearchAugmentation', () => {
         vi.useFakeTimers();
         // A same-id session held for another server must not authorize this hit.
         storageState.sessions = { 'session-1': { id: 'session-1', serverId: 'server-b' } };
-        ensureSessionVisibleMock.mockResolvedValue({ kind: 'missing', cause: 'unauthorized' });
+        unavailableSessionIds.add('session-1');
         machineRpcWithServerScopeMock.mockImplementation(async (params: { method?: string }) => {
             if (params.method === RPC_METHODS.DAEMON_MEMORY_STATUS) return createMemoryStatusResponse(true);
             if (params.method === RPC_METHODS.DAEMON_MEMORY_SEARCH) {
@@ -461,9 +605,7 @@ describe('useSessionListMemorySearchAugmentation', () => {
 
         await flushHookEffects({ advanceTimersMs: 300, cycles: 4 });
 
-        expect(ensureSessionVisibleMock).toHaveBeenCalledWith('session-1', expect.objectContaining({
-            serverId: 'server-a',
-        }));
+        expect(scopedSessionRequestMock).toHaveBeenCalledWith('/v2/sessions/session-1', expect.any(Object));
         expect([...hook.getCurrent().memoryMatchedSessionKeys]).toEqual([]);
         expect(hook.getCurrent().memoryMatchedSessionTargets).toEqual([]);
     });
@@ -688,7 +830,7 @@ describe('useSessionListMemorySearchAugmentation', () => {
         vi.useFakeTimers();
         withoutSelectedMemoryMachine();
         withReadyHomeSearch();
-        ensureSessionVisibleMock.mockResolvedValue({ kind: 'missing', cause: 'not_found' });
+        unavailableSessionIds.add('session-9');
         homeSearchMock.mockResolvedValueOnce({
             v: 1,
             ok: true,
@@ -700,9 +842,7 @@ describe('useSessionListMemorySearchAugmentation', () => {
         });
         await flushHookEffects({ advanceTimersMs: 300, cycles: 4 });
 
-        expect(ensureSessionVisibleMock).toHaveBeenCalledWith('session-9', expect.objectContaining({
-            serverId: 'server-a',
-        }));
+        expect(scopedSessionRequestMock).toHaveBeenCalledWith('/v2/sessions/session-9', expect.any(Object));
         expect([...hook.getCurrent().memoryMatchedSessionKeys]).toEqual([]);
     });
 
@@ -716,11 +856,11 @@ describe('useSessionListMemorySearchAugmentation', () => {
         });
         await flushHookEffects({ advanceTimersMs: 300, cycles: 4 });
 
-        // Capability is diagnostic: with none advertised, Home is not the provider
-        // and the daemon has no explicitly selected machine to query.
+        // The Home feature is enabled, but readiness is still unknown and no daemon
+        // can answer. Preserve that truthful transitional Home state.
         expect(homeSearchMock).not.toHaveBeenCalled();
         expect(machineRpcWithServerScopeMock).not.toHaveBeenCalled();
-        expect(hook.getCurrent().memorySearchUnavailableReason).toBe('daemon_no_target');
+        expect(hook.getCurrent().memorySearchUnavailableReason).toBe('home_unknown');
 
         featureRuntimeState.homeSearch = { enabled: false, reason: 'indexing' };
         await hook.rerender({

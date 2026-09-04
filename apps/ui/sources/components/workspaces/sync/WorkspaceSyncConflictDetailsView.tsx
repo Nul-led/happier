@@ -38,7 +38,7 @@ import {
     formatWorkspaceSyncRelationshipTitle,
     resolveWorkspaceSyncErrorTranslationKey,
     resolveWorkspaceSyncModeTranslationKey,
-    resolveWorkspaceSyncStateTranslationKey,
+    resolveWorkspaceSyncRelationshipStateLabel,
 } from '@/sync/domains/sessionHandoff/workspaceSyncPresentation';
 import { formatWithCachedDateTimeFormatter } from '@/utils/datetime/cachedIntlFormatters';
 
@@ -382,17 +382,13 @@ export const WorkspaceSyncConflictDetailsView = React.memo(function WorkspaceSyn
     }
 
     const modeKey = resolveWorkspaceSyncModeTranslationKey(props.resource.mode);
-    const stateKey = status ? resolveWorkspaceSyncStateTranslationKey(status.state) : null;
     const errorKey = resolveWorkspaceSyncErrorTranslationKey(status?.errorCode);
-    const stateLabel = !props.resource.enabled
-        ? t('workspaceSync.state.stopped')
-        : status?.errorCode === 'engine_unavailable'
-            ? t('workspaceSync.state.engineUnavailable')
-            : statusSnapshot.phase === 'error'
-                ? t('workspaceSync.state.controllerUnavailable')
-                : stateKey
-                    ? t(stateKey)
-                    : t('workspaceSync.state.loading');
+    const stateLabel = t(resolveWorkspaceSyncRelationshipStateLabel({
+        enabled: props.resource.enabled,
+        statusState: status?.state,
+        errorCode: status?.errorCode,
+        statusPhaseHasError: statusSnapshot.phase === 'error',
+    }));
     const lastSyncLabel = status?.lastSuccessfulSyncAtMs == null
         ? t('workspaceSync.neverSynced')
         : t('workspaceSync.lastSynced', {

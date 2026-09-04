@@ -12,12 +12,20 @@ import { CenteredInfoTile } from '@/components/ui/lists/CenteredInfoTile';
 import { getMachineDisplayName } from '@/utils/sessions/machineUtils';
 import {
     useAllMachines,
-    useSettingMutable,
+    useSetting,
 } from '@/sync/domains/state/storage';
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
 import { openMachinePathBrowserModal } from '@/components/ui/pathBrowser/openMachinePathBrowserModal';
 import { Modal } from '@/modal';
-import { findWorkspaceRefByScope, upsertWorkspaceRefByScope } from '@/sync/domains/workspaces/workspaceRefs';
+import { useWorkspaceSyncRelationshipSummaries, resolveWorkspaceSyncStatusScope } from '@/sync/domains/sessionHandoff/useWorkspaceSyncRelationshipSummaries';
+import { terminatePersistedWorkspaceSyncRelationship } from '@/sync/ops/workspaceSync';
+import {
+    addWorkspaceRefToAccount,
+    removeWorkspaceRefFromAccount,
+    renameWorkspaceRefInAccount,
+    resetWorkspaceRefNameInAccount,
+    setWorkspaceRefPinnedInAccount,
+} from '@/sync/ops/workspaceRefs';
 import { workspaceListDirectory } from '@/sync/ops/workspaceFileSystem';
 import { resolveMachineActionCandidates } from '@/utils/sessions/resolveMachineActionCandidates';
 
@@ -37,8 +45,11 @@ export const ProjectsListView = React.memo(() => {
     const allMachines = useAllMachines();
     const addFirstMachines = React.useMemo(() => resolveMachineActionCandidates(allMachines), [allMachines]);
 
-    const [workspaceRefsV1, setWorkspaceRefsV1] = useSettingMutable('workspaceRefsV1');
-    const [pinnedWorkspaceRefIdsV1, setPinnedWorkspaceRefIdsV1] = useSettingMutable('pinnedWorkspaceRefIdsV1');
+    const workspaceRefsV1 = useSetting('workspaceRefsV1');
+    const pinnedWorkspaceRefIdsV1 = useSetting('pinnedWorkspaceRefIdsV1');
+    // Relationship intent is read from the canonical Account settings projection;
+    // Projects keeps no relationship state of its own.
+    const workspaceSyncRelationships = useWorkspaceSyncRelationshipSummaries();
 
     const machinesById = React.useMemo(() => {
         return new Map(allMachines.map((machine) => [machine.id, machine] as const));
@@ -72,33 +83,36 @@ export const ProjectsListView = React.memo(() => {
         }
 
         const nowMs = Date.now();
-        const nextRefs = upsertWorkspaceRefByScope(Array.isArray(workspaceRefsV1) ? workspaceRefsV1 : [], {
+        const added = await addWorkspaceRefToAccount({
             scope: { serverId, machineId, rootPath: selectedRootPath },
             nowMs,
             patch: { lastOpenedAtMs: nowMs },
         });
-        setWorkspaceRefsV1(nextRefs);
-
-        const added = findWorkspaceRefByScope(nextRefs, { serverId, machineId, rootPath: selectedRootPath });
-        if (added) {
-            router.push(`/projects/${encodeURIComponent(added.id)}`);
+        if (!added.ok || !('workspaceRefId' in added)) {
+            Modal.alert(t('common.error'), t('common.saveError'));
+            return;
         }
-    }, [activeServer.serverId, router, setWorkspaceRefsV1, workspaceRefsV1]);
+        router.push(`/projects/${encodeURIComponent(added.workspaceRefId)}`);
+    }, [activeServer.serverId, router]);
 
     const pinnedIdSet = React.useMemo(() => {
         return new Set(Array.isArray(pinnedWorkspaceRefIdsV1) ? pinnedWorkspaceRefIdsV1 : []);
     }, [pinnedWorkspaceRefIdsV1]);
 
-    const handleTogglePinned = React.useCallback((workspaceRefId: string) => {
+    const handleTogglePinned = React.useCallback(async (workspaceRefId: string) => {
+        const serverId = String(activeServer.serverId ?? '').trim();
+        if (!serverId) return;
         const id = String(workspaceRefId ?? '').trim();
         if (!id) return;
-        const current = Array.isArray(pinnedWorkspaceRefIdsV1) ? pinnedWorkspaceRefIdsV1 : [];
-        if (pinnedIdSet.has(id)) {
-            setPinnedWorkspaceRefIdsV1(current.filter((v) => String(v ?? '').trim() !== id));
-            return;
+        const result = await setWorkspaceRefPinnedInAccount({
+            serverId,
+            workspaceRefId: id,
+            pinned: !pinnedIdSet.has(id),
+        });
+        if (!result.ok) {
+            Modal.alert(t('common.error'), t('common.saveError'));
         }
-        setPinnedWorkspaceRefIdsV1([...current, id]);
-    }, [pinnedIdSet, pinnedWorkspaceRefIdsV1, setPinnedWorkspaceRefIdsV1]);
+    }, [activeServer.serverId, pinnedIdSet]);
 
     const handleRenameProject = React.useCallback(async (workspaceRef: WorkspaceRefV1) => {
         const serverId = String(activeServer.serverId ?? '').trim();
@@ -118,46 +132,70 @@ export const ProjectsListView = React.memo(() => {
         const trimmed = newName.trim();
         if (!trimmed) return;
 
-        const nextRefs = (Array.isArray(workspaceRefsV1) ? workspaceRefsV1 : []).map((ref) => {
-            if (ref.id !== workspaceRef.id) return ref;
-            if (String(ref.serverId ?? '').trim() !== serverId) return ref;
-            return { ...ref, label: trimmed };
+        const result = await renameWorkspaceRefInAccount({
+            serverId,
+            workspaceRefId: workspaceRef.id,
+            label: trimmed,
         });
-        setWorkspaceRefsV1(nextRefs);
-    }, [activeServer.serverId, setWorkspaceRefsV1, workspaceRefsV1]);
+        if (!result.ok) {
+            Modal.alert(t('common.error'), t('common.saveError'));
+        }
+    }, [activeServer.serverId]);
 
-    const handleResetProjectName = React.useCallback((workspaceRef: WorkspaceRefV1) => {
+    const handleResetProjectName = React.useCallback(async (workspaceRef: WorkspaceRefV1) => {
         const serverId = String(activeServer.serverId ?? '').trim();
         if (!serverId) return;
-        const nextRefs = (Array.isArray(workspaceRefsV1) ? workspaceRefsV1 : []).map((ref) => {
-            if (ref.id !== workspaceRef.id) return ref;
-            if (String(ref.serverId ?? '').trim() !== serverId) return ref;
-            return { ...ref, label: null };
+        const result = await resetWorkspaceRefNameInAccount({
+            serverId,
+            workspaceRefId: workspaceRef.id,
         });
-        setWorkspaceRefsV1(nextRefs);
-    }, [activeServer.serverId, setWorkspaceRefsV1, workspaceRefsV1]);
+        if (!result.ok) {
+            Modal.alert(t('common.error'), t('common.saveError'));
+        }
+    }, [activeServer.serverId]);
 
-    const handleRemoveProject = React.useCallback((workspaceRef: WorkspaceRefV1) => {
+    const handleRemoveProject = React.useCallback(async (workspaceRef: WorkspaceRefV1) => {
         const serverId = String(activeServer.serverId ?? '').trim();
         if (!serverId) return;
         const id = String(workspaceRef.id ?? '').trim();
         if (!id) return;
-        const nextRefs = (Array.isArray(workspaceRefsV1) ? workspaceRefsV1 : []).filter((ref) => {
-            if (String(ref.serverId ?? '').trim() !== serverId) return true;
-            return String(ref.id ?? '').trim() !== id;
-        });
-        setWorkspaceRefsV1(nextRefs);
-        const currentPinned = Array.isArray(pinnedWorkspaceRefIdsV1) ? pinnedWorkspaceRefIdsV1 : [];
-        if (pinnedIdSet.has(id)) {
-            setPinnedWorkspaceRefIdsV1(currentPinned.filter((v) => String(v ?? '').trim() !== id));
+
+        let removal = await removeWorkspaceRefFromAccount({ serverId, workspaceRefId: id });
+
+        if (!removal.ok && removal.code === 'workspace_ref_in_use') {
+            const blockingRelationshipIds = removal.relationshipIds;
+            const blocking = workspaceSyncRelationships.filter(
+                (summary) => blockingRelationshipIds.includes(summary.relationshipId),
+            );
+            if (blocking.length !== blockingRelationshipIds.length) {
+                Modal.alert(t('common.error'), t('projects.actions.removeStopSyncingFailed'));
+                return;
+            }
+            const confirmed = await Modal.confirm(
+                t('projects.actions.removeBlockedBySyncTitle'),
+                t('projects.actions.removeBlockedBySyncBody', { count: blocking.length }),
+                { confirmText: t('projects.actions.removeBlockedBySyncConfirm'), destructive: true },
+            );
+            if (!confirmed) return;
+            try {
+                // Stop syncing through the canonical daemon relationship owner;
+                // the reference is only released once nothing still points at it.
+                for (const summary of blocking) {
+                    await terminatePersistedWorkspaceSyncRelationship(resolveWorkspaceSyncStatusScope(summary));
+                }
+            } catch {
+                Modal.alert(t('common.error'), t('projects.actions.removeStopSyncingFailed'));
+                return;
+            }
+            removal = await removeWorkspaceRefFromAccount({ serverId, workspaceRefId: id });
+        }
+
+        if (!removal.ok) {
+            Modal.alert(t('common.error'), t('projects.actions.removeStopSyncingFailed'));
         }
     }, [
         activeServer.serverId,
-        pinnedIdSet,
-        pinnedWorkspaceRefIdsV1,
-        setPinnedWorkspaceRefIdsV1,
-        setWorkspaceRefsV1,
-        workspaceRefsV1,
+        workspaceSyncRelationships,
     ]);
 
     const hasAnyProjects = groups.pinned.length > 0 || groups.machineGroups.length > 0;

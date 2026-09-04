@@ -203,6 +203,36 @@ afterEach(() => {
 });
 
 describe('MemorySettingsView', () => {
+    it('does not mislabel a transient status failure as an unsupported old daemon', async () => {
+        installMemoryRpc({
+            settingsGet: () => ({
+                v: 1,
+                enabled: true,
+                indexMode: 'hints',
+                includeArchivedSessions: true,
+            }),
+            status: () => { throw new Error('temporarily unreachable'); },
+        });
+
+        const screen = await renderSettledMemorySettingsView();
+        const archivedItem = screen.findByTestId('memory-settings-include-archived-item');
+        expect(archivedItem?.props.subtitle).toBe('common.unavailable');
+        expect(archivedItem?.props.subtitle).not.toBe('memorySearchSettings.archived.unsupportedSubtitle');
+        expect(archivedItem?.props.rightElement?.props.disabled).toBe(true);
+    });
+
+    it('labels a resolved status without the effective field as an unsupported old daemon', async () => {
+        installMemoryRpc({
+            settingsGet: () => ({ v: 1, enabled: true, indexMode: 'hints' }),
+            status: () => createReadyMemoryStatus(),
+        });
+
+        const screen = await renderSettledMemorySettingsView();
+        const archivedItem = screen.findByTestId('memory-settings-include-archived-item');
+        expect(archivedItem?.props.subtitle).toBe('memorySearchSettings.archived.unsupportedSubtitle');
+        expect(archivedItem?.props.rightElement?.props.disabled).toBe(true);
+    });
+
     it('shows daemon memory status in read-only mode when daemon.memory.settings.get is unavailable', async () => {
         installMemoryRpc({
             settingsGet: () => {

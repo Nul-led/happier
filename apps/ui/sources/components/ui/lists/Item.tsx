@@ -102,6 +102,8 @@ export interface ItemProps {
     accessibilityLiveRegion?: ViewProps['accessibilityLiveRegion'];
     accessibilityExpanded?: boolean;
     webRole?: ViewProps['role'];
+    /** Explicit web Tab-order override for a parent-owned composite widget. */
+    webTabIndex?: 0 | -1;
     /** Web DOM id used by composite widgets such as listbox/aria-activedescendant. */
     webId?: string;
     /** Web ARIA position metadata for option-like rows. */
@@ -356,6 +358,7 @@ export const Item = React.memo<ItemProps>((props) => {
         accessibilityLiveRegion,
         accessibilityExpanded,
         webRole,
+        webTabIndex,
         webId,
         accessibilityPositionInSet,
         accessibilitySetSize,
@@ -903,7 +906,7 @@ export const Item = React.memo<ItemProps>((props) => {
     const resolvedAccessibilityLabel = accessibilityLabel ?? (
         interactiveWebRole ? generatedAccessibilityLabel : undefined
     );
-    const interactiveTabIndex = isWeb ? sharedItemBehavior.tabIndex : undefined;
+    const interactiveTabIndex = isWeb ? (webTabIndex ?? sharedItemBehavior.tabIndex) : undefined;
     const supportsSelectedAccessibilityState = isRadioRole || isCheckboxRole || interactiveWebRole === 'option';
     // React Native Web maps `accessibilityState.selected` to `aria-selected`.
     // That attribute is valid for option/radio-style composite choices, but not

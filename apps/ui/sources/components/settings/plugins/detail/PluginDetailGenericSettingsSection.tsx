@@ -1006,6 +1006,8 @@ type PluginDetailGenericSettingsSectionProps = Readonly<{
     daemonServerIdentityId?: string | null;
     /** Portable selected-server identity retained while its daemon is offline. */
     perActiveServerIdentityId?: string | null;
+    /** Account-owned writes stay unavailable when Administration targets another server Account. */
+    accountOperationsAvailable?: boolean;
     daemonOperationsAvailable: boolean;
     /**
      * Optional owner-local freshness fence for a daemon target. Callers that
@@ -1124,7 +1126,7 @@ function PluginDetailScopedSettingsSection(props: PluginDetailGenericSettingsSec
         }
     }, [props.accountLifetime, props.scope.kind, props.target]);
     const scopedOperationsAvailable = props.scope.kind === 'account'
-        ? accountScopeCurrent
+        ? accountScopeCurrent && props.accountOperationsAvailable !== false
         : props.daemonOperationsAvailable;
     const scopedSettings = useScopedPluginSettingsProjection({
         pluginId: props.pluginId,

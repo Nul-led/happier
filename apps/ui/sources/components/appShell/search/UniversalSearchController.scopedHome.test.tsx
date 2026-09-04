@@ -4,18 +4,49 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen, standardCleanup } from '@/dev/testkit';
 import type { SelectionListProps } from '@/components/ui/selectionList';
+import type { SessionOrganizationProjection } from '@/sync/domains/session/organization/types';
 
 const harness = vi.hoisted(() => ({
     selectionListProps: null as SelectionListProps | null,
     navigateToSession: vi.fn(),
     searchHomeMemory: vi.fn(),
+    modalAlert: vi.fn(),
+    featureEnabled: { search: true, 'memory.search': false } as Record<string, boolean>,
+    fetchAllSessionMetadata: vi.fn(async () => {}),
+    ensureSessionMetadataInventoryForServerAccountScope: vi.fn(async (_params: Readonly<{
+        scope: { serverId: string; accountId: string };
+        accountLifetime: {
+            isCurrent(): boolean;
+            onRetire(cancel: () => void): { dispose(): void };
+        };
+        signal?: AbortSignal;
+    }>) => {}),
+    sessionListRows: [] as Array<{
+        serverId: string | null;
+        serverName: string | null;
+        session: {
+            id: string;
+            updatedAt: number;
+            archivedAt?: number | null;
+            metadata: { name: string; path?: string };
+        };
+    }>,
     homeCredentialMutationListeners: new Set<(event: { kind: 'credentials_set' | 'credentials_removed'; serverId: string; serverUrl: string }) => void>(),
+    portableIdentity: false,
+    sessionOrganizationProjection: null as SessionOrganizationProjection | null,
+    activeAccountLifetime: null as null | {
+        scope: { serverId: string; accountId: string };
+        isCurrent(): boolean;
+        onRetire(): { dispose(): void };
+    },
 }));
 
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
     return createReactNativeWebMock({ Platform: { OS: 'web' } });
 });
+
+vi.mock('@/modal', () => ({ Modal: { alert: harness.modalAlert } }));
 
 vi.mock('expo-router', async () => {
     const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
@@ -59,27 +90,94 @@ vi.mock('@/components/plugins/surfaces/pluginSurfaceDestinationNavigation', () =
 vi.mock('@/sync/store/hooks', () => ({
     useAllSessions: () => [{
         id: 'session-b',
-        serverId: 'home-b',
+        serverId: harness.portableIdentity ? 'local-home-b' : 'home-b',
         updatedAt: 1,
         metadata: { name: 'Home B session', path: '/repo/b' },
     }],
+    useSessionListRowStateByServerId: () => harness.sessionListRows.reduce<Record<string, Record<string, typeof harness.sessionListRows[number]['session']>>>((byServer, row) => {
+        const serverId = row.serverId ?? '';
+        if (!serverId) return byServer;
+        byServer[serverId] ??= {};
+        byServer[serverId]![row.session.id] = row.session;
+        return byServer;
+    }, {}),
+    useSessionOrganizationProjection: () => harness.sessionOrganizationProjection,
 }));
-vi.mock('@/sync/domains/state/storage', () => ({ useSetting: () => [] }));
+vi.mock('@/sync/runtime/getSyncSingleton', () => ({
+    getSyncSingleton: () => ({
+        fetchAllSessionMetadata: harness.fetchAllSessionMetadata,
+        ensureSessionVisibleForMessageRoute: async () => ({ kind: 'available' }),
+        getSyncTuning: () => ({ sessionListHydrationConcurrencyLimit: 2 }),
+    }),
+}));
+vi.mock('@/sync/domains/session/fetchSessionMetadataInventoryForServerAccountScope', () => ({
+    ensureSessionMetadataInventoryForServerAccountScope: harness.ensureSessionMetadataInventoryForServerAccountScope,
+}));
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/fetchSessionByIdWithServerScope', () => ({
+    fetchSessionByIdWithServerScope: async (params: Readonly<{
+        sessionId: string;
+        serverId?: string | null;
+        applySessions(sessions: readonly unknown[]): void;
+    }>) => {
+        params.applySessions([{
+            id: params.sessionId,
+            serverId: params.serverId,
+            seq: 100,
+            createdAt: 1,
+            updatedAt: 1,
+            active: true,
+            activeAt: 1,
+            archivedAt: null,
+            encryptionMode: 'plain',
+            metadata: { name: 'Scoped Session', path: '/repo/b' },
+            metadataVersion: 1,
+            agentState: {},
+            agentStateVersion: 1,
+            thinking: false,
+            thinkingAt: 0,
+        }]);
+        return { ok: true };
+    },
+}));
+vi.mock('@/sync/domains/state/storage', () => ({
+    useSetting: () => [],
+    storage: { getState: () => ({
+        sessionListRowStateByServerId: harness.sessionListRows.reduce<Record<string, Record<string, typeof harness.sessionListRows[number]['session']>>>((byServer, row) => {
+            const serverId = row.serverId ?? '';
+            if (!serverId) return byServer;
+            byServer[serverId] ??= {};
+            byServer[serverId]![row.session.id] = row.session;
+            return byServer;
+        }, {}),
+        clearSessionListRowsForServerScope: () => undefined,
+        mergeSessionListRowsForServerScope: (serverId: string, sessions: typeof harness.sessionListRows[number]['session'][]) => {
+            for (const session of sessions) {
+                harness.sessionListRows = harness.sessionListRows.filter((row) => (
+                    row.serverId !== serverId || row.session.id !== session.id
+                ));
+                harness.sessionListRows.push({ serverId, serverName: serverId, session });
+            }
+        },
+    }) },
+}));
 vi.mock('@/sync/domains/state/storageStore', () => ({
-    storage: { getState: () => ({ sessions: { 'session-b': { id: 'session-b', serverId: 'home-b' } } }) },
+    storage: { getState: () => ({ sessions: { 'session-b': { id: 'session-b', serverId: harness.portableIdentity ? 'local-home-b' : 'home-b' } } }) },
 }));
 vi.mock('@/sync/domains/scope/activeServerAccountScope', () => ({
-    captureActiveServerAccountScopeLifetime: () => ({
-        scope: { serverId: 'home-a', accountId: 'account-1' },
-        isCurrent: () => true,
-        onRetire: () => ({ dispose: () => undefined }),
-    }),
+    captureActiveServerAccountScopeLifetime: () => {
+        harness.activeAccountLifetime ??= {
+            scope: { serverId: 'home-a', accountId: 'account-1' },
+            isCurrent: () => true,
+            onRetire: () => ({ dispose: () => undefined }),
+        };
+        return harness.activeAccountLifetime;
+    },
 }));
 vi.mock('@/hooks/server/useActiveServerSnapshot', () => ({
     useActiveServerSnapshot: () => ({ serverId: 'home-a' }),
 }));
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
-    useFeatureEnabled: (id: string) => id === 'search',
+    useFeatureEnabled: (id: string) => harness.featureEnabled[id] === true,
 }));
 vi.mock('@/sync/domains/features/featureDecisionRuntime', () => {
     const ready = {
@@ -96,6 +194,14 @@ vi.mock('@/sync/domains/machines/administration/useTargetSelection', () => ({
 }));
 vi.mock('@/sync/domains/memory/searchHomeMemory', () => ({
     searchHomeMemory: harness.searchHomeMemory,
+}));
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope', () => ({
+    captureSessionRequestAuthorityForServerAccountScope: async ({ scope }: { scope: { serverId: string; accountId: string } }) => ({
+        scope,
+        context: { scope: 'scoped', credentials: { token: scope.accountId } },
+        request: async () => new Response('{}'),
+        release: async () => undefined,
+    }),
 }));
 vi.mock('@/auth/storage/tokenStorage', () => ({
     TokenStorage: {
@@ -121,21 +227,357 @@ vi.mock('@/sync/domains/server/serverProfiles', () => ({
     }),
     listServerProfiles: () => [
         { id: 'home-a', name: 'Home A', serverUrl: 'https://home-a.example.test' },
-        { id: 'home-b', name: 'Home B', serverUrl: 'https://home-b.example.test' },
+        harness.portableIdentity
+            ? { id: 'local-home-b', serverIdentityId: 'home-b', name: 'Home B', serverUrl: 'https://home-b.example.test' }
+            : { id: 'home-b', name: 'Home B', serverUrl: 'https://home-b.example.test' },
     ],
-    getServerProfileById: (serverId: string) => ({ id: serverId, name: serverId, serverUrl: `https://${serverId}.example.test` }),
-    resolveServerProfileScopeIdForIdentifier: (serverId: string) => serverId,
-    areServerProfileIdentifiersEquivalent: (left: string, right: string) => left === right,
+    getServerProfileById: (serverId: string) => harness.portableIdentity && (serverId === 'home-b' || serverId === 'local-home-b')
+        ? { id: 'local-home-b', serverIdentityId: 'home-b', name: 'Home B', serverUrl: 'https://home-b.example.test' }
+        : { id: serverId, name: serverId, serverUrl: `https://${serverId}.example.test` },
+    resolveServerProfileScopeId: (profile: { id: string; serverIdentityId?: string | null }) => profile.serverIdentityId ?? profile.id,
+    resolveServerProfileScopeIdForIdentifier: (serverId: string) => harness.portableIdentity && serverId === 'local-home-b' ? 'home-b' : serverId,
+    areServerProfileIdentifiersEquivalent: (left: string, right: string) => left === right
+        || (harness.portableIdentity && [left, right].sort().join(':') === 'home-b:local-home-b'),
 }));
 
 afterEach(() => {
     harness.selectionListProps = null;
+    harness.sessionListRows = [];
     harness.homeCredentialMutationListeners.clear();
+    harness.portableIdentity = false;
+    harness.sessionOrganizationProjection = null;
+    harness.activeAccountLifetime = null;
+    harness.featureEnabled = { search: true, 'memory.search': false };
     vi.clearAllMocks();
     standardCleanup();
 });
 
 describe('UniversalSearchController exact Home scope', () => {
+    it('keeps a typed Messages section with a truthful hint when transcript search is disabled', async () => {
+        harness.featureEnabled = { search: false, 'memory.search': false };
+        const { UniversalSearchController } = await import('./UniversalSearchController');
+
+        await renderScreen(
+            <UniversalSearchController
+                commands={[]}
+                initialQuery="needle"
+                initialScope={{ accountId: 'account-1', serverId: 'home-b', sessionId: null, machineId: null, rootPath: null }}
+                activeSessionId={null}
+                presentation="modal"
+                onRequestClose={vi.fn()}
+            />,
+        );
+
+        const rootStep = harness.selectionListProps?.rootStep;
+        const transcript = rootStep?.sections.find((section) => section.id === 'transcript');
+        expect(transcript?.kind).toBe('dynamic');
+        if (!transcript || transcript.kind !== 'dynamic') throw new Error('Messages availability section missing');
+        const resolved = await transcript.resolve('needle', new AbortController().signal);
+        expect(resolved.options).toEqual([]);
+        expect(resolved.emptyHint).toBe('Enable memory search in Features to configure local indexing.');
+        expect(rootStep?.emptyStateLabel).toBe('No matches');
+
+        await act(async () => {
+            harness.selectionListProps?.onSelect?.('missing-result', { id: 'missing-result', label: 'Missing' });
+        });
+        await vi.waitFor(() => expect(harness.modalAlert).toHaveBeenCalledWith(
+            'Error',
+            'Search failed. Please try again.',
+        ));
+    });
+
+    it('keeps an explicit empty scope closed instead of widening to ambient or cross-Home entities', async () => {
+        const { UniversalSearchController } = await import('./UniversalSearchController');
+
+        await renderScreen(
+            <UniversalSearchController
+                commands={[]}
+                initialQuery="needle"
+                initialScope={{ accountId: null, serverId: null, sessionId: null, machineId: null, rootPath: null }}
+                activeSessionId="ambient-session-a"
+                presentation="modal"
+                onRequestClose={vi.fn()}
+            />,
+        );
+
+        const ids = harness.selectionListProps?.rootStep.sections.map((section) => section.id) ?? [];
+        expect(ids).not.toContain('transcript');
+        expect(ids).not.toContain('sessions');
+        expect(harness.searchHomeMemory).not.toHaveBeenCalled();
+    });
+
+    it('uses the canonical Session organization projection when matching Session tags', async () => {
+        harness.sessionListRows = [{
+            serverId: 'home-b',
+            serverName: 'Home B',
+            session: {
+                id: 'session-b',
+                updatedAt: 1,
+                metadata: { name: 'Home B session', path: '/repo/b' },
+            },
+        }];
+        harness.sessionOrganizationProjection = {
+            schemaVersion: 1,
+            version: 1,
+            pinnedSessionIds: [],
+            pinsBySessionId: {},
+            foldersById: {},
+            folderAssignmentsBySessionId: {},
+            tagsById: {
+                urgent: {
+                    tagId: 'urgent',
+                    tagKey: 'tag/urgent',
+                    sortKey: 'a',
+                    display: { t: 'plain', v: { label: 'Urgent' } },
+                    displayState: { status: 'available', value: { label: 'Urgent' } },
+                    archivedAt: null,
+                    createdAt: 1,
+                    updatedAt: 1,
+                },
+            },
+            tagAssignmentsBySessionId: { 'session-b': ['urgent'] },
+            attentionStandingsBySessionId: {},
+            orderEntriesByScopeKey: {},
+            labelsByLabelKey: {},
+        };
+        const { UniversalSearchController } = await import('./UniversalSearchController');
+
+        await renderScreen(
+            <UniversalSearchController
+                commands={[]}
+                initialScope={{ accountId: 'account-1', serverId: 'home-b', sessionId: null, machineId: null, rootPath: null }}
+                activeSessionId={null}
+                presentation="modal"
+                onRequestClose={vi.fn()}
+            />,
+        );
+
+        const sessionSection = harness.selectionListProps?.rootStep.sections.find((section) => section.id === 'sessions');
+        if (!sessionSection || sessionSection.kind !== 'static') throw new Error('Sessions section missing');
+        expect(sessionSection.options[0]?.searchText).toContain('Urgent');
+    });
+
+    it('ensures complete inventory once for the scope lifetime without exposing or restarting a result section', async () => {
+        harness.activeAccountLifetime = {
+            scope: { serverId: 'home-a', accountId: 'account-a' },
+            isCurrent: () => true,
+            onRetire: () => ({ dispose: () => undefined }),
+        };
+        harness.sessionListRows = [
+            {
+                serverId: 'home-a',
+                serverName: 'Home A',
+                session: {
+                    id: 'unloaded-active',
+                    updatedAt: 3,
+                    archivedAt: null,
+                    metadata: { name: 'Unloaded active needle', path: '/repo/active' },
+                },
+            },
+            {
+                serverId: 'home-a',
+                serverName: 'Home A',
+                session: {
+                    id: 'unloaded-archived',
+                    updatedAt: 2,
+                    archivedAt: 1,
+                    metadata: { name: 'Archived needle', path: '/repo/archived' },
+                },
+            },
+        ];
+        const { UniversalSearchController } = await import('./UniversalSearchController');
+
+        await renderScreen(
+            <UniversalSearchController
+                commands={[]}
+                initialQuery="needle"
+                initialScope={{ accountId: 'account-a', serverId: 'home-a', sessionId: null, machineId: null, rootPath: null }}
+                activeSessionId={null}
+                presentation="modal"
+                onRequestClose={vi.fn()}
+            />,
+        );
+
+        await vi.waitFor(() => expect(harness.ensureSessionMetadataInventoryForServerAccountScope).toHaveBeenCalledOnce());
+        expect(harness.selectionListProps?.rootStep.sections.some((section) => section.id === 'session-inventory')).toBe(false);
+        await act(async () => {
+            harness.selectionListProps?.onChangeInputValue?.('needle again');
+        });
+        await act(async () => undefined);
+        expect(harness.ensureSessionMetadataInventoryForServerAccountScope).toHaveBeenCalledTimes(1);
+        expect(harness.ensureSessionMetadataInventoryForServerAccountScope).toHaveBeenCalledWith(expect.objectContaining({
+            scope: { serverId: 'home-a', accountId: 'account-a' },
+        }));
+        const sessions = harness.selectionListProps?.rootStep?.sections.find((section) => section.id === 'sessions');
+        expect(sessions?.kind).toBe('static');
+        if (!sessions || sessions.kind !== 'static') throw new Error('Sessions section not ready');
+        expect(sessions.options.map((option) => option.label)).toEqual([
+            'Unloaded active needle',
+            'Archived needle',
+        ]);
+    });
+
+    it('surfaces Session inventory failures section-locally while silencing cancellation', async () => {
+        const failure = new Error('current inventory unavailable');
+        harness.ensureSessionMetadataInventoryForServerAccountScope.mockRejectedValueOnce(failure);
+        const { UniversalSearchController } = await import('./UniversalSearchController');
+
+        await renderScreen(
+            <UniversalSearchController
+                commands={[]}
+                initialQuery="needle"
+                initialScope={{ accountId: 'account-1', serverId: 'home-b', sessionId: null, machineId: null, rootPath: null }}
+                activeSessionId={null}
+                presentation="modal"
+                onRequestClose={vi.fn()}
+            />,
+        );
+
+        await vi.waitFor(() => expect(harness.ensureSessionMetadataInventoryForServerAccountScope).toHaveBeenCalledOnce());
+        expect(harness.selectionListProps?.rootStep.sections.some((section) => section.id === 'session-inventory')).toBe(false);
+        await vi.waitFor(() => {
+            const sessions = harness.selectionListProps?.rootStep.sections.find((section) => section.id === 'sessions');
+            expect(sessions?.kind).toBe('static');
+            expect(sessions && 'resultHint' in sessions ? sessions.resultHint : undefined).toEqual(expect.any(String));
+        });
+    });
+
+    it('pages Session metadata for an explicitly selected inactive Home without borrowing the active Sync scope', async () => {
+        harness.activeAccountLifetime = {
+            scope: { serverId: 'home-a', accountId: 'account-a' },
+            isCurrent: () => true,
+            onRetire: () => ({ dispose: () => undefined }),
+        };
+        const { UniversalSearchController } = await import('./UniversalSearchController');
+
+        await renderScreen(
+            <UniversalSearchController
+                commands={[]}
+                initialQuery="archived needle"
+                initialScope={{ accountId: 'account-1', serverId: 'home-b', sessionId: null, machineId: null, rootPath: null }}
+                activeSessionId={null}
+                presentation="modal"
+                onRequestClose={vi.fn()}
+            />,
+        );
+
+        await vi.waitFor(() => expect(harness.ensureSessionMetadataInventoryForServerAccountScope).toHaveBeenCalledOnce());
+        expect(harness.ensureSessionMetadataInventoryForServerAccountScope).toHaveBeenCalledWith(expect.objectContaining({
+            scope: { serverId: 'home-b', accountId: 'account-1' },
+        }));
+        expect(harness.fetchAllSessionMetadata).not.toHaveBeenCalled();
+    });
+
+    it('aborts inactive-Home Session metadata paging when that exact credential lifetime retires', async () => {
+        harness.ensureSessionMetadataInventoryForServerAccountScope.mockImplementationOnce(async (params) => await new Promise<void>((_resolve, reject) => {
+            params.accountLifetime.onRetire(() => {
+                reject(Object.assign(new Error('retired'), { name: 'AbortError' }));
+            });
+        }));
+        const { UniversalSearchController } = await import('./UniversalSearchController');
+        await renderScreen(
+            <UniversalSearchController
+                commands={[]}
+                initialQuery="needle"
+                initialScope={{ accountId: 'account-1', serverId: 'home-b', sessionId: null, machineId: null, rootPath: null }}
+                activeSessionId={null}
+                presentation="modal"
+                onRequestClose={vi.fn()}
+            />,
+        );
+        await vi.waitFor(() => expect(harness.ensureSessionMetadataInventoryForServerAccountScope).toHaveBeenCalledOnce());
+        const firstSignal = harness.ensureSessionMetadataInventoryForServerAccountScope.mock.calls[0]?.[0]?.signal as AbortSignal;
+        expect(firstSignal.aborted).toBe(false);
+
+        await act(async () => {
+            for (const listener of harness.homeCredentialMutationListeners) {
+                listener({ kind: 'credentials_set', serverId: 'home-b', serverUrl: 'https://home-b.example.test' });
+            }
+        });
+
+        await vi.waitFor(() => expect(firstSignal.aborted).toBe(true));
+    });
+
+    it('keeps Search open when a previously rendered command has left the current catalog', async () => {
+        const dismiss = vi.fn();
+        const action = vi.fn(async () => {});
+        const command = {
+            id: 'retired-command',
+            title: 'Retired command',
+            action,
+            // This test exercises pre-dismiss currentness, not the separately
+            // covered empty-query suggestion projection.
+            emptyQuerySuggested: true,
+        };
+        const { UniversalSearchController } = await import('./UniversalSearchController');
+        const renderController = (commands: typeof command[]) => (
+            <UniversalSearchController
+                commands={commands}
+                activeSessionId={null}
+                presentation="modal"
+                onRequestClose={dismiss}
+            />
+        );
+        const screen = await renderScreen(renderController([command]));
+        const staleOption = harness.selectionListProps?.rootStep.sections
+            .flatMap((section) => section.kind === 'static' ? section.options : [])
+            .find((option) => option.id === 'command:retired-command');
+        expect(staleOption).toBeDefined();
+
+        await act(async () => { screen.tree.update(renderController([])); });
+        await act(async () => {
+            harness.selectionListProps?.onSelect?.(staleOption!.id, staleOption!);
+        });
+
+        expect(dismiss).not.toHaveBeenCalled();
+        expect(action).not.toHaveBeenCalled();
+    });
+
+    it('canonicalizes a local profile id to portable Home identity for credentials, filtering, query, and result activation', async () => {
+        harness.portableIdentity = true;
+        harness.searchHomeMemory.mockResolvedValue({
+            v: 1,
+            ok: true,
+            hits: [{
+                sessionId: 'session-b',
+                seqFrom: 5,
+                seqTo: 5,
+                createdAtFromMs: 1,
+                createdAtToMs: 1,
+                summary: 'Portable identity result',
+                score: 1,
+            }],
+        });
+        const { UniversalSearchController } = await import('./UniversalSearchController');
+
+        await renderScreen(
+            <UniversalSearchController
+                commands={[]}
+                initialQuery="needle"
+                initialScope={{ accountId: 'account-1', serverId: 'local-home-b', sessionId: 'session-b', machineId: null, rootPath: null }}
+                activeSessionId={null}
+                presentation="modal"
+                onRequestClose={vi.fn()}
+            />,
+        );
+
+        const transcript = harness.selectionListProps?.rootStep?.sections.find((section) => section.id === 'transcript');
+        expect(transcript?.kind).toBe('dynamic');
+        if (!transcript || transcript.kind !== 'dynamic') throw new Error('Transcript section not ready');
+        const resolved = await transcript.resolve('needle', new AbortController().signal);
+        const option = resolved.options[0];
+        expect(harness.searchHomeMemory).toHaveBeenCalledWith(expect.objectContaining({
+            serverId: 'home-b',
+            accountId: 'account-1',
+        }));
+        option?.onSelect?.();
+        harness.selectionListProps?.onSelect?.(option!.id, option!);
+        await vi.waitFor(() => expect(harness.navigateToSession).toHaveBeenCalledWith('session-b', {
+            serverId: 'home-b',
+            query: { jumpSeq: 5 },
+        }));
+    });
+
     it('keeps a contextual Home B seed through query, result identity, and canonical scoped activation while Home A is focused', async () => {
         harness.searchHomeMemory.mockResolvedValue({
             v: 1,
@@ -184,6 +626,83 @@ describe('UniversalSearchController exact Home scope', () => {
                 query: { jumpSeq: 7 },
             });
         });
+        expect(harness.fetchAllSessionMetadata).not.toHaveBeenCalled();
+    });
+
+    it('uses the freshly hydrated exact Session title instead of duplicating the transcript excerpt', async () => {
+        harness.searchHomeMemory.mockResolvedValue({
+            v: 1,
+            ok: true,
+            hits: [{
+                sessionId: 'newly-hydrated',
+                seqFrom: 1,
+                seqTo: 1,
+                createdAtFromMs: 1,
+                createdAtToMs: 1,
+                summary: 'Matching transcript excerpt',
+                score: 1,
+            }],
+        });
+        const { UniversalSearchController } = await import('./UniversalSearchController');
+        await renderScreen(
+            <UniversalSearchController
+                commands={[]}
+                initialQuery="needle"
+                initialScope={{ accountId: 'account-1', serverId: 'home-b', sessionId: null, machineId: null, rootPath: null }}
+                activeSessionId={null}
+                presentation="modal"
+                onRequestClose={vi.fn()}
+            />,
+        );
+
+        const transcript = harness.selectionListProps?.rootStep.sections.find((section) => section.id === 'transcript');
+        if (!transcript || transcript.kind !== 'dynamic') throw new Error('Transcript section missing');
+        const result = await transcript.resolve('needle', new AbortController().signal);
+
+        expect(result.options[0]?.label).toBe('Scoped Session');
+        expect(result.options[0]?.subtitle).toBe('Matching transcript excerpt');
+    });
+
+    it('keeps the result query out of the scope picker and returns to the root after choosing a scope', async () => {
+        const { UniversalSearchController } = await import('./UniversalSearchController');
+
+        await renderScreen(
+            <UniversalSearchController
+                commands={[]}
+                initialQuery="needle"
+                initialScope={{ accountId: 'account-1', serverId: 'home-b', sessionId: null, machineId: null, rootPath: null }}
+                activeSessionId={null}
+                presentation="modal"
+                onRequestClose={vi.fn()}
+            />,
+        );
+
+        expect(harness.selectionListProps?.rootStep.sections.some((section) => section.id === 'scope')).toBe(false);
+        const scopeControl = harness.selectionListProps?.inputPrefix;
+        if (!React.isValidElement<{ testID?: string; onPress?: () => void; accessibilityState?: { expanded?: boolean } }>(scopeControl)) {
+            throw new Error('Scope control missing from Search input');
+        }
+        expect(scopeControl.props.testID).toBe('universal-search:scope');
+        expect(scopeControl.props.accessibilityState?.expanded).toBe(false);
+        await act(async () => {
+            scopeControl.props.onPress?.();
+        });
+        const pickerStep = harness.selectionListProps?.syncActiveStep;
+        expect(pickerStep?.disableInputFilter).toBe(true);
+        if (!pickerStep) throw new Error('Scope picker step missing');
+        expect(harness.selectionListProps?.syncActiveStep).toBe(pickerStep);
+
+        const nextScope = pickerStep.sections
+            .flatMap((section) => section.kind === 'static' ? section.options : [])
+            .find((option) => option.id.includes('home-a'));
+        expect(nextScope).toBeDefined();
+        await act(async () => {
+            nextScope?.onSelect?.();
+            harness.selectionListProps?.onSelect?.(nextScope!.id, nextScope!);
+        });
+
+        expect(harness.selectionListProps?.inputValue).toBe('needle');
+        expect(harness.selectionListProps?.syncActiveStep).toBeNull();
     });
 
     it('invalidates the Home transcript resolver identity when that Home credential mutates', async () => {
@@ -246,7 +765,13 @@ describe('UniversalSearchController exact Home scope', () => {
             <UniversalSearchController
                 commands={[]}
                 initialQuery="needle"
-                initialScope={{ accountId: 'account-1', serverId: 'home-b', sessionId: 'session-b' }}
+                initialScope={{
+                    accountId: 'account-1',
+                    serverId: 'home-b',
+                    sessionId: 'session-b',
+                    machineId: null,
+                    rootPath: null,
+                }}
                 activeSessionId={null}
                 presentation="modal"
                 onRequestClose={vi.fn()}

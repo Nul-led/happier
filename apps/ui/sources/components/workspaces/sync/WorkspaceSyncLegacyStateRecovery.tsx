@@ -9,6 +9,14 @@ import { inspectWorkspaceSyncLegacyState } from '@/sync/ops/workspaceSync';
 import { t } from '@/text';
 import { getMachineDisplayName } from '@/utils/sessions/machineUtils';
 import { invokeDesktopHost, isDesktopHost } from '@/utils/platform/desktopHost';
+import {
+    getVersionSupportState,
+    MINIMUM_CLI_WORKSPACE_SYNC_LEGACY_INSPECT_VERSION,
+} from '@/utils/system/versionUtils';
+import {
+    isRpcMethodNotAvailableError,
+    isRpcMethodNotFoundError,
+} from '@/sync/runtime/rpcErrors';
 
 type Finding = Readonly<{
     machineId: string;
@@ -16,15 +24,41 @@ type Finding = Readonly<{
     inspection: Exclude<WorkspaceSyncLegacyStateInspectionV1, { status: 'absent' }>;
 }>;
 
+function isInspectionRpcUnavailableError(error: unknown): boolean {
+    return isRpcMethodNotAvailableError(error) || isRpcMethodNotFoundError(error);
+}
+
+/**
+ * Distinguishes a daemon that predates the workspace-sync legacy-state
+ * inspection RPC from a genuine detector failure. The typed RPC rejection is
+ * the direct capability evidence; the machine's daemon CLI version is the
+ * existing corroborating evidence when the daemon could not answer at all.
+ */
+function isOutdatedDaemonEvidence(
+    machine: { daemonState?: unknown } | undefined,
+    error: unknown,
+): boolean {
+    if (isInspectionRpcUnavailableError(error)) return true;
+    const version = machine?.daemonState && typeof machine.daemonState === 'object'
+        ? (machine.daemonState as { cliVersion?: unknown }).cliVersion
+        : null;
+    return getVersionSupportState(
+        typeof version === 'string' ? version : undefined,
+        MINIMUM_CLI_WORKSPACE_SYNC_LEGACY_INSPECT_VERSION,
+    ) === 'unsupported';
+}
+
 export const WorkspaceSyncLegacyStateRecovery = React.memo(function WorkspaceSyncLegacyStateRecovery() {
     const machines = useAllMachines();
     const localDaemon = useLocalDaemonControl();
     const [findings, setFindings] = React.useState<readonly Finding[]>([]);
+    const [outdatedMachineIds, setOutdatedMachineIds] = React.useState<readonly string[]>([]);
     const [checking, setChecking] = React.useState(false);
     const [inspectionFailed, setInspectionFailed] = React.useState(false);
 
     const inspect = React.useCallback(async () => {
         setChecking(true);
+        const outdated: string[] = [];
         const settled = await Promise.allSettled(machines.map(async (machine): Promise<Finding | null> => {
             const inspection = await inspectWorkspaceSyncLegacyState({ controllerMachineId: machine.id });
             return inspection.status === 'absent' ? null : {
@@ -47,19 +81,39 @@ export const WorkspaceSyncLegacyStateRecovery = React.memo(function WorkspaceSyn
             });
             return [...next.values()];
         });
-        setInspectionFailed(settled.some((result) => result.status === 'rejected'));
+        settled.forEach((result, index) => {
+            const machine = machines[index];
+            if (!machine || result.status !== 'rejected') return;
+            if (isOutdatedDaemonEvidence(machine, result.reason)) outdated.push(machine.id);
+        });
+        setOutdatedMachineIds(outdated);
+        setInspectionFailed(settled.some((result, index) => (
+            result.status === 'rejected'
+            && machines[index]
+            && !outdated.includes(machines[index]!.id)
+        )));
         setChecking(false);
     }, [machines]);
 
     React.useEffect(() => { void inspect(); }, [inspect]);
 
-    if (!checking && findings.length === 0 && !inspectionFailed) return null;
+    if (!checking && findings.length === 0 && outdatedMachineIds.length === 0 && !inspectionFailed) return null;
     return (
         <ItemGroup
             title={t('workspaceSync.legacyRecovery.title')}
             footer={t('workspaceSync.legacyRecovery.footer')}
         >
             {checking ? <Item title={t('workspaceSync.legacyRecovery.checking')} showChevron={false} /> : null}
+            {outdatedMachineIds.map((machineId) => (
+                <Item
+                    key={machineId}
+                    testID={`workspace-sync-legacy-outdated-${machineId}`}
+                    title={t('workspaceSync.legacyRecovery.outdatedTitle', { machine: getMachineDisplayName(machines.find((machine) => machine.id === machineId)) ?? machineId })}
+                    subtitle={t('workspaceSync.legacyRecovery.outdatedBody')}
+                    subtitleLines={0}
+                    showChevron={false}
+                />
+            ))}
             {inspectionFailed ? (
                 <Item
                     testID="workspace-sync-legacy-inspection-failed"

@@ -143,15 +143,9 @@ const observed = {
     events: ['parentTurnCompleted'] as const,
 } as const;
 
-function destinationStepFromEventPicker(eventPicker: { props: {
-    rootStep: {
-        sections: ReadonlyArray<{
-            options: ReadonlyArray<Readonly<{ id: string; openStep?: SelectionListStep }>>;
-        }>;
-    };
-} }): SelectionListStep {
+function destinationStepFromEventPicker(eventPicker: ReactTestInstance): SelectionListStep {
     const option = eventPicker.props.rootStep.sections[0]!.options.find(
-        (candidate) => candidate.id === 'parentTurnFailed',
+        (candidate: Readonly<{ id: string; openStep?: SelectionListStep }>) => candidate.id === 'parentTurnFailed',
     );
     if (!option || option.openStep === undefined) {
         throw new Error('the lifecycle Event row does not open a destination step');
@@ -176,7 +170,7 @@ async function activateDestination(
  * live destination content through the controlled active-step mirror.
  */
 function activeDestinationStep(
-    picker: { props: { syncActiveStep: SelectionListStep | null } },
+    picker: ReactTestInstance,
 ): SelectionListStep {
     const step = picker.props.syncActiveStep;
     if (!step) throw new Error('no destination step is active');

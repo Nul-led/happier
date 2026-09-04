@@ -161,7 +161,10 @@ describe('CommandPaletteProvider keyboard shortcuts', () => {
     });
 
     it('keeps Search available when only its keyboard shortcut is disabled', async () => {
-        testState.settings.commandPaletteEnabled = false;
+        testState.settings = {
+            ...testState.settings,
+            commandPaletteEnabled: false,
+        };
         const { useUniversalSearchRuntime } = await import('@/components/appShell/search/UniversalSearchRuntimeContext');
         const { CommandPaletteProvider } = await import('./CommandPaletteProvider');
 

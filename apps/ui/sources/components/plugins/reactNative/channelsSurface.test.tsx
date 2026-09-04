@@ -972,6 +972,14 @@ function findPressableByTestId(node: ReactTestRenderer, testID: string) {
   return pressable;
 }
 
+function findPressableByAccessibilityLabel(node: ReactTestRenderer, label: string) {
+  const pressable = node.root.findAll((instance) => (
+    instance.props?.accessibilityLabel === label && typeof instance.props?.onPress === 'function'
+  ))[0];
+  if (!pressable) throw new Error(`Expected an interactive control labelled ${label}.`);
+  return pressable;
+}
+
 function findTextFieldByTestId(node: ReactTestRenderer, testID: string) {
   const textField = findByTestId(node, testID).find(
     (instance) => typeof instance.props?.onChangeText === 'function',
@@ -1519,7 +1527,7 @@ describe('Channels settings surface (real source, mounted)', () => {
     expect(findByTestId(renderer, 'channels-connection-delete')).toHaveLength(0);
     await act(async () => {
       findPressableByTestId(renderer!, 'channels-connection-enabled').props.onPress();
-      findTextFieldByTestId(renderer!, 'channels-connection-observation-age').props.onChangeText('120000');
+      findPressableByAccessibilityLabel(renderer!, '5 minutes').props.onPress();
     });
     await act(async () => {
       await findPressableByTestId(renderer!, 'channels-connection-save').props.onPress();
@@ -1538,7 +1546,7 @@ describe('Channels settings surface (real source, mounted)', () => {
           payload: expect.objectContaining({
             enabled: false,
             authorityEpoch: 3,
-            maximumObservationAgeMs: 120_000,
+            maximumObservationAgeMs: 5 * 60_000,
           }),
         }),
       }),
@@ -1941,7 +1949,7 @@ describe('Channels settings surface (real source, mounted)', () => {
     await flushHookEffects();
     await act(async () => {
       findPressableByTestId(renderer!, 'channels-connection-enabled').props.onPress();
-      findTextFieldByTestId(renderer!, 'channels-connection-observation-age').props.onChangeText('120000');
+      findPressableByAccessibilityLabel(renderer!, '5 minutes').props.onPress();
     });
     await act(async () => {
       await findPressableByTestId(renderer!, 'channels-connection-save').props.onPress();
@@ -1954,7 +1962,7 @@ describe('Channels settings surface (real source, mounted)', () => {
         payload: {
           enabled: false,
           authorityEpoch: 3,
-          maximumObservationAgeMs: 120_000,
+          maximumObservationAgeMs: 5 * 60_000,
         },
       },
     });
@@ -1972,7 +1980,7 @@ describe('Channels settings surface (real source, mounted)', () => {
     expect(data.query.mock.calls.length).toBeGreaterThan(readsBeforeExplicitReread);
     expect(findByTestId(renderer, 'channels-save-outcome-unknown')).toHaveLength(0);
     expect(findPressableByTestId(renderer, 'channels-connection-enabled').props.checked).toBe(false);
-    expect(findTextFieldByTestId(renderer, 'channels-connection-observation-age').props.value).toBe('120000');
+    expect(findPressableByAccessibilityLabel(renderer, '5 minutes').props.checked).toBe(true);
     expect(host.readResource).not.toHaveBeenCalled();
   });
 
@@ -2265,9 +2273,9 @@ describe('Channels settings surface (real source, mounted)', () => {
     const alphaBinding = findByTestId(renderer, 'channels-binding-binding-alpha')[0];
     const betaBinding = findByTestId(renderer, 'channels-binding-binding-beta')[0];
     expect(alphaBinding?.props.accessibilityLabel).toContain('Provider: Alpha Provider');
-    expect(alphaBinding?.props.accessibilityLabel).not.toContain(alphaConnection.integrationPrincipalLabel);
+    expect(alphaBinding?.props.accessibilityLabel).toContain(`Account: ${alphaConnection.integrationPrincipalLabel}`);
     expect(betaBinding?.props.accessibilityLabel).toContain('Provider: Beta Provider');
-    expect(betaBinding?.props.accessibilityLabel).not.toContain(betaConnection.integrationPrincipalLabel);
+    expect(betaBinding?.props.accessibilityLabel).toContain(`Account: ${betaConnection.integrationPrincipalLabel}`);
     expect(findByTestId(renderer, 'channels-provider-brand-binding-binding-alpha').some(
       (instance) => instance.props.accessible === false && instance.props.accessibilityLabel === undefined,
     )).toBe(true);
@@ -2424,7 +2432,7 @@ describe('Channels settings surface (real source, mounted)', () => {
           connectionId: connection.connectionId,
           expectedRevision: connection.revision,
           enabled: false,
-          maximumObservationAgeMs: 180_000,
+          maximumObservationAgeMs: 5 * 60_000,
         });
         return {
           kind: 'updated',
@@ -2478,7 +2486,7 @@ describe('Channels settings surface (real source, mounted)', () => {
 
     await act(async () => {
       findPressableByTestId(renderer!, 'channels-connection-enabled').props.onPress();
-      findTextFieldByTestId(renderer!, 'channels-connection-observation-age').props.onChangeText('180000');
+      findPressableByAccessibilityLabel(renderer!, '5 minutes').props.onPress();
     });
     await act(async () => {
       await findPressableByTestId(renderer!, 'channels-connection-save').props.onPress();
@@ -2632,7 +2640,7 @@ describe('Channels settings surface (real source, mounted)', () => {
     ]);
   });
 
-  it('validates exact observation-age boundary neighbors before dispatching the update Action', async () => {
+  it('offers the bounded human observation-age presets through the update Action', async () => {
     const connection = connectionFixture();
     const host = createChannelsHostApi({
       readResource: async () => connectionResourceContent([connection]),
@@ -2644,19 +2652,10 @@ describe('Channels settings surface (real source, mounted)', () => {
     });
     await flushHookEffects();
 
-    const field = () => findTextFieldByTestId(renderer!, 'channels-connection-observation-age');
     const save = () => findPressableByTestId(renderer!, 'channels-connection-save');
 
     await act(async () => {
-      field().props.onChangeText(String(MIN_CONVERSATION_OBSERVATION_AGE_MS - 1));
-    });
-    await act(async () => {
-      await save().props.onPress();
-    });
-    expect(host.executeAction).not.toHaveBeenCalled();
-
-    await act(async () => {
-      field().props.onChangeText(String(MIN_CONVERSATION_OBSERVATION_AGE_MS));
+      findPressableByAccessibilityLabel(renderer!, '1 minute').props.onPress();
     });
     await act(async () => {
       await save().props.onPress();
@@ -2670,15 +2669,7 @@ describe('Channels settings surface (real source, mounted)', () => {
     });
 
     await act(async () => {
-      field().props.onChangeText(String(MAX_CONVERSATION_OBSERVATION_AGE_MS + 1));
-    });
-    await act(async () => {
-      await save().props.onPress();
-    });
-    expect(host.executeAction).toHaveBeenCalledTimes(1);
-
-    await act(async () => {
-      field().props.onChangeText(String(MAX_CONVERSATION_OBSERVATION_AGE_MS));
+      findPressableByAccessibilityLabel(renderer!, '30 days').props.onPress();
     });
     await act(async () => {
       await save().props.onPress();
@@ -2865,7 +2856,7 @@ describe('Channels settings surface (real source, mounted)', () => {
     expect(findByTestId(renderer, 'channels-save-outcome-unknown').length).toBeGreaterThan(0);
     expect(findPressableByTestId(renderer, 'channels-connection-save').props.disabled).toBe(true);
     expect(findPressableByTestId(renderer, 'channels-connection-enabled').props.checked).toBe(true);
-    expect(findTextFieldByTestId(renderer, 'channels-connection-observation-age').props.value).toBe('240000');
+    expect(findPressableByAccessibilityLabel(renderer, '4 minutes').props.checked).toBe(true);
 
     deferReconciliationRead = true;
     await act(async () => {
@@ -2894,7 +2885,7 @@ describe('Channels settings surface (real source, mounted)', () => {
     await flushHookEffects();
     await act(async () => {
       findPressableByTestId(renderer!, 'channels-connection-enabled').props.onPress();
-      findTextFieldByTestId(renderer!, 'channels-connection-observation-age').props.onChangeText('180000');
+      findPressableByAccessibilityLabel(renderer!, '5 minutes').props.onPress();
     });
 
     await act(async () => {
@@ -2907,10 +2898,10 @@ describe('Channels settings surface (real source, mounted)', () => {
     await flushHookEffects();
 
     expect(findPressableByTestId(renderer, 'channels-connection-enabled').props.checked).toBe(false);
-    expect(findTextFieldByTestId(renderer, 'channels-connection-observation-age').props.value).toBe('180000');
+    expect(findPressableByAccessibilityLabel(renderer, '5 minutes').props.checked).toBe(true);
   });
 
-  it('reconciles a changed connection revision before a draft can be saved', async () => {
+  it('preserves an unsaved connection draft and blocks it from overwriting a newer revision', async () => {
     let connection = connectionFixture();
     let digestCharacter = 'c';
     const host = createChannelsHostApi({
@@ -2924,7 +2915,7 @@ describe('Channels settings surface (real source, mounted)', () => {
     await flushHookEffects();
     await act(async () => {
       findPressableByTestId(renderer!, 'channels-connection-enabled').props.onPress();
-      findTextFieldByTestId(renderer!, 'channels-connection-observation-age').props.onChangeText('180000');
+      findPressableByAccessibilityLabel(renderer!, '5 minutes').props.onPress();
     });
 
     connection = connectionFixture({
@@ -2937,17 +2928,14 @@ describe('Channels settings surface (real source, mounted)', () => {
     });
     await flushHookEffects();
 
-    expect(findPressableByTestId(renderer, 'channels-connection-enabled').props.checked).toBe(true);
-    expect(findTextFieldByTestId(renderer, 'channels-connection-observation-age').props.value).toBe('240000');
+    expect(findPressableByTestId(renderer, 'channels-connection-enabled').props.checked).toBe(false);
+    expect(findPressableByAccessibilityLabel(renderer, '5 minutes').props.checked).toBe(true);
+    expect(findByTestId(renderer, 'channels-connection-source-changed').length).toBeGreaterThan(0);
+    expect(findPressableByTestId(renderer, 'channels-connection-save').props.disabled).toBe(true);
     await act(async () => {
       await findPressableByTestId(renderer!, 'channels-connection-save').props.onPress();
     });
-    expect(host.executeAction).toHaveBeenLastCalledWith('connection/update-v1', {
-      connectionId: connection.connectionId,
-      expectedRevision: connection.revision,
-      enabled: connection.enabled,
-      maximumObservationAgeMs: connection.maximumObservationAgeMs,
-    });
+    expect(host.executeAction).not.toHaveBeenCalled();
   });
 
   it('waits for the queued unknown-outcome reread when one Resource refresh is already pending', async () => {
@@ -3187,6 +3175,7 @@ describe('Channels settings surface (real source, mounted)', () => {
           input: providerSetupInput,
           selection,
           connectedAccount: { kind: 'none' },
+          presentation: { connectedAccountLabel: null, machineDisplayName: 'Development Mac' },
         };
       },
       executeAction: async (actionId, payload) => {
@@ -3261,6 +3250,7 @@ describe('Channels settings surface (real source, mounted)', () => {
         input: { authorizationCode: 'opaque-provider-input' },
         selection,
         connectedAccount: { kind: 'none' },
+        presentation: { connectedAccountLabel: null, machineDisplayName: 'Development Mac' },
       }),
       executeAction: async () => {
         throw Object.assign(new Error('Provider preparation may have reached the selected provider.'), {
@@ -3347,6 +3337,7 @@ describe('Channels settings surface (real source, mounted)', () => {
           fieldPath: '/credential',
           ref: credentialRef,
         },
+        presentation: { connectedAccountLabel: 'Work account', machineDisplayName: 'Development Mac' },
       }),
       executeAction: async (actionId, payload) => {
         if (actionId === CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionPrepare) {
@@ -3454,6 +3445,7 @@ describe('Channels settings surface (real source, mounted)', () => {
         input: { authorizationCode: 'opaque-provider-input' },
         selection,
         connectedAccount: { kind: 'none' },
+        presentation: { connectedAccountLabel: null, machineDisplayName: 'Development Mac' },
       }),
       executeAction: async (actionId) => {
         if (actionId === CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionPrepare) {
@@ -3543,6 +3535,7 @@ describe('Channels settings surface (real source, mounted)', () => {
           fieldPath: '/credential',
           ref: credentialRef,
         },
+        presentation: { connectedAccountLabel: 'Work account', machineDisplayName: 'Development Mac' },
       }),
     });
 
@@ -3607,6 +3600,7 @@ describe('Channels settings surface (real source, mounted)', () => {
         input: { authorizationCode: 'opaque-provider-input' },
         selection,
         connectedAccount: { kind: 'none' },
+        presentation: { connectedAccountLabel: null, machineDisplayName: 'Development Mac' },
       }),
       executeAction: async (actionId) => {
         expect(actionId).toBe('connection/prepare-v1');
@@ -4411,7 +4405,8 @@ describe('Channels settings surface (real source, mounted)', () => {
       `channels-delivery-resolution-accept-${partialCustodyId}`,
     ).some((instance) => (
       instance.props?.role === 'button'
-        && instance.props?.accessibilityLabel === 'Accept as sent'
+        && instance.props?.accessibilityLabel
+          === `Accept as sent (Resolve delivery outcome — ${partialCustodyId.slice(0, 8)})`
     ))).toBe(true);
     expect(findByTestId(
       renderer,

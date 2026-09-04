@@ -371,6 +371,7 @@ export function buildSelectionListOptionA11yProps(params: Readonly<{
     positionInSet: number;
     setSize: number;
     accessibilityLabel?: string;
+    tabIndex: 0 | -1;
     /** Defaults to `'listbox'` so existing consumers keep the option role set. */
     pattern?: SelectionListA11yPattern;
 }>): SelectionListActivatableA11yProps {
@@ -393,7 +394,7 @@ export function buildSelectionListOptionA11yProps(params: Readonly<{
             selected: params.isSelected,
             ...(params.disabled ? { disabled: true as const } : {}),
         },
-        tabIndex: params.disabled ? -1 as const : 0 as const,
+        tabIndex: params.disabled ? -1 as const : params.tabIndex,
     };
     if (!accessibilityLabel) return base;
     return {

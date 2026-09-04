@@ -182,7 +182,7 @@ describe('useSelectionListKeyboardNav (Phase 2.5 — advanced)', () => {
                 nextVisibleOptionIds: ['refreshed-row-a', 'refreshed-row-b'],
                 expectedFocusedId: 'refreshed-row-b',
             },
-        ])('keeps explicit row intent at the surviving identity or nearest position when $name', async ({
+        ])('preserves focus position but retires stale explicit Tab intent when $name', async ({
             nextInputValue,
             nextVisibleOptionIds,
             expectedFocusedId,
@@ -215,15 +215,46 @@ describe('useSelectionListKeyboardNav (Phase 2.5 — advanced)', () => {
             expect(harness.getCurrent().focusedOptionId).toBe(expectedFocusedId);
 
             const initialTab = makeKeyEvent({ key: 'Tab' });
-            let initialTabConsumed = false;
+            let initialTabConsumed = true;
             await act(async () => {
                 initialTabConsumed = harness.getCurrent().handleKey(initialTab.event);
             });
-            expect(initialTabConsumed).toBe(true);
-            expect(initialTab.preventDefault).toHaveBeenCalledOnce();
-            expect(initialTab.stopPropagation).toHaveBeenCalledOnce();
+            expect(initialTabConsumed).toBe(false);
+            expect(initialTab.preventDefault).not.toHaveBeenCalled();
+            expect(initialTab.stopPropagation).not.toHaveBeenCalled();
+            expect(onActivate).not.toHaveBeenCalled();
+        });
+
+        it('retires explicit row intent after a non-terminal Tab activation', async () => {
+            const onActivate = vi.fn();
+            const harness = await renderHook(() =>
+                useSelectionListKeyboardNav(makeParams({
+                    onActivate,
+                    ghostSuffixPresent: false,
+                    flatVisibleOptionIds: ['row-a', 'row-b'],
+                })),
+            );
+
+            await act(async () => {
+                harness.getCurrent().handleKey(makeKeyEvent({ key: 'ArrowDown' }).event);
+            });
+
+            const activatingTab = makeKeyEvent({ key: 'Tab' });
+            await act(async () => {
+                expect(harness.getCurrent().handleKey(activatingTab.event)).toBe(true);
+            });
             expect(onActivate).toHaveBeenCalledOnce();
-            expect(onActivate).toHaveBeenCalledWith(expectedFocusedId);
+            expect(onActivate).toHaveBeenCalledWith('row-b');
+
+            const subsequentTab = makeKeyEvent({ key: 'Tab' });
+            let subsequentConsumed = true;
+            await act(async () => {
+                subsequentConsumed = harness.getCurrent().handleKey(subsequentTab.event);
+            });
+            expect(subsequentConsumed).toBe(false);
+            expect(subsequentTab.preventDefault).not.toHaveBeenCalled();
+            expect(subsequentTab.stopPropagation).not.toHaveBeenCalled();
+            expect(onActivate).toHaveBeenCalledOnce();
         });
 
         it('Tab does NOT preventDefault or activate when the filtered list is empty (Issue 3 RUX-2)', async () => {

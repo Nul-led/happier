@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
 
 import { renderHook } from '@/dev/testkit';
@@ -60,6 +60,31 @@ const activeServerState = vi.hoisted(() => {
         },
     };
 });
+const nativeLifecycleState = vi.hoisted(() => {
+    const listeners = new Set<() => void>();
+    const state = {
+        available: false,
+        listeners,
+        resolveProbe: null as (() => void) | null,
+        probe: vi.fn(() => new Promise<boolean>((resolve) => {
+            state.resolveProbe = () => {
+                state.available = true;
+                for (const listener of [...listeners]) listener();
+                resolve(true);
+            };
+        })),
+    };
+    return state;
+});
+
+vi.mock('@/sync/runtime/nativeIrohTunnels/machineHttpLifecycle', () => ({
+    isIrohMachineHttpLifecycleAvailable: () => nativeLifecycleState.available,
+    probeIrohMachineHttpLifecycleAvailability: () => nativeLifecycleState.probe(),
+    subscribeIrohMachineHttpLifecycleAvailability: (listener: () => void) => {
+        nativeLifecycleState.listeners.add(listener);
+        return () => nativeLifecycleState.listeners.delete(listener);
+    },
+}));
 
 vi.mock('@/sync/domains/state/storage', () =>
     createStorageModuleStub({
@@ -108,6 +133,58 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/usePreferredServerIdForSes
 }));
 
 describe('useSessionFileTransferAvailabilityResolver', () => {
+    beforeEach(() => {
+        nativeLifecycleState.available = false;
+        nativeLifecycleState.resolveProbe = null;
+        nativeLifecycleState.listeners.clear();
+        nativeLifecycleState.probe.mockClear();
+    });
+
+    it('reactively enables an Iroh-only native transfer after the host lifecycle probe succeeds', async () => {
+        state.session = { active: true } as any;
+        state.machineReachability = { machineRpcTargetAvailable: true } as any;
+        state.machineTarget = { machineId: 'machine-1', basePath: '/repo' } as any;
+        state.machine = null as any;
+        state.serverScopedMachine = {
+            daemonState: {
+                peerMediation: {
+                    iroh: {
+                        endpoint: {
+                            endpointId: 'a'.repeat(64),
+                            relayUrls: ['https://relay.example.test'],
+                        },
+                    },
+                },
+            },
+        } as any;
+        state.cachedMachineRpcDirectRoute = { status: 'unknown' as const } as any;
+        state.serverSnapshot = {
+            status: 'ready' as const,
+            features: {
+                features: {
+                    machines: {
+                        enabled: true,
+                        transfer: {
+                            enabled: true,
+                            directPeer: { enabled: true },
+                            serverRouted: { enabled: false },
+                        },
+                    },
+                },
+                capabilities: {},
+            },
+        } as any;
+
+        const { useSessionFileTransferAvailabilityResolver } = await import('./useSessionFileTransferAvailability');
+        const hook = await renderHook(() => useSessionFileTransferAvailabilityResolver('s1'));
+
+        expect(hook.getCurrent()(null)).toBe(false);
+        await act(async () => {
+            nativeLifecycleState.resolveProbe?.();
+            await nativeLifecycleState.probe.mock.results[0]?.value;
+        });
+        expect(hook.getCurrent()(null)).toBe(true);
+    });
     it('does not gate bulk file transfers by the total transfer size (chunked transfers)', async () => {
         state.session = { active: true } as any;
         state.machineReachability = { machineRpcTargetAvailable: true } as any;

@@ -151,6 +151,35 @@ function findItemByTestId(screen: Awaited<ReturnType<typeof renderScreen>>, test
 }
 
 describe('ConnectedAccountPurposeTargetChooser', () => {
+  it('keeps an Account-scoped purpose target inert when its enclosing Administration target is foreign', async () => {
+    const { ConnectedAccountPurposeTargetChooser } = await import('./ConnectedAccountPurposeTargetChooser');
+    const onChange = vi.fn();
+    const screen = await renderScreen(
+      <ConnectedAccountPurposeTargetChooser
+        testID="agent-connected-account-purpose:primary"
+        localizedTextPluginId="acme.provider.author"
+        declaration={{
+          purpose: 'primary',
+          service: { pluginId: 'acme.managed.provider', localId: 'gateway' },
+          required: false,
+        }}
+        value={null}
+        onChange={onChange}
+        disabled
+        disabledReason="Switch server Accounts to continue"
+      />,
+    );
+
+    const trigger = findItemByTestId(screen, 'agent-connected-account-purpose:primary');
+    expect(trigger?.props).toMatchObject({
+      disabled: true,
+      subtitle: 'Switch server Accounts to continue',
+      onPress: undefined,
+    });
+    expect(modalSpies.show).not.toHaveBeenCalled();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
   it('closes its portal-backed menu when a retained settings screen changes route', async () => {
     const { ConnectedAccountPurposeTargetChooser } = await import('./ConnectedAccountPurposeTargetChooser');
     const props = {

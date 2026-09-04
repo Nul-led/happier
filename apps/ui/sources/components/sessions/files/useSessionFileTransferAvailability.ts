@@ -12,7 +12,12 @@ import {
 } from '@/sync/domains/transfers/runtime/transferRuntime';
 import { readMachineTargetForSession } from '@/sync/ops/sessionMachineTarget';
 import { usePreferredServerIdForSession } from '@/sync/runtime/orchestration/serverScopedRpc/usePreferredServerIdForSession';
-import { isIrohMachineHttpLifecycleAvailable } from '@/sync/runtime/nativeIrohTunnels/machineHttpLifecycle';
+import {
+    isIrohMachineHttpLifecycleAvailable,
+    probeIrohMachineHttpLifecycleAvailability,
+    subscribeIrohMachineHttpLifecycleAvailability,
+} from '@/sync/runtime/nativeIrohTunnels/machineHttpLifecycle';
+import { isBrowserIrohHost } from '@/sync/runtime/browserIroh/hostEligibility';
 
 export function useSessionFileTransferAvailabilityState(sessionId: string): ResolveSessionFileTransferAvailabilityResult {
     const { sessionExists } = useSessionRpcAvailabilityState(sessionId);
@@ -25,6 +30,14 @@ export function useSessionFileTransferAvailabilityState(sessionId: string): Reso
     const globalMachine = useMachine(machineTarget?.machineId ?? '');
     const serverScopedMachine = useServerScopedMachine(serverId, machineTarget?.machineId ?? '');
     const machine = serverScopedMachine ?? globalMachine;
+    const nativeMachineCarrierAvailable = React.useSyncExternalStore(
+        subscribeIrohMachineHttpLifecycleAvailability,
+        isIrohMachineHttpLifecycleAvailable,
+        isIrohMachineHttpLifecycleAvailable,
+    );
+    React.useEffect(() => {
+        void probeIrohMachineHttpLifecycleAvailability();
+    }, []);
     const machineRpcRouteInput = machineTarget && serverId
         ? {
             serverId,
@@ -37,7 +50,9 @@ export function useSessionFileTransferAvailabilityState(sessionId: string): Reso
         machineTargetAvailable: machineRpcTargetAvailable,
         serverFeatures: serverSnapshot.status === 'ready' ? serverSnapshot.features : null,
         machineDaemonState: machine?.daemonState ?? null,
-        irohPeerAvailable: isIrohMachineHttpLifecycleAvailable(),
+        machineCarrierHost: isBrowserIrohHost()
+            ? { kind: 'browser' }
+            : { kind: 'native', lifecycleAvailable: nativeMachineCarrierAvailable },
         machineRpcDirectRoute: machineRpcRouteInput
             ? readCachedMachineRpcDirectRoute(machineRpcRouteInput)
             : { status: 'unknown' },

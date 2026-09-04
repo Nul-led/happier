@@ -21,6 +21,7 @@ import { SlideTransitionSwitch } from '@/components/ui/motion/SlideTransitionSwi
 
 import { activateSelectionListRow } from './SelectionListRowActivation';
 import { SelectionListOptionPresentationContext } from './SelectionListOptionPresentationContext';
+import { SelectionListOptionTabBehaviorContext } from './SelectionListOptionTabBehaviorContext';
 import {
     SELECTION_LIST_CARD_ACCESSORY_BOX_PX,
     SELECTION_LIST_CARD_ACCESSORY_GAP_PX,
@@ -185,6 +186,7 @@ export function PlanOptionRow(props: Readonly<{
         : undefined;
     const registerScrollItemLayout = React.useContext(SelectionListScrollIntoViewContext);
     const requestInputAttention = React.useContext(SelectionListInputAttentionContext);
+    const optionTabBehavior = React.useContext(SelectionListOptionTabBehaviorContext);
     const optionTestId = resolveSelectionListOptionDomId({
         option: props.option,
         rootTestID: props.rootTestID,
@@ -216,6 +218,9 @@ export function PlanOptionRow(props: Readonly<{
         setSize: props.setSize ?? 1,
         accessibilityLabel: optionAccessibilityLabel,
         pattern: a11yPattern,
+        tabIndex: optionTabBehavior === 'input-owned'
+            ? -1
+            : props.isFocused && props.option.disabled !== true ? 0 : -1,
     });
     // ONE OPTION IS ONE CELL, at every column count — the control, the corner
     // accessory and the expanded panel all live in it. Only WHICH node is that
@@ -434,6 +439,7 @@ export function PlanOptionRow(props: Readonly<{
             keepChevronWithRightElement={props.option.keepChevronWithAccessory === true}
             accessibilityRole="button"
             accessibilityLabel={optionAria.accessibilityLabel}
+            webTabIndex={optionAria.tabIndex}
             webRole={isGridCell ? 'button' : selectionListOptionWebRole(a11yPattern)}
             webId={isGridCell ? undefined : optionAria.id}
             accessibilityPositionInSet={optionAria.role === 'option' ? optionAria['aria-posinset'] : undefined}

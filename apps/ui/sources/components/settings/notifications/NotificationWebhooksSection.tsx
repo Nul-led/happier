@@ -138,7 +138,17 @@ export function NotificationWebhooksSection({
         }));
     }, [promptWebhookSigningSecret, setWebhookChannels, webhookChannels]);
 
-    const handleClearWebhookSigningSecret = React.useCallback((channel: WebhookNotificationChannelV1) => {
+    const handleClearWebhookSigningSecret = React.useCallback(async (channel: WebhookNotificationChannelV1) => {
+        const confirmed = await Modal.confirm(
+            t('settingsNotifications.webhooks.signingSecretClearAction'),
+            t('settingsNotifications.webhooks.signingSecretEmptySubtitle'),
+            {
+                cancelText: t('common.cancel'),
+                confirmText: t('settingsNotifications.webhooks.signingSecretClearAction'),
+                destructive: true,
+            },
+        );
+        if (!confirmed) return;
         setWebhookChannels(updateNotificationChannelById({
             channels: webhookChannels,
             channelId: channel.id,
@@ -231,7 +241,7 @@ export function NotificationWebhooksSection({
                                             id: 'clear-signing-secret',
                                             title: t('settingsNotifications.webhooks.signingSecretClearAction'),
                                             icon: 'x-circle',
-                                            onPress: () => { handleClearWebhookSigningSecret(channel); },
+                                            onPress: () => { void handleClearWebhookSigningSecret(channel); },
                                         },
                                     ]}
                                 />

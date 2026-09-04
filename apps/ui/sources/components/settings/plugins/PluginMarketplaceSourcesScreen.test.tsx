@@ -19,8 +19,11 @@ const mocks = vi.hoisted(() => ({
     registry: null as MarketplaceSourceRegistryV1 | null,
     registryLoading: false,
     registryLoadError: false,
+    registryMutationInFlight: false,
+    registryMutationOutcomeUnknown: false,
 }));
 
+vi.mock('@react-navigation/native', async () => (await import('@/dev/testkit/mocks/reactNavigation')).createReactNavigationNativeMock());
 vi.mock('react-native', async () => (await import('@/dev/testkit/mocks/reactNative')).createReactNativeWebMock({ View: 'View' }));
 vi.mock('react-native-unistyles', async () => (await import('@/dev/testkit/mocks/unistyles')).createUnistylesMock({
     theme: { colors: { accent: { indigo: 'indigo', green: 'green' } } },
@@ -46,6 +49,8 @@ vi.mock('./model/usePluginSettingsScreenState', () => ({
         marketplaceSourceRegistry: mocks.registry,
         marketplaceSourceRegistryLoading: mocks.registryLoading,
         marketplaceSourceRegistryLoadError: mocks.registryLoadError,
+        marketplaceSourceRegistryMutationInFlight: mocks.registryMutationInFlight,
+        marketplaceSourceRegistryMutationOutcomeUnknown: mocks.registryMutationOutcomeUnknown,
         refreshMarketplaceSourceRegistry: mocks.refreshMarketplaceSourceRegistry,
         upsertMarketplaceSource: mocks.upsertMarketplaceSource,
         setMarketplaceSourceEnabled: mocks.setMarketplaceSourceEnabled,
@@ -119,6 +124,8 @@ describe('PluginMarketplaceSourcesScreen', () => {
         mocks.registry = createRegistry();
         mocks.registryLoading = false;
         mocks.registryLoadError = false;
+        mocks.registryMutationInFlight = false;
+        mocks.registryMutationOutcomeUnknown = false;
     });
 
     afterEach(() => {
@@ -410,6 +417,20 @@ describe('PluginMarketplaceSourcesScreen', () => {
         expect(screen.findRow('settings.plugins.sources.source.marketplace:user')).toBeTruthy();
         expect(screen.findRow('settings.plugins.sources.retry')).toBeTruthy();
         expect(screen.findRow('settings.plugins.sources.empty')).toBeNull();
+    });
+
+    it('keeps an unknown mutation outcome visible until the user refreshes daemon truth', async () => {
+        mocks.registryMutationOutcomeUnknown = true;
+
+        const screen = await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));
+        await act(async () => {
+            screen.pressRow('settings.plugins.sources.outcomeUnknown');
+            await flushHookEffects();
+        });
+
+        expect(mocks.refreshMarketplaceSourceRegistry).toHaveBeenCalledTimes(1);
+        expect(screen.findRow('settings.plugins.sources.outcomeUnknown')?.props.subtitle)
+            .toBe(t('settingsPlugins.sourceAdministration.operationOutcomeUnknownBody'));
     });
 
     it('shows the empty answer only for a settled, authoritative, empty registry', async () => {

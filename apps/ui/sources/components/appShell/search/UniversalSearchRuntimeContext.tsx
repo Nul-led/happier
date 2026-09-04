@@ -1,6 +1,7 @@
 import * as React from 'react';
 
 import type { Command } from '@/components/appShell/commandPalette/types';
+import { resolveServerProfileScopeIdForIdentifier } from '@/sync/domains/server/serverProfiles';
 
 export type UniversalSearchScopeSeed = Readonly<{
     accountId: string | null;
@@ -10,16 +11,24 @@ export type UniversalSearchScopeSeed = Readonly<{
     rootPath: string | null;
 }>;
 
+/** Canonicalize the one portable Home identity at Search ingress. */
+export function canonicalizeUniversalSearchScopeSeed(
+    scope: UniversalSearchScopeSeed,
+): UniversalSearchScopeSeed {
+    const serverId = resolveServerProfileScopeIdForIdentifier(scope.serverId) || null;
+    return serverId === scope.serverId ? scope : { ...scope, serverId };
+}
+
 export function resolveUniversalSearchInvocationScope(input: Readonly<{
     requestedScope?: UniversalSearchScopeSeed;
     ambientScope: UniversalSearchScopeSeed;
 }>): UniversalSearchScopeSeed {
-    return input.requestedScope ?? input.ambientScope;
+    return canonicalizeUniversalSearchScopeSeed(input.requestedScope ?? input.ambientScope);
 }
 
 export type UniversalSearchRuntime = Readonly<{
     open(query?: string, scope?: UniversalSearchScopeSeed): void;
-    buildCommands(): readonly Command[];
+    buildCommands(activeSessionId?: string | null, scope?: UniversalSearchScopeSeed): readonly Command[];
 }>;
 
 const UniversalSearchRuntimeContext = React.createContext<UniversalSearchRuntime | null>(null);

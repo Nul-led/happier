@@ -12,7 +12,16 @@ import type { Machine } from '@/sync/domains/state/storageTypes';
 const openMachinePathBrowserModalSpy = vi.hoisted(() => vi.fn<(...args: any[]) => Promise<string | null>>());
 const workspaceListDirectorySpy = vi.hoisted(() => vi.fn<(...args: any[]) => Promise<any>>());
 const modalAlertSpy = vi.hoisted(() => vi.fn());
+const modalConfirmSpy = vi.hoisted(() => vi.fn(async () => true));
+const modalPromptSpy = vi.hoisted(() => vi.fn<(...args: any[]) => Promise<string | null>>());
+const terminateRelationshipSpy = vi.hoisted(() => vi.fn(async () => {}));
+const addWorkspaceRefToAccountSpy = vi.hoisted(() => vi.fn(async () => ({ ok: true as const, workspaceRefId: 'added-ref' })));
+const renameWorkspaceRefInAccountSpy = vi.hoisted(() => vi.fn(async () => ({ ok: true as const })));
+const resetWorkspaceRefNameInAccountSpy = vi.hoisted(() => vi.fn(async () => ({ ok: true as const })));
+const setWorkspaceRefPinnedInAccountSpy = vi.hoisted(() => vi.fn(async () => ({ ok: true as const })));
+const removeWorkspaceRefFromAccountSpy = vi.hoisted(() => vi.fn(async () => ({ ok: true as const })));
 const routerPushSpy = vi.hoisted(() => vi.fn());
+let workspaceSyncRelationshipSummariesMock: any[] = [];
 let translationPrefixMock = '';
 
 let machinesMock: Machine[] = [];
@@ -85,9 +94,32 @@ vi.mock('@/modal', async () => {
     return createModalModuleMock({
         spies: {
             alert: modalAlertSpy,
+            confirm: (...args: any[]) => modalConfirmSpy(...args),
+            prompt: (...args: any[]) => modalPromptSpy(...args),
         },
     }).module;
 });
+
+vi.mock('@/sync/domains/sessionHandoff/useWorkspaceSyncRelationshipSummaries', () => ({
+    useWorkspaceSyncRelationshipSummaries: () => workspaceSyncRelationshipSummariesMock,
+    resolveWorkspaceSyncStatusScope: (summary: any) => ({
+        serverId: 'server-1',
+        machineId: summary.alpha.machineId,
+        relationshipId: summary.relationshipId,
+    }),
+}));
+
+vi.mock('@/sync/ops/workspaceSync', () => ({
+    terminatePersistedWorkspaceSyncRelationship: (...args: any[]) => terminateRelationshipSpy(...args),
+}));
+
+vi.mock('@/sync/ops/workspaceRefs', () => ({
+    addWorkspaceRefToAccount: (...args: any[]) => addWorkspaceRefToAccountSpy(...args),
+    renameWorkspaceRefInAccount: (...args: any[]) => renameWorkspaceRefInAccountSpy(...args),
+    resetWorkspaceRefNameInAccount: (...args: any[]) => resetWorkspaceRefNameInAccountSpy(...args),
+    setWorkspaceRefPinnedInAccount: (...args: any[]) => setWorkspaceRefPinnedInAccountSpy(...args),
+    removeWorkspaceRefFromAccount: (...args: any[]) => removeWorkspaceRefFromAccountSpy(...args),
+}));
 
 vi.mock('@/hooks/server/useActiveServerSnapshot', () => ({
     useActiveServerSnapshot: () => ({ serverId: 'server-1' }),
@@ -105,9 +137,11 @@ vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
     const { createPartialStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
     return createPartialStorageModuleMock(importOriginal, {
         useAllMachines: () => machinesMock,
-        useSetting: (key: string) => key === 'workspaceRefsV1'
-            ? workspaceRefsV1Mock
-            : accountSettingsMock[key],
+        useSetting: (key: string) => {
+            if (key === 'workspaceRefsV1') return workspaceRefsV1Mock;
+            if (key === 'pinnedWorkspaceRefIdsV1') return pinnedWorkspaceRefIdsV1Mock;
+            return accountSettingsMock[key];
+        },
         useLocalSetting: (key: string) => localSettingsMock[key],
         useProjectLastMobileSurfacesByWorkspaceRefId: () => projectLastMobileSurfacesByWorkspaceRefIdMock,
         useSettingMutable: (key: string) => {
@@ -175,6 +209,22 @@ describe('ProjectsListView', () => {
         openMachinePathBrowserModalSpy.mockReset();
         workspaceListDirectorySpy.mockReset();
         modalAlertSpy.mockReset();
+        modalConfirmSpy.mockReset();
+        modalConfirmSpy.mockResolvedValue(true);
+        modalPromptSpy.mockReset();
+        terminateRelationshipSpy.mockReset();
+        terminateRelationshipSpy.mockResolvedValue(undefined);
+        addWorkspaceRefToAccountSpy.mockReset();
+        addWorkspaceRefToAccountSpy.mockResolvedValue({ ok: true, workspaceRefId: 'added-ref' });
+        renameWorkspaceRefInAccountSpy.mockReset();
+        renameWorkspaceRefInAccountSpy.mockResolvedValue({ ok: true });
+        resetWorkspaceRefNameInAccountSpy.mockReset();
+        resetWorkspaceRefNameInAccountSpy.mockResolvedValue({ ok: true });
+        setWorkspaceRefPinnedInAccountSpy.mockReset();
+        setWorkspaceRefPinnedInAccountSpy.mockResolvedValue({ ok: true });
+        removeWorkspaceRefFromAccountSpy.mockReset();
+        removeWorkspaceRefFromAccountSpy.mockResolvedValue({ ok: true });
+        workspaceSyncRelationshipSummariesMock = [];
         routerPushSpy.mockReset();
         setWorkspaceRefsV1Spy.mockReset();
         setPinnedWorkspaceRefIdsV1Spy.mockReset();
@@ -223,6 +273,67 @@ describe('ProjectsListView', () => {
         expect(setWorkspaceRefsV1Spy).toHaveBeenCalledTimes(0);
         expect(routerPushSpy).toHaveBeenCalledTimes(0);
         expect(modalAlertSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('adds through the semantic Account Settings mutation and opens its committed ref', async () => {
+        machinesMock = [createMachine({ id: 'm1', host: 'leeroy-mbp', activeAt: Date.now() })];
+        openMachinePathBrowserModalSpy.mockResolvedValueOnce('/repo');
+        workspaceListDirectorySpy.mockResolvedValueOnce({ success: true, entries: [] });
+
+        const { ProjectsListView } = await import('./ProjectsListView');
+        const screen = await renderScreen(<ProjectsListView />);
+        await screen.pressByTestIdAsync('projects-add-first-machine:m1');
+
+        expect(addWorkspaceRefToAccountSpy).toHaveBeenCalledWith(expect.objectContaining({
+            scope: { serverId: 'server-1', machineId: 'm1', rootPath: '/repo' },
+        }));
+        expect(routerPushSpy).toHaveBeenCalledWith('/projects/added-ref');
+        expect(setWorkspaceRefsV1Spy).not.toHaveBeenCalled();
+    });
+
+    it('routes rename, reset, pin, and unpin through semantic Account Settings mutations', async () => {
+        const workspaceRef = {
+            id: 'wr_1',
+            serverId: 'server-1',
+            machineId: 'm1',
+            rootPath: '/repo',
+            label: 'Before',
+            createdAtMs: 1,
+        };
+        machinesMock = [createMachine({ id: 'm1', host: 'leeroy-mbp' })];
+        workspaceRefsV1Mock = [workspaceRef];
+        modalPromptSpy.mockResolvedValueOnce('  After  ');
+
+        const { ProjectsListView } = await import('./ProjectsListView');
+        let screen = await renderScreen(<ProjectsListView />);
+        let menuNode = screen.findAll((node: any) => typeof node.props?.onRename === 'function')[0];
+        await act(async () => {
+            await menuNode?.props.onRename(workspaceRef);
+            await menuNode?.props.onReset(workspaceRef);
+            await menuNode?.props.onTogglePinned('wr_1');
+        });
+
+        expect(renameWorkspaceRefInAccountSpy).toHaveBeenCalledWith({
+            serverId: 'server-1', workspaceRefId: 'wr_1', label: 'After',
+        });
+        expect(resetWorkspaceRefNameInAccountSpy).toHaveBeenCalledWith({
+            serverId: 'server-1', workspaceRefId: 'wr_1',
+        });
+        expect(setWorkspaceRefPinnedInAccountSpy).toHaveBeenCalledWith({
+            serverId: 'server-1', workspaceRefId: 'wr_1', pinned: true,
+        });
+
+        pinnedWorkspaceRefIdsV1Mock = ['wr_1'];
+        standardCleanup();
+        screen = await renderScreen(<ProjectsListView />);
+        menuNode = screen.findAll((node: any) => typeof node.props?.onTogglePinned === 'function')[0];
+        await act(async () => { await menuNode?.props.onTogglePinned('wr_1'); });
+
+        expect(setWorkspaceRefPinnedInAccountSpy).toHaveBeenLastCalledWith({
+            serverId: 'server-1', workspaceRefId: 'wr_1', pinned: false,
+        });
+        expect(setWorkspaceRefsV1Spy).not.toHaveBeenCalled();
+        expect(setPinnedWorkspaceRefIdsV1Spy).not.toHaveBeenCalled();
     });
 
     it('opens the last active mobile project subroute from the projects list', async () => {
@@ -390,6 +501,119 @@ describe('ProjectsListView', () => {
         expect(dropdowns.length).toBeGreaterThan(0);
         expect(dropdowns[0]?.props.placement).toBe('bottom');
         expect(dropdowns[0]?.props.popoverAnchorAlign).toBe('end');
+    });
+
+    describe('removing a project referenced by a workspace-sync relationship', () => {
+        const workspaceRef = {
+            id: 'wr_target',
+            serverId: 'server-1',
+            machineId: 'm1',
+            rootPath: '/repo',
+            label: 'Repo',
+            createdAtMs: 1,
+            lastOpenedAtMs: null,
+        };
+        const summary = {
+            relationshipId: 'relationship-1',
+            alpha: { workspaceRefId: 'wr_source', machineId: 'm2' },
+            beta: { workspaceRefId: 'wr_target', machineId: 'm1' },
+        };
+
+        async function invokeRemove() {
+            machinesMock = [createMachine({ id: 'm1', host: 'leeroy-mbp' })];
+            workspaceRefsV1Mock = [workspaceRef];
+            const { ProjectsListView } = await import('./ProjectsListView');
+            const screen = await renderScreen(<ProjectsListView />);
+            const menuNode = screen.findAll((node: any) => typeof node.props?.onRemove === 'function')[0];
+            const onRemove = (menuNode?.props as any)?.onRemove;
+            if (typeof onRemove !== 'function') {
+                throw new Error('Expected the project row menu to expose onRemove');
+            }
+            await act(async () => { await onRemove(workspaceRef); });
+        }
+
+        it('stops syncing through the daemon owner before the reference is released', async () => {
+            workspaceSyncRelationshipSummariesMock = [summary];
+            removeWorkspaceRefFromAccountSpy
+                .mockResolvedValueOnce({
+                    ok: false,
+                    code: 'workspace_ref_in_use',
+                    relationshipIds: ['relationship-1'],
+                })
+                .mockResolvedValueOnce({ ok: true });
+            await invokeRemove();
+
+            expect(modalConfirmSpy).toHaveBeenCalledTimes(1);
+            expect(terminateRelationshipSpy).toHaveBeenCalledTimes(1);
+            expect(terminateRelationshipSpy).toHaveBeenCalledWith(
+                expect.objectContaining({ relationshipId: 'relationship-1' }),
+            );
+            expect(removeWorkspaceRefFromAccountSpy).toHaveBeenCalledTimes(2);
+            expect(setWorkspaceRefsV1Spy).not.toHaveBeenCalled();
+        });
+
+        it('keeps the reference when the user declines to stop syncing', async () => {
+            workspaceSyncRelationshipSummariesMock = [summary];
+            removeWorkspaceRefFromAccountSpy.mockResolvedValueOnce({
+                ok: false,
+                code: 'workspace_ref_in_use',
+                relationshipIds: ['relationship-1'],
+            });
+            modalConfirmSpy.mockResolvedValueOnce(false);
+            await invokeRemove();
+
+            expect(terminateRelationshipSpy).not.toHaveBeenCalled();
+            expect(setWorkspaceRefsV1Spy).not.toHaveBeenCalled();
+        });
+
+        it('keeps the reference when the daemon cannot stop syncing', async () => {
+            workspaceSyncRelationshipSummariesMock = [summary];
+            removeWorkspaceRefFromAccountSpy.mockResolvedValueOnce({
+                ok: false,
+                code: 'workspace_ref_in_use',
+                relationshipIds: ['relationship-1'],
+            });
+            terminateRelationshipSpy.mockRejectedValueOnce(new Error('workspace_sync_unavailable'));
+            await invokeRemove();
+
+            expect(setWorkspaceRefsV1Spy).not.toHaveBeenCalled();
+            expect(modalAlertSpy).toHaveBeenCalledTimes(1);
+        });
+
+        it('removes an unreferenced project without any daemon relationship command', async () => {
+            workspaceSyncRelationshipSummariesMock = [];
+            await invokeRemove();
+
+            expect(modalConfirmSpy).not.toHaveBeenCalled();
+            expect(terminateRelationshipSpy).not.toHaveBeenCalled();
+            expect(removeWorkspaceRefFromAccountSpy).toHaveBeenCalledWith({
+                serverId: 'server-1',
+                workspaceRefId: 'wr_target',
+            });
+            expect(setWorkspaceRefsV1Spy).not.toHaveBeenCalled();
+        });
+
+        it('keeps the reference when another relationship wins after the requested relationship stops', async () => {
+            workspaceSyncRelationshipSummariesMock = [summary];
+            removeWorkspaceRefFromAccountSpy
+                .mockResolvedValueOnce({
+                    ok: false,
+                    code: 'workspace_ref_in_use',
+                    relationshipIds: ['relationship-1'],
+                })
+                .mockResolvedValueOnce({
+                    ok: false,
+                    code: 'workspace_ref_in_use',
+                    relationshipIds: ['relationship-new'],
+                });
+
+            await invokeRemove();
+
+            expect(terminateRelationshipSpy).toHaveBeenCalledTimes(1);
+            expect(removeWorkspaceRefFromAccountSpy).toHaveBeenCalledTimes(2);
+            expect(setWorkspaceRefsV1Spy).not.toHaveBeenCalled();
+            expect(modalAlertSpy).toHaveBeenCalledTimes(1);
+        });
     });
 
     it('refreshes project row menu labels after the translation output changes', async () => {

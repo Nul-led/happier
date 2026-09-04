@@ -20,6 +20,7 @@ import { SelectionListAnimatedHeight } from './SelectionListAnimatedHeight';
 import { SelectionListBody } from './SelectionListBody';
 import { SelectionListFooter } from './SelectionListFooter';
 import { SelectionListInputAttentionContext } from './SelectionListInputAttentionContext';
+import { SelectionListOptionTabBehaviorContext } from './SelectionListOptionTabBehaviorContext';
 import { createSelectionListKeyPressHandler } from './SelectionListKeyboardInput';
 import { SelectionListMeasureHost } from './SelectionListMeasureHost';
 import { synthesizeSelectionListRenderPlan, type SectionRenderPlan } from './SelectionListRenderPlan';
@@ -106,6 +107,10 @@ const stylesheet = StyleSheet.create((theme) => ({
  * being replaced says nothing about the step replacing it.
  */
 type MeasuredStepBodyHeight = Readonly<{ stepId: string; height: number }>;
+type SelectionListStatusAnnouncement = Readonly<{
+    eventId: number;
+    message: string;
+}>;
 
 const IS_WEB = Platform.OS === 'web';
 const IS_IOS = Platform.OS === 'ios';
@@ -116,21 +121,35 @@ const SELECTION_LIST_INPUT_ROW_SECTION_ID = 'selection-list:input-row';
 function useSelectionListStatusAnnouncement(
     sections: ReadonlyArray<SelectionListSectionDescriptor>,
     states: ReadonlyMap<string, DynamicSectionState>,
-): string | null {
+    renderPlan: ReadonlyArray<SectionRenderPlan>,
+): SelectionListStatusAnnouncement | null {
     const previousSignaturesRef = React.useRef<ReadonlyMap<string, string>>(new Map());
-    const [announcement, setAnnouncement] = React.useState<string | null>(null);
+    const [announcement, setAnnouncement] = React.useState<SelectionListStatusAnnouncement | null>(null);
 
     React.useEffect(() => {
         const previousSignatures = previousSignaturesRef.current;
         const nextSignatures = new Map<string, string>();
+        const displayedSectionById = new Map(renderPlan.map((section) => [section.id, section]));
         let nextAnnouncement: string | null = null;
         let changed = false;
 
         for (const section of sections) {
-            if (section.kind !== 'dynamic') continue;
+            const displayedSection = displayedSectionById.get(section.id);
+            if (section.kind === 'static') {
+                const resultHint = displayedSection?.resultHint ?? section.resultHint;
+                if (!resultHint) continue;
+                const signature = `static\u0000${resultHint}`;
+                nextSignatures.set(section.id, signature);
+                if (previousSignatures.get(section.id) === signature) continue;
+                changed = true;
+                const title = section.title?.trim() ?? '';
+                nextAnnouncement = title.length > 0 ? `${title} · ${resultHint}` : resultHint;
+                continue;
+            }
             const state = states.get(section.id);
             if (!state) continue;
-            const signature = `${state.seed ?? ''}\u0000${state.status}\u0000${state.options.length}\u0000${state.resultHint ?? ''}`;
+            const displayedResultCount = displayedSection?.options.length ?? 0;
+            const signature = `${state.seed ?? ''}\u0000${state.status}\u0000${displayedResultCount}\u0000${state.emptyHint ?? ''}\u0000${state.notFoundHint ?? ''}\u0000${state.resultHint ?? ''}`;
             nextSignatures.set(section.id, signature);
             if (previousSignatures.get(section.id) === signature) continue;
             changed = true;
@@ -141,24 +160,37 @@ function useSelectionListStatusAnnouncement(
                     ? `${title} · ${t('common.loading')}`
                     : t('common.loading');
             } else if (state.status === 'success') {
-                const resultStatus = state.options.length === 0
+                const resultStatus = displayedResultCount === 0
                     ? title.length > 0
                         ? `${title} · ${t('selectionList.emptyMatch')}`
                         : t('selectionList.emptyMatch')
                     : title.length > 0
-                        ? `${state.options.length} · ${title}`
-                        : String(state.options.length);
-                nextAnnouncement = state.resultHint
-                    ? `${resultStatus} · ${state.resultHint}`
-                    : resultStatus;
+                        ? `${displayedResultCount} · ${title}`
+                        : String(displayedResultCount);
+                const emptyHint = displayedResultCount === 0
+                    ? state.emptyHint ?? state.notFoundHint
+                    : undefined;
+                nextAnnouncement = emptyHint !== undefined
+                    ? title.length > 0 ? `${title} · ${emptyHint}` : emptyHint
+                    : state.resultHint
+                        ? `${resultStatus} · ${state.resultHint}`
+                        : resultStatus;
             }
             // Errors remain section-local. Their existing calm inline alert is
             // the one announcement source for that failure.
         }
 
+        if (previousSignatures.size !== nextSignatures.size) changed = true;
         previousSignaturesRef.current = nextSignatures;
-        if (changed) setAnnouncement(nextAnnouncement);
-    }, [sections, states]);
+        if (changed) {
+            setAnnouncement((previous) => nextAnnouncement === null
+                ? null
+                : {
+                    eventId: (previous?.eventId ?? 0) + 1,
+                    message: nextAnnouncement,
+                });
+        }
+    }, [renderPlan, sections, states]);
 
     return announcement;
 }
@@ -356,19 +388,6 @@ export function SelectionList(props: SelectionListProps): React.ReactElement {
         inputBehavior,
         ...(props.dynamicSectionCache ? { cache: props.dynamicSectionCache } : {}),
     });
-    const statusAnnouncement = useSelectionListStatusAnnouncement(
-        currentStep.sections,
-        dynamicSectionStates,
-    );
-    React.useEffect(() => {
-        if (!IS_IOS || statusAnnouncement === null) return;
-        try {
-            AccessibilityInfo.announceForAccessibility(statusAnnouncement);
-        } catch {
-            // Accessibility announcements are best effort on native platforms.
-        }
-    }, [statusAnnouncement]);
-
     // Resolve sections to render via the pure synthesizer (R14 extraction).
     const buildInputRow = currentStep.buildInputRow;
     const renderPlan = React.useMemo(
@@ -397,6 +416,19 @@ export function SelectionList(props: SelectionListProps): React.ReactElement {
         },
         [currentStep.sections, currentStep.disableInputFilter, buildInputRow, dynamicSectionStates, inputValue, filterQuery],
     );
+    const statusAnnouncement = useSelectionListStatusAnnouncement(
+        currentStep.sections,
+        dynamicSectionStates,
+        renderPlan,
+    );
+    React.useEffect(() => {
+        if (!IS_IOS || statusAnnouncement === null) return;
+        try {
+            AccessibilityInfo.announceForAccessibility(statusAnnouncement.message);
+        } catch {
+            // Accessibility announcements are best effort on native platforms.
+        }
+    }, [statusAnnouncement]);
 
     // FR4-2 — see `isFocusableSectionPlan` above for why stale option-bearing
     // sections still contribute focusable rows.
@@ -1079,6 +1111,8 @@ export function SelectionList(props: SelectionListProps): React.ReactElement {
                 value={inputValue}
                 onChangeText={setInputValue}
                 placeholder={currentStep.inputPlaceholder ?? ''}
+                inputReadOnly={currentStep.inputReadOnly}
+                inputAccessibilityLabel={currentStep.inputReadOnly ? currentStep.title ?? t('tools.names.search') : undefined}
                 canPop={stack.canPop}
                 backLabel={currentStep.backLabel ?? props.rootStep.title}
                 onPopStep={stack.popStep}
@@ -1160,6 +1194,7 @@ export function SelectionList(props: SelectionListProps): React.ReactElement {
 
     return (
         <SelectionListInputAttentionContext.Provider value={requestInputAttention}>
+        <SelectionListOptionTabBehaviorContext.Provider value={showSearchHeader ? 'input-owned' : 'roving'}>
         <View
             testID={resolvedTestId}
             style={containerStyle}
@@ -1178,10 +1213,11 @@ export function SelectionList(props: SelectionListProps): React.ReactElement {
             ) : null}
             {statusAnnouncement !== null && !IS_IOS ? (
                 <View
+                    key={statusAnnouncement.eventId}
                     testID={selectionListTestId(resolvedTestId, 'status')}
                     style={styles.statusAnnouncement}
                     accessible
-                    accessibilityLabel={statusAnnouncement}
+                    accessibilityLabel={statusAnnouncement.message}
                     accessibilityLiveRegion="polite"
                     pointerEvents="none"
                     {...({
@@ -1190,7 +1226,7 @@ export function SelectionList(props: SelectionListProps): React.ReactElement {
                         'aria-atomic': true,
                     } as Record<string, unknown>)}
                 >
-                    <Text>{statusAnnouncement}</Text>
+                    <Text>{statusAnnouncement.message}</Text>
                 </View>
             ) : null}
             {seatInputAtBottom ? null : searchHeaderZone}
@@ -1198,6 +1234,7 @@ export function SelectionList(props: SelectionListProps): React.ReactElement {
             {footerZone}
             {seatInputAtBottom ? searchHeaderZone : null}
         </View>
+        </SelectionListOptionTabBehaviorContext.Provider>
         </SelectionListInputAttentionContext.Provider>
     );
 }

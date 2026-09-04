@@ -75,6 +75,8 @@ export function ConnectedAccountPurposeTargetChooser(props: Readonly<{
   }>;
   value: QualifiedConnectedAccountPurposeBindingTargetV1 | null;
   onChange: (target: QualifiedConnectedAccountPurposeBindingTargetV1 | null) => void;
+  disabled?: boolean;
+  disabledReason?: string;
   onReload?: () => Promise<void> | void;
   /** Provider's current status, presented by the provider status owner. */
   reloadSubtitle?: string;
@@ -150,7 +152,8 @@ export function ConnectedAccountPurposeTargetChooser(props: Readonly<{
   const requiredUnsetLabel = props.value === null && props.declaration.required === true
     ? t('connectedServices.purposeTargets.requiredPrompt')
     : null;
-  const triggerStatus = unresolvedSourceLabel
+  const triggerStatus = props.disabledReason
+    ?? unresolvedSourceLabel
     ?? (selectedTargetAccessibilityLabel ? null : requiredUnsetLabel ?? t('common.unavailable'));
   const triggerDetail = selected?.presentation.primaryLabel
     ?? unresolvedSourceLabel
@@ -187,6 +190,7 @@ export function ConnectedAccountPurposeTargetChooser(props: Readonly<{
     pickerModalIdRef.current = null;
   }, []);
   const openPicker = React.useCallback(() => {
+    if (props.disabled) return;
     closePicker();
     pickerModalIdRef.current = Modal.show({
       component: ConnectedAccountPurposeTargetPickerModalContent,
@@ -208,7 +212,7 @@ export function ConnectedAccountPurposeTargetChooser(props: Readonly<{
       },
       closeOnBackdrop: true,
     });
-  }, [choices, closePicker, props.onChange, props.testID, purposeTitle, rootStep, selected]);
+  }, [choices, closePicker, props.disabled, props.onChange, props.testID, purposeTitle, rootStep, selected]);
 
   // This screen can stay mounted behind another Settings route while its picker
   // remains portaled. Route ownership and unmount both close it.
@@ -235,7 +239,8 @@ export function ConnectedAccountPurposeTargetChooser(props: Readonly<{
       detail={triggerDetail}
       accessibilityLabel={triggerAccessibilityLabel}
       showChevron
-      onPress={openPicker}
+      disabled={props.disabled}
+      onPress={props.disabled ? undefined : openPicker}
     />
     {props.onReload ? (
       <Item

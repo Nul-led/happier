@@ -5,7 +5,11 @@ import { renderScreen } from '@/dev/testkit';
 import { createCapturingLegendListMock } from '@/dev/testkit/mocks/legendList';
 
 import type { SectionRenderPlan } from '../SelectionListRenderPlan';
-import type { SelectionListOption, SelectionListStep } from '../_types';
+import type {
+    SelectionListOption,
+    SelectionListStep,
+    SelectionListVirtualizedOptionSource,
+} from '../_types';
 
 const reducedMotionState = vi.hoisted(() => ({ value: false }));
 
@@ -24,7 +28,7 @@ vi.mock('react-native', async () => {
 const scrollToIndex = vi.fn<(args: { index: number; animated?: boolean; viewPosition?: number }) => void>();
 const scrollToOffset = vi.fn();
 
-const { module: capturedLegendList } = createCapturingLegendListMock({
+const { module: capturedLegendList, state: legendListState } = createCapturingLegendListMock({
     renderItems: true,
     refHandle: { scrollToIndex, scrollToOffset },
 });
@@ -83,6 +87,28 @@ function buildBodyStep(): SelectionListStep {
         id: 'root',
         inputPlaceholder: 'Search',
         sections: [],
+    };
+}
+
+function buildDirectSource(): SelectionListVirtualizedOptionSource {
+    const options = makeOptions(8, 'direct');
+    return {
+        items: options.map((_, optionIndex) => ({
+            kind: 'option',
+            optionIndex,
+            positionInSet: optionIndex + 1,
+        })),
+        optionCount: options.length,
+        stateKey: 'direct-v1',
+        getOption: (index) => options[index]!,
+        getOptionId: (index) => options[index]?.id ?? '',
+        findOptionIndexById: (id) => options.findIndex((option) => option.id === id),
+        getFirstFocusableOptionIndex: () => 0,
+        getNextFocusableOptionIndex: (current, direction) => (
+            (current + direction + options.length) % options.length
+        ),
+        isFocusableOptionIndex: (index) => index >= 0 && index < options.length,
+        getHeader: () => ({ id: 'unused' }),
     };
 }
 
@@ -182,6 +208,65 @@ describe('SelectionListBody flat virtualized-list focused-row scroll (RV-9)', ()
         // [native header, 7 native rows, provider header, provider-0..10]
         expect(scrollToIndex).toHaveBeenCalledWith({
             index: 19,
+            viewPosition: 0.5,
+            animated: true,
+        });
+    });
+
+    it('reveals the focused flattened row again after the viewport is resized', async () => {
+        const { SelectionListBody } = await import('../SelectionListBody');
+        await renderScreen(
+            <SelectionListBody
+                step={buildBodyStep()}
+                rootTestID="sl"
+                selectedOptionId={null}
+                plan={buildMultiSectionPlan()}
+                focusedOptionId="second-4"
+                listboxId="listbox"
+                onSelect={() => {}}
+                onPushStep={() => {}}
+            />,
+        );
+
+        scrollToIndex.mockClear();
+        legendListState.props?.onLayout?.({ nativeEvent: { layout: { x: 0, y: 0, width: 320, height: 400 } } });
+        expect(scrollToIndex).not.toHaveBeenCalled();
+
+        legendListState.props?.onLayout?.({ nativeEvent: { layout: { x: 0, y: 0, width: 320, height: 240 } } });
+        expect(scrollToIndex).toHaveBeenCalledTimes(1);
+        expect(scrollToIndex).toHaveBeenCalledWith({
+            index: 66,
+            viewPosition: 0.5,
+            animated: true,
+        });
+    });
+
+    it('reveals the focused direct-source row again after the viewport is resized', async () => {
+        const { SelectionListBody } = await import('../SelectionListBody');
+        const source = buildDirectSource();
+        await renderScreen(
+            <SelectionListBody
+                step={buildBodyStep()}
+                rootTestID="sl"
+                selectedOptionId={null}
+                plan={[]}
+                virtualizedOptionSource={source}
+                focusedOptionId="direct-5"
+                focusedOptionIndex={5}
+                listboxId="listbox"
+                onSelect={() => {}}
+                onPushStep={() => {}}
+            />,
+        );
+
+        scrollToIndex.mockClear();
+        legendListState.props?.onLayout?.({ nativeEvent: { layout: { x: 0, y: 0, width: 320, height: 400 } } });
+        expect(scrollToIndex).not.toHaveBeenCalled();
+
+        legendListState.props?.onLayout?.({ nativeEvent: { layout: { x: 0, y: 0, width: 320, height: 240 } } });
+        expect(scrollToIndex).toHaveBeenCalledTimes(1);
+        expect(scrollToIndex).toHaveBeenCalledWith({
+            index: 5,
             viewPosition: 0.5,
             animated: true,
         });

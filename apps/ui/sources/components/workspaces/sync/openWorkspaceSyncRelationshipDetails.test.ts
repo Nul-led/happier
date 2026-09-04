@@ -20,7 +20,7 @@ describe('openWorkspaceSyncRelationshipDetails', () => {
                 alphaWorkspaceRefId: 'workspace-a',
                 betaWorkspaceRefId: 'workspace-b',
                 mode: 'keep_synced',
-                contentPolicy: { v: 1, selection: 'git_worktree', extraIgnorePatterns: [], extraIncludePatterns: [], includeGitDirectory: false, policyDigest: 'sha256:test' },
+                contentPolicy: { v: 1, selection: 'git_worktree', extraIgnorePatterns: [], extraIncludePatterns: [], policyDigest: 'sha256:test' },
                 enabled: true,
                 createdAtMs: 1,
                 updatedAtMs: 1,

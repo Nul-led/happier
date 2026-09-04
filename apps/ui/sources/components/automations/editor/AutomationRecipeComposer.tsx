@@ -28,6 +28,7 @@ import { sync } from '@/sync/sync';
 import { t } from '@/text';
 import { getSessionName } from '@/utils/sessions/sessionUtils';
 import { Modal } from '@/modal';
+import { formatAutomationErrorMessage } from '@/components/automations/automationErrorFormatting';
 
 export function buildAutomationExecutionRunTarget(params: Readonly<{
     backendTarget: BackendTargetRefV2Input;
@@ -170,7 +171,7 @@ export function AutomationRecipeComposer(props: Readonly<{
             if (mountedRef.current && latestValueRef.current === captured) {
                 await Modal.alert(
                     t('common.error'),
-                    error instanceof Error ? error.message : t('automations.edit.updateFailed'),
+                    formatAutomationErrorMessage(error, t('automations.edit.updateFailed')),
                 );
             }
         } finally {

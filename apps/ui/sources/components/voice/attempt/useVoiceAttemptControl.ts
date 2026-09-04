@@ -14,6 +14,7 @@ import { useProjectedConnectedServicesRegistry } from '@/components/appShell/plu
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
+import { resolvePortableServerIdentityForRoutingId } from '@/sync/domains/server/resolvePortableServerIdentityForRoutingId';
 import { storage, useSetting } from '@/sync/domains/state/storage';
 import { readVoiceProviderSettingsConfig, voiceSettingsParse } from '@/sync/domains/settings/voiceSettings';
 import { useNavigationFocusReturn } from '@/utils/navigation/useNavigationFocusReturn';
@@ -213,16 +214,17 @@ export function useVoiceAttemptControl(idleTarget: VoiceAttemptIdleTarget): Voic
     const runtimeRecoveryTarget = React.useMemo<VoiceAttemptRecoveryRuntimeTarget | null>(() => {
         const agentId = normalizeNonEmptyString(agentRuntimeIdentity?.localId);
         const pluginId = normalizeNonEmptyString(agentRuntimeIdentity?.pluginId);
-        const serverId = normalizeNonEmptyString(
+        const routingServerId = normalizeNonEmptyString(
             bindingScope === 'session' ? recoverySessionServerId : activeServerSnapshot.serverId,
         );
+        const serverIdentityId = resolvePortableServerIdentityForRoutingId(routingServerId);
         const machineId = normalizeNonEmptyString(
             bindingScope === 'session'
                 ? recoverySessionOwnerMetadata?.machineId
                 : voiceExecutionMachine.machineId,
         );
-        if (!agentId || !pluginId || !serverId || !machineId) return null;
-        return { agentId, pluginId, machineId, serverId };
+        if (!agentId || !pluginId || !serverIdentityId || !machineId) return null;
+        return { agentId, pluginId, machineId, serverIdentityId };
     }, [
         activeServerSnapshot.serverId,
         agentRuntimeIdentity,

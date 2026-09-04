@@ -25,7 +25,7 @@ import {
     warmMachineFileBrowserRoots,
 } from '@/sync/domains/input/machineFileBrowser';
 import { machineCreateDirectory } from '@/sync/ops/machines';
-import { machineRipgrep } from '@/sync/ops/machineRipgrep';
+import { machineWorkspaceFileList } from '@/sync/ops/machineWorkspaceFileList';
 import { t } from '@/text';
 import { RPC_ERROR_MESSAGES } from '@happier-dev/protocol/rpc';
 import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
@@ -549,31 +549,25 @@ export function MachinePathBrowserView(props: MachinePathBrowserViewProps): Reac
         const DEEP_SEARCH_DEBOUNCE_MS = 200;
         const handle = setTimeout(() => {
             void (async () => {
-                const args: string[] = ['--files', '--iglob', `*${trimmedQuery}*`];
-                if (showHidden) {
-                    args.push('--hidden');
-                }
-
-                const result = await machineRipgrep(
+                const result = await machineWorkspaceFileList(
                     props.machineId,
-                    args,
-                    deepSearchRootDirectoryPath,
+                    {
+                        rootPath: deepSearchRootDirectoryPath,
+                        query: trimmedQuery,
+                        includeHidden: showHidden,
+                    },
                     { serverId: props.serverId },
                 );
                 if (cancelled) return;
 
-                if (!result.success) {
+                if (!result.ok) {
                     setDeepSearchNodes([]);
-                    setDeepSearchError(result.error ?? t('errors.unknownError'));
+                    setDeepSearchError(t('errors.unknownError'));
                     setDeepSearchLoading(false);
                     return;
                 }
 
-                const stdout = typeof result.stdout === 'string' ? result.stdout : '';
-                const lines = stdout
-                    .split(/\r?\n/g)
-                    .map((line) => line.trim())
-                    .filter(Boolean);
+                const lines = result.paths;
 
                 const absoluteFiles = lines.map((relative) => joinMachinePath(deepSearchRootDirectoryPath, relative));
                 const fileNodes: FilesystemBrowserNode[] = absoluteFiles.map((absPath, index) => ({

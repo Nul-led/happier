@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { useIsFocused } from '@react-navigation/native';
 import { Platform, ScrollView, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { useRouter } from 'expo-router';
@@ -16,6 +17,9 @@ import { t } from '@/text';
 import type { PluginScaffoldUiMode } from '@happier-dev/protocol';
 import { MachineAdministrationTargetSelector } from '@/components/settings/machines/MachineAdministrationTargetSelector';
 import { SETTINGS_ROUTES } from '@/components/settings/catalog/routes';
+import { seedNewSessionDraftV1 } from '@/components/sessions/new/newSessionDraftSeed';
+import { buildNewSessionLaunchRouteParams } from '@/components/sessions/new/navigation/newSessionRouteParams';
+import { useActiveServerAccountScope } from '@/sync/store/hooks';
 
 import {
     DevelopmentPluginsSection,
@@ -81,11 +85,12 @@ const DISCOVER_ALL_SOURCES_TAB_ID = 'all';
 const DISCOVER_SEARCH_LABEL_ID = 'settings-plugins-discover-search-label';
 
 export const PluginSettingsHomeScreen = React.memo(function PluginSettingsHomeScreen() {
+    const isFocused = useIsFocused();
     const { theme } = useUnistyles();
     const styles = stylesheet;
     const router = useRouter();
     const minimumInteractiveTargetSize = resolveMinimumInteractiveTargetSize(Platform.OS);
-    const state = usePluginSettingsScreenState();
+    const state = usePluginSettingsScreenState({ focused: isFocused });
     // The webhook administration screen and its account API are both behind the
     // server's public-webhook feature, so the entry only exists where it leads
     // somewhere the server will answer.
@@ -96,26 +101,32 @@ export const PluginSettingsHomeScreen = React.memo(function PluginSettingsHomeSc
         ? null
         : state.discoverSources.find((source) => source.id === state.selectedDiscoverSourceId)?.title ?? null;
     const views = createPluginSettingsViews((key) => t(key));
-    const createDevelopmentPlugin = React.useCallback(async () => {
-        if (!state.daemonOperationsAvailable || !state.developmentCreateAvailable) return;
+    const activeAccountScope = useActiveServerAccountScope();
+    /** The collected scaffold answers, shared by the deterministic and Agent-assisted create flows. */
+    const promptDevelopmentCreateParams = React.useCallback(async (): Promise<Readonly<{
+        targetDir: string;
+        displayName: string;
+        pluginId: string;
+        ui?: PluginScaffoldUiMode;
+    }> | null> => {
         const targetDir = (await Modal.prompt(
             t('settingsPlugins.developmentCreateDirectoryTitle'),
             t('settingsPlugins.developmentCreateDirectoryBody'),
             { confirmText: t('common.next'), cancelText: t('common.cancel') },
         ))?.trim();
-        if (!targetDir) return;
+        if (!targetDir) return null;
         const displayName = (await Modal.prompt(
             t('settingsPlugins.developmentCreateNameTitle'),
             t('settingsPlugins.developmentCreateNameBody'),
             { confirmText: t('common.next'), cancelText: t('common.cancel') },
         ))?.trim();
-        if (!displayName) return;
+        if (!displayName) return null;
         const pluginId = (await Modal.prompt(
             t('settingsPlugins.developmentCreateIdTitle'),
             t('settingsPlugins.developmentCreateIdBody'),
             { placeholder: 'com.example.my-plugin', confirmText: t('common.next'), cancelText: t('common.cancel') },
         ))?.trim();
-        if (!pluginId) return;
+        if (!pluginId) return null;
         // The scaffold's UI mode is part of what the author is creating, so the
         // in-app lifecycle asks for it. Without this step every plugin created
         // from the app is a non-UI plugin and no later in-app step can add a
@@ -140,15 +151,96 @@ export const PluginSettingsHomeScreen = React.memo(function PluginSettingsHomeSc
                 },
             ],
         );
-        if (!uiChosen) return;
+        if (!uiChosen) return null;
+        return { targetDir, displayName, pluginId, ...(ui ? { ui } : {}) };
+    }, []);
+    /**
+     * Opens the ordinary New Session composer on the exact selected
+     * administration target and the given plugin source root.
+     *
+     * There is no Agent-specific session path here: the seed goes into the one
+     * New Session draft repository and the push goes to the one `/new` route,
+     * exactly like every other in-app seeding caller. The placement names the
+     * exact selected administration target — never an inferred active or first
+     * machine — so if that target has no resolvable identity, nothing opens.
+     */
+    const openPluginAuthoringSession = React.useCallback((params: Readonly<{ sourceRootPath: string; promptText: string }>) => {
+        const serverId = state.executionServerId;
+        const machineId = state.executionMachineId;
+        if (!activeAccountScope || !serverId || !machineId) return;
+        const draftId = seedNewSessionDraftV1({
+            seed: {
+                prompt: { text: params.promptText, mode: 'replace' },
+                placement: {
+                    kind: 'exactTarget',
+                    serverId,
+                    machineId,
+                    directory: params.sourceRootPath,
+                },
+            },
+            scope: activeAccountScope,
+        });
+        if (!draftId) return;
+        router.push({ pathname: '/new', params: buildNewSessionLaunchRouteParams({ draftId }) });
+    }, [activeAccountScope, router, state.executionMachineId, state.executionServerId]);
+    const createDevelopmentPlugin = React.useCallback(async () => {
+        if (!state.daemonOperationsAvailable || !state.developmentCreateAvailable) return;
+        const params = await promptDevelopmentCreateParams();
+        if (!params) return;
         const confirmed = await Modal.confirm(
             t('settingsPlugins.developmentCreateConfirmTitle'),
-            t('settingsPlugins.developmentCreateConfirmBody', { pluginId, targetDir }),
+            t('settingsPlugins.developmentCreateConfirmBody', {
+                pluginId: params.pluginId,
+                targetDir: params.targetDir,
+            }),
             { confirmText: t('settingsPlugins.developmentCreate'), cancelText: t('common.cancel') },
         );
         if (!confirmed) return;
-        state.runDevelopmentCreate({ targetDir, displayName, pluginId, ...(ui ? { ui } : {}) });
-    }, [state]);
+        state.runDevelopmentCreate(params);
+    }, [state, promptDevelopmentCreateParams]);
+    /**
+     * The Agent-assisted create path: the exact same deterministic scaffold
+     * prompts, the exact same canonical `create` action — and then the scaffold
+     * result's returned source root opens the ordinary authoring Session.
+     * Nothing about trust, review, or the scaffold owner changes.
+     */
+    const createDevelopmentPluginWithAgent = React.useCallback(async () => {
+        if (!state.daemonOperationsAvailable || !state.developmentCreateAvailable) return;
+        const params = await promptDevelopmentCreateParams();
+        if (!params) return;
+        const confirmed = await Modal.confirm(
+            t('settingsPlugins.developmentCreateConfirmTitle'),
+            t('settingsPlugins.developmentCreateConfirmBody', {
+                pluginId: params.pluginId,
+                targetDir: params.targetDir,
+            }),
+            { confirmText: t('settingsPlugins.developmentCreateWithAgent'), cancelText: t('common.cancel') },
+        );
+        if (!confirmed) return;
+        state.runDevelopmentCreate({
+            ...params,
+            onCreated: ({ pluginId, sourceRootPath }) => {
+                openPluginAuthoringSession({
+                    sourceRootPath,
+                    promptText: t('settingsPlugins.developmentCreateWithAgentPrompt', { pluginId }),
+                });
+            },
+        });
+    }, [openPluginAuthoringSession, state, promptDevelopmentCreateParams]);
+    /**
+     * Opens the ordinary authoring Session for an existing development source,
+     * at that entry's exact `sourceRootPath` reported by the daemon.
+     */
+    const editDevelopmentPluginWithAgent = React.useCallback((editPluginId: string) => {
+        const entry = state.developmentPlugins.find(
+            (candidate) => candidate.installed.pluginId === editPluginId,
+        ) ?? null;
+        if (!entry) return;
+        openPluginAuthoringSession({
+            sourceRootPath: entry.sourceRootPath,
+            promptText: t('settingsPlugins.developmentEditWithAgentPrompt', { pluginId: editPluginId }),
+        });
+    }, [openPluginAuthoringSession, state.developmentPlugins]);
     // Adopting an existing folder is the step that turns a created (or cloned)
     // plugin project into a running development source. The path the user types
     // here is the exact thing the daemon will be asked to trust, so it is echoed
@@ -386,9 +478,13 @@ export const PluginSettingsHomeScreen = React.memo(function PluginSettingsHomeSc
                     onCreate={() => {
                         void createDevelopmentPlugin();
                     }}
+                    onCreateWithAgent={() => {
+                        void createDevelopmentPluginWithAgent();
+                    }}
                     onDevelopSourceRoot={() => {
                         void developPluginSourceRoot();
                     }}
+                    onEditWithAgent={editDevelopmentPluginWithAgent}
                     onRunAction={state.runDevelopmentAction}
                 />
             ) : null}

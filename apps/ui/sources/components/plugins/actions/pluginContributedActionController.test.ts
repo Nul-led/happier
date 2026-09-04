@@ -475,6 +475,7 @@ describe('plugin contributed Action controller', () => {
                     sourceSelectorId: 'source-a',
                 },
                 connectedAccount: { kind: 'none' },
+                presentation: { connectedAccountLabel: null },
             },
         });
     });
@@ -486,7 +487,8 @@ describe('plugin contributed Action controller', () => {
         };
         const dispatch = vi.fn();
         const controller = createPluginContributedActionController({
-            resolveCurrent: () => snapshot([action({
+            resolveCurrent: () => {
+                const current = snapshot([action({
                 id: 'connection/prepare-v1',
                 scopes: ['settings'],
                 surfaces: ['plugin'],
@@ -528,7 +530,12 @@ describe('plugin contributed Action controller', () => {
                         },
                     ],
                 },
-            })]),
+                })]);
+                return {
+                    ...current,
+                    host: { ...current.host, machineDisplayName: 'Development Mac' },
+                };
+            },
             dispatch,
             resolveConnectedAccountOptions: vi.fn().mockResolvedValue({
                 supported: true,
@@ -564,6 +571,10 @@ describe('plugin contributed Action controller', () => {
                 kind: 'selected',
                 fieldPath: 'credentialRef',
                 ref: account,
+            },
+            presentation: {
+                connectedAccountLabel: 'Work',
+                machineDisplayName: 'Development Mac',
             },
         });
         const settlement = await selected.result;
@@ -651,6 +662,10 @@ describe('plugin contributed Action controller', () => {
                     contributor: operation.contributor,
                 },
                 connectedAccount: { kind: 'none' },
+                presentation: {
+                    connectedAccountLabel: null,
+                    machineDisplayName: null,
+                },
             },
         });
     });

@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { buildUniversalSearchScopeChoices, buildUniversalSearchScopeKeyFromSeed } from './universalSearchScope';
+import {
+    buildUniversalSearchScopeChoices,
+    buildUniversalSearchScopeKeyFromSeed,
+    resolveUniversalSearchRouteInitialScope,
+} from './universalSearchScope';
 
 describe('Universal Search local scope', () => {
     it('keeps an invocation-seeded Home independent from focused Home changes', () => {
@@ -10,7 +14,7 @@ describe('Universal Search local scope', () => {
     });
 
     it('projects exact Home and workspace alternatives without mutating global focus or fanout', () => {
-        const readMachineTarget = vi.fn((sessionId: string) => sessionId === 'session-b'
+        const readMachineTarget = vi.fn((target: { accountId: string; serverId: string; sessionId: string }) => target.sessionId === 'session-b'
             ? { machineId: 'machine-b', basePath: '/repo/b' }
             : null);
         const choices = buildUniversalSearchScopeChoices({
@@ -33,6 +37,11 @@ describe('Universal Search local scope', () => {
             { accountId: 'account-b', serverId: 'home-b', machineId: 'machine-b', rootPath: '/repo/b', sessionId: 'session-b' },
         ]);
         expect(readMachineTarget).toHaveBeenCalledTimes(1);
+        expect(readMachineTarget).toHaveBeenCalledWith({
+            accountId: 'account-b',
+            serverId: 'home-b',
+            sessionId: 'session-b',
+        });
     });
 
     it('omits Home and workspace alternatives whose exact credential Account cannot be resolved', () => {
@@ -58,5 +67,61 @@ describe('Universal Search local scope', () => {
         const before = buildUniversalSearchScopeKeyFromSeed({ accountId: 'account-b', serverId: 'home-b', machineId: 'machine-b', rootPath: '/repo/one', sessionId: 's1' });
         const after = buildUniversalSearchScopeKeyFromSeed({ accountId: 'account-b', serverId: 'home-b', machineId: 'machine-b', rootPath: '/repo/two', sessionId: 's1' });
         expect(after).not.toBe(before);
+    });
+
+    it('uses portable server identity for Home and workspace choices while accepting stored local profile ids', () => {
+        const choices = buildUniversalSearchScopeChoices({
+            accountIdByServerId: new Map([['srv-home-a', 'account-a']]),
+            profiles: [{
+                id: 'local-profile-a',
+                serverIdentityId: 'srv-home-a',
+                name: 'Home A',
+            }] as never,
+            workspaces: [{
+                id: 'workspace-a',
+                serverId: 'local-profile-a',
+                machineId: 'machine-a',
+                rootPath: '/repo/a',
+                createdAtMs: 1,
+            }] as never,
+            sessions: [{ id: 'session-a', serverId: 'local-profile-a' }] as never,
+            readMachineTarget: () => ({ machineId: 'machine-a', basePath: '/repo/a' }),
+        });
+
+        expect(choices.map((choice) => choice.scope)).toEqual([
+            { accountId: 'account-a', serverId: 'srv-home-a', machineId: null, rootPath: null, sessionId: null },
+            { accountId: 'account-a', serverId: 'srv-home-a', machineId: 'machine-a', rootPath: '/repo/a', sessionId: 'session-a' },
+        ]);
+    });
+
+    it('leaves an unscoped direct route ambient while preserving partial and explicit-empty scopes', () => {
+        expect(resolveUniversalSearchRouteInitialScope({})).toBeUndefined();
+        expect(resolveUniversalSearchRouteInitialScope({ serverId: 'home-b' })).toEqual({
+            accountId: null,
+            serverId: 'home-b',
+            sessionId: null,
+            machineId: null,
+            rootPath: null,
+        });
+        expect(resolveUniversalSearchRouteInitialScope({
+            accountId: '',
+            serverId: '',
+            sessionId: '',
+            machineId: '',
+            rootPath: '',
+        })).toEqual({
+            accountId: null,
+            serverId: null,
+            sessionId: null,
+            machineId: null,
+            rootPath: null,
+        });
+        expect(resolveUniversalSearchRouteInitialScope({ serverId: ['home-a', 'home-b'] })).toEqual({
+            accountId: null,
+            serverId: null,
+            sessionId: null,
+            machineId: null,
+            rootPath: null,
+        });
     });
 });

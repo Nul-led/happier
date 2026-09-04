@@ -41,6 +41,29 @@ function defaultProps(overrides: Partial<SelectionListProps> = {}): SelectionLis
 }
 
 describe('SelectionList accessibility contract (Phase 2.10)', () => {
+    it('keeps a non-filtering scope step labelled but read-only', async () => {
+        const { SelectionList } = await import('../SelectionList');
+        const rootStep: SelectionListStep = {
+            id: 'root',
+            inputPlaceholder: 'Search',
+            sections: [],
+        };
+        const scopeStep: SelectionListStep = {
+            id: 'scope-picker',
+            title: 'Home B',
+            inputPlaceholder: 'Home B',
+            inputReadOnly: true,
+            disableInputFilter: true,
+            sections: [{ kind: 'static', id: 'scopes', options: [{ id: 'b', label: 'Home B' }] }],
+        };
+        const screen = await renderScreen(
+            <SelectionList {...defaultProps({ rootStep, syncActiveStep: scopeStep })} />,
+        );
+        const input = screen.findByTestId('sl:header:input');
+        expect(input?.props.editable).toBe(false);
+        expect(input?.props.accessibilityLabel).toBe('Home B');
+        expect(input?.props.accessibilityState).toEqual({ disabled: true });
+    });
     it.each([
         {
             name: 'fallback identity',
@@ -157,7 +180,8 @@ describe('SelectionList accessibility contract (Phase 2.10)', () => {
         expect(optB?.props['aria-selected']).toBe(true);
         expect(optB?.props['aria-posinset']).toBe(2);
         expect(optB?.props['aria-setsize']).toBe(2);
-        expect(optA?.props.tabIndex).toBe(0);
+        expect(optA?.props.tabIndex).toBe(-1);
+        expect(optB?.props.tabIndex).toBe(-1);
     });
 
     it('applies option accessibility labels to plain actionable option rows', async () => {
@@ -220,6 +244,7 @@ describe('SelectionList accessibility contract (Phase 2.10)', () => {
         const screen = await renderScreen(<SelectionList {...defaultProps({
             rootStep: {
                 id: 'root',
+                inputPlaceholder: 'Search',
                 sections: [{
                     kind: 'static',
                     id: 'custom',
@@ -236,6 +261,26 @@ describe('SelectionList accessibility contract (Phase 2.10)', () => {
         const option = screen.findByTestId('sl:root:option:custom-content');
         expect(wrapper?.props.role).toBeUndefined();
         expect(option?.props.role).toBe('option');
-        expect(option?.props.tabIndex).toBe(0);
+        expect(option?.props.tabIndex).toBe(-1);
+    });
+
+    it('keeps exactly the roving focused option in the Tab order for a headerless list', async () => {
+        const { SelectionList } = await import('../SelectionList');
+        const screen = await renderScreen(<SelectionList {...defaultProps({
+            rootStep: {
+                id: 'root',
+                sections: [{
+                    kind: 'static',
+                    id: 'section-a',
+                    options: [
+                        { id: 'first', label: 'First' },
+                        { id: 'second', label: 'Second' },
+                    ],
+                }],
+            },
+        })} />);
+
+        expect(screen.findByTestId('sl:root:option:first')?.props.tabIndex).toBe(0);
+        expect(screen.findByTestId('sl:root:option:second')?.props.tabIndex).toBe(-1);
     });
 });

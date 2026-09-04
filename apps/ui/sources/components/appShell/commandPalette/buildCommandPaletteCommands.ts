@@ -75,7 +75,6 @@ type BuildCommandPaletteCommandsBaseParams = Readonly<{
   features: Readonly<{
     executionRunsEnabled: boolean;
     voiceEnabled: boolean;
-    memorySearchEnabled: boolean;
     petsCompanionEnabled?: boolean;
   }>;
   shortcutLabels?: Partial<Record<KeyboardCommandId, string>>;
@@ -85,7 +84,6 @@ type BuildCommandPaletteCommandsBaseParams = Readonly<{
     openNewSession: () => void;
     navigateToSession: (sessionId: string) => void;
   }>;
-  auth: Readonly<{ logout: () => Promise<void> }>;
   actions: Readonly<{
     execute: (actionId: ActionId, parameters: unknown, ctx?: { defaultSessionId?: string | null }) => Promise<unknown>;
   }>;
@@ -155,6 +153,7 @@ export function buildCommandPaletteCommands(
   const cmds: Command[] = [
     {
       id: 'new-session',
+      emptyQuerySuggested: true,
       title: t('commandPalette.commands.newSessionTitle'),
       subtitle: t('commandPalette.commands.newSessionSubtitle'),
       icon: 'plus-circle',
@@ -164,6 +163,7 @@ export function buildCommandPaletteCommands(
     },
     {
       id: 'sessions',
+      emptyQuerySuggested: true,
       title: t('commandPalette.commands.viewAllSessionsTitle'),
       subtitle: t('commandPalette.commands.viewAllSessionsSubtitle'),
       icon: 'chats-circle',
@@ -172,6 +172,7 @@ export function buildCommandPaletteCommands(
     },
     {
       id: 'settings',
+      emptyQuerySuggested: true,
       title: t('commandPalette.commands.settingsTitle'),
       subtitle: t('commandPalette.commands.settingsSubtitle'),
       icon: 'sliders-horizontal',

@@ -70,24 +70,40 @@ function createExecutionTarget(machineId: string): FreshMachineAdministrationExe
     } as FreshMachineAdministrationExecutionTargetV1;
 }
 
-type HookProps = Readonly<{ scopeKey: string; executionTarget: FreshMachineAdministrationExecutionTargetV1 }>;
-
-/**
- * A stable resolver: the owner treats it as an effect input, so an inline
- * closure would re-issue the read on every render instead of on a real change.
- */
-const resolveCurrentExecutionTarget = (
-    expected: FreshMachineAdministrationExecutionTargetV1 | null,
-): FreshMachineAdministrationExecutionTargetV1 | null => expected;
+type HookProps = Readonly<{
+    scopeKey: string;
+    executionTarget: FreshMachineAdministrationExecutionTargetV1;
+    focused?: boolean;
+}>;
 
 async function renderOwner(props: HookProps) {
+    let currentExecutionTarget = props.executionTarget;
+    /**
+     * Mirrors the administration owner: the resolver identity stays stable,
+     * but an issued target resolves only while that exact portable target is
+     * still selected.
+     */
+    const resolveCurrentExecutionTarget = (
+        expected: FreshMachineAdministrationExecutionTargetV1 | null,
+    ): FreshMachineAdministrationExecutionTargetV1 | null => (
+        expected !== null
+        && expected.serverId === currentExecutionTarget.serverId
+        && expected.target.serverIdentityId === currentExecutionTarget.target.serverIdentityId
+        && expected.target.machineId === currentExecutionTarget.target.machineId
+            ? expected
+            : null
+    );
     return await renderHook(
-        (current: HookProps) => useMarketplaceSourceRegistryAdministration({
-            scopeKey: current.scopeKey,
-            enabled: true,
-            executionTarget: current.executionTarget,
-            resolveCurrentExecutionTarget,
-        }),
+        (current: HookProps) => {
+            currentExecutionTarget = current.executionTarget;
+            return useMarketplaceSourceRegistryAdministration({
+                scopeKey: current.scopeKey,
+                enabled: true,
+                focused: current.focused ?? true,
+                executionTarget: current.executionTarget,
+                resolveCurrentExecutionTarget,
+            });
+        },
         { initialProps: props },
     );
 }
@@ -144,38 +160,68 @@ describe('useMarketplaceSourceRegistryAdministration', () => {
         expect(hook.getCurrent().loadError).toBe(true);
     });
 
-    it('sends concurrent edits as independent mutations and keeps the daemon-combined result', async () => {
+    it('allows only one exact-target registry mutation at a time', async () => {
         const initial = createRegistry('marketplace:existing');
         const afterAlpha = {
             ...initial,
             sources: [...initial.sources, createRegistry('marketplace:alpha').sources[0]!],
         };
-        const afterBoth = {
-            ...afterAlpha,
-            sources: [...afterAlpha.sources, createRegistry('marketplace:beta').sources[0]!],
+        let finishMutation: (value: { status: 'success'; registry: MarketplaceSourceRegistryV1 }) => void = () => {
+            throw new Error('Mutation resolver was not initialized');
         };
         mocks.get.mockResolvedValue(initial);
-        mocks.mutate
-            .mockResolvedValueOnce({ status: 'success', registry: afterAlpha })
-            .mockResolvedValueOnce({ status: 'success', registry: afterBoth });
+        mocks.mutate.mockReturnValueOnce(new Promise((resolve) => { finishMutation = resolve; }));
         const hook = await renderOwner({ scopeKey: 'machine-a', executionTarget: createExecutionTarget('machine-a') });
 
+        let first!: ReturnType<ReturnType<typeof hook.getCurrent>['upsertSource']>;
+        let second!: ReturnType<ReturnType<typeof hook.getCurrent>['setSourceRegistryProfile']>;
         await act(async () => {
-            await Promise.all([
-                hook.getCurrent().upsertSource({ sourceUrl: 'https://alpha.example.test/index.json', title: 'Alpha', origin: 'user' }),
-                hook.getCurrent().upsertSource({ sourceUrl: 'https://beta.example.test/index.json', title: 'Beta', origin: 'user' }),
-            ]);
+            first = hook.getCurrent().upsertSource({
+                sourceUrl: 'https://alpha.example.test/index.json',
+                title: 'Alpha',
+                origin: 'user',
+            });
+            second = hook.getCurrent().setSourceRegistryProfile('marketplace:existing', 'registry_one');
+            void second.catch(() => undefined);
         });
 
-        expect(mocks.mutate).toHaveBeenNthCalledWith(1, 'machine-a', {
+        await expect(second).rejects.toThrow('already in progress');
+        expect(mocks.mutate).toHaveBeenCalledTimes(1);
+        expect(mocks.mutate).toHaveBeenCalledWith('machine-a', {
             kind: 'upsert',
             input: { sourceUrl: 'https://alpha.example.test/index.json', title: 'Alpha', origin: 'user' },
         }, { serverId: 'server-a' });
-        expect(mocks.mutate).toHaveBeenNthCalledWith(2, 'machine-a', {
-            kind: 'upsert',
-            input: { sourceUrl: 'https://beta.example.test/index.json', title: 'Beta', origin: 'user' },
-        }, { serverId: 'server-a' });
-        expect(hook.getCurrent().registry).toEqual(afterBoth);
+        finishMutation({ status: 'success', registry: afterAlpha });
+        await act(async () => { await first; });
+        expect(hook.getCurrent().registry).toEqual(afterAlpha);
+    });
+
+    it('settles an invalidated refresh when a mutation commits', async () => {
+        const initial = createRegistry('marketplace:initial');
+        const changed = createRegistry('marketplace:changed');
+        let finishRefresh: (registry: MarketplaceSourceRegistryV1) => void = () => {
+            throw new Error('Refresh resolver was not initialized');
+        };
+        mocks.get
+            .mockResolvedValueOnce(initial)
+            .mockReturnValueOnce(new Promise<MarketplaceSourceRegistryV1>((resolve) => {
+                finishRefresh = resolve;
+            }));
+        mocks.mutate.mockResolvedValueOnce({ status: 'success', registry: changed });
+        const hook = await renderOwner({ scopeKey: 'machine-a', executionTarget: createExecutionTarget('machine-a') });
+
+        await act(async () => { hook.getCurrent().refresh(); });
+        expect(hook.getCurrent().loading).toBe(true);
+
+        await act(async () => {
+            await hook.getCurrent().setSourceEnabled('marketplace:initial', false);
+        });
+        expect(hook.getCurrent().loading).toBe(false);
+        expect(hook.getCurrent().registry).toEqual(changed);
+
+        finishRefresh(createRegistry('marketplace:stale-refresh'));
+        await flushHookEffects();
+        expect(hook.getCurrent().registry).toEqual(changed);
     });
 
     it('does not apply a completed mutation after the selected machine changes', async () => {
@@ -189,7 +235,10 @@ describe('useMarketplaceSourceRegistryAdministration', () => {
         mocks.mutate.mockReturnValueOnce(mutation);
         const hook = await renderOwner({ scopeKey: 'machine-a', executionTarget: createExecutionTarget('machine-a') });
 
-        const pending = hook.getCurrent().setSourceEnabled('marketplace:a', false);
+        let pending!: ReturnType<ReturnType<typeof hook.getCurrent>['setSourceEnabled']>;
+        await act(async () => {
+            pending = hook.getCurrent().setSourceEnabled('marketplace:a', false);
+        });
         await hook.rerender({ scopeKey: 'machine-b', executionTarget: createExecutionTarget('machine-b') });
         finishMutation(createRegistry('marketplace:stale-a'));
         await act(async () => { await pending; });
@@ -197,7 +246,38 @@ describe('useMarketplaceSourceRegistryAdministration', () => {
         expect(hook.getCurrent().registry).toEqual(createRegistry('marketplace:b'));
     });
 
-    it('refreshes the original target and returns outcomeUnknown after an issued mutation loses its response', async () => {
+    it('keeps the single mutation slot occupied across a target switch until the issued mutation settles', async () => {
+        let finishMutation: (registry: MarketplaceSourceRegistryV1) => void = () => {
+            throw new Error('Mutation resolver was not initialized');
+        };
+        mocks.get
+            .mockResolvedValueOnce(createRegistry('marketplace:a'))
+            .mockResolvedValueOnce(createRegistry('marketplace:b'));
+        mocks.mutate.mockReturnValueOnce(new Promise<{ status: 'success'; registry: MarketplaceSourceRegistryV1 }>((resolve) => {
+            finishMutation = (registry) => resolve({ status: 'success', registry });
+        }));
+        const hook = await renderOwner({ scopeKey: 'machine-a', executionTarget: createExecutionTarget('machine-a') });
+
+        let first!: ReturnType<ReturnType<typeof hook.getCurrent>['setSourceEnabled']>;
+        await act(async () => {
+            first = hook.getCurrent().setSourceEnabled('marketplace:a', false);
+        });
+        expect(hook.getCurrent().mutationInFlight).toBe(true);
+
+        await hook.rerender({ scopeKey: 'machine-b', executionTarget: createExecutionTarget('machine-b') });
+        expect(hook.getCurrent().mutationInFlight).toBe(true);
+
+        await expect(hook.getCurrent().setSourceEnabled('marketplace:b', false)).rejects.toThrow('already in progress');
+        expect(mocks.mutate).toHaveBeenCalledTimes(1);
+
+        finishMutation(createRegistry('marketplace:stale-a'));
+        await act(async () => { await first; });
+
+        expect(hook.getCurrent().mutationInFlight).toBe(false);
+        expect(hook.getCurrent().registry).toEqual(createRegistry('marketplace:b'));
+    });
+
+    it('keeps an unknown mutation outcome visible until a later explicit refresh succeeds', async () => {
         const initial = createRegistry('marketplace:a');
         const reconciled = createRegistry('marketplace:reconciled-a');
         mocks.get.mockResolvedValueOnce(initial).mockResolvedValueOnce(reconciled);
@@ -208,12 +288,39 @@ describe('useMarketplaceSourceRegistryAdministration', () => {
         await act(async () => {
             settlement = await hook.getCurrent().setSourceEnabled('marketplace:a', false);
         });
-        await flushHookEffects();
 
         expect(settlement).toEqual({ status: 'outcomeUnknown' });
+        expect(mocks.get).toHaveBeenCalledTimes(1);
+        expect(hook.getCurrent().mutationOutcomeUnknown).toBe(true);
+        expect(hook.getCurrent().registry).toEqual(initial);
+
+        await act(async () => { hook.getCurrent().refresh(); });
+        await flushHookEffects();
+
         expect(mocks.get).toHaveBeenCalledTimes(2);
         expect(mocks.get).toHaveBeenLastCalledWith('machine-a', { serverId: 'server-a' });
         expect(hook.getCurrent().registry).toEqual(reconciled);
+        expect(hook.getCurrent().mutationOutcomeUnknown).toBe(false);
+    });
+
+    it('re-reads on focus and ignores a read that settles after the screen loses focus', async () => {
+        let finishFirstRead: (registry: MarketplaceSourceRegistryV1) => void = () => {
+            throw new Error('Read resolver was not initialized');
+        };
+        mocks.get
+            .mockReturnValueOnce(new Promise((resolve) => { finishFirstRead = resolve; }))
+            .mockResolvedValueOnce(createRegistry('marketplace:focused'));
+        const target = createExecutionTarget('machine-a');
+        const hook = await renderOwner({ scopeKey: 'machine-a', executionTarget: target, focused: true });
+
+        await hook.rerender({ scopeKey: 'machine-a', executionTarget: target, focused: false });
+        finishFirstRead(createRegistry('marketplace:blurred-stale'));
+        await flushHookEffects();
+        expect(hook.getCurrent().registry).toBeNull();
+
+        await hook.rerender({ scopeKey: 'machine-a', executionTarget: target, focused: true });
+        expect(mocks.get).toHaveBeenCalledTimes(2);
+        expect(hook.getCurrent().registry).toEqual(createRegistry('marketplace:focused'));
     });
 
     it('returns a definite unavailable settlement without reconciling after daemon validation rejects the mutation', async () => {

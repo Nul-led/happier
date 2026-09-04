@@ -164,6 +164,34 @@ export const sessionListStyles = StyleSheet.create((theme) => ({
         justifyContent: 'flex-end' as const,
         gap: 4,
     },
+    searchChromeAuxiliaryControlsRow: {
+        minHeight: 44,
+        flexDirection: 'row' as const,
+        alignItems: 'center' as const,
+        justifyContent: 'flex-end' as const,
+        gap: 4,
+    },
+    searchChromeStatusRow: {
+        flexDirection: 'row' as const,
+        alignItems: 'center' as const,
+        gap: 8,
+        minHeight: 28,
+    },
+    searchChromeStatusText: {
+        flex: 1,
+        minWidth: 0,
+        color: theme.colors.text.tertiary,
+        ...Typography.default(),
+    },
+    searchChromeStatusRetry: {
+        alignItems: 'center' as const,
+        justifyContent: 'center' as const,
+        paddingHorizontal: 8,
+    },
+    searchChromeStatusRetryText: {
+        color: theme.colors.accent.blue,
+        ...Typography.default('semiBold'),
+    },
     searchChromeEscalationRow: {
         flexDirection: 'row' as const,
         alignItems: 'center' as const,
@@ -200,6 +228,9 @@ export const sessionListStyles = StyleSheet.create((theme) => ({
         paddingRight: 8,
         gap: 5,
         zIndex: 2,
+    },
+    headerSearchShellExpandedNative: {
+        maxWidth: '100%' as const,
     },
     headerSearchShellBackdrop: {
         position: 'absolute' as const,
@@ -247,6 +278,14 @@ export const sessionListStyles = StyleSheet.create((theme) => ({
         height: 20,
         alignItems: 'center' as const,
         justifyContent: 'center' as const,
+    },
+    headerSearchAction: {
+        position: 'relative' as const,
+        zIndex: 2,
+        alignItems: 'center' as const,
+        justifyContent: 'center' as const,
+        borderRadius: 999,
+        flexShrink: 0,
     },
     headerSearchInput: {
         flex: 1,

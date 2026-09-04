@@ -72,7 +72,6 @@ function createSummary(
                 selection: 'git_worktree',
                 extraIgnorePatterns: [],
                 extraIncludePatterns: [],
-                includeGitDirectory: false,
                 policyDigest: 'sha256:test',
             },
             enabled: true,

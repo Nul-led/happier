@@ -348,6 +348,46 @@ describe('AutomationEditorHostScreen', () => {
         seedStorageSessions();
     });
 
+    it('settles missing and private-unavailable edit hydration without an indefinite spinner', async () => {
+        syncSpies.refreshAutomationDefinitionDetail.mockResolvedValueOnce(null);
+        const missingScreen = await mountHost({});
+        await flushRender();
+        expect(missingScreen.findByProps({ testID: 'automation-editor-not-found' })).toBeDefined();
+        expect(missingScreen.findAllByType('ActivitySpinner' as never)).toHaveLength(0);
+        await missingScreen.unmount();
+
+        const summary = automationState.definition;
+        const unavailable = {
+            ...summary,
+            detail: {
+                kind: 'unavailable' as const,
+                templateVersion: summary.templateVersion,
+                code: 'automation_stored_content_unavailable' as const,
+            },
+        };
+        automationState.definition = unavailable;
+        syncSpies.refreshAutomationDefinitionDetail.mockResolvedValueOnce(unavailable);
+        const unavailableScreen = await mountHost({});
+        await flushRender();
+
+        expect(unavailableScreen.findByProps({ title: unavailable.name })).toBeDefined();
+        expect(unavailableScreen.findByProps({ testID: 'automation-editor-private-unavailable' })).toBeDefined();
+        expect(unavailableScreen.findAllByType('ActivitySpinner' as never)).toHaveLength(0);
+    });
+
+    it('renders a retryable failed edit hydration state while keeping public facts visible', async () => {
+        syncSpies.refreshAutomationDefinitionDetail.mockRejectedValueOnce(new Error('offline'));
+        const screen = await mountHost({});
+        await flushRender();
+
+        expect(screen.findByProps({ testID: 'automation-editor-public-facts' })).toBeDefined();
+        const failed = screen.findByProps({ testID: 'automation-editor-load-failed' });
+        expect(failed.props.accessibilitySemantics).toBe('alert');
+        await act(async () => failed.props.action.onPress());
+        await flushRender();
+        expect(syncSpies.refreshAutomationDefinitionDetail).toHaveBeenCalledTimes(2);
+    });
+
     it('seeds the exact observed prefill as one new row and saves through the one canonical writer', async () => {
         syncSpies.saveAutomationEditorDraft.mockResolvedValue({ id: 'automation-1' });
         const screen = await mountHost({

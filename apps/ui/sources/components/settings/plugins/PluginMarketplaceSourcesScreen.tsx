@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { useIsFocused } from '@react-navigation/native';
 import { useUnistyles } from 'react-native-unistyles';
 import type { MarketplaceSourceV1 } from '@happier-dev/protocol/marketplace';
 
@@ -77,11 +78,14 @@ async function readSourceDraft(existing: MarketplaceSourceV1 | null): Promise<Re
 }
 
 export const PluginMarketplaceSourcesScreen = React.memo(function PluginMarketplaceSourcesScreen() {
+    const isFocused = useIsFocused();
     const { theme } = useUnistyles();
-    const state = usePluginSettingsScreenState();
+    const state = usePluginSettingsScreenState({ focused: isFocused });
     const [busySourceId, setBusySourceId] = React.useState<string | null>(null);
     const configuredSources = state.marketplaceSourceRegistry?.sources ?? [];
-    const mutationsDisabled = !state.daemonAdministrationAvailable || busySourceId !== null;
+    const mutationsDisabled = !state.daemonAdministrationAvailable
+        || busySourceId !== null
+        || state.marketplaceSourceRegistryMutationInFlight;
 
     const add = React.useCallback(async () => {
         const draft = await readSourceDraft(null);
@@ -160,6 +164,15 @@ export const PluginMarketplaceSourcesScreen = React.memo(function PluginMarketpl
                         testID="settings.plugins.sources.retry"
                         title={t('settingsPlugins.sourceAdministration.loadError')}
                         subtitle={t('settingsPlugins.sourceAdministration.retry')}
+                        onPress={state.refreshMarketplaceSourceRegistry}
+                        showChevron={false}
+                    />
+                ) : null}
+                {state.marketplaceSourceRegistryMutationOutcomeUnknown ? (
+                    <Item
+                        testID="settings.plugins.sources.outcomeUnknown"
+                        title={t('settingsPlugins.sourceAdministration.operationOutcomeUnknownTitle')}
+                        subtitle={t('settingsPlugins.sourceAdministration.operationOutcomeUnknownBody')}
                         onPress={state.refreshMarketplaceSourceRegistry}
                         showChevron={false}
                     />
@@ -256,6 +269,7 @@ export const PluginMarketplaceSourcesScreen = React.memo(function PluginMarketpl
                 targetSelection={state.administrationTargetSelection}
                 marketplaceSources={configuredSources}
                 onSetMarketplaceSourceProfile={state.setMarketplaceSourceProfile}
+                marketplaceSourceMutationInFlight={state.marketplaceSourceRegistryMutationInFlight}
             />
         </ItemList>
     );

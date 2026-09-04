@@ -1,4 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
+import type {
+    PluginUiHostApiRequestEnvelopeV1,
+    PluginUiJsonValueV1,
+} from '@happier-dev/protocol/plugins/ui';
 
 import { createPluginOpenNewSessionHostApiHandler } from './pluginOpenNewSessionHostApi';
 
@@ -8,11 +12,22 @@ const accountLifetime = Object.freeze({
     onRetire: () => Object.freeze({ dispose() {} }),
 });
 
-function request(payload: unknown) {
+function request(payload: PluginUiJsonValueV1): PluginUiHostApiRequestEnvelopeV1 {
     return {
+        version: 1 as const,
         method: 'openNewSession' as const,
         payload,
         requestId: 'request-1',
+        surface: {
+            pluginId: 'happier.triage',
+            contributionId: 'triage-app',
+            surfaceId: 'surfacePlacement:happier.triage:triage-app',
+            placement: 'appSurface' as const,
+            platform: 'web' as const,
+            channel: 'internal' as const,
+            resourceScope: [],
+            diagnostics: [],
+        },
     };
 }
 
@@ -37,6 +52,10 @@ const selected = {
         contributor: operation.contributor,
     },
     connectedAccount: { kind: 'none' as const },
+    presentation: {
+        connectedAccountLabel: null,
+        machineDisplayName: 'Development Mac',
+    },
 };
 
 const executeSelectedOperation = vi.fn(async () => ({

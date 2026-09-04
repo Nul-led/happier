@@ -19,7 +19,7 @@ import type {
  * IMMEDIATELY after closing. Per-mount state means the freshly-mounted hook
  * loses the prior options on every open.
  *
- * Fix: a module-level LRU cache keyed by `${id}::${resolverKey}::${seed}`
+ * Fix: a module-level LRU cache keyed by the canonical JSON identity tuple
  * stores the last successful options. On mount the reducer's initial state
  * seeds `lastSuccessOptions` from the cache when present. On every
  * successful resolve the cache is updated. Aborted in-flight resolves do

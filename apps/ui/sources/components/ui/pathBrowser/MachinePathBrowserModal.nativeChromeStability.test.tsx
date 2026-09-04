@@ -61,8 +61,8 @@ vi.mock('@/sync/ops/machines', () => ({
     machineCreateDirectory: async () => ({ success: true }),
 }));
 
-vi.mock('@/sync/ops/machineRipgrep', () => ({
-    machineRipgrep: async () => ({ success: true, stdout: '', exitCode: 0 }),
+vi.mock('@/sync/ops/machineWorkspaceFileList', () => ({
+    machineWorkspaceFileList: async () => ({ ok: true, paths: [], truncated: false }),
 }));
 
 describe('MachinePathBrowserModal native chrome stability', () => {

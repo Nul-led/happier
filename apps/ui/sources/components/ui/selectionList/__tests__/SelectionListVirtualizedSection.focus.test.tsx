@@ -170,6 +170,38 @@ describe('SelectionListVirtualizedSection focus parity (F4)', () => {
         expect(call.animated).toBe(true);
     });
 
+    it('reveals the focused row again when the virtualized viewport height changes', async () => {
+        legendListState.reset();
+        const { SelectionListVirtualizedSection } = await import('../SelectionListVirtualizedSection');
+        const section = makeSection(60);
+        await renderScreen(
+            <SelectionListVirtualizedSection
+                section={section}
+                stepId="root"
+                rootTestID="sl"
+                selectedOptionId={null}
+                focusedOptionId="opt-30"
+                onSelect={() => {}}
+                onPushStep={() => {}}
+            />,
+        );
+
+        scrollToIndex.mockClear();
+        legendListState.props?.onLayout?.({ nativeEvent: { layout: { x: 0, y: 0, width: 320, height: 400 } } });
+        expect(scrollToIndex).not.toHaveBeenCalled();
+
+        legendListState.props?.onLayout?.({ nativeEvent: { layout: { x: 0, y: 0, width: 320, height: 220 } } });
+        expect(scrollToIndex).toHaveBeenCalledTimes(1);
+        expect(scrollToIndex).toHaveBeenCalledWith({
+            index: 30,
+            viewPosition: 0.5,
+            animated: true,
+        });
+
+        legendListState.props?.onLayout?.({ nativeEvent: { layout: { x: 0, y: 0, width: 320, height: 220 } } });
+        expect(scrollToIndex).toHaveBeenCalledTimes(1);
+    });
+
     it('scrolls focused rows without animation when reduced motion is enabled', async () => {
         reducedMotionState.value = true;
         const { SelectionListVirtualizedSection } = await import('../SelectionListVirtualizedSection');

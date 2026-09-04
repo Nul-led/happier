@@ -74,12 +74,13 @@ export function filterDynamicOptionsByQuery(
 }
 
 /**
- * RUX-1 Issue 1: rank options into 3 tiers given a query, preserving each
+ * RUX-1 Issue 1: rank options into 4 tiers given a query, preserving each
  * option's original index within its tier (which itself preserves the
  * descriptor's original alphabetical/curated order):
- *   tier 1 — label starts with the query (case-insensitive)
+ *   tier 1 — label starts with the query, or an exact canonical identity matches
  *   tier 2 — label contains the query (not at start)
  *   tier 3 — subtitle contains the query
+ *   tier 4 — additional canonical metadata contains the query
  * Options with no match are dropped. Returns the original array reference
  * unchanged when the query is empty so consumers can cheaply skip
  * re-rendering.
@@ -100,10 +101,17 @@ export function rankOptionsByQuery(
     const tier1: { idx: number; option: SelectionListOption }[] = [];
     const tier2: { idx: number; option: SelectionListOption }[] = [];
     const tier3: { idx: number; option: SelectionListOption }[] = [];
+    const tier4: { idx: number; option: SelectionListOption }[] = [];
     for (let i = 0; i < options.length; i += 1) {
         const option = options[i]!;
         const label = option.label.toLowerCase();
         if (label.startsWith(normalized)) {
+            tier1.push({ idx: i, option });
+            continue;
+        }
+        if (option.exactSearchText
+            ?.split('\n')
+            .some((value) => value.trim().toLowerCase() === normalized)) {
             tier1.push({ idx: i, option });
             continue;
         }
@@ -116,10 +124,12 @@ export function rankOptionsByQuery(
         // path which always contains the parent directory, so tier-3 would
         // match EVERY child when typing inside a folder, polluting the
         // ranking with false positives.
-        if (disableSubtitleTier === true) continue;
-        if (option.subtitle && option.subtitle.toLowerCase().includes(normalized)) {
+        if (disableSubtitleTier !== true && option.subtitle && option.subtitle.toLowerCase().includes(normalized)) {
             tier3.push({ idx: i, option });
             continue;
+        }
+        if (option.searchText?.toLowerCase().includes(normalized)) {
+            tier4.push({ idx: i, option });
         }
     }
     // Stable order within each tier is the original input order. The caller
@@ -129,6 +139,7 @@ export function rankOptionsByQuery(
     for (const { option } of tier1) out.push(option);
     for (const { option } of tier2) out.push(option);
     for (const { option } of tier3) out.push(option);
+    for (const { option } of tier4) out.push(option);
     return out;
 }
 
@@ -199,18 +210,18 @@ export function synthesizeSelectionListRenderPlan(
         if (descriptor.kind === 'static') {
             const filtered = staticByOriginalId.get(descriptor.id);
             if (!filtered) continue;
-            // RUX-9.1: drop static sections with zero options entirely —
-            // including the empty-query path where `filterSelectionListSections`
-            // is a no-op and the descriptor's own options array is empty
-            // (e.g. an empty Favorites section before any favorites are
-            // saved). Otherwise the header renders alone above no rows.
-            if (filtered.options.length === 0) continue;
+            // RUX-9.1: drop static sections with neither rows nor a truthful
+            // status hint. A hint is itself visible section content (for
+            // example, incomplete Session discovery), while an empty Favorites
+            // section remains absent instead of rendering a bare header.
+            if (filtered.options.length === 0 && !filtered.resultHint) continue;
             plan.push({
                 id: filtered.id,
                 title: filtered.title,
                 count: filtered.count,
                 options: filtered.options,
                 virtualization: filtered.virtualization,
+                resultHint: filtered.resultHint,
             });
             continue;
         }

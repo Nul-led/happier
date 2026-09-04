@@ -173,6 +173,7 @@ export const PermissionPromptCard = React.memo(function PermissionPromptCard(pro
                     alignFirstButtonToStart={true}
                     permission={{
                         id: props.request.id,
+                        ...(props.request.turnId ? { turnId: props.request.turnId } : {}),
                         status: 'pending',
                         ...(typeof props.request.permissionSuggestions !== 'undefined'
                             ? { suggestions: props.request.permissionSuggestions }

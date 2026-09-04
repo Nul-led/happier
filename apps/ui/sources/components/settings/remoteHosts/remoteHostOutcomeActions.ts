@@ -1,10 +1,15 @@
-import type { ActiveServerSnapshot } from '@/sync/domains/server/serverProfiles';
+import {
+    buildHomeConnectionDescriptorForProfile,
+    getServerProfileById,
+    type ActiveServerSnapshot,
+} from '@/sync/domains/server/serverProfiles';
 import type { RemoteHostEffectiveSshConfig } from '@/sync/domains/remoteHosts/resolveRemoteHostEffectiveSshConfig';
 import type { SshCredentialsDraft } from '@/components/ssh/SshCredentialsFields';
 import { buildRemoteSshBootstrapMachineSystemTaskSpec } from '@/components/systemTasks/remoteSshBootstrap/buildRemoteSshBootstrapMachineSystemTaskSpec';
 import { resolvePreferredPublicReleaseRingLabelForCurrentApp } from '@/sync/runtime/resolvePublicReleaseRing';
 import { parseSshTarget, type SshTunnelEnsureRequest } from '@happier-dev/protocol';
 import type { RelayAccessTaskTarget } from '@happier-dev/cli-common/systemTasks';
+import { resolveHomeTargetFromDescriptor } from '@happier-dev/cli-common/homeTarget';
 import type { NativeSshTunnelRequest } from '@/sync/runtime/nativeSshTunnels/types';
 import type { NativeSshTunnelCredentialResolution } from '@/sync/runtime/nativeSshTunnels/adapter';
 import {
@@ -64,11 +69,27 @@ export function buildRemoteHostBootstrapSystemTaskSpec(params: Readonly<{
 }>) {
     const relay = resolveRemoteHostBootstrapRelayUrls(params.activeServerSnapshot);
     if (!relay) return null;
+    const activeProfile = getServerProfileById(params.activeServerSnapshot.serverId);
+    const descriptor = activeProfile ? buildHomeConnectionDescriptorForProfile(activeProfile) : null;
+    const homeTarget = activeProfile && descriptor
+        ? resolveHomeTargetFromDescriptor({
+            descriptor,
+            authority: activeProfile.descriptorProvenance === 'advisory-only'
+                ? 'account_directory'
+                : 'current_connection',
+            profile: {
+                id: activeProfile.id,
+                serverUrl: activeProfile.canonicalServerUrl ?? activeProfile.serverUrl,
+                webappUrl: activeProfile.serverUrl,
+            },
+        })
+        : undefined;
 
     const spec = buildRemoteSshBootstrapMachineSystemTaskSpec({
         relayUrl: relay.relayUrl,
         webappUrl: relay.webappUrl,
         publicRelayUrl: relay.publicRelayUrl ?? undefined,
+        homeTarget,
         channel: resolvePreferredPublicReleaseRingLabelForCurrentApp(),
         sshTarget: params.config.sshTarget,
         sshPort: params.config.sshPort ? String(params.config.sshPort) : '',

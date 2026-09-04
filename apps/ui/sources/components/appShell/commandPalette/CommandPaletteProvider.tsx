@@ -3,17 +3,13 @@ import { Platform } from 'react-native';
 import { useGlobalSearchParams, useRouter, useSegments } from 'expo-router';
 import { buildQualifiedPluginContributionKey } from '@happier-dev/protocol';
 import { Modal } from '@/modal';
-import {
-    presentFirstKeyCredentialLifecycle,
-} from '@/components/account/presentFirstKeyCredentialLifecycle';
-import { UniversalSearchModal } from '@/components/appShell/search/UniversalSearchModal';
+import { UniversalSearchModal, type UniversalSearchModalProps } from '@/components/appShell/search/UniversalSearchModal';
 import {
     UniversalSearchRuntimeProvider,
     resolveUniversalSearchInvocationScope,
     type UniversalSearchRuntime,
     type UniversalSearchScopeSeed,
 } from '@/components/appShell/search/UniversalSearchRuntimeContext';
-import { useAuth } from '@/auth/context/AuthContext';
 import { storage } from '@/sync/domains/state/storage';
 import { useShallow } from 'zustand/react/shallow';
 import { useNavigateToSession } from '@/hooks/session/useNavigateToSession';
@@ -36,6 +32,7 @@ import {
     normalizePluginUiProjection,
 } from '@/sync/domains/plugins/ui/projection';
 import { readPluginUiContributionOrigin } from '@/sync/domains/plugins/ui/projectionUnion';
+import { resolveServerProfileScopeIdForIdentifier } from '@/sync/domains/server/serverProfiles';
 import {
     createPluginContributedActionController,
     type PluginContributedActionCurrentSnapshot,
@@ -196,13 +193,14 @@ export function CommandPaletteProvider({ children }: { children: React.ReactNode
 function WebCommandPaletteProvider({ children }: { children: React.ReactNode }) {
     const router = useRouter();
     const resolveNewSessionOrdinaryEntryRoute = useResolveNewSessionOrdinaryEntryRoute();
-    const { logout } = useAuth();
     const {
+        sessionsById,
         commandPaletteEnabled,
         keyboardSingleKeyShortcutsEnabled,
         keyboardShortcutDisabledCommandIdsV1,
         keyboardShortcutOverridesV1,
     } = storage(useShallow((state) => ({
+        sessionsById: state.sessions,
         commandPaletteEnabled: state.settings.commandPaletteEnabled,
         keyboardSingleKeyShortcutsEnabled: state.settings.keyboardSingleKeyShortcutsEnabled,
         keyboardShortcutDisabledCommandIdsV1: state.settings.keyboardShortcutDisabledCommandIdsV1,
@@ -210,7 +208,7 @@ function WebCommandPaletteProvider({ children }: { children: React.ReactNode }) 
     })));
     const navigateToSession = useNavigateToSession();
     const segments = useSegments();
-    const routeParams = useGlobalSearchParams<{ id?: string | string[] }>();
+    const routeParams = useGlobalSearchParams<{ id?: string | string[]; sessionId?: string | string[] }>();
     const activeSessionId = useMemo(
         () => readActiveSessionIdFromRoute(segments, routeParams.id),
         [routeParams.id, segments],
@@ -219,16 +217,18 @@ function WebCommandPaletteProvider({ children }: { children: React.ReactNode }) 
         () => projectParameterFreeRoute(segments).segments[0] === 'search',
         [segments],
     );
+    const commandContextSessionId = universalSearchRouteActive
+        ? normalizeSessionId(routeParams.sessionId)
+        : activeSessionId;
     const universalSearchRouteOpenRequestedRef = React.useRef(universalSearchRouteActive);
     React.useEffect(() => {
         if (!universalSearchRouteActive) {
             universalSearchRouteOpenRequestedRef.current = false;
         }
     }, [universalSearchRouteActive]);
-    const pluginActionPresentation = useCommandPalettePluginActionPresentation(activeSessionId);
+    const pluginActionPresentation = useCommandPalettePluginActionPresentation(commandContextSessionId);
     const executionRunsEnabled = useFeatureEnabled('execution.runs');
     const voiceEnabled = useFeatureEnabled('voice');
-    const memorySearchEnabled = useFeatureEnabled('memory.search');
     const petsCompanionEnabled = useFeatureEnabled('pets.companion');
     const browseExistingSessionsEnabled = useFeatureEnabled('sessions.direct');
     const compactAppDestinations = useCompactAppDestinations({ browseExistingSessionsEnabled });
@@ -337,28 +337,37 @@ function WebCommandPaletteProvider({ children }: { children: React.ReactNode }) 
         router.push({ pathname: '/new', params: { draftId, draftOrigin } });
     }, [resolveNewSessionOrdinaryEntryRoute, router]);
 
-    const buildCommands = useCallback(() => {
+    const buildCommands = useCallback((requestedActiveSessionId: string | null = commandContextSessionId, requestedScope?: UniversalSearchScopeSeed) => {
+        // The contributed Action presentation is captured for the rendered
+        // route's exact Session. An imperative opener may target another Home
+        // or Session, so never attach the ambient Session's Actions to that
+        // command inventory. The Search provider catalog still supplies
+        // exact-target plugin entities for the requested scope.
+        const ambientSession = requestedActiveSessionId
+            ? (storage.getState().sessions as Record<string, { serverId?: string; accountId?: string } | undefined>)[requestedActiveSessionId]
+            : null;
+        const exactSessionContext = requestedScope && requestedActiveSessionId
+            ? resolveServerProfileScopeIdForIdentifier(ambientSession?.serverId ?? null)
+                === resolveServerProfileScopeIdForIdentifier(requestedScope.serverId)
+                && (requestedScope.accountId === null || ambientSession?.accountId === requestedScope.accountId)
+            : requestedActiveSessionId === commandContextSessionId;
+        const scopedPluginActionPresentation = exactSessionContext
+            ? pluginActionPresentation
+            : null;
         return buildCommandPaletteCommands({
             sessionsById: storage.getState().sessions,
             isDev: __DEV__ === true,
-            activeSessionId,
-            features: { executionRunsEnabled, voiceEnabled, memorySearchEnabled, petsCompanionEnabled },
+            activeSessionId: requestedActiveSessionId,
+            features: { executionRunsEnabled, voiceEnabled, petsCompanionEnabled },
             shortcutLabels,
             petControls,
-            ...(pluginActionPresentation ? { pluginActionPresentation } : {}),
+            ...(scopedPluginActionPresentation ? { pluginActionPresentation: scopedPluginActionPresentation } : {}),
             compactAppDestinations: compactAppDestinations.filter((destination) => destination.id !== SEARCH_DESTINATION_ID),
             onActivateCompactAppDestination: activateCompactAppDestination,
             nav: {
                 push: (path) => router.push(path as any),
                 openNewSession,
                 navigateToSession,
-            },
-            auth: {
-                logout: async () => {
-                    await presentFirstKeyCredentialLifecycle({
-                        run: logout,
-                    });
-                },
             },
             actions: {
                 execute: (actionId, parameters, ctx) => actionExecutor.execute(actionId as any, parameters, ctx),
@@ -367,10 +376,20 @@ function WebCommandPaletteProvider({ children }: { children: React.ReactNode }) 
                 await Modal.alertAsync(title, message);
             },
         });
-    }, [activeSessionId, executionRunsEnabled, voiceEnabled, memorySearchEnabled, petsCompanionEnabled, compactAppDestinations, activateCompactAppDestination, shortcutLabels, petControls, pluginActionPresentation, router, openNewSession, navigateToSession, logout, actionExecutor]);
-    const buildCommandsRef = React.useRef(buildCommands);
-    buildCommandsRef.current = buildCommands;
-    const readCurrentCommands = useCallback(() => buildCommandsRef.current(), []);
+    }, [sessionsById, commandContextSessionId, executionRunsEnabled, voiceEnabled, petsCompanionEnabled, compactAppDestinations, activateCompactAppDestination, shortcutLabels, petControls, pluginActionPresentation, router, openNewSession, navigateToSession, actionExecutor]);
+
+    const openUniversalSearchModalRef = React.useRef<Readonly<{
+        id: string;
+        activeSessionId: string | null;
+        scope: UniversalSearchScopeSeed;
+    }> | null>(null);
+    React.useEffect(() => {
+        const openModal = openUniversalSearchModalRef.current;
+        if (!openModal) return;
+        Modal.update<UniversalSearchModalProps>(openModal.id, {
+            commands: buildCommands(openModal.activeSessionId, openModal.scope),
+        });
+    }, [buildCommands]);
 
     const showCommandPalette = useCallback((initialQuery?: string, requestedScope?: UniversalSearchScopeSeed) => {
         const activeAccountScope = captureActiveServerAccountScopeLifetime()?.scope;
@@ -404,18 +423,29 @@ function WebCommandPaletteProvider({ children }: { children: React.ReactNode }) 
             } as never);
             return;
         }
-        Modal.show({
+        if (openUniversalSearchModalRef.current) return;
+        let modalId = '';
+        modalId = Modal.show({
             component: UniversalSearchModal,
             webPlacement: 'top',
+            onRequestClose: () => {
+                if (openUniversalSearchModalRef.current?.id === modalId) {
+                    openUniversalSearchModalRef.current = null;
+                }
+            },
             props: {
-                commands: buildCommands(),
-                readCurrentCommands,
+                commands: buildCommands(invocationScope.sessionId, invocationScope),
                 ...(initialQuery?.trim() ? { initialQuery: initialQuery.trim() } : {}),
-                ...(activeSessionId ? { activeSessionId } : {}),
+                ...(invocationScope.sessionId ? { activeSessionId: invocationScope.sessionId } : {}),
                 initialScope: invocationScope,
             },
         });
-    }, [activeSessionId, buildCommands, readCurrentCommands, router, universalSearchRouteActive]);
+        openUniversalSearchModalRef.current = {
+            id: modalId,
+            activeSessionId: invocationScope.sessionId,
+            scope: invocationScope,
+        };
+    }, [activeSessionId, buildCommands, router, universalSearchRouteActive]);
 
     const universalSearchRuntime = useMemo<UniversalSearchRuntime>(() => ({
         open: showCommandPalette,

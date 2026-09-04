@@ -9,6 +9,8 @@ export interface Command {
     id: string;
     /** Construction-owned semantic used by Search to avoid duplicate empty-state recents. */
     kind?: 'recentSession';
+    /** Intentionally useful before the user has entered a Search query. */
+    emptyQuerySuggested?: boolean;
     title: string;
     subtitle?: string;
     icon?: IconName;

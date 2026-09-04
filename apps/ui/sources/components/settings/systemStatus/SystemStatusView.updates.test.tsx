@@ -97,18 +97,24 @@ vi.mock('expo-clipboard', () => ({
 }));
 
 vi.mock('@/constants/Typography', () => ({
-    Typography: {
-        default: () => ({}),
+    FontWeights: {
+        regular: '400',
+        semiBold: '500',
+        bold: '600',
     },
+    Typography: new Proxy({}, {
+        get: () => () => ({}),
+    }),
 }));
 
-vi.mock('@/sync/domains/server/serverRuntime', () => ({
-    getActiveServerSnapshot: () => ({ generation: 1, serverId: 'srv_1', serverUrl: 'http://example.local' }),
+vi.mock('@/hooks/server/useActiveServerSnapshot', () => ({
+    useActiveServerSnapshot: () => ({ generation: 1, serverId: 'srv_1', serverUrl: 'http://example.local' }),
 }));
 
-vi.mock('@/sync/domains/server/serverProfiles', () => ({
-    listServerProfiles: () => [],
-}));
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
+    const { createPartialServerProfilesModuleMock } = await import('@/dev/testkit/mocks/serverProfiles');
+    return createPartialServerProfilesModuleMock(importOriginal, { profiles: [] });
+});
 
 vi.mock('@/sync/runtime/readCurrentAppRuntimeInfo', () => ({
     readCurrentAppRuntimeInfo: () => ({

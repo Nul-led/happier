@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen, standardCleanup } from '@/dev/testkit';
@@ -160,6 +161,18 @@ describe('CommandPaletteProvider lazy command building', () => {
         expect(Modal.show).toHaveBeenCalledTimes(1);
     });
 
+    it('keeps repeated web open requests on the existing Search modal', async () => {
+        const { Modal } = await import('@/modal');
+        const { CommandPaletteProvider } = await import('./CommandPaletteProvider');
+
+        await renderScreen(<CommandPaletteProvider><React.Fragment /></CommandPaletteProvider>);
+
+        testState.keyboardHandlers?.['commandPalette.open']?.();
+        testState.keyboardHandlers?.['commandPalette.open']?.();
+
+        expect(Modal.show).toHaveBeenCalledTimes(1);
+    });
+
     it('uses the latest sessions when opening after a closed-state session update', async () => {
         const { Modal } = await import('@/modal');
         const { CommandPaletteProvider } = await import('./CommandPaletteProvider');
@@ -178,6 +191,55 @@ describe('CommandPaletteProvider lazy command building', () => {
 
         const showProps = vi.mocked(Modal.show).mock.calls[0]?.[0]?.props as { commands?: Array<{ id: string }> } | undefined;
         expect(showProps?.commands?.some((command) => command.id === 'session-session-late')).toBe(true);
+    });
+
+    it('builds web commands for the explicitly requested Session instead of ambient context', async () => {
+        const { useUniversalSearchRuntime } = await import('@/components/appShell/search/UniversalSearchRuntimeContext');
+        const { CommandPaletteProvider } = await import('./CommandPaletteProvider');
+
+        function ExplicitScopeOpener(): React.ReactElement {
+            const search = useUniversalSearchRuntime();
+            return React.createElement('ExplicitScopeOpener', {
+                onPress: () => search.open('needle', {
+                    accountId: 'account-b',
+                    serverId: 'home-b',
+                    sessionId: 'requested-session',
+                    machineId: 'machine-b',
+                    rootPath: '/repo/b',
+                }),
+            });
+        }
+
+        const screen = await renderScreen(
+            <CommandPaletteProvider><ExplicitScopeOpener /></CommandPaletteProvider>,
+        );
+        buildCommandPaletteCommandsSpy.mockClear();
+        screen.findByType('ExplicitScopeOpener')?.props.onPress();
+
+        expect(buildCommandPaletteCommandsSpy).toHaveBeenCalledWith(expect.objectContaining({
+            activeSessionId: 'requested-session',
+        }));
+    });
+
+    it('refreshes an open web Search modal when the command-builder generation changes', async () => {
+        const { Modal } = await import('@/modal');
+        const { CommandPaletteProvider } = await import('./CommandPaletteProvider');
+        const element = () => <CommandPaletteProvider><React.Fragment /></CommandPaletteProvider>;
+        const screen = await renderScreen(element());
+
+        testState.keyboardHandlers?.['commandPalette.open']?.();
+        vi.mocked(Modal.update).mockClear();
+
+        testState.enabledFeatures.add('sessions.direct');
+        await act(async () => {
+            screen.tree.update(element());
+        });
+
+        expect(Modal.update).toHaveBeenCalledWith('modal-id', {
+            commands: expect.arrayContaining([
+                expect.objectContaining({ id: 'app-destination:browseExistingSessions' }),
+            ]),
+        });
     });
 
     it('opens the canonical Browse Existing Sessions compact destination from the web palette', async () => {

@@ -59,7 +59,7 @@ function resolveBindingAgent(params: Readonly<{
 export function resolveVoiceConnectRecoveryTarget(params: Readonly<{
     agentRuntime: PluginContributionIdentityV1 | null;
     bindingScope: 'global' | 'session';
-    runtimeTarget: Readonly<{ serverId: string; machineId: string }> | null;
+    runtimeTarget: Readonly<{ machineId: string }> | null;
     provider: VoiceConnectRecoveryProviderContext | null;
     providerConfig: unknown;
     sessionMetadata: unknown;

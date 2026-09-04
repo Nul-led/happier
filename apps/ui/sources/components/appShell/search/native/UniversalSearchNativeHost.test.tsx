@@ -8,6 +8,7 @@ import type { SelectionListStep } from '@/components/ui/selectionList';
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 const keyboardState = vi.hoisted(() => ({ height: 0 }));
+const safeAreaState = vi.hoisted(() => ({ top: 59, bottom: 34, left: 0, right: 0 }));
 const reducedMotionState = vi.hoisted(() => ({ value: false }));
 const keyboardDismiss = vi.hoisted(() => vi.fn());
 
@@ -23,7 +24,11 @@ vi.mock('react-native', async () => {
 });
 
 vi.mock('react-native-safe-area-context', () => ({
-    useSafeAreaInsets: () => ({ top: 59, bottom: 34, left: 0, right: 0 }),
+    useSafeAreaInsets: () => safeAreaState,
+    initialWindowMetrics: {
+        insets: { top: 59, bottom: 34, left: 0, right: 0 },
+        frame: { x: 0, y: 0, width: 390, height: 844 },
+    },
 }));
 
 // The scrim, the keyboard frame and the capsule are shared primitives with their own suites; here
@@ -71,16 +76,28 @@ function defaultProps(overrides: Record<string, unknown> = {}) {
 afterEach(() => {
     vi.useRealTimers();
     keyboardState.height = 0;
+    safeAreaState.top = 59;
+    safeAreaState.bottom = 34;
+    safeAreaState.left = 0;
+    safeAreaState.right = 0;
     keyboardDismiss.mockReset();
     reducedMotionState.value = false;
     standardCleanup();
 });
 
 describe('UniversalSearchNativeHost', () => {
+    it('marks the native Search surface as an accessibility modal', async () => {
+        const { UniversalSearchNativeHost } = await import('./UniversalSearchNativeHost');
+        const screen = await renderScreen(<UniversalSearchNativeHost {...(defaultProps() as any)} />);
+        const host = screen.findByTestId('universal-search-native-host');
+        expect(host?.props.accessibilityViewIsModal).toBe(true);
+    });
+
     it('seats the controller-owned catalog in one canonical bottom-placed input', async () => {
         const { UniversalSearchNativeHost } = await import('./UniversalSearchNativeHost');
         const { SelectionList } = await import('@/components/ui/selectionList');
-        const props = defaultProps();
+        const scopeControl = React.createElement('ScopeControl');
+        const props = defaultProps({ inputPrefix: scopeControl });
 
         const screen = await renderScreen(<UniversalSearchNativeHost {...(props as any)} />);
 
@@ -92,6 +109,7 @@ describe('UniversalSearchNativeHost', () => {
         expect(list.props.inputValue).toBe('');
         expect(list.props.onChangeInputValue).toBe(props.onChangeQuery);
         expect(list.props.onSelect).toBe(props.onSelect);
+        expect(list.props.inputPrefix).toBe(scopeControl);
         // One query owner: the host never renders a search field of its own beside the list's.
         expect(screen.root.findAllByType('TextInput' as unknown as React.ComponentType)).toHaveLength(1);
     });
@@ -137,6 +155,21 @@ describe('UniversalSearchNativeHost', () => {
 
         expect(flatten(screen.findHostByTestId('universal-search-native-host:plane')?.props.style).paddingBottom)
             .toBe(0);
+    });
+
+    it('keeps the whole Search plane inside lateral safe areas', async () => {
+        safeAreaState.left = 47;
+        safeAreaState.right = 21;
+        const { UniversalSearchNativeHost } = await import('./UniversalSearchNativeHost');
+        const screen = await renderScreen(<UniversalSearchNativeHost {...(defaultProps() as any)} />);
+        const flatten = (style: unknown): Record<string, unknown> => (
+            Array.isArray(style)
+                ? style.reduce<Record<string, unknown>>((acc, entry) => ({ ...acc, ...flatten(entry) }), {})
+                : (style as Record<string, unknown> | null) ?? {}
+        );
+
+        expect(flatten(screen.findHostByTestId('universal-search-native-host:plane')?.props.style))
+            .toMatchObject({ paddingLeft: 47, paddingRight: 21 });
     });
 
     it('keeps the full-screen touch barrier armed while suppressing duplicate close requests', async () => {
@@ -208,6 +241,27 @@ describe('UniversalSearchNativeHost', () => {
             screen.pressByTestId('universal-search-native-host:dismiss-keyboard');
         });
         expect(keyboardDismiss).toHaveBeenCalledTimes(1);
+    });
+
+    it('gives each capsule a real platform-minimum press frame without hit slop', async () => {
+        const { UniversalSearchNativeHost } = await import('./UniversalSearchNativeHost');
+        const { resolveMinimumInteractiveTargetSize } = await import('@/components/ui/interactiveTargetSize');
+        const screen = await renderScreen(<UniversalSearchNativeHost {...(defaultProps() as any)} />);
+        const close = screen.findHostByTestId('universal-search-native-host:close');
+        const style = typeof close?.props.style === 'function'
+            ? close.props.style({ pressed: false })
+            : close?.props.style;
+        const flatten = (value: unknown): Record<string, unknown> => (
+            Array.isArray(value)
+                ? value.reduce<Record<string, unknown>>((acc, entry) => ({ ...acc, ...flatten(entry) }), {})
+                : (value as Record<string, unknown> | null) ?? {}
+        );
+
+        expect(flatten(style)).toMatchObject({
+            width: resolveMinimumInteractiveTargetSize('ios'),
+            height: resolveMinimumInteractiveTargetSize('ios'),
+        });
+        expect(close?.props.hitSlop).toBeUndefined();
     });
 
     it('offers an accessible clear action that preserves input focus', async () => {

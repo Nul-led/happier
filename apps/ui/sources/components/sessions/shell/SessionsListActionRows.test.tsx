@@ -171,11 +171,13 @@ describe('SessionsListActionRows', () => {
             availability: 'available',
         }] as const;
         const { SessionsListActionRows } = await import('./SessionsListActionRows');
-        const screen = await renderScreen(<SessionsListActionRows externalSessionsEnabled={false} />);
+        const scope = { accountId: 'account-b', serverId: 'home-b', sessionId: null, machineId: null, rootPath: null } as const;
+        const screen = await renderScreen(<SessionsListActionRows externalSessionsEnabled={false} universalSearchScope={scope} />);
 
         screen.findByTestId('sessions-search-all-button')?.props.onPress();
 
         expect(openUniversalSearch).toHaveBeenCalledTimes(1);
+        expect(openUniversalSearch).toHaveBeenCalledWith(undefined, scope);
         expect(routeState.push).not.toHaveBeenCalled();
     });
 

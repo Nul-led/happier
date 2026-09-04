@@ -84,7 +84,6 @@ type AutomationTriggerEditorSharedProps = Readonly<{
     }> | null;
     onSessionSelectionStale?: () => void;
     renderPluginEventEditor?: AutomationPluginEventEditorRender;
-    onSubmit?: () => void;
     onCancel?: () => void;
     submitting?: boolean;
     submitDisabled?: boolean;
@@ -93,17 +92,20 @@ type AutomationTriggerEditorSharedProps = Readonly<{
 export type AutomationPluralEditorScreenProps = AutomationTriggerEditorSharedProps & Readonly<{
     value: AutomationEditorDraft;
     onChange: (next: AutomationEditorDraft) => void;
+    onSubmit?: (draft: AutomationEditorDraft) => void;
     variant: 'create' | 'edit';
 }>;
 
 export type AutomationTriggerEditorProps = AutomationTriggerEditorSharedProps & Readonly<{
     value: AutomationTriggerEditorValue;
     onChange: (next: AutomationTriggerEditorValue) => void;
+    onSubmit?: (draft: AutomationTriggerEditorValue) => void;
 }>;
 
 type AutomationTriggerEditorContentsProps = AutomationTriggerEditorSharedProps & Readonly<{
     value: AutomationTriggerEditorValue;
     onChange: (next: AutomationTriggerEditorValue) => void;
+    onSubmit?: (draft: AutomationTriggerEditorValue) => void;
     variant: 'create' | 'edit' | 'embedded';
     recipeEditor?: React.ReactNode;
 }>;
@@ -767,28 +769,31 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
         && matchCountDraftState.basisText === committedMatchCountText
         ? matchCountDraftState.value
         : null;
-    const commitMatchCountDraft = React.useCallback(() => {
-        if (matchCountDraft === null) return;
-        setMatchCountDraftState(null);
+    const commitMatchCountDraft = React.useCallback((): AutomationTriggerEditorValue | null => {
+        if (matchCountDraft === null) return props.value;
         const normalized = matchCountDraft.trim();
-        if (!/^\d+$/u.test(normalized)) return;
+        if (!/^\d+$/u.test(normalized)) return null;
         const parsed = Number(normalized);
-        if (!Number.isSafeInteger(parsed) || parsed < 1) return;
-        updateLifecycleDefinition((definition) => (
-            definition.policy.kind === 'nextMatches'
-                ? {
-                    ...definition,
-                    policy: {
-                        kind: 'nextMatches',
-                        count: Math.max(1, Math.min(
-                            AUTOMATION_SESSION_LIFECYCLE_MAX_MATCH_COUNT,
-                            parsed,
-                        )),
-                    },
-                }
-                : definition
-        ));
-    }, [matchCountDraft, updateLifecycleDefinition]);
+        if (!Number.isSafeInteger(parsed) || parsed < 1) return null;
+        if (editor.kind !== 'sessionLifecycle' || !editor.clientId) return null;
+        const current = props.value.triggers.find((trigger) => trigger.clientId === editor.clientId);
+        if (current?.definition?.kind !== 'sessionLifecycle') return null;
+        const nextDraft = replaceTrigger(props.value, editor.clientId, current.definition.policy.kind === 'nextMatches'
+            ? {
+                ...current.definition,
+                policy: {
+                    kind: 'nextMatches',
+                    count: Math.max(1, Math.min(
+                        AUTOMATION_SESSION_LIFECYCLE_MAX_MATCH_COUNT,
+                        parsed,
+                    )),
+                },
+            }
+            : current.definition);
+        setMatchCountDraftState(null);
+        emitChange(nextDraft);
+        return nextDraft;
+    }, [editor, emitChange, matchCountDraft, props.value]);
 
     const toggleLifecycleEvent = React.useCallback((event: AutomationSessionLifecycleEvent) => {
         updateLifecycleDefinition((definition) => {
@@ -1135,8 +1140,10 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
                                                         basisText: committedMatchCountText,
                                                         value,
                                                     })}
-                                                    onEndEditing={commitMatchCountDraft}
-                                                    onSubmitEditing={commitMatchCountDraft}
+                                                    onEndEditing={() => {
+                                                        if (commitMatchCountDraft() === null) setMatchCountDraftState(null);
+                                                    }}
+                                                    onSubmitEditing={() => { commitMatchCountDraft(); }}
                                                     accessibilityLabel={t('automations.pluralEditor.lifecycleMatchCount')}
                                                 />
                                             </FieldItem>
@@ -1148,7 +1155,10 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
                     ) : null}
                     {editor.clientId ? (
                         <EditorActions
-                            onDone={() => closeTriggerEditor(editor.clientId!)}
+                            onDone={() => {
+                                if (commitMatchCountDraft() === null) return;
+                                closeTriggerEditor(editor.clientId!);
+                            }}
                             onRemove={() => { void removeTrigger(editor.clientId!); }}
                         />
                     ) : null}
@@ -1181,7 +1191,11 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
                                 busy: props.submitting === true,
                             }}
                             disabled={props.submitDisabled === true || props.submitting === true}
-                            onPress={props.onSubmit}
+                            onPress={() => {
+                                const submittedDraft = commitMatchCountDraft();
+                                if (!submittedDraft) return;
+                                props.onSubmit?.(submittedDraft);
+                            }}
                             style={({ pressed }) => [
                                 styles.actionButton,
                                 styles.primaryAction,
@@ -1221,6 +1235,9 @@ export const AutomationPluralEditorScreen = React.memo(function AutomationPlural
         <AutomationTriggerEditorContents
             {...props}
             onChange={(next) => emitChange({ ...props.value, ...next })}
+            onSubmit={props.onSubmit
+                ? (next) => props.onSubmit?.({ ...props.value, ...next })
+                : undefined}
             recipeEditor={<AutomationRecipeComposer value={props.value} onChange={emitChange} />}
         />
     );

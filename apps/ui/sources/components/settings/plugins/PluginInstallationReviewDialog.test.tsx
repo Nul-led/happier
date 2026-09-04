@@ -9,8 +9,13 @@ import { installSettingsViewCommonModuleMocks } from '../settingsViewTestHelpers
 const platformEnvironment = vi.hoisted(() => ({
     platform: 'web' as 'web' | 'ios' | 'android',
 }));
+const modalState = vi.hoisted(() => ({ show: vi.fn() }));
 
 installSettingsViewCommonModuleMocks({
+    modal: async () => {
+        const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+        return createModalModuleMock({ spies: { show: modalState.show } }).module;
+    },
     reactNative: async () => {
         const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
         return createReactNativeWebMock({
@@ -60,6 +65,26 @@ describe('PluginInstallationReviewDialog', () => {
                 headerNames: ['authorization'],
             },
         }],
+    });
+
+    it('declines exactly once when the modal provider host unmounts', async () => {
+        modalState.show.mockReset();
+        let shown: Readonly<{ onRequestClose?: () => void; onHostUnmount?: () => void }> | undefined;
+        modalState.show.mockImplementation((config) => {
+            shown = config;
+            return 'install-review';
+        });
+        const { showPluginInstallationReviewDialog } = await import('./PluginInstallationReviewDialog');
+        const pending = showPluginInstallationReviewDialog({
+            title: 'Review plugin',
+            review,
+            target: { machine: 'Laptop', server: 'Server A' },
+        });
+
+        expect(shown?.onHostUnmount).toEqual(expect.any(Function));
+        shown?.onHostUnmount?.();
+        shown?.onRequestClose?.();
+        await expect(pending).resolves.toEqual({ approved: false, optionalSelections: [] });
     });
 
     it('paints a visible keyboard focus ring on the install decision controls on web', async () => {

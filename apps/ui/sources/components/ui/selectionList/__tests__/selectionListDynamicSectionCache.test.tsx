@@ -115,14 +115,21 @@ describe('selectionListDynamicSectionCache adapter', () => {
     describe('buildDynamicSectionCacheKey', () => {
         it('defaults the resolver-key component to the section id when undefined', () => {
             expect(buildDynamicSectionCacheKey('section-a', undefined, 'seed-1')).toBe(
-                'section-a::section-a::seed-1',
+                JSON.stringify(['section-a', 'section-a', 'seed-1']),
             );
         });
 
         it('includes the explicit resolverKey when provided', () => {
             expect(buildDynamicSectionCacheKey('section-a', 'machine:m1', 'seed-1')).toBe(
-                'section-a::machine:m1::seed-1',
+                JSON.stringify(['section-a', 'machine:m1', 'seed-1']),
             );
+        });
+
+        it('cannot collide when tuple fields contain the legacy delimiter', () => {
+            const left = buildDynamicSectionCacheKey('provider::target', 'generation', 'query');
+            const right = buildDynamicSectionCacheKey('provider', 'target::generation', 'query');
+
+            expect(left).not.toBe(right);
         });
     });
 

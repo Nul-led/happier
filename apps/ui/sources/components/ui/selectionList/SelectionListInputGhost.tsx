@@ -7,7 +7,7 @@ import { Text } from '@/components/ui/text/Text';
 /**
  * Renders the autocomplete ghost suffix (e.g. `uments/` shown after the user's
  * typed `~/Doc`). Positioned to align with the input text — the parent input
- * controller (`SelectionListInputController`) is responsible for placing the
+ * header (`SelectionListSearchHeader`) is responsible for placing the
  * ghost immediately to the right of the user's typed text.
  *
  * Per the plan §Phase 2.4:

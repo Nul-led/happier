@@ -9,11 +9,13 @@ import {
 
 export function buildUniversalSearchWorkspaceFileResults(input: Readonly<{
     files: readonly FileSearchItem[];
+    accountId: string;
     scope: WorkspaceScopeBase;
     workspaceRefId: string | null;
     sessionId: string | null;
 }>): UniversalSearchResult[] {
     const scopeKey = buildUniversalSearchScopeKey([
+        input.accountId,
         input.scope.serverId,
         input.scope.machineId,
         input.scope.rootPath,
@@ -32,6 +34,7 @@ export function buildUniversalSearchWorkspaceFileResults(input: Readonly<{
             workspaceRefId: input.workspaceRefId,
             sessionId: input.sessionId,
             serverId: input.scope.serverId,
+            accountId: input.accountId,
         },
     }] : []);
 }

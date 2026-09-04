@@ -62,6 +62,7 @@ import type {
     SelectionListGridCellPlacement,
 } from './buildSelectionListOptionA11yProps';
 import { buildSelectionListSectionGroupA11yProps } from './buildSelectionListOptionA11yProps';
+import { useSelectionListVirtualizedFocusReveal } from './useSelectionListVirtualizedFocusReveal';
 
 const styles = StyleSheet.create(() => ({
     body: {
@@ -70,9 +71,12 @@ const styles = StyleSheet.create(() => ({
         flexGrow: 1,
     },
     virtualizedHost: {
-        // RV-9: ensure the flat virtualized list has a measurable host. Mirrors
-        // `SelectionListVirtualizedSection.virtualizedHost`.
-        minHeight: 56 * 4,
+        // RV-9: provide a normal four-row measuring height without imposing a
+        // minimum that can overflow a short modal/keyboard/rotation viewport.
+        // The parent remains authoritative when less room is available.
+        height: SELECTION_LIST_VIRTUALIZED_ROW_ESTIMATED_HEIGHT_PX * 4,
+        maxHeight: '100%',
+        minHeight: 0,
     },
     sectionWrap: {
         flexDirection: 'column',
@@ -700,21 +704,22 @@ function SelectionListBodyFlattenedVirtualized(props: SelectionListBodyVirtualiz
     // view centered.
     const virtualizedListRef = React.useRef<VirtualizedListRef | null>(null);
     const focusedOptionId = props.focusedOptionId;
-    React.useEffect(() => {
-        if (focusedOptionId === null) return;
-        const ref = virtualizedListRef.current;
-        if (!ref || typeof ref.scrollToIndex !== 'function') return;
-        const index = flatItems.findIndex((row) => {
+    const focusedItemIndex = React.useMemo(
+        () => focusedOptionId === null ? -1 : flatItems.findIndex((row) => {
             if (row.kind === 'option') return row.option.id === focusedOptionId;
             // A focused cell brings its whole visual row into view.
             if (row.kind === 'option-row') {
                 return row.options.some((cell) => cell.option.id === focusedOptionId);
             }
             return false;
-        });
-        if (index < 0) return;
-        ref.scrollToIndex({ index, viewPosition: 0.5, animated: !reducedMotion });
-    }, [focusedOptionId, flatItems, reducedMotion]);
+        }),
+        [focusedOptionId, flatItems],
+    );
+    const { onViewportLayout } = useSelectionListVirtualizedFocusReveal({
+        listRef: virtualizedListRef,
+        focusedItemIndex,
+        reducedMotion,
+    });
 
     const measureMode = props.measureMode === true;
     const { onEndReached, footer: paginationFooter } = useSelectionListVirtualizedPagination({
@@ -786,6 +791,7 @@ function SelectionListBodyFlattenedVirtualized(props: SelectionListBodyVirtualiz
                 recycleItems={false}
                 keyboardShouldPersistTaps="handled"
                 showsVerticalScrollIndicator={props.showsVerticalScrollIndicator === true}
+                onLayout={measureMode ? undefined : onViewportLayout}
                 onEndReached={onEndReached}
                 onEndReachedThreshold={props.pagination ? 0.35 : undefined}
                 ListFooterComponent={paginationFooter}
@@ -864,16 +870,17 @@ function SelectionListBodyDirectVirtualizedSource(props: SelectionListBodyVirtua
             ? -1
             : source.findOptionIndexById(props.focusedOptionId)
     );
-    React.useEffect(() => {
-        if (focusedOptionIndex < 0) return;
-        const ref = virtualizedListRef.current;
-        if (!ref || typeof ref.scrollToIndex !== 'function') return;
-        const itemIndex = source.items.findIndex((item) => (
+    const focusedItemIndex = React.useMemo(
+        () => focusedOptionIndex < 0 ? -1 : source.items.findIndex((item) => (
             item.kind === 'option' && item.optionIndex === focusedOptionIndex
-        ));
-        if (itemIndex < 0) return;
-        ref.scrollToIndex({ index: itemIndex, viewPosition: 0.5, animated: !reducedMotion });
-    }, [focusedOptionIndex, source.items, reducedMotion]);
+        )),
+        [focusedOptionIndex, source.items],
+    );
+    const { onViewportLayout } = useSelectionListVirtualizedFocusReveal({
+        listRef: virtualizedListRef,
+        focusedItemIndex,
+        reducedMotion,
+    });
 
     const measureMode = props.measureMode === true;
     const { onEndReached, footer: paginationFooter } = useSelectionListVirtualizedPagination({
@@ -943,6 +950,7 @@ function SelectionListBodyDirectVirtualizedSource(props: SelectionListBodyVirtua
                 recycleItems={false}
                 keyboardShouldPersistTaps="handled"
                 showsVerticalScrollIndicator={props.showsVerticalScrollIndicator === true}
+                onLayout={measureMode ? undefined : onViewportLayout}
                 onEndReached={onEndReached}
                 onEndReachedThreshold={props.pagination ? 0.35 : undefined}
                 ListFooterComponent={paginationFooter}

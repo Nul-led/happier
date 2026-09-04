@@ -48,6 +48,7 @@ import { useActiveUnsavedChangesGuard } from '@/utils/navigation/useActiveUnsave
 import { useUnsavedChangesBeforeRemoveGuard } from '@/utils/navigation/useUnsavedChangesBeforeRemoveGuard';
 import { promptUnsavedChangesAlert } from '@/utils/ui/promptUnsavedChangesAlert';
 import { getSessionName } from '@/utils/sessions/sessionUtils';
+import { formatAutomationErrorMessage } from '@/components/automations/automationErrorFormatting';
 
 const stylesheet = StyleSheet.create((theme) => ({
     container: { flex: 1, backgroundColor: theme.colors.background.canvas },
@@ -353,7 +354,7 @@ export function SessionAutomationCreateScreen(props: Readonly<{
                 )) setEditorDraft(replacement);
                 else if (!replacement) await Modal.alert(t('automations.exactTurn.staleTitle'), t('automations.exactTurn.staleBody'));
             } else if (authority.isCurrent()) {
-                await Modal.alert(t('common.error'), error instanceof Error ? error.message : t('automations.create.createFailed'));
+                await Modal.alert(t('common.error'), formatAutomationErrorMessage(error, t('automations.create.createFailed')));
             }
         } finally {
             submittingRef.current = false;

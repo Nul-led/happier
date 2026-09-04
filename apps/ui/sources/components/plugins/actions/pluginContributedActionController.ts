@@ -4,6 +4,7 @@ import {
     PluginActionScopeV2Schema,
     PluginContributionIdentityV1Schema,
     QualifiedConnectedAccountRefSchema,
+    sameQualifiedConnectedAccountRef,
     buildQualifiedPluginContributionKey,
     compilePluginJsonSchema,
     isValidPluginJsonSchemaValue,
@@ -73,6 +74,7 @@ import {
 type PluginContributedActionExactSubmittedInputResult = Readonly<{
     kind: 'submitted';
     action: Extract<PluginUiSelectActionInputResultV1, Readonly<{ kind: 'submitted' }>>['action'];
+    presentation: Readonly<{ connectedAccountLabel: string | null }>;
 }> & PluginUiSelectedActionInputForReconstructionV1;
 
 /**
@@ -99,6 +101,8 @@ function projectResolvedConnectedAccountOptions(
  */
 export type PluginContributedActionHostFacts = Readonly<{
     machineId: string | null | undefined;
+    /** Existing machine-store display projection; never an identifier fallback. */
+    machineDisplayName?: string | null;
     serverId?: string | null;
     expectedGeneration: string | number | null | undefined;
     /** Exact mounted targeted-contribution target; never derived from a contributor. */
@@ -1460,6 +1464,7 @@ export function createPluginContributedActionController(params: Readonly<{
                         action: resolved.identity,
                         input: parsedInput.data as PluginContributedActionExactSubmittedInputResult['input'],
                         connectedAccount: { kind: 'none' },
+                        presentation: { connectedAccountLabel: null },
                     },
                 }
                 : { kind: 'unavailable', reason: 'invalid_input' };
@@ -1518,6 +1523,7 @@ export function createPluginContributedActionController(params: Readonly<{
                 let input = candidate;
                 type SubmittedSelection = PluginContributedActionExactSubmittedInputResult;
                 let connectedAccount: SubmittedSelection['connectedAccount'] = { kind: 'none' };
+                let connectedAccountLabel: string | null = null;
                 if (accountField) {
                     const parsedRef = QualifiedConnectedAccountRefSchema.safeParse(
                         readPath(candidate, accountField.path),
@@ -1529,6 +1535,13 @@ export function createPluginContributedActionController(params: Readonly<{
                         fieldPath: accountField.path,
                         ref: parsedRef.data,
                     };
+                    const resolvedAccountField = resolvedHints.fields.find((field) => field.path === accountField.path);
+                    connectedAccountLabel = resolvedAccountField?.options?.flatMap((option) => {
+                        const optionRef = QualifiedConnectedAccountRefSchema.safeParse(option.value);
+                        return optionRef.success && sameQualifiedConnectedAccountRef(optionRef.data, parsedRef.data)
+                            ? [option.label.trim()]
+                            : [];
+                    }).find(Boolean) ?? null;
                 }
                 const parsedInput = PluginUiJsonValueV1Schema.safeParse(input);
                 if (!parsedInput.success || !parsedInput.data || Array.isArray(parsedInput.data) || typeof parsedInput.data !== 'object') {
@@ -1539,6 +1552,7 @@ export function createPluginContributedActionController(params: Readonly<{
                     action: current.identity,
                     input: parsedInput.data as SubmittedSelection['input'],
                     connectedAccount,
+                    presentation: { connectedAccountLabel },
                 });
                 return { ok: true };
             },
@@ -1581,6 +1595,10 @@ export function createPluginContributedActionController(params: Readonly<{
         if (result.kind === 'cancelled') return result;
         return {
             ...result,
+            presentation: {
+                connectedAccountLabel: result.presentation.connectedAccountLabel,
+                machineDisplayName: readRequiredString(target.snapshot.host.machineDisplayName),
+            },
             selection: {
                 target: target.targetedContributions.target,
                 point: target.operation.point,

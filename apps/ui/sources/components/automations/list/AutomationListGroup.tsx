@@ -21,6 +21,7 @@ import type { ItemGroupVirtualizedSegment } from '@/components/ui/lists/ItemGrou
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { Icon } from '@/components/ui/icons/Icon';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
+import { formatAutomationErrorMessage } from '@/components/automations/automationErrorFormatting';
 
 const minimumInteractiveTargetSize = resolveMinimumInteractiveTargetSize(Platform.OS);
 const MAX_VISIBLE_TRIGGER_SUMMARY_LINES = 3;
@@ -64,6 +65,8 @@ export const AutomationListGroup = React.memo((props: Props) => {
     const router = useRouter();
     const runNowController = props.runNow;
     const mutationsEnabled = props.mutationsEnabled !== false;
+    const enabledMutationIdsRef = React.useRef(new Set<string>());
+    const [enabledMutationIds, setEnabledMutationIds] = React.useState<ReadonlySet<string>>(() => new Set());
 
     const handleRunNow = React.useCallback(async (automationId: string) => {
         if (!mutationsEnabled) return;
@@ -73,7 +76,13 @@ export const AutomationListGroup = React.memo((props: Props) => {
     }, [mutationsEnabled, props.isInvocationCurrent, runNowController]);
 
     const handleSetEnabled = React.useCallback(async (automationId: string, nextEnabled: boolean) => {
-        if (!mutationsEnabled || !props.isInvocationCurrent()) return;
+        if (
+            !mutationsEnabled
+            || !props.isInvocationCurrent()
+            || enabledMutationIdsRef.current.has(automationId)
+        ) return;
+        enabledMutationIdsRef.current.add(automationId);
+        setEnabledMutationIds(new Set(enabledMutationIdsRef.current));
         try {
             if (!nextEnabled) {
                 await sync.pauseAutomation(automationId);
@@ -84,8 +93,11 @@ export const AutomationListGroup = React.memo((props: Props) => {
             if (!props.isInvocationCurrent()) return;
             await Modal.alert(
                 t('common.error'),
-                error instanceof Error ? error.message : t('automations.edit.updateFailed'),
+                formatAutomationErrorMessage(error, t('automations.edit.updateFailed')),
             );
+        } finally {
+            enabledMutationIdsRef.current.delete(automationId);
+            setEnabledMutationIds(new Set(enabledMutationIdsRef.current));
         }
     }, [mutationsEnabled, props.isInvocationCurrent]);
 
@@ -108,6 +120,7 @@ export const AutomationListGroup = React.memo((props: Props) => {
                 const runState = runNowController.stateFor(automation.id);
                 const runNowPending = runState === 'submitting';
                 const runNowDisabled = !mutationsEnabled || runNowPending;
+                const enabledMutationPending = enabledMutationIds.has(automation.id);
                 const triggerLines = automation.triggers.length === 0
                     ? [t('automations.list.noAutomaticTriggers')]
                     : automation.triggers.slice(0, MAX_VISIBLE_TRIGGER_SUMMARY_LINES).map((trigger) => [
@@ -172,13 +185,17 @@ export const AutomationListGroup = React.memo((props: Props) => {
                                     onValueChange={mutationsEnabled
                                         ? (next) => void handleSetEnabled(automation.id, next)
                                         : undefined}
-                                    disabled={!mutationsEnabled}
+                                    disabled={!mutationsEnabled || enabledMutationPending}
                                     accessibilityLabel={[
                                         automation.name,
                                         t(automation.enabled
                                             ? 'automations.detail.pauseAutomation'
                                             : 'automations.detail.resumeAutomation'),
                                     ].join('. ')}
+                                    accessibilityState={{
+                                        disabled: !mutationsEnabled || enabledMutationPending,
+                                        busy: enabledMutationPending,
+                                    }}
                                 />
                             </View>
                         )}

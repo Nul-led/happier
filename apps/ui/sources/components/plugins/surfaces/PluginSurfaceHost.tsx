@@ -98,6 +98,7 @@ import {
     type PluginSurfacePresentationState,
 } from '@/sync/domains/surfaces/copy';
 import { getPreferredLanguage, t } from '@/text';
+import { useMachineDisplayNamesById } from '@/sync/store/hooks';
 import { stableJsonStringify } from '@/utils/json/stableJsonStringify';
 import { resolvePluginDisplayString } from '@/components/plugins/surfaces/resolvePluginDisplayString';
 import {
@@ -2159,6 +2160,13 @@ export function PluginSurfaceHost(props: Readonly<(
     const machineId = executionOrigin?.materializationRef.machineId
         ?? origin?.machineId
         ?? props.machineId;
+    const machineDisplayIds = React.useMemo(() => (
+        typeof machineId === 'string' && machineId.trim() ? [machineId] : []
+    ), [machineId]);
+    const machineDisplayNamesById = useMachineDisplayNamesById(machineDisplayIds);
+    const machineDisplayName = typeof machineId === 'string'
+        ? machineDisplayNamesById[machineId] ?? null
+        : null;
     const serverId = hasEmbeddedRendererMount ? props.serverId : origin ? origin.serverId : props.serverId;
     const mountedComposerMediaExecutionTarget = React.useMemo<SessionExecutionTargetV1 | undefined>(() => (
         typeof serverId === 'string' && typeof machineId === 'string'
@@ -2616,6 +2624,7 @@ export function PluginSurfaceHost(props: Readonly<(
             channel: surfaceChannel,
             resourceScope: surfaceScope.declared ? surfaceScope.resourceScope : [],
             machineId,
+            machineDisplayName,
             serverId,
             projectionGeneration,
             executionOrigin,

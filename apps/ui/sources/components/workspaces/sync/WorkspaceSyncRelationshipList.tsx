@@ -17,7 +17,7 @@ import {
     resolveWorkspaceSyncErrorTranslationKey,
     formatWorkspaceSyncRelationshipTitle,
     resolveWorkspaceSyncModeTranslationKey,
-    resolveWorkspaceSyncStateTranslationKey,
+    resolveWorkspaceSyncRelationshipStateLabel,
 } from '@/sync/domains/sessionHandoff/workspaceSyncPresentation';
 import {
     resolveWorkspaceSyncStatusScope,
@@ -53,7 +53,12 @@ export const WorkspaceSyncRelationshipRow = React.memo(function WorkspaceSyncRel
     const snapshot = getWorkspaceSyncStatusSnapshot(scope);
     const status = props.summary.status;
     const modeKey = resolveWorkspaceSyncModeTranslationKey(props.summary.relationship.mode);
-    const stateKey = status ? resolveWorkspaceSyncStateTranslationKey(status.state) : null;
+    const stateKey = resolveWorkspaceSyncRelationshipStateLabel({
+        enabled: props.summary.relationship.enabled,
+        statusState: status?.state,
+        errorCode: status?.errorCode,
+        statusPhaseHasError: snapshot.phase === 'error',
+    });
     const errorKey = resolveWorkspaceSyncErrorTranslationKey(status?.errorCode);
     const [pendingAction, setPendingAction] = React.useState<'sync' | 'disable' | 'enable' | 'terminate' | null>(null);
     const [menuOpen, setMenuOpen] = React.useState(false);
@@ -144,15 +149,7 @@ export const WorkspaceSyncRelationshipRow = React.memo(function WorkspaceSyncRel
         machineDirectionLabel,
         modeKey ? t(modeKey) : t('workspaceSync.unknownMode'),
         pendingAction ? t('workspaceSync.state.working') : null,
-        !props.summary.relationship.enabled
-            ? t('workspaceSync.state.stopped')
-            : status?.errorCode === 'engine_unavailable'
-            ? t('workspaceSync.state.engineUnavailable')
-            : snapshot.phase === 'error'
-            ? t('workspaceSync.state.controllerUnavailable')
-            : stateKey
-                ? t(stateKey)
-                : t('workspaceSync.state.loading'),
+        t(stateKey),
         errorKey ? t(errorKey) : null,
         lastSyncLabel,
         status && status.conflictCount > 0 ? t('workspaceSync.conflictCount', { count: status.conflictCount }) : null,

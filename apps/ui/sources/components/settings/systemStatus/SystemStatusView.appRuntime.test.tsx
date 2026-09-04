@@ -85,7 +85,9 @@ vi.mock('expo-router', async () => {
 vi.mock('@/text', async () => {
     const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
     return createTextModuleMock({
-        translate: (key: string) => key,
+        translate: (key: string, params?: Record<string, unknown>) => (
+            params ? `${key}:${JSON.stringify(params)}` : key
+        ),
         translateLoose: (key: string) => key,
     });
 });
@@ -116,17 +118,19 @@ vi.mock('@/constants/Typography', () => ({
     }),
 }));
 
-vi.mock('@/sync/domains/server/serverRuntime', () => ({
-    getActiveServerSnapshot: () => ({ generation: 1, serverId: 'srv_1', serverUrl: 'http://example.local' }),
+vi.mock('@/hooks/server/useActiveServerSnapshot', () => ({
+    useActiveServerSnapshot: () => ({ generation: 1, serverId: 'srv_1', serverUrl: 'http://example.local' }),
 }));
 
-vi.mock('@/sync/domains/server/serverProfiles', () => ({
-    listServerProfiles: () => [],
-    loadHomeViewState: () => null,
-}));
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
+    const { createPartialServerProfilesModuleMock } = await import('@/dev/testkit/mocks/serverProfiles');
+    return createPartialServerProfilesModuleMock(importOriginal, { profiles: [] });
+});
 
 vi.mock('@/sync/runtime/irohHomeTransportDiagnostics', () => ({
     readIrohHomeTransportDiagnostics: () => homeTransportDiagnostics,
+    readIrohHomeTransportDiagnosticsRevision: () => 0,
+    subscribeIrohHomeTransportDiagnostics: () => () => {},
 }));
 
 vi.mock('@/sync/runtime/readCurrentAppRuntimeInfo', () => ({
@@ -174,6 +178,8 @@ describe('SystemStatusView app runtime info', () => {
         expect(text).toContain('1.2.3');
         expect(text).toContain('settingsAgents.releaseChannelTitle');
         expect(text).toContain('preview');
+        expect(text).not.toContain('copy-me-never');
+        expect(text).toContain('[redacted]');
 
         const copyRow = screen.find((node) => (
             node.props?.title === 'systemStatus.actions.copyJson' &&

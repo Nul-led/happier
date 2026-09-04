@@ -51,6 +51,10 @@ export type SessionListSearchChromeProps = Readonly<{
     selectedTags: ReadonlyArray<string>;
     searchQuery: string;
     searchTrailingAccessory?: React.ReactNode;
+    searchStatus?: Readonly<{
+        message: string;
+        onRetry?: () => void;
+    }>;
     onSelectedTagsChange: (tags: string[]) => void;
     onSearchQueryChange: (query: string) => void;
     /**
@@ -78,6 +82,7 @@ export const SessionListSearchChrome = React.memo(function SessionListSearchChro
         onSearchQueryChange,
         onSelectedTagsChange,
         searchQuery,
+        searchStatus,
         searchTrailingAccessory,
         selectedTags,
     } = props;
@@ -93,6 +98,7 @@ export const SessionListSearchChrome = React.memo(function SessionListSearchChro
     const iconColor = theme.colors.text.secondary;
     const activeIconColor = theme.colors.accent.blue;
     const searchIsOpen = searchOpened || trimmedQuery.length > 0;
+    const useExpandedNativeComposition = Platform.OS !== 'web' && searchIsOpen;
     const selectedTagSet = React.useMemo(() => new Set(selectedTags), [selectedTags]);
 
     React.useEffect(() => {
@@ -132,6 +138,20 @@ export const SessionListSearchChrome = React.memo(function SessionListSearchChro
         setSearchFocused(false);
     }, [onSearchQueryChange]);
 
+    const handleClearSearch = React.useCallback((event?: unknown) => {
+        stopPressEventPropagation(event);
+        onSearchQueryChange('');
+        setSearchOpened(true);
+        setSearchFocused(true);
+    }, [onSearchQueryChange]);
+
+    const handleCloseSearch = React.useCallback((event?: unknown) => {
+        stopPressEventPropagation(event);
+        onSearchQueryChange('');
+        setSearchOpened(false);
+        setSearchFocused(false);
+    }, [onSearchQueryChange]);
+
     const handleTagMenuOpenChange = React.useCallback((open: boolean) => {
         setTagMenuOpen(open);
     }, []);
@@ -162,20 +182,70 @@ export const SessionListSearchChrome = React.memo(function SessionListSearchChro
         onSearchEverything?.(trimmedQuery);
     }, [onSearchEverything, trimmedQuery]);
 
+    const handleRetrySearch = React.useCallback((event?: unknown) => {
+        stopPressEventPropagation(event);
+        searchStatus?.onRetry?.();
+    }, [searchStatus]);
+
+    const tagFilterControl = allKnownTags.length > 0 ? (
+        <DropdownMenu
+            open={tagMenuOpen}
+            onOpenChange={handleTagMenuOpenChange}
+            items={tagItems}
+            onSelect={handleTagSelect}
+            selectedId={selectedTags[0] ?? null}
+            variant="slim"
+            search={allKnownTags.length > 8}
+            searchPlaceholder={t('sessionTags.searchOrAddPlaceholder')}
+            closeOnSelect={false}
+            showCategoryTitles={false}
+            matchTriggerWidth={false}
+            maxWidthCap={220}
+            popoverPortalWebTarget="body"
+            placement="bottom"
+            popoverAnchorAlign="end"
+            trigger={({ toggle }) => (
+                <Pressable
+                    testID="session-list-tag-filter-trigger"
+                    style={[styles.headerActionButton, MINIMUM_INTERACTIVE_TARGET_STYLE]}
+                    onPress={(event) => {
+                        stopPressEventPropagation(event);
+                        toggle();
+                    }}
+                    accessibilityRole="button"
+                    accessibilityLabel={t('sessionsList.filterByTags')}
+                >
+                    <Icon
+                        name="tag"
+                        size={16}
+                        color={selectedTags.length > 0 ? activeIconColor : iconColor}
+                    />
+                </Pressable>
+            )}
+        />
+    ) : null;
+    const orderingControl = <SessionListOrderingMenuButton placement="bottom" />;
+
     return (
         <View style={styles.searchChrome} testID="session-list-search-chrome">
-            <View style={styles.searchChromeControlsRow}>
+            <View
+                testID="session-list-search-primary-controls"
+                style={styles.searchChromeControlsRow}
+            >
                 <Pressable
                     testID="session-list-search-trigger"
+                    accessible={!searchIsOpen}
+                    focusable={!searchIsOpen}
                     accessibilityRole={searchIsOpen ? undefined : 'button'}
                     accessibilityLabel={searchIsOpen ? undefined : t('sessionsList.searchSessions')}
                     onPress={searchIsOpen ? undefined : handleOpenSearch}
-                    onFocus={() => setCollapsedTriggerFocused(true)}
-                    onBlur={() => setCollapsedTriggerFocused(false)}
+                    onFocus={searchIsOpen ? undefined : () => setCollapsedTriggerFocused(true)}
+                    onBlur={searchIsOpen ? undefined : () => setCollapsedTriggerFocused(false)}
                     style={[
                         styles.headerSearchShell,
                         WEB_NO_FOCUS_OUTLINE_STYLE,
                         searchIsOpen ? styles.headerSearchShellExpanded : styles.headerSearchShellCollapsed,
+                        useExpandedNativeComposition ? styles.headerSearchShellExpandedNative : null,
                         MINIMUM_INTERACTIVE_TARGET_STYLE,
                         ((!searchIsOpen && collapsedTriggerFocused) || (searchIsOpen && searchFocused))
                             ? ({
@@ -238,46 +308,62 @@ export const SessionListSearchChrome = React.memo(function SessionListSearchChro
                             {searchTrailingAccessory}
                         </View>
                     ) : null}
+                    {searchIsOpen && trimmedQuery.length > 0 ? (
+                        <Pressable
+                            testID="session-list-search-clear"
+                            accessibilityRole="button"
+                            accessibilityLabel={t('common.clearSearch')}
+                            onPress={handleClearSearch}
+                            style={[styles.headerSearchAction, MINIMUM_INTERACTIVE_TARGET_STYLE]}
+                        >
+                            <Icon name="x" size={14} color={iconColor} />
+                        </Pressable>
+                    ) : null}
+                    {searchIsOpen ? (
+                        <Pressable
+                            testID="session-list-search-close"
+                            accessibilityRole="button"
+                            accessibilityLabel={t('common.collapse')}
+                            onPress={handleCloseSearch}
+                            style={[styles.headerSearchAction, MINIMUM_INTERACTIVE_TARGET_STYLE]}
+                        >
+                            <Icon name="caret-left" size={14} color={iconColor} />
+                        </Pressable>
+                    ) : null}
                 </Pressable>
-                {allKnownTags.length > 0 ? (
-                    <DropdownMenu
-                        open={tagMenuOpen}
-                        onOpenChange={handleTagMenuOpenChange}
-                        items={tagItems}
-                        onSelect={handleTagSelect}
-                        selectedId={selectedTags[0] ?? null}
-                        variant="slim"
-                        search={allKnownTags.length > 8}
-                        searchPlaceholder={t('sessionTags.searchOrAddPlaceholder')}
-                        closeOnSelect={false}
-                        showCategoryTitles={false}
-                        matchTriggerWidth={false}
-                        maxWidthCap={220}
-                        popoverPortalWebTarget="body"
-                        placement="bottom"
-                        popoverAnchorAlign="end"
-                        trigger={({ toggle }) => (
-                            <Pressable
-                                testID="session-list-tag-filter-trigger"
-                                style={[styles.headerActionButton, MINIMUM_INTERACTIVE_TARGET_STYLE]}
-                                onPress={(event) => {
-                                    stopPressEventPropagation(event);
-                                    toggle();
-                                }}
-                                accessibilityRole="button"
-                                accessibilityLabel={t('sessionsList.filterByTags')}
-                            >
-                                <Icon
-                                    name="tag"
-                                    size={16}
-                                    color={selectedTags.length > 0 ? activeIconColor : iconColor}
-                                />
-                            </Pressable>
-                        )}
-                    />
-                ) : null}
-                <SessionListOrderingMenuButton placement="bottom" />
+                {useExpandedNativeComposition ? null : tagFilterControl}
+                {useExpandedNativeComposition ? null : orderingControl}
             </View>
+            {useExpandedNativeComposition ? (
+                <View
+                    testID="session-list-search-auxiliary-controls"
+                    style={styles.searchChromeAuxiliaryControlsRow}
+                >
+                    {tagFilterControl}
+                    {orderingControl}
+                </View>
+            ) : null}
+            {searchStatus && trimmedQuery.length > 0 ? (
+                <View
+                    testID="session-list-search-status"
+                    accessibilityLiveRegion="polite"
+                    role={Platform.OS === 'web' ? 'status' : undefined}
+                    style={styles.searchChromeStatusRow}
+                >
+                    <Text style={styles.searchChromeStatusText}>{searchStatus.message}</Text>
+                    {searchStatus.onRetry ? (
+                        <Pressable
+                            testID="session-list-search-retry"
+                            accessibilityRole="button"
+                            accessibilityLabel={t('common.retry')}
+                            onPress={handleRetrySearch}
+                            style={[styles.searchChromeStatusRetry, MINIMUM_INTERACTIVE_TARGET_STYLE]}
+                        >
+                            <Text style={styles.searchChromeStatusRetryText}>{t('common.retry')}</Text>
+                        </Pressable>
+                    ) : null}
+                </View>
+            ) : null}
             {onSearchEverything && trimmedQuery.length > 0 ? (
                 <Pressable
                     testID="session-list-search-everything"

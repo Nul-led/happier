@@ -17,12 +17,12 @@ function countOccurrences(contents: string, needle: string): number {
 }
 
 function hasKotlinBridgeGuardInsideDispatchKeyEvent(contents: string): boolean {
-    return /override\s+fun\s+dispatchKeyEvent\s*\(\s*event\s*:\s*KeyEvent\s*\)\s*:\s*Boolean\s*\{[\s\S]*?HappierHardwareKeyboardShortcutsBridge\.dispatchKeyEvent\(event\)[\s\S]*?\n\s{2}\}/m
+    return /override\s+fun\s+dispatchKeyEvent\s*\(\s*event\s*:\s*KeyEvent\s*\)\s*:\s*Boolean\s*\{[\s\S]*?HappierHardwareKeyboardShortcutsBridge\.dispatchKeyEvent\(event,\s*currentFocus\)[\s\S]*?\n\s{2}\}/m
         .test(contents);
 }
 
 function hasJavaBridgeGuardInsideDispatchKeyEvent(contents: string): boolean {
-    return /public\s+boolean\s+dispatchKeyEvent\s*\(\s*KeyEvent\s+event\s*\)\s*\{[\s\S]*?HappierHardwareKeyboardShortcutsBridge\.dispatchKeyEvent\(event\)[\s\S]*?\n\s{2}\}/m
+    return /public\s+boolean\s+dispatchKeyEvent\s*\(\s*KeyEvent\s+event\s*\)\s*\{[\s\S]*?HappierHardwareKeyboardShortcutsBridge\.dispatchKeyEvent\(event,\s*getCurrentFocus\(\)\)[\s\S]*?\n\s{2}\}/m
         .test(contents);
 }
 
@@ -101,6 +101,25 @@ describe('happier hardware keyboard shortcuts local Expo module config', () => {
         expect(androidBridgeSource).not.toContain('key == "Tab"');
     });
 
+    it('projects the canonical Mod+K shortcut through both native hardware-key bridges', () => {
+        const swiftSource = readFileSync(
+            join(moduleRoot, 'ios/HappierHardwareKeyboardShortcutsModule.swift'),
+            'utf8',
+        );
+        const androidBridgeSource = readFileSync(
+            join(moduleRoot, 'android/src/main/java/dev/happier/hardwarekeyboardshortcuts/HappierHardwareKeyboardShortcutsBridge.kt'),
+            'utf8',
+        );
+
+        expect(swiftSource).toContain('UIKeyboardHIDUsage.keyboardK');
+        expect(swiftSource).toContain('normalizedPrintableKey');
+        expect(swiftSource).toContain('return "k"');
+        expect(swiftSource).toContain('return "KeyK"');
+        expect(androidBridgeSource).toContain('KeyEvent.KEYCODE_K -> "k"');
+        expect(androidBridgeSource).toContain('KeyEvent.KEYCODE_K -> "KeyK"');
+        expect(androidBridgeSource).toContain('normalizedPrintableKey');
+    });
+
     it('keeps legacy iOS Shift+Enter consumption separate from generic native shortcuts', () => {
         const swiftSource = readFileSync(
             join(moduleRoot, 'ios/HappierHardwareKeyboardShortcutsModule.swift'),
@@ -146,7 +165,7 @@ describe('happier hardware keyboard shortcuts local Expo module config', () => {
         expect(androidBridgeSource).toContain('!module.canReceiveHardwareKeyEvents()');
         expect(androidBridgeSource).toContain('val module = moduleRef?.get() ?: return false');
         expect(androidBridgeSource.indexOf('val module = moduleRef?.get() ?: return false'))
-            .toBeLessThan(androidBridgeSource.indexOf('val payload = payloadFromEvent(event) ?: return false'));
+            .toBeLessThan(androidBridgeSource.indexOf('val payload = payloadFromEvent(event, focusedView) ?: return false'));
         expect(androidBridgeSource).toContain('module.emitHardwareKey(payload)');
         expect(androidBridgeSource).toContain('module.shouldConsumeHardwareKey(payload)');
         expect(androidBridgeSource).not.toContain('if (key == "Escape") return true');
@@ -167,17 +186,20 @@ describe('happier hardware keyboard shortcuts local Expo module config', () => {
         expect(androidModuleSource).toContain('Name("HappierHardwareKeyboardShortcuts")');
         expect(androidModuleSource).toContain('Events("hardwareKey")');
         expect(androidModuleSource).toContain('AsyncFunction("setHardwareKeyEventsEnabled")');
-        expect(androidBridgeSource).toContain('dispatchKeyEvent(event: KeyEvent)');
+        expect(androidBridgeSource).toContain('dispatchKeyEvent(event: KeyEvent, focusedView: View?)');
         expect(androidBridgeSource).toContain('KeyCharacterMap.VIRTUAL_KEYBOARD');
         expect(androidBridgeSource).toContain('InputDevice.SOURCE_KEYBOARD');
         expect(androidBridgeSource).toContain('"modifiers"');
         expect(androidBridgeSource).toContain('"target"');
+        expect(androidBridgeSource).toContain('focusedView?.onCheckIsTextEditor() == true');
         expect(pluginSource).toContain('withMainActivity');
         expect(appConfigSource).toContain('happier-hardware-keyboard-shortcuts');
     });
 
     describe('Android MainActivity config plugin transforms', () => {
-        const bridgeCall = 'HappierHardwareKeyboardShortcutsBridge.dispatchKeyEvent(event)';
+        const legacyBridgeCall = 'HappierHardwareKeyboardShortcutsBridge.dispatchKeyEvent(event)';
+        const kotlinBridgeCall = 'HappierHardwareKeyboardShortcutsBridge.dispatchKeyEvent(event, currentFocus)';
+        const javaBridgeCall = 'HappierHardwareKeyboardShortcutsBridge.dispatchKeyEvent(event, getCurrentFocus())';
 
         it('adds a Kotlin dispatchKeyEvent override when MainActivity has no override', () => {
             const fixture = [
@@ -195,7 +217,7 @@ describe('happier hardware keyboard shortcuts local Expo module config', () => {
 
             expect(transformed).toContain('import android.view.KeyEvent');
             expect(transformed).toContain('import dev.happier.hardwarekeyboardshortcuts.HappierHardwareKeyboardShortcutsBridge');
-            expect(countOccurrences(transformed, bridgeCall)).toBe(1);
+            expect(countOccurrences(transformed, kotlinBridgeCall)).toBe(1);
             expect(hasKotlinBridgeGuardInsideDispatchKeyEvent(transformed)).toBe(true);
             expect(transformed).toContain('return super.dispatchKeyEvent(event)');
         });
@@ -220,9 +242,9 @@ describe('happier hardware keyboard shortcuts local Expo module config', () => {
             const transformed = hardwareKeyboardShortcutsPlugin.addKotlinDispatchKeyEvent(fixture);
 
             expect(countOccurrences(transformed, 'override fun dispatchKeyEvent(event: KeyEvent): Boolean')).toBe(1);
-            expect(countOccurrences(transformed, bridgeCall)).toBe(1);
+            expect(countOccurrences(transformed, kotlinBridgeCall)).toBe(1);
             expect(hasKotlinBridgeGuardInsideDispatchKeyEvent(transformed)).toBe(true);
-            expect(transformed.indexOf(bridgeCall)).toBeLessThan(transformed.indexOf('event.keyCode == KeyEvent.KEYCODE_MENU'));
+            expect(transformed.indexOf(kotlinBridgeCall)).toBeLessThan(transformed.indexOf('event.keyCode == KeyEvent.KEYCODE_MENU'));
         });
 
         it('keeps Kotlin MainActivity unchanged when it is already patched', () => {
@@ -238,13 +260,30 @@ describe('happier hardware keyboard shortcuts local Expo module config', () => {
             expect(hasKotlinBridgeGuardInsideDispatchKeyEvent(fixture)).toBe(true);
         });
 
+        it('upgrades the legacy Kotlin bridge guard without duplicating dispatch', () => {
+            const fixture = [
+                'package dev.happier.app',
+                'class MainActivity : ReactActivity() {',
+                '  override fun dispatchKeyEvent(event: KeyEvent): Boolean {',
+                `    if (${legacyBridgeCall}) return true`,
+                '    return super.dispatchKeyEvent(event)',
+                '  }',
+                '}',
+            ].join('\n');
+
+            const transformed = hardwareKeyboardShortcutsPlugin.addKotlinDispatchKeyEvent(fixture);
+
+            expect(countOccurrences(transformed, kotlinBridgeCall)).toBe(1);
+            expect(countOccurrences(transformed, legacyBridgeCall)).toBe(0);
+        });
+
         it('does not treat an unrelated Kotlin bridge call as an existing dispatch override patch', () => {
             const fixture = [
                 'package dev.happier.app',
                 '',
                 'class MainActivity : ReactActivity() {',
                 '  fun debugHardwareKeyboardBridge() {',
-                `    println("${bridgeCall}")`,
+                `    println("${legacyBridgeCall}")`,
                 '  }',
                 '}',
                 '',
@@ -253,6 +292,7 @@ describe('happier hardware keyboard shortcuts local Expo module config', () => {
             const transformed = hardwareKeyboardShortcutsPlugin.addKotlinDispatchKeyEvent(fixture);
 
             expect(hasKotlinBridgeGuardInsideDispatchKeyEvent(transformed)).toBe(true);
+            expect(transformed).toContain(`println("${legacyBridgeCall}")`);
         });
 
         it('fails loudly when Kotlin MainActivity cannot be patched safely', () => {
@@ -297,7 +337,7 @@ describe('happier hardware keyboard shortcuts local Expo module config', () => {
 
             expect(transformed).toContain('import android.view.KeyEvent;');
             expect(transformed).toContain('import dev.happier.hardwarekeyboardshortcuts.HappierHardwareKeyboardShortcutsBridge;');
-            expect(countOccurrences(transformed, bridgeCall)).toBe(1);
+            expect(countOccurrences(transformed, javaBridgeCall)).toBe(1);
             expect(hasJavaBridgeGuardInsideDispatchKeyEvent(transformed)).toBe(true);
             expect(transformed).toContain('return super.dispatchKeyEvent(event);');
         });
@@ -323,9 +363,9 @@ describe('happier hardware keyboard shortcuts local Expo module config', () => {
             const transformed = hardwareKeyboardShortcutsPlugin.addJavaDispatchKeyEvent(fixture);
 
             expect(countOccurrences(transformed, 'public boolean dispatchKeyEvent(KeyEvent event)')).toBe(1);
-            expect(countOccurrences(transformed, bridgeCall)).toBe(1);
+            expect(countOccurrences(transformed, javaBridgeCall)).toBe(1);
             expect(hasJavaBridgeGuardInsideDispatchKeyEvent(transformed)).toBe(true);
-            expect(transformed.indexOf(bridgeCall)).toBeLessThan(transformed.indexOf('event.getKeyCode() == KeyEvent.KEYCODE_MENU'));
+            expect(transformed.indexOf(javaBridgeCall)).toBeLessThan(transformed.indexOf('event.getKeyCode() == KeyEvent.KEYCODE_MENU'));
         });
 
         it('keeps Java MainActivity unchanged when it is already patched', () => {
@@ -341,13 +381,30 @@ describe('happier hardware keyboard shortcuts local Expo module config', () => {
             expect(hasJavaBridgeGuardInsideDispatchKeyEvent(fixture)).toBe(true);
         });
 
+        it('upgrades the legacy Java bridge guard without duplicating dispatch', () => {
+            const fixture = [
+                'package dev.happier.app;',
+                'public class MainActivity extends ReactActivity {',
+                '  public boolean dispatchKeyEvent(KeyEvent event) {',
+                `    if (${legacyBridgeCall}) return true;`,
+                '    return super.dispatchKeyEvent(event);',
+                '  }',
+                '}',
+            ].join('\n');
+
+            const transformed = hardwareKeyboardShortcutsPlugin.addJavaDispatchKeyEvent(fixture);
+
+            expect(countOccurrences(transformed, javaBridgeCall)).toBe(1);
+            expect(countOccurrences(transformed, legacyBridgeCall)).toBe(0);
+        });
+
         it('does not treat an unrelated Java bridge call as an existing dispatch override patch', () => {
             const fixture = [
                 'package dev.happier.app;',
                 '',
                 'public class MainActivity extends ReactActivity {',
                 '  public void debugHardwareKeyboardBridge() {',
-                `    System.out.println("${bridgeCall}");`,
+                `    System.out.println("${legacyBridgeCall}");`,
                 '  }',
                 '}',
                 '',
@@ -356,6 +413,7 @@ describe('happier hardware keyboard shortcuts local Expo module config', () => {
             const transformed = hardwareKeyboardShortcutsPlugin.addJavaDispatchKeyEvent(fixture);
 
             expect(hasJavaBridgeGuardInsideDispatchKeyEvent(transformed)).toBe(true);
+            expect(transformed).toContain(`System.out.println("${legacyBridgeCall}");`);
         });
 
         it('fails loudly when Java MainActivity cannot be patched safely', () => {

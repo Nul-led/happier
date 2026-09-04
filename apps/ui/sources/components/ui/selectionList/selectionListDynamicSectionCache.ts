@@ -48,7 +48,10 @@ export function buildDynamicSectionCacheKey(
     resolverKey: string | undefined,
     seed: string,
 ): string {
-    return `${id}::${resolverKey ?? id}::${seed}`;
+    // These fields are authored by independent domains and may legitimately
+    // contain any delimiter. A JSON tuple is the smallest unambiguous encoding
+    // and preserves exact string identity without another cache-key registry.
+    return JSON.stringify([id, resolverKey ?? id, seed]);
 }
 
 /**

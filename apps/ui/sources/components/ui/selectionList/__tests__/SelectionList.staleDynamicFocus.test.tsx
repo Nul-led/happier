@@ -76,7 +76,7 @@ describe('SelectionList stale dynamic row keyboard focus + a11y (FR4-2)', () => 
 
         // Pre-populate the cross-mount cache by mounting once with a
         // resolving resolver, then unmount. The cross-mount cache stores the
-        // last successful options keyed by `${id}::${resolverKey}::${seed}`.
+        // last successful options keyed by the canonical JSON identity tuple.
 
         const root1 = makeStep({
             id: 'dyn',

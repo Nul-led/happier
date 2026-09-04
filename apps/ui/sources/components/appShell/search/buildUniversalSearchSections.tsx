@@ -51,15 +51,19 @@ const DEFAULT_ROW_LIMIT = 20;
 
 export type UniversalSearchSessionEntity = Readonly<{
     sessionId: string;
-    serverId: string | null;
+    serverId: string;
+    accountId: string;
     title: string;
     subtitle?: string;
+    searchText?: string;
+    exactSearchText?: string;
     updatedAt: number;
 }>;
 
 export type UniversalSearchProjectEntity = Readonly<{
     workspaceRefId: string;
     serverId: string;
+    accountId: string;
     machineId: string;
     rootPath: string;
     title: string;
@@ -88,13 +92,25 @@ export type UniversalSearchDynamicSource = Readonly<{
     resultHint?: string;
     resolve: (query: string, signal: AbortSignal) => Promise<
         readonly UniversalSearchResult[]
-        | Readonly<{ results: readonly UniversalSearchResult[]; emptyHint: string }>
+        | Readonly<{
+            results: readonly UniversalSearchResult[];
+            emptyHint?: string;
+            resultHint?: string;
+        }>
     >;
 }>;
 
 function isUniversalSearchResolvePage(
-    value: readonly UniversalSearchResult[] | Readonly<{ results: readonly UniversalSearchResult[]; emptyHint: string }>,
-): value is Readonly<{ results: readonly UniversalSearchResult[]; emptyHint: string }> {
+    value: readonly UniversalSearchResult[] | Readonly<{
+        results: readonly UniversalSearchResult[];
+        emptyHint?: string;
+        resultHint?: string;
+    }>,
+): value is Readonly<{
+    results: readonly UniversalSearchResult[];
+    emptyHint?: string;
+    resultHint?: string;
+}> {
     return typeof value === 'object' && value !== null && 'results' in value;
 }
 
@@ -120,6 +136,7 @@ export type BuildUniversalSearchSectionsInput = Readonly<{
     query: string;
     commands: readonly Command[];
     sessions: readonly UniversalSearchSessionEntity[];
+    sessionInventoryStatus?: 'idle' | 'loading' | 'ready' | 'error';
     projects: readonly UniversalSearchProjectEntity[];
     /** The resolved settings catalog's own Fuse owner; never a second matcher. */
     searchSettingsPages: (query: string) => readonly UniversalSearchSettingsPageEntity[];
@@ -152,6 +169,11 @@ function toOption(
         testID: `universal-search:option:${result.sourceId}:${result.id}`,
         label: result.title,
         ...(result.subtitle ? { subtitle: result.subtitle } : {}),
+        ...(result.searchText ? { searchText: result.searchText } : {}),
+        ...(result.exactSearchText ? { exactSearchText: result.exactSearchText } : {}),
+        ...((result.kind === 'project' || result.kind === 'workspaceFile') && result.subtitle
+            ? { subtitleEllipsizeMode: 'head' as const }
+            : {}),
         icon: icon(iconName),
         onSelect: () => { onCommit(result); },
     };
@@ -191,20 +213,23 @@ function buildDynamicSection(
         id: input.sourceId,
         title: input.title,
         resolverKey: `${input.sourceId}|${source.resolverKey}`,
-        ...(source.resultHint ? { resultHint: source.resultHint } : {}),
         visibleWhen: (value: string) => value.trim().length > 0,
         resultFiltering: 'provider',
         showSkeletonsOnFirstLoad: true,
         resultTransition: 'none',
         resolve: async (seed, signal) => {
             const resolved = await source.resolve(seed.trim(), signal);
-            const page = isUniversalSearchResolvePage(resolved) ? resolved : null;
-            const results = page ? page.results : resolved;
+            const page = isUniversalSearchResolvePage(resolved)
+                ? resolved
+                : { results: resolved, emptyHint: undefined };
             return {
-                options: results
+                options: page.results
                     .slice(0, input.rowLimit)
                     .map((result) => toOption(result, input.iconName, input.onCommit)),
-                ...(page ? { emptyHint: page.emptyHint } : {}),
+                ...(page.emptyHint !== undefined ? { emptyHint: page.emptyHint } : {}),
+                ...(page.resultHint !== undefined
+                    ? { resultHint: page.resultHint }
+                    : source.resultHint !== undefined ? { resultHint: source.resultHint } : {}),
             };
         },
     }];
@@ -233,11 +258,22 @@ export function buildUniversalSearchSections(
     // Commands first: they are local, immediate, and the highest-frequency
     // reason the surface is open. Construction, currentness, availability, i18n
     // and activation all stay with `buildCommandPaletteCommands`.
-    const visibleCommands = input.commands.filter((command) => command.kind !== 'recentSession');
+    const nonRecentCommands = input.commands.filter((command) => command.kind !== 'recentSession');
+    const visibleCommands = query.length > 0
+        ? nonRecentCommands
+        : nonRecentCommands
+            .filter((command) => command.emptyQuerySuggested === true);
     sections.push(...buildCommandPaletteSelectionListSections(visibleCommands));
 
     const sessions = narrowLocalEntities(input.sessions, query, EMPTY_QUERY_RECENT_LIMIT);
-    if (sessions.length > 0) {
+    const sessionInventoryHint = query.length > 0
+        ? input.sessionInventoryStatus === 'loading'
+            ? t('universalSearch.sessionInventoryLoading')
+            : input.sessionInventoryStatus === 'error'
+                ? t('universalSearch.sessionInventoryIncomplete')
+                : undefined
+        : undefined;
+    if (sessions.length > 0 || sessionInventoryHint) {
         sections.push({
             kind: 'static',
             id: UNIVERSAL_SEARCH_SOURCE_IDS.sessions,
@@ -248,20 +284,23 @@ export function buildUniversalSearchSections(
                 id: session.sessionId,
                 // The same session id can exist on two Homes; the Home the row
                 // was projected from is part of what the user selected.
-                scopeKey: buildUniversalSearchScopeKey([session.serverId]),
+                scopeKey: buildUniversalSearchScopeKey([session.accountId, session.serverId]),
                 sourceId: UNIVERSAL_SEARCH_SOURCE_IDS.sessions,
                 kind: 'session',
                 title: session.title,
                 ...(session.subtitle ? { subtitle: session.subtitle } : {}),
+                ...(session.searchText ? { searchText: session.searchText } : {}),
+                ...(session.exactSearchText ? { exactSearchText: session.exactSearchText } : {}),
                 target: {
                     kind: 'session',
                     sessionId: session.sessionId,
                     serverId: session.serverId,
+                    accountId: session.accountId,
                 },
             }, 'chats-circle', onCommit)),
+            ...(sessionInventoryHint ? { resultHint: sessionInventoryHint } : {}),
         });
     }
-
     const projects = narrowLocalEntities(input.projects, query, EMPTY_QUERY_RECENT_LIMIT);
     if (projects.length > 0) {
         sections.push({
@@ -271,6 +310,7 @@ export function buildUniversalSearchSections(
             options: projects.map((project) => toOption({
                 id: project.workspaceRefId,
                 scopeKey: buildUniversalSearchScopeKey([
+                    project.accountId,
                     project.serverId,
                     project.machineId,
                     project.rootPath,
@@ -283,6 +323,7 @@ export function buildUniversalSearchSections(
                     kind: 'project',
                     workspaceRefId: project.workspaceRefId,
                     serverId: project.serverId,
+                    accountId: project.accountId,
                     machineId: project.machineId,
                     rootPath: project.rootPath,
                 },

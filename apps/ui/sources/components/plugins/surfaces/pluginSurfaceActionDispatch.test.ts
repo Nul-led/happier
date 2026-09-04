@@ -535,7 +535,7 @@ describe('plugin-surface action branch selection', () => {
         }, { policy: 'additive-open/drop' }).jsonSchema;
         const handler = vi.fn(async (input: PluginUiJsonValueV1) => ({
             accepted: true,
-            privateResult: (input as Readonly<{ title?: unknown }>).title,
+            privateResult: input,
         }));
         const clientHandler: PluginClientActionHandler = async (input, context) => {
             expect(context).toBeDefined();
@@ -841,6 +841,10 @@ describe('plugin-surface action branch selection', () => {
                 kind: 'selected' as const,
                 fieldPath: 'credentialRef',
                 ref: account,
+            },
+            presentation: {
+                connectedAccountLabel: 'Work account',
+                machineDisplayName: 'Development Mac',
             },
         };
         const dispatch = (overrides: Partial<DispatchPluginSurfaceActionInput> = {}) => dispatchPluginSurfaceAction({
@@ -1664,6 +1668,10 @@ describe('mounted executeAction handler', () => {
                 fieldPath: 'credentialRef',
                 ref: account,
             },
+            presentation: {
+                connectedAccountLabel: 'Work account',
+                machineDisplayName: 'Development Mac',
+            },
         };
 
         await expect(api.handleRequest(
@@ -2041,6 +2049,10 @@ describe('composed public SDK client to canonical plugin-surface dispatcher', ()
                         contributor: COMPOSED_TARGETED_OPERATION.contributor,
                     },
                     connectedAccount: { kind: 'none' },
+                    presentation: {
+                        connectedAccountLabel: null,
+                        machineDisplayName: 'Development Mac',
+                    },
                 };
             },
         });
@@ -2191,6 +2203,10 @@ describe('composed public SDK client to canonical plugin-surface dispatcher', ()
                 contributor: COMPOSED_TARGETED_OPERATION.contributor,
             },
             connectedAccount: { kind: 'none' },
+            presentation: {
+                connectedAccountLabel: null,
+                machineDisplayName: 'Development Mac',
+            },
         });
         if (selected.kind !== 'submitted') throw new Error('expected submitted selection');
 

@@ -65,6 +65,7 @@ export type NpmRegistryProfilesSectionProps = Readonly<{
         sourceId: string,
         profileId: string | null,
     ) => Promise<Readonly<{ status: 'success' | 'unavailable' | 'outcomeUnknown' | 'superseded' }>>;
+    marketplaceSourceMutationInFlight?: boolean;
 }>;
 
 export function NpmRegistryProfilesSection({
@@ -72,6 +73,7 @@ export function NpmRegistryProfilesSection({
     targetSelection,
     marketplaceSources = [],
     onSetMarketplaceSourceProfile,
+    marketplaceSourceMutationInFlight = false,
 }: NpmRegistryProfilesSectionProps): React.ReactElement {
     const { theme } = useUnistyles();
     const selectedTarget = targetSelection.selectedTarget;
@@ -87,8 +89,6 @@ export function NpmRegistryProfilesSection({
     const refreshGenerationRef = React.useRef(0);
     const mutationRequestIdRef = React.useRef(0);
     const mutationInFlightRef = React.useRef(false);
-    const bindingRequestIdRef = React.useRef(0);
-    const bindingInFlightRef = React.useRef(false);
     const [loaded, setLoaded] = React.useState<LoadedSnapshot | null>(null);
     const [loading, setLoading] = React.useState(false);
     const [loadError, setLoadError] = React.useState(false);
@@ -173,8 +173,6 @@ export function NpmRegistryProfilesSection({
     React.useEffect(() => {
         mutationRequestIdRef.current += 1;
         mutationInFlightRef.current = false;
-        bindingRequestIdRef.current += 1;
-        bindingInFlightRef.current = false;
         setBusyProfileId(null);
         setBusyBindingSourceId(null);
         // An open binding menu lists the previous machine's profiles; it must
@@ -309,25 +307,12 @@ export function NpmRegistryProfilesSection({
 
     const setMarketplaceBinding = React.useCallback(async (sourceId: string, profileId: string | null) => {
         if (
-            !daemonOperationsAvailableRef.current
-            || !selectedTarget
-            || !targetSelection.canExecute
-            || !onSetMarketplaceSourceProfile
-            || bindingInFlightRef.current
+            !onSetMarketplaceSourceProfile
+            || marketplaceSourceMutationInFlight
         ) return;
-        const executionTarget = resolveExactExecutionTarget(selectedTarget);
-        if (!executionTarget) return;
-        const requestId = ++bindingRequestIdRef.current;
-        const requestedSelection = selectionKey;
-        bindingInFlightRef.current = true;
         setBusyBindingSourceId(sourceId);
         try {
             const settlement = await onSetMarketplaceSourceProfile(sourceId, profileId);
-            if (
-                requestId !== bindingRequestIdRef.current
-                || !daemonOperationsAvailableRef.current
-                || !isExecutionTargetCurrent(requestedSelection, executionTarget)
-            ) return;
             if (settlement.status === 'outcomeUnknown') {
                 await Modal.alert(
                     t('settingsPlugins.sourceAdministration.operationOutcomeUnknownTitle'),
@@ -337,18 +322,11 @@ export function NpmRegistryProfilesSection({
                 await Modal.alert(t('settingsPlugins.registriesErrorTitle'), t('settingsPlugins.registriesErrorBody'));
             }
         } catch {
-            if (
-                requestId !== bindingRequestIdRef.current
-                || !daemonOperationsAvailableRef.current
-                || !isExecutionTargetCurrent(requestedSelection, executionTarget)
-            ) return;
             await Modal.alert(t('settingsPlugins.registriesErrorTitle'), t('settingsPlugins.registriesErrorBody'));
         } finally {
-            if (requestId !== bindingRequestIdRef.current) return;
-            bindingInFlightRef.current = false;
             setBusyBindingSourceId(null);
         }
-    }, [isExecutionTargetCurrent, onSetMarketplaceSourceProfile, resolveExactExecutionTarget, selectedTarget, selectionKey, targetSelection.canExecute]);
+    }, [marketplaceSourceMutationInFlight, onSetMarketplaceSourceProfile]);
 
     return (
         <ItemGroup title={t('settingsPlugins.registriesTitle')} footer={t('settingsPlugins.registriesFooter')}>
@@ -486,7 +464,8 @@ export function NpmRegistryProfilesSection({
                     || !targetSelection.canExecute
                     || !onSetMarketplaceSourceProfile
                     || busyProfileId !== null
-                    || busyBindingSourceId !== null;
+                    || busyBindingSourceId !== null
+                    || marketplaceSourceMutationInFlight;
                 return (
                     <DropdownMenu
                         key={`marketplace-binding:${source.id}`}

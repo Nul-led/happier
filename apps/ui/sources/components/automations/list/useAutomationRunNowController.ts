@@ -8,6 +8,7 @@ import {
     serverAccountScopedStorageKey,
     type ServerAccountScope,
 } from '@/sync/domains/scope/serverAccountScope';
+import { formatAutomationErrorMessage } from '@/components/automations/automationErrorFormatting';
 
 export type AutomationRunNowState = 'idle' | 'submitting' | 'acknowledged';
 
@@ -75,7 +76,7 @@ async function runAutomationNow(
         if (isAuthorityCurrent() && isCurrent()) {
             await Modal.alert(
                 t('common.error'),
-                error instanceof Error ? error.message : t('automations.detail.runFailed'),
+                formatAutomationErrorMessage(error, t('automations.detail.runFailed')),
             );
         }
     } finally {

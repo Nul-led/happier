@@ -65,6 +65,13 @@ type SelectionListOptionBase = Readonly<{
     /** Plain-text label used for matching and as the synchronous fallback. */
     label: string;
     /**
+     * Additional canonical plain-text metadata used only for matching. It is
+     * ranked after visible label and subtitle matches and is never rendered.
+     */
+    searchText?: string;
+    /** Newline-delimited canonical identities that enter the first match band only on exact equality. */
+    exactSearchText?: string;
+    /**
      * Render-time title for virtualized rows whose visible text is more
      * expensive to derive than their plain-text matching label.
      */
@@ -230,6 +237,8 @@ export type SelectionListSection = Readonly<{
     /** Optional integer rendered as ` · {count}` after the section title. */
     count?: number;
     options: ReadonlyArray<SelectionListOption>;
+    /** Optional non-activatable status rendered after this static section. */
+    resultHint?: string;
     /**
      * Optional virtualization hint consumed by `SelectionListVirtualizedSection`.
      * Defaults to `'auto'`. See `SelectionListVirtualizationMode`.
@@ -373,6 +382,12 @@ export type SelectionListStep = Readonly<{
     backLabel?: string;
     /** Optional placeholder for the input on this step (omit to disable input). */
     inputPlaceholder?: string;
+    /**
+     * When true, the shared header remains visible for context but the field
+     * is read-only (for example while choosing a Search scope). The step can
+     * still disable filtering independently via `disableInputFilter`.
+     */
+    inputReadOnly?: boolean;
     /**
      * Per-step input mode. Defaults to the SelectionList-level `inputMode` prop
      * (which itself defaults to `'search'`). A step can opt into `'value'` so

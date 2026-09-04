@@ -30,6 +30,7 @@ describe('activateUniversalSearchResult', () => {
             kind: 'project',
             workspaceRefId: 'wr_1',
             serverId: 'home-a',
+            accountId: 'account-a',
             machineId: 'machine-a',
             rootPath: '/repo',
         }, {
@@ -48,6 +49,7 @@ describe('activateUniversalSearchResult', () => {
             kind: 'project',
             workspaceRefId: 'retired',
             serverId: 'home-a',
+            accountId: 'account-a',
             machineId: 'machine-a',
             rootPath: '/gone',
         }, {
@@ -67,6 +69,7 @@ describe('activateUniversalSearchResult', () => {
             workspaceRefId: 'wr_1',
             sessionId: null,
             serverId: 'home-a',
+            accountId: 'account-a',
         }, { kind: 'file', path: 'src/index.ts' });
     });
 
@@ -78,6 +81,7 @@ describe('activateUniversalSearchResult', () => {
             workspaceRefId: 'wr_1',
             sessionId: null,
             serverId: 'home-a',
+            accountId: 'account-a',
         }, { kind: 'commit', sha: 'abc123' });
     });
 });

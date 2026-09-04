@@ -22,6 +22,7 @@ import { useSetting } from '@/sync/domains/state/storage';
 import { resolveReasonCopy } from '@/sync/domains/surfaces/copy';
 import { useIsTablet } from '@/utils/platform/responsive';
 import { resolveSessionListDensityViewState } from './resolveSessionListDensityViewState';
+import type { UniversalSearchScopeSeed } from '@/components/appShell/search/UniversalSearchRuntimeContext';
 
 const stylesheet = StyleSheet.create(() => ({
     actionContainer: {
@@ -44,6 +45,7 @@ const stylesheet = StyleSheet.create(() => ({
 
 export const SessionsListActionRows = React.memo(function SessionsListActionRows(props: Readonly<{
     externalSessionsEnabled: boolean;
+    universalSearchScope?: UniversalSearchScopeSeed;
 }>) {
     const router = useRouter();
     const pathname = usePathname();
@@ -127,7 +129,7 @@ export const SessionsListActionRows = React.memo(function SessionsListActionRows
                     onPress={destination.availability === 'available'
                         ? () => {
                             if (destination.id === SEARCH_DESTINATION_ID) {
-                                universalSearch.open();
+                                universalSearch.open(undefined, props.universalSearchScope);
                                 return;
                             }
                             if (destination.kind === 'plugin' && destination.container === 'appPage') {

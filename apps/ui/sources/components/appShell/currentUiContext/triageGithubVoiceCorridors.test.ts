@@ -289,6 +289,7 @@ describe('Triage/GitHub projection and Voice Action source corridors', () => {
     const window = windowStore.getSnapshot().window;
     if (window === undefined) throw new Error('Expected the mounted Triage window');
     const enrichment = projectTriageCurrentUiContextV1({
+      formatOpenEntryTitle: (title) => `Open ${title}`,
       surface: {
         ...TRIAGE_SURFACE_INITIAL_STATE_V1,
         selection: {

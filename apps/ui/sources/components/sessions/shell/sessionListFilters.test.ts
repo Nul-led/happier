@@ -74,6 +74,39 @@ describe('filterSessionListItemsForHeaderControls', () => {
         ]);
     });
 
+    it('stable-partitions a grouped session run into exact, metadata, then provider-ordered transcript bands', () => {
+        const result = filterSessionListItemsForHeaderControls([
+            activeHeader,
+            sessionItem('transcript-second'),
+            sessionItem('metadata'),
+            sessionItem('exact'),
+            sessionItem('transcript-first'),
+        ], {
+            searchQuery: 'payments',
+            selectedTags: [],
+            sessionTags: {},
+            searchableTextBySessionKey: {
+                'server-a:metadata': 'release payments migration',
+                'server-a:exact': 'exact\nPayments',
+            },
+            primarySearchableTextBySessionKey: {
+                'server-a:exact': 'Payments',
+            },
+            memoryMatchedSessionKeys: new Set([
+                'server-a:transcript-first',
+                'server-a:transcript-second',
+            ]),
+        });
+
+        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.title)).toEqual([
+            'Active',
+            'exact',
+            'metadata',
+            'transcript-first',
+            'transcript-second',
+        ]);
+    });
+
     it('keeps selected tag filters conjunctive for memory-matched sessions', () => {
         const result = filterSessionListItemsForHeaderControls([
             activeHeader,
@@ -90,9 +123,7 @@ describe('filterSessionListItemsForHeaderControls', () => {
             memoryMatchedSessionKeys: new Set(['server-a:beta']),
         });
 
-        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.title)).toEqual([
-            'Active',
-        ]);
+        expect(result).toEqual([]);
     });
 
     it('keeps sessions matching any selected tag', () => {
@@ -116,7 +147,7 @@ describe('filterSessionListItemsForHeaderControls', () => {
         ]);
     });
 
-    it('keeps a primary header when active filters match no sessions', () => {
+    it('prunes a primary header when active filters match no sessions', () => {
         const result = filterSessionListItemsForHeaderControls([
             activeHeader,
             sessionItem('alpha'),
@@ -129,12 +160,10 @@ describe('filterSessionListItemsForHeaderControls', () => {
             searchableTextBySessionKey: {},
         });
 
-        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.title)).toEqual([
-            'Active',
-        ]);
+        expect(result).toEqual([]);
     });
 
-    it('filters across groups while preserving the first primary header as the controls anchor', () => {
+    it('filters across groups without preserving an empty controls-anchor header', () => {
         const result = filterSessionListItemsForHeaderControls([
             activeHeader,
             sessionItem('alpha'),
@@ -154,7 +183,6 @@ describe('filterSessionListItemsForHeaderControls', () => {
         });
 
         expect(result.map((item) => item.type === 'session' ? item.sessionId : item.title)).toEqual([
-            'Active',
             'Inactive',
             'beta',
         ]);

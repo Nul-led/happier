@@ -1639,6 +1639,39 @@ describe('AutomationDetailScreen', () => {
         expect(modalAlertSpy).not.toHaveBeenCalled();
     });
 
+    it('keeps pause feedback local to the current Automation and blocks repeat presses', async () => {
+        const deferredPause = createDeferred();
+        syncSpies.pauseAutomation.mockImplementationOnce(() => deferredPause.promise);
+        const { AutomationDetailScreen } = await import('./AutomationDetailScreen');
+
+        const screen = await renderScreen(React.createElement(AutomationDetailScreen));
+        await flushHookEffects();
+        const pauseButton = findTestInstanceByTypeContainingText(
+            screen,
+            'Pressable',
+            'automations.detail.pauseAutomation',
+        );
+        await act(async () => {
+            pressTestInstance(pauseButton, 'automations.detail.pauseAutomation');
+            pressTestInstance(pauseButton, 'automations.detail.pauseAutomation');
+            await Promise.resolve();
+        });
+
+        expect(syncSpies.pauseAutomation).toHaveBeenCalledTimes(1);
+        const pendingPauseButton = findTestInstanceByTypeContainingText(
+            screen,
+            'Pressable',
+            'automations.detail.pauseAutomation',
+        );
+        expect(pendingPauseButton?.props.disabled).toBe(true);
+        expect(pendingPauseButton?.props.loading).toBe(true);
+
+        await act(async () => {
+            deferredPause.resolve();
+            await deferredPause.promise;
+        });
+    });
+
     it('does not alert for a machine assignment failure after the detail route is reused', async () => {
         const deferredAssignment = createDeferred();
         machinesState.list = [{

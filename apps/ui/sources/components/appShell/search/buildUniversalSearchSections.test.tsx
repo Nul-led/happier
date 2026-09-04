@@ -36,7 +36,7 @@ function dynamicSections(
 }
 
 function sessionEntity(id: string, updatedAt: number, serverId = 'home-a') {
-    return { sessionId: id, serverId, title: `Session ${id}`, updatedAt };
+    return { sessionId: id, serverId, accountId: `account-${serverId}`, title: `Session ${id}`, updatedAt };
 }
 
 function staticOptionIds(
@@ -48,6 +48,76 @@ function staticOptionIds(
 }
 
 describe('buildUniversalSearchSections', () => {
+    it('projects complete-inventory progress and failure through the real Sessions section', () => {
+        const loading = buildUniversalSearchSections(input({
+            query: 'missing session',
+            sessionInventoryStatus: 'loading',
+        })).find((section) => section.id === 'sessions');
+        expect(loading).toMatchObject({
+            kind: 'static',
+            options: [],
+            resultHint: expect.any(String),
+        });
+
+        const failed = buildUniversalSearchSections(input({
+            query: 'missing session',
+            sessionInventoryStatus: 'error',
+        })).find((section) => section.id === 'sessions');
+        expect(failed).toMatchObject({
+            kind: 'static',
+            options: [],
+            resultHint: expect.any(String),
+        });
+        expect(failed && 'resultHint' in failed ? failed.resultHint : undefined)
+            .not.toBe(loading && 'resultHint' in loading ? loading.resultHint : undefined);
+    });
+
+    it('uses start ellipsis for project and file path subtitles', async () => {
+        const sections = buildUniversalSearchSections(input({
+            query: 'repo',
+            projects: [{
+                workspaceRefId: 'workspace-a',
+                serverId: 'home-a',
+                accountId: 'account-a',
+                machineId: 'machine-a',
+                rootPath: '/very/long/path/to/repository',
+                title: 'Repository',
+                subtitle: '/very/long/path/to/repository',
+                lastOpenedAtMs: 1,
+            }],
+            files: {
+                status: 'ready',
+                resolverKey: 'workspace-a',
+                resolve: async () => [{
+                    id: 'src/deep/file.ts',
+                    scopeKey: buildUniversalSearchScopeKey(['home-a', 'machine-a', '/repo']),
+                    sourceId: 'files',
+                    kind: 'workspaceFile',
+                    title: 'file.ts',
+                    subtitle: 'src/deep/file.ts',
+                    target: {
+                        kind: 'workspaceFile',
+                        scope: { serverId: 'home-a', machineId: 'machine-a', rootPath: '/repo' },
+                        path: 'src/deep/file.ts',
+                        workspaceRefId: 'workspace-a',
+                        sessionId: null,
+                        serverId: 'home-a',
+                        accountId: 'account-a',
+                    },
+                }],
+            },
+        }));
+
+        const projects = sections.find((section) => section.id === 'projects');
+        expect(projects?.kind).toBe('static');
+        if (!projects || projects.kind !== 'static') throw new Error('Projects section missing');
+        expect(projects.options[0]?.subtitleEllipsizeMode).toBe('head');
+
+        const files = dynamicSections(sections).find((section) => section.id === 'files');
+        const resolvedFiles = await files!.resolve('repo', new AbortController().signal);
+        expect(resolvedFiles.options[0]?.subtitleEllipsizeMode).toBe('head');
+    });
+
     it('issues no remote request on an empty query: every corpus section is gated off', () => {
         const transcriptResolve = vi.fn(async () => []);
         const filesResolve = vi.fn(async () => []);
@@ -90,6 +160,7 @@ describe('buildUniversalSearchSections', () => {
         const projects = Array.from({ length: 25 }, (_, index) => ({
             workspaceRefId: `wr-${index}`,
             serverId: 'home-a',
+            accountId: 'account-a',
             machineId: 'machine-a',
             rootPath: `/repo/${index}`,
             title: index === 24 ? 'Exact project needle' : `Unrelated project ${index}`,
@@ -132,6 +203,28 @@ describe('buildUniversalSearchSections', () => {
         expect(staticOptionIds(typed, 'sessions')).toHaveLength(1);
     });
 
+    it('shows only intentionally suggested commands before a query, then exposes the full command catalog', () => {
+        const commands = Array.from({ length: 8 }, (_, index) => ({
+            id: `command-${index}`,
+            title: `Command ${index}`,
+            category: 'Commands',
+            ...(index < 6 ? { emptyQuerySuggested: true } : {}),
+            action: () => {},
+        }));
+
+        const empty = buildUniversalSearchSections(input({ commands }));
+        const emptyCommandIds = empty.flatMap((section) => 'options' in section ? section.options : [])
+            .filter((option) => option.id.startsWith('command:'))
+            .map((option) => option.id);
+        expect(emptyCommandIds).toEqual(commands.slice(0, 6).map((command) => `command:${command.id}`));
+
+        const typed = buildUniversalSearchSections(input({ query: 'command', commands }));
+        const typedCommandIds = typed.flatMap((section) => 'options' in section ? section.options : [])
+            .filter((option) => option.id.startsWith('command:'))
+            .map((option) => option.id);
+        expect(typedCommandIds).toEqual(commands.map((command) => `command:${command.id}`));
+    });
+
     it('preserves provider order for corpus sections instead of re-running the host matcher', async () => {
         const results: UniversalSearchResult[] = [
             {
@@ -142,7 +235,7 @@ describe('buildUniversalSearchSections', () => {
                 // Deliberately does NOT contain the query: an FTS/semantic hit
                 // whose displayed label lacks the literal term must survive.
                 title: 'Deployment postmortem',
-                target: { kind: 'session', sessionId: 'sess-1', serverId: 'home-b', seq: 42 },
+                target: { kind: 'session', sessionId: 'sess-1', serverId: 'home-b', accountId: 'account-b', seq: 42 },
             },
         ];
         const sections = buildUniversalSearchSections(input({
@@ -158,7 +251,7 @@ describe('buildUniversalSearchSections', () => {
             .toBe(`transcript::${buildUniversalSearchScopeKey(['home-b'])}::m1`);
     });
 
-    it('projects a source-owned bounded-coverage hint through the canonical section status', () => {
+    it('projects a source-owned bounded-coverage hint through the canonical section status', async () => {
         const sections = buildUniversalSearchSections(input({
             query: 'older work',
             transcript: {
@@ -169,7 +262,9 @@ describe('buildUniversalSearchSections', () => {
             },
         }));
 
-        expect(dynamicSections(sections).find((section) => section.id === 'transcript')?.resultHint)
+        const transcript = dynamicSections(sections).find((section) => section.id === 'transcript');
+        const resolved = await transcript!.resolve('older work', new AbortController().signal);
+        expect(resolved.resultHint)
             .toBe('Local memory storage limits can make older coverage partial.');
     });
 
@@ -185,7 +280,7 @@ describe('buildUniversalSearchSections', () => {
                     sourceId: 'transcript',
                     kind: 'message',
                     title: 'Transcript one',
-                    target: { kind: 'session', sessionId: 's', serverId: 'home-a' },
+                    target: { kind: 'session', sessionId: 's', serverId: 'home-a', accountId: 'account-a' },
                 }],
             },
             files: {
@@ -204,6 +299,7 @@ describe('buildUniversalSearchSections', () => {
                         workspaceRefId: null,
                         sessionId: 's',
                         serverId: 'home-a',
+                        accountId: 'account-a',
                     },
                 }],
             },
@@ -266,6 +362,7 @@ describe('buildUniversalSearchSections', () => {
                         workspaceRefId: null,
                         sessionId: 'sess',
                         serverId: 'home-a',
+                        accountId: 'account-a',
                     },
                 }],
             },
@@ -324,6 +421,7 @@ describe('buildUniversalSearchSections', () => {
                             workspaceRefId: null,
                             sessionId: 'sess',
                             serverId: scope.serverId,
+                            accountId: 'account-a',
                         },
                     }],
                 },
@@ -385,7 +483,13 @@ describe('buildUniversalSearchSections', () => {
         const sections = buildUniversalSearchSections(input({
             query: '',
             commands: [
-                { id: 'new-session', title: 'New Session', category: 'Sessions', action: () => {} },
+                {
+                    id: 'new-session',
+                    emptyQuerySuggested: true,
+                    title: 'New Session',
+                    category: 'Sessions',
+                    action: () => {},
+                },
             ],
         }));
         expect(sections[0]?.kind).toBe('static');

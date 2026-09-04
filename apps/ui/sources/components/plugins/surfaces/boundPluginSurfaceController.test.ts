@@ -1127,6 +1127,7 @@ describe('BoundPluginSurfaceController (§3.1)', () => {
             const controller = createBoundPluginSurfaceController({
                 facts: {
                     ...channelsFacts,
+                    machineDisplayName: 'Development Mac',
                     pluginProjectionById,
                     targetedContributions,
                 },
@@ -1168,6 +1169,10 @@ describe('BoundPluginSurfaceController (§3.1)', () => {
                     contributor: operation.contributor,
                 },
                 connectedAccount: { kind: 'selected', ref: account, fieldPath: 'credentialRef' },
+                presentation: {
+                    connectedAccountLabel: 'Discord bot',
+                    machineDisplayName: 'Development Mac',
+                },
             });
             expect(resolveOptions).toHaveBeenCalledWith('machine_1', expect.objectContaining({
                 serverId: 'server-1',

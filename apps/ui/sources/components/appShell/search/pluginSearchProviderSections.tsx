@@ -39,6 +39,8 @@ import type {
     SelectionListDynamicSectionResolveResult,
     SelectionListOption,
 } from '@/components/ui/selectionList';
+import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
+import { resolveServerProfileScopeIdForIdentifier } from '@/sync/domains/server/serverProfiles';
 
 /**
  * The Universal Search host adapter for `contributes.searchProviders`.
@@ -81,8 +83,12 @@ export type BuildPluginSearchProviderSectionsInput = Readonly<{
     /** Rows the host will render for one provider section. */
     rowLimit?: number;
     locale?: string | null;
-    /** Existing Account-lifetime predicate; never reconstructed here. */
-    scopeIsCurrent?: (() => boolean) | null;
+    /** Exact admitting Account lifetime; string scope equality cannot replace it. */
+    accountLifetime?: ActiveServerAccountScopeLifetime | null;
+    /** Existing projection-generation fence, composed with the exact lifetime. */
+    catalogIsCurrent?: (() => boolean) | null;
+    /** Controller-local presentation revision derived from Account retirement. */
+    accountLifetimeRevision?: number;
     execute?: PluginSurfaceContributedActionTransport;
     openSurface?: PluginSurfaceOpenHandler;
     readCurrentUiContext?: () => CurrentUiContextSnapshotV1 | null | undefined;
@@ -133,6 +139,11 @@ function resolveCurrentProviderScope(
             || origin.generation === null
             || !Number.isFinite(origin.generation)
         ) return null;
+        // Explicit Search scope is authoritative; never reuse a provider
+        // projected for another Home or machine.
+        if (scopedLaunchFacts?.serverId !== undefined
+            && resolveServerProfileScopeIdForIdentifier(origin.serverId) !== resolveServerProfileScopeIdForIdentifier(scopedLaunchFacts.serverId)) return null;
+        if (scopedLaunchFacts?.machineId !== undefined && origin.machineId !== scopedLaunchFacts.machineId) return null;
         return Object.freeze({
             serverId: origin.serverId,
             machineId: origin.machineId,
@@ -176,6 +187,10 @@ export function buildPluginSearchProviderSections(
     if (!projection) return [];
     const resolveContributedAction = createPluginUiProjectedActionResolver(projection.actionsById);
     const rowLimit = readProviderRowLimit(input.rowLimit);
+    const scopeIsCurrent = input.accountLifetime || input.catalogIsCurrent
+        ? () => (input.accountLifetime?.isCurrent() ?? true)
+            && (input.catalogIsCurrent?.() ?? true)
+        : undefined;
 
     return Object.freeze(Object.values(projection.searchProvidersById)
         .slice()
@@ -210,7 +225,7 @@ export function buildPluginSearchProviderSections(
             const activate = async (
                 command: PluginUiResolvedSemanticCommandV1,
             ): Promise<PluginSearchActivationOutcome> => {
-                if (input.scopeIsCurrent && !input.scopeIsCurrent()) {
+                if (scopeIsCurrent && !scopeIsCurrent()) {
                     return { ok: false, code: 'stale_surface', reason: 'plugin_ui_generation_retired' };
                 }
                 // Awaited and caught at the surface seam: a rejected activation
@@ -222,7 +237,7 @@ export function buildPluginSearchProviderSections(
                         callerPluginId: provider.pluginId,
                         command,
                         scopedLaunchFacts: providerScope,
-                        ...(input.scopeIsCurrent ? { scopeIsCurrent: input.scopeIsCurrent } : {}),
+                        ...(scopeIsCurrent ? { scopeIsCurrent } : {}),
                         ...(input.execute ? { execute: input.execute } : {}),
                         ...(input.openSurface ? { openSurface: input.openSurface } : {}),
                         ...(input.readCurrentUiContext
@@ -260,12 +275,15 @@ export function buildPluginSearchProviderSections(
                     },
                     scopedLaunchFacts: providerScope,
                     signal: abortSignal,
-                    ...(input.scopeIsCurrent ? { scopeIsCurrent: input.scopeIsCurrent } : {}),
+                    ...(scopeIsCurrent ? { scopeIsCurrent } : {}),
                     ...(input.execute ? { execute: input.execute } : {}),
                     ...(input.readCurrentUiContext
                         ? { readCurrentUiContext: input.readCurrentUiContext }
                         : {}),
                 });
+                if (abortSignal.aborted || (scopeIsCurrent && !scopeIsCurrent())) {
+                    return Object.freeze({ options: Object.freeze([]) });
+                }
                 const failure = activationError(outcome);
                 if (failure) throw failure;
                 // The universal boundary is where the canonical result is
@@ -314,7 +332,7 @@ export function buildPluginSearchProviderSections(
             return [Object.freeze({
                 id: sectionId,
                 title,
-                resolverKey: `${sectionId}|${providerScope.serverId ?? ''}|${providerScope.machineId ?? ''}|${providerScope.generation ?? ''}|${readPluginUiContributionOrigin(provider)?.generation ?? ''}`,
+                resolverKey: `${sectionId}|${providerScope.serverId ?? ''}|${providerScope.machineId ?? ''}|${providerScope.generation ?? ''}|${readPluginUiContributionOrigin(provider)?.generation ?? ''}|account:${input.accountLifetimeRevision ?? 0}`,
                 // Empty query is a UI state, not a wire request.
                 visibleWhen: (value: string) => value.trim().length > 0,
                 resultFiltering: 'provider' as const,

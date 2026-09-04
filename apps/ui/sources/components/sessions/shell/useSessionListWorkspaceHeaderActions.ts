@@ -1,11 +1,11 @@
 import { Modal } from '@/modal';
 import type { WorkspaceRefV1 } from '@/sync/domains/workspaces/workspaceRefModel';
-import { findWorkspaceRefByScope, upsertWorkspaceRefByScope } from '@/sync/domains/workspaces/workspaceRefs';
+import { findWorkspaceRefByScope } from '@/sync/domains/workspaces/workspaceRefs';
+import { addWorkspaceRefToAccount, resetWorkspaceRefNameInAccount } from '@/sync/ops/workspaceRefs';
 import { t } from '@/text';
 
 export function useSessionListWorkspaceHeaderActions(input: Readonly<{
     workspaceRefs: ReadonlyArray<WorkspaceRefV1>;
-    setWorkspaceRefs: (value: WorkspaceRefV1[]) => void;
     collapsedGroupKeys: Readonly<Record<string, boolean>>;
     setCollapsedGroupKeys: (value: Record<string, boolean>) => void;
 }>) {
@@ -31,14 +31,15 @@ export function useSessionListWorkspaceHeaderActions(input: Readonly<{
                 if ((currentRef?.label ?? null) === newName.trim()) {
                     return;
                 }
-                input.setWorkspaceRefs(upsertWorkspaceRefByScope(input.workspaceRefs, {
+                const result = await addWorkspaceRefToAccount({
                     scope: params.scopeHint,
                     nowMs: Date.now(),
                     patch: { label: newName.trim() },
-                }));
+                });
+                if (!result.ok) Modal.alert(t('common.error'), t('common.saveError'));
             }
         },
-        handleResetWorkspaceName: (params: Readonly<{
+        handleResetWorkspaceName: async (params: Readonly<{
             legacyWorkspaceKey: string;
             scopeHint: Readonly<{ serverId: string; machineId: string; rootPath: string }> | null;
         }>) => {
@@ -47,11 +48,11 @@ export function useSessionListWorkspaceHeaderActions(input: Readonly<{
             if ((currentRef?.label ?? null) === null) {
                 return;
             }
-            input.setWorkspaceRefs(upsertWorkspaceRefByScope(input.workspaceRefs, {
-                scope: params.scopeHint,
-                nowMs: Date.now(),
-                patch: { label: null },
-            }));
+            const result = await resetWorkspaceRefNameInAccount({
+                serverId: params.scopeHint.serverId,
+                workspaceRefId: currentRef!.id,
+            });
+            if (!result.ok) Modal.alert(t('common.error'), t('common.saveError'));
         },
         handleToggleCollapse: (collapseKey: string) => {
             const current = input.collapsedGroupKeys;

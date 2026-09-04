@@ -272,7 +272,7 @@ describe('CommandPaletteProvider native', () => {
         testState.settings = { ...testState.settings, commandPaletteEnabled: true };
     });
 
-    it('does not build web command-palette commands on native render', async () => {
+    it('defers command construction to the native Universal Search route', async () => {
         const { renderScreen } = await import('@/dev/testkit');
         const { CommandPaletteProvider } = await import('./CommandPaletteProvider');
 

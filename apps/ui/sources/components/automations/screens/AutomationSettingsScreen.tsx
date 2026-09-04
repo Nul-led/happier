@@ -17,6 +17,7 @@ import { captureActiveServerAccountScopeLifetime } from '@/sync/domains/scope/ac
 import { useActiveServerAccountScope } from '@/sync/domains/state/storage';
 import { sync } from '@/sync/sync';
 import { t } from '@/text';
+import { formatAutomationErrorMessage } from '@/components/automations/automationErrorFormatting';
 
 /**
  * This screen presents the server-owned settings record directly. Its local
@@ -96,7 +97,7 @@ export function AutomationSettingsScreen(): React.ReactElement {
             if (requestEpoch !== requestEpochRef.current || requestAccountLifetime?.isCurrent() === false) return;
             await Modal.alert(
                 t('common.error'),
-                error instanceof Error ? error.message : t('automations.settings.updateFailed'),
+                formatAutomationErrorMessage(error, t('automations.settings.updateFailed')),
             );
         } finally {
             if (requestEpoch === requestEpochRef.current && requestAccountLifetime?.isCurrent() !== false) {

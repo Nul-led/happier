@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
 
 import { renderScreen, standardCleanup } from '@/dev/testkit';
+import { OVERLAY_CAPSULE_ROW_HEIGHT } from '@/components/ui/overlays/OverlayCapsuleButton';
 
 import { installNewSessionComponentsCommonModuleMocks } from './newSessionComponentsTestHelpers';
 
@@ -445,11 +446,11 @@ describe('NewSessionSimplePanel keyboard scaffold integration', () => {
             expect(testState.scaffoldRender?.props.mode).toBe('newSession');
             expect(screen.findByType('MockComposerKeyboardScaffoldContent')).toBeTruthy();
             expect(screen.findByType('MockComposerKeyboardScaffoldComposer')).toBeTruthy();
-            // 348 less the 46pt capsule row (36 + 10) this host draws above the card. The row lives
+            // Reserve the shared capsule row's real platform-minimum press frame plus its gap. It lives
             // inside the same bottom-anchored slot and nothing else subtracts it, so without the
             // reservation a long draft grows up past the capsule and off the top of the screen.
             // `safeAreaTop` is 0 here, so only the row comes off.
-            expect(testState.agentInputProps.at(-1)?.maxPanelHeight).toBe(348 - 46);
+            expect(testState.agentInputProps.at(-1)?.maxPanelHeight).toBe(348 - OVERLAY_CAPSULE_ROW_HEIGHT);
         } finally {
             act(() => {
                 screen?.tree.unmount();
@@ -503,8 +504,8 @@ describe('NewSessionSimplePanel keyboard scaffold integration', () => {
                 />,
             );
 
-            // Same 46pt capsule-row reservation as above, applied to the seeded first-frame height.
-            expect(testState.agentInputProps.at(-1)?.maxPanelHeight).toBe(610 - 46);
+            // Same capsule-row reservation as above, applied to the seeded first-frame height.
+            expect(testState.agentInputProps.at(-1)?.maxPanelHeight).toBe(610 - OVERLAY_CAPSULE_ROW_HEIGHT);
         } finally {
             act(() => {
                 screen?.tree.unmount();

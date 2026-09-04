@@ -86,6 +86,7 @@ function createScheduleTrigger(input: Readonly<{
 function createAutomationListItem(input: Readonly<{
     id?: string;
     name?: string;
+    enabled?: boolean;
     triggers?: AutomationListItem['triggers'];
 }> = {}): AutomationListItem {
     const id = input.id ?? 'a1';
@@ -93,7 +94,7 @@ function createAutomationListItem(input: Readonly<{
         id,
         name: input.name ?? 'Nightly',
         description: null,
-        enabled: true,
+        enabled: input.enabled ?? true,
         triggers: input.triggers ?? [createScheduleTrigger({
             id: `${id}-schedule-1`,
             nextRunAt: Date.now() + 60_000,
@@ -459,6 +460,35 @@ describe('AutomationsScreen', () => {
         });
         expect(navigateWithBlurOnWebSpy).toHaveBeenCalled();
         expect(routerPushSpy).toHaveBeenCalledWith('/automations/a1');
+    });
+
+    it('keeps pause feedback local to one Automation and blocks repeat clicks without inventing optimistic truth', async () => {
+        const pause = createDeferred<void>();
+        syncSpies.pauseAutomation.mockImplementationOnce(() => pause.promise);
+        automationsState.list = [
+            createAutomationListItem({ id: 'a1', name: 'First', enabled: true }),
+            createAutomationListItem({ id: 'a2', name: 'Second', enabled: true }),
+        ];
+        const { AutomationsScreen } = await import('./AutomationsScreen');
+        const screen = await renderScreen(React.createElement(AutomationsScreen));
+        await flushHookEffects();
+
+        const switches = screen.findAllByType('Switch' as any);
+        await act(async () => {
+            invokeTestInstanceHandler(switches[0]!, 'onValueChange', false);
+            invokeTestInstanceHandler(switches[0]!, 'onValueChange', false);
+            await Promise.resolve();
+        });
+
+        expect(syncSpies.pauseAutomation).toHaveBeenCalledTimes(1);
+        expect(switches[0]?.props.value).toBe(true);
+        expect(screen.findAllByType('Switch' as any)[0]?.props.disabled).toBe(true);
+        expect(screen.findAllByType('Switch' as any)[1]?.props.disabled).toBe(false);
+
+        await act(async () => {
+            pause.resolve();
+            await pause.promise;
+        });
     });
 
     it('submits each list Run now action once while its request is pending', async () => {

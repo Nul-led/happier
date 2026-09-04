@@ -33,6 +33,7 @@ export function createPluginSettingsViews(
 export type InstalledPluginDiagnostic = Readonly<{
     code: string;
     message: string;
+    details?: unknown;
 }>;
 
 export type InstalledPluginDistribution =
@@ -619,6 +620,21 @@ export function readDevelopmentSourceInstallAvailable(
 }
 
 /**
+ * Reads the deterministic scaffold result the canonical `create` action
+ * returns. The returned source root is the only authoritative answer for
+ * where the scaffolded plugin now lives; a caller that re-derived the folder
+ * it typed into a prompt could disagree with what the daemon actually created.
+ */
+export function readPluginCreateResult(value: unknown): Readonly<{ pluginId: string; sourceRootPath: string }> | null {
+    if (!isRecord(value) || value.action !== 'create') return null;
+    const pluginId = readNonEmptyString(value.pluginId);
+    const sourceRootPath = readNonEmptyString(value.sourceRootPath);
+    return pluginId !== null && sourceRootPath !== null
+        ? { pluginId, sourceRootPath }
+        : null;
+}
+
+/**
  * What a listed pending change is asking for, in the user's own terms. The
  * locator and the package identity are the whole security payload of the two
  * decisions, so both are shown verbatim rather than summarised away.
@@ -668,7 +684,7 @@ export function formatDevelopmentPluginSubtitle(entry: DevelopmentPluginEntry): 
     const parts = [
         entry.installed.pluginId,
         entry.installed.enabled ? t('common.enabled') : t('common.disabled'),
-        `path: ${entry.sourceRootPath}`,
+        t('settingsPlugins.developmentSourcePathLabel', { path: entry.sourceRootPath }),
     ];
     if (entry.installed.compatibility.status !== 'compatible') {
         parts.push(entry.installed.compatibility.status);

@@ -196,13 +196,14 @@ vi.mock('@/constants/Typography', () => ({
     },
 }));
 
-vi.mock('@/sync/domains/server/serverRuntime', () => ({
-    getActiveServerSnapshot: () => state.activeServerSnapshot,
+vi.mock('@/hooks/server/useActiveServerSnapshot', () => ({
+    useActiveServerSnapshot: () => state.activeServerSnapshot,
 }));
 
-vi.mock('@/sync/domains/server/serverProfiles', () => ({
-    listServerProfiles: () => [],
-}));
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
+    const { createPartialServerProfilesModuleMock } = await import('@/dev/testkit/mocks/serverProfiles');
+    return createPartialServerProfilesModuleMock(importOriginal, { profiles: [] });
+});
 
 vi.mock('@/sync/ops/machines', () => ({
     machineCollectBugReportDiagnostics: machineCollectBugReportDiagnosticsMock,

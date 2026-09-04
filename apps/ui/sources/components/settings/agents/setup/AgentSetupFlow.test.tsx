@@ -4,7 +4,6 @@ import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-    createModalModuleMock,
     createResolvedAgentCatalogEntryFixture,
     flushHookEffects,
     renderScreen,
@@ -21,6 +20,7 @@ const capabilitiesState = vi.hoisted(() => ({
     })),
 }));
 const authenticationStateInput = vi.hoisted(() => vi.fn());
+const modalConfirmSpy = vi.hoisted(() => vi.fn(async () => true));
 const administrationTargetState = vi.hoisted(() => ({
     resolveExecutionTarget: vi.fn(() => ({
         target: { serverIdentityId: 'identity-target', machineId: 'machine-target' },
@@ -66,12 +66,14 @@ vi.mock('@/utils/platform/desktopHost', () => ({
     isDesktopHost: () => tauriDesktopState.value,
 }));
 
-const modalMock = createModalModuleMock({
-    spies: {
-        confirm: vi.fn(async () => true),
-    },
+vi.mock('@/modal', async () => {
+    const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+    return createModalModuleMock({
+        spies: {
+            confirm: modalConfirmSpy,
+        },
+    }).module;
 });
-vi.mock('@/modal', () => modalMock.module);
 
 vi.mock('@/sync/ops', async (importOriginal) => {
     const original = await importOriginal<typeof import('@/sync/ops')>();
@@ -207,7 +209,7 @@ vi.mock('@/components/onboarding/steps/webDesktop/WebDesktopDownloadCta', () => 
 describe('AgentSetupFlow', () => {
     beforeEach(() => {
         tauriDesktopState.value = true;
-        modalMock.spies.confirm.mockClear();
+        modalConfirmSpy.mockClear();
         capabilitiesState.invoke.mockClear();
         capabilitiesState.invoke.mockImplementation(async () => ({
             supported: true as const,
@@ -250,7 +252,7 @@ describe('AgentSetupFlow', () => {
 
         await screen.pressByTestIdAsync('provider-setup-start-card');
 
-        expect(modalMock.spies.confirm).toHaveBeenCalledTimes(1);
+        expect(modalConfirmSpy).toHaveBeenCalledTimes(1);
         expect(capabilitiesState.invoke).toHaveBeenCalledTimes(2);
     });
 

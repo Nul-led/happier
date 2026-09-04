@@ -129,6 +129,9 @@ const settingsState = vi.hoisted(() => ({
 const activeAccountScopeState = vi.hoisted(() => ({
     value: { serverId: 'server-a', accountId: 'account-a' } as { serverId: string; accountId: string } | null,
 }));
+const automationPaginationState = vi.hoisted(() => ({
+    nextCursor: null as string | null,
+}));
 const translationCallState = vi.hoisted(() => ({
     keys: [] as string[],
 }));
@@ -185,7 +188,7 @@ installAutomationScreensCommonModuleMocks({
         const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
         return createStorageModuleStub({
             useAutomations: () => automationsState.list,
-            useAutomationDefinitionNextCursor: () => null,
+            useAutomationDefinitionNextCursor: () => automationPaginationState.nextCursor,
             useSession: () => sessionState.value,
             useSettings: () => settingsState.value,
             useActiveServerAccountScope: () => activeAccountScopeState.value,
@@ -268,6 +271,7 @@ describe('SessionAutomationsScreen', () => {
         };
         settingsState.value = {};
         activeAccountScopeState.value = { serverId: 'server-a', accountId: 'account-a' };
+        automationPaginationState.nextCursor = null;
         hydrateReadyState.ready = true;
         setStorageStateForSession({
             session: sessionState.value,
@@ -662,6 +666,7 @@ describe('SessionAutomationsScreen', () => {
         expect(syncSpies.refreshAutomationDefinitionDetail.mock.calls.map((call) => call[0]).sort())
             .toEqual(['a1', 'a2']);
         expect(screen.findByTestId('session-automations-stale-refresh-retry')).not.toBeNull();
+        expect(JSON.stringify(screen.tree.toJSON())).not.toContain('No automations yet');
 
         syncSpies.refreshAutomationDefinitionDetail.mockImplementation(async () => {});
         await screen.pressByTestIdAsync('session-automations-stale-refresh-retry');
@@ -679,6 +684,17 @@ describe('SessionAutomationsScreen', () => {
             await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
         });
         expect(syncSpies.refreshAutomationDefinitionDetail.mock.calls.length).toBe(3);
+    });
+
+    it('keeps pagination available without claiming the session has no automations', async () => {
+        automationPaginationState.nextCursor = 'opaque_cursor-2';
+        const { SessionAutomationsScreen } = await import('./SessionAutomationsScreen');
+
+        const screen = await renderScreen(React.createElement(SessionAutomationsScreen, { sessionId: 's1' }));
+        await flushHookEffects();
+
+        expect(screen.findByTestId('session-automations-load-more')).not.toBeNull();
+        expect(JSON.stringify(screen.tree.toJSON())).not.toContain('No automations yet');
     });
 
     it('answers the session association without an account-wide private detail fan-out', async () => {

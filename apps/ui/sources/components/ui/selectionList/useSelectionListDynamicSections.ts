@@ -41,7 +41,7 @@ export type DynamicSectionState = Readonly<{
 
 /**
  * RUX-11.1 — cross-mount cache of last-successful options keyed by
- * `${id}::${resolverKey}::${seed}`. The cache solves the open-flicker
+ * an unambiguous JSON tuple of `[id, resolverKey, seed]`. The cache solves the open-flicker
  * symptom: opening the path popover used to render an empty body before
  * the dynamic resolver completed, even when reopening immediately after
  * close. The hook's per-mount state is lost on unmount; the cross-mount
@@ -185,6 +185,7 @@ export function useSelectionListDynamicSections(params: {
     const debounceTimers = React.useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
     const abortControllers = React.useRef<Map<string, AbortController>>(new Map());
     const sequenceCounters = React.useRef<Map<string, number>>(new Map());
+    const currentRequestIdentityByIdRef = React.useRef<Map<string, string>>(new Map());
     const isMountedRef = React.useRef(true);
     // R16a (was R9 blocker 2): track per-section identity inputs that, when
     // they change, MUST invalidate the cached state and trigger a fresh fetch:
@@ -213,6 +214,25 @@ export function useSelectionListDynamicSections(params: {
     );
 
     React.useEffect(() => {
+        const activeIds = new Set(dynamicSections.map((section) => section.id));
+        for (const [id, timer] of debounceTimers.current) {
+            if (activeIds.has(id)) continue;
+            clearTimeout(timer);
+            debounceTimers.current.delete(id);
+            sequenceCounters.current.set(id, (sequenceCounters.current.get(id) ?? 0) + 1);
+        }
+        for (const [id, controller] of abortControllers.current) {
+            if (activeIds.has(id)) continue;
+            controller.abort();
+            abortControllers.current.delete(id);
+            sequenceCounters.current.set(id, (sequenceCounters.current.get(id) ?? 0) + 1);
+        }
+        for (const id of lastResolverKeyByIdRef.current.keys()) {
+            if (!activeIds.has(id)) lastResolverKeyByIdRef.current.delete(id);
+        }
+        for (const id of lastVisibleByIdRef.current.keys()) {
+            if (!activeIds.has(id)) lastVisibleByIdRef.current.delete(id);
+        }
         setStateMap((prev) => {
             const next = new Map<string, DynamicSectionState>();
             for (const section of dynamicSections) {
@@ -279,6 +299,25 @@ export function useSelectionListDynamicSections(params: {
         }
         return tokens.join('|');
     }, [dynamicSections, inputValue]);
+
+    // Publish the current request identity during render. Promise settlements
+    // can run before React flushes the replacement effect, so an effect-only
+    // sequence bump leaves a small window where an aborted request can publish
+    // an error for the query already visible in the input. This ref is only a
+    // latest-props fence: timers/controllers are still retired by the effect.
+    const currentSectionIds = new Set<string>();
+    for (const section of dynamicSections) {
+        currentSectionIds.add(section.id);
+        const seed = deriveSeed(section, inputBehavior, inputValue);
+        const visible = !section.visibleWhen || section.visibleWhen(inputValue);
+        currentRequestIdentityByIdRef.current.set(
+            section.id,
+            `${section.resolverKey ?? section.id}\u0000${visible ? '1' : '0'}\u0000${seed}`,
+        );
+    }
+    for (const id of currentRequestIdentityByIdRef.current.keys()) {
+        if (!currentSectionIds.has(id)) currentRequestIdentityByIdRef.current.delete(id);
+    }
 
     React.useEffect(() => {
         isMountedRef.current = true;
@@ -375,6 +414,8 @@ export function useSelectionListDynamicSections(params: {
             const dispatch = () => {
                 debounceTimers.current.delete(id);
                 if (!isMountedRef.current) return;
+                const requestIdentity = currentRequestIdentityByIdRef.current.get(id);
+                if (requestIdentity === undefined) return;
 
                 const controller = new AbortController();
                 abortControllers.current.set(id, controller);
@@ -409,6 +450,7 @@ export function useSelectionListDynamicSections(params: {
                     // together preserve the abort-safe contract.
                     if (!isMountedRef.current) return;
                     if (sequenceCounters.current.get(id) !== sequence) return;
+                    if (currentRequestIdentityByIdRef.current.get(id) !== requestIdentity) return;
                     if (controller.signal.aborted) return;
                     // Write the cross-mount cache only on a true success
                     // (not on notFound, which intentionally preserves the
@@ -444,6 +486,8 @@ export function useSelectionListDynamicSections(params: {
                 const handleError = (err: unknown) => {
                     if (!isMountedRef.current) return;
                     if (sequenceCounters.current.get(id) !== sequence) return;
+                    if (currentRequestIdentityByIdRef.current.get(id) !== requestIdentity) return;
+                    if (controller.signal.aborted) return;
                     const error = err instanceof Error ? err : new Error(String(err));
                     setStateMap((prev) => {
                         const next = new Map(prev);

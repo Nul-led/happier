@@ -52,7 +52,6 @@ function createAutomationComposerCatalogEntry(): DaemonPluginUiComposerSurfaceCa
             renderer: {
                 kind: 'declarative',
                 contributionId: 'automation-region-renderer',
-                model: { visible: true },
             },
             availability: { state: 'available', reason: 'available', diagnostics: [] },
         },
@@ -69,7 +68,7 @@ function createAutomationComposerCatalogEntry(): DaemonPluginUiComposerSurfaceCa
             target: { pluginId: 'acme.automations', immutableGenerationId: 'automations-generation-1' },
             points: [],
         },
-    } as DaemonPluginUiComposerSurfaceCatalogEntryV1;
+    };
 }
 
 function currentAutomationDaemonProjection() {

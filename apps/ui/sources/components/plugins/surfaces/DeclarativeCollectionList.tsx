@@ -13,10 +13,10 @@ import {
 import type { HappierUiTheme } from '@happier-dev/plugin-ui/environment';
 import {
     NormalizedPluginCollectionUiQueryDescriptorV1Schema,
-    PluginCollectionUiQueryRequestV1Schema,
+    PluginCollectionUiQueryInputV1Schema,
     PluginDeclarativeCollectionListProjectionV1Schema,
     type NormalizedPluginCollectionUiQueryDescriptorV1,
-    type PluginCollectionUiQueryRequestV1,
+    type PluginCollectionUiQueryInputV1,
     type PluginDeclarativeCollectionListProjectionV1,
 } from '@happier-dev/protocol';
 import type {
@@ -36,7 +36,7 @@ type AccountLifetime = Readonly<{
 
 type CollectionListBinding = Readonly<{
     descriptor: NormalizedPluginCollectionUiQueryDescriptorV1;
-    request: PluginCollectionUiQueryRequestV1;
+    request: PluginCollectionUiQueryInputV1;
     projection: PluginDeclarativeCollectionListProjectionV1;
 }>;
 
@@ -132,7 +132,7 @@ function readCollectionListBinding(input: Readonly<{
     const projection = PluginDeclarativeCollectionListProjectionV1Schema.safeParse(input.node.projection);
     if (!source || !descriptor.success || !projection.success) return null;
 
-    const request = PluginCollectionUiQueryRequestV1Schema.safeParse({
+    const request = PluginCollectionUiQueryInputV1Schema.safeParse({
         pluginId: input.pluginId,
         collectionId: source.collectionId,
         uiQueryId: source.uiQueryId,

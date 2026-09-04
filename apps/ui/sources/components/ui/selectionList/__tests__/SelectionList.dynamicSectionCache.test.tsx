@@ -151,7 +151,9 @@ describe('SelectionList — injectable dynamic-section cache', () => {
         // deterministic: nothing from the previous account may surface while
         // it is in flight.
         let releaseRemount: ((result: { options: ReadonlyArray<{ id: string; label: string }> }) => void) | undefined;
-        const remountResolver = vi.fn(() => new Promise((resolvePromise) => {
+        const remountResolver = vi.fn(() => new Promise<{
+            options: ReadonlyArray<{ id: string; label: string }>;
+        }>((resolvePromise) => {
             releaseRemount = resolvePromise as typeof releaseRemount;
         }));
         const second = await renderScreen(

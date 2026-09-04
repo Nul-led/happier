@@ -8,10 +8,22 @@ import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionLis
 import { getStorage } from '@/sync/domains/state/storageStore';
 import type { StorageState } from '@/sync/store/types';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
+import { resolveSessionWorkspaceDisplayPresentation } from '@/sync/domains/session/listing/sessionWorkspaceDisplayPresentation';
+import type { WorkspacePathDisplayModeV1 } from '@/sync/domains/workspaces/workspaceDisplayPresentation';
+import type { WorkspaceRefV1 } from '@/sync/domains/workspaces/workspaceRefModel';
 
 import { sessionTagKey } from './sessionTagUtils';
 
 const EMPTY_SEARCH_TEXT_BY_SESSION_KEY: Readonly<Record<string, string>> = Object.freeze({});
+const EMPTY_SEARCH_TEXT_PROJECTION = Object.freeze({
+    searchableTextBySessionKey: EMPTY_SEARCH_TEXT_BY_SESSION_KEY,
+    primarySearchableTextBySessionKey: EMPTY_SEARCH_TEXT_BY_SESSION_KEY,
+});
+
+export type SessionListSearchTextProjection = Readonly<{
+    searchableTextBySessionKey: Readonly<Record<string, string>>;
+    primarySearchableTextBySessionKey: Readonly<Record<string, string>>;
+}>;
 
 type SessionSearchKey = Readonly<{
     serverId: string;
@@ -21,10 +33,15 @@ type SessionSearchKey = Readonly<{
 
 type SearchableSessionMetadata = Readonly<{
     name?: string | null;
-    summaryText?: string | null;
     path?: string | null;
     host?: string | null;
     machineId?: string | null;
+}>;
+
+type SessionListSearchOrganization = Readonly<{
+    sessionTags: Readonly<Record<string, ReadonlyArray<string>>>;
+    workspaceRefs: ReadonlyArray<WorkspaceRefV1>;
+    workspacePathDisplayModeV1?: WorkspacePathDisplayModeV1 | null;
 }>;
 
 function appendText(parts: string[], value: string | null | undefined): void {
@@ -35,7 +52,6 @@ function appendText(parts: string[], value: string | null | undefined): void {
 
 function appendSessionMetadataText(parts: string[], metadata: SearchableSessionMetadata | null | undefined): void {
     appendText(parts, metadata?.name);
-    appendText(parts, metadata?.summaryText);
     appendText(parts, metadata?.path);
     appendText(parts, metadata?.host);
     appendText(parts, metadata?.machineId);
@@ -49,11 +65,31 @@ export function buildCanonicalSessionListSearchText(input: Readonly<{
     sessionId: string;
     renderable?: SessionListRenderableSession | null;
     session?: Session | null;
+    tags?: ReadonlyArray<string>;
+    workspaceDisplayLabel?: string | null;
 }>): string {
     const parts: string[] = [];
     appendText(parts, input.sessionId);
     appendRenderableText(parts, input.renderable);
     appendSessionMetadataText(parts, input.session ? readSessionOwnerMetadataView(input.session) : null);
+    for (const tag of input.tags ?? []) appendText(parts, tag);
+    appendText(parts, input.workspaceDisplayLabel);
+    return parts.join('\n');
+}
+
+export function buildCanonicalSessionListPrimarySearchText(input: Readonly<{
+    sessionId: string;
+    renderable?: SessionListRenderableSession | null;
+    session?: Session | null;
+    workspaceDisplayLabel?: string | null;
+}>): string {
+    const parts: string[] = [];
+    appendText(parts, input.sessionId);
+    const renderableMetadata = input.renderable?.metadata ?? null;
+    appendText(parts, renderableMetadata?.name);
+    const ownerMetadata = input.session ? readSessionOwnerMetadataView(input.session) : null;
+    appendText(parts, ownerMetadata?.name);
+    appendText(parts, input.workspaceDisplayLabel);
     return parts.join('\n');
 }
 
@@ -73,38 +109,63 @@ function collectSessionKeys(items: ReadonlyArray<SessionListIndexItem>): Readonl
     return keys;
 }
 
-function buildSearchTextBySessionKey(
+function buildSearchTextProjection(
     state: StorageState,
     sessionKeys: ReadonlyArray<SessionSearchKey>,
-): Readonly<Record<string, string>> {
+    organization?: SessionListSearchOrganization,
+): SessionListSearchTextProjection {
     const out: Record<string, string> = {};
+    const primary: Record<string, string> = {};
     for (const entry of sessionKeys) {
-        const session = state.sessions?.[entry.sessionId] ?? null;
+        // Session ids are source-local. Contextual search consumes only the
+        // exact server partition; bare-id global Session/renderable maps could
+        // otherwise leak another Home's same-id metadata into this haystack.
+        const renderable = readSessionListRowForServerId(
+            state.sessionListRowStateByServerId,
+            entry.serverId,
+            entry.sessionId,
+        );
+        const metadata = renderable?.metadata ?? null;
+        const workspaceDisplayLabel = organization
+            ? resolveSessionWorkspaceDisplayPresentation({
+                serverId: entry.serverId,
+                metadata,
+                workspaceRefs: organization.workspaceRefs,
+                workspacePathDisplayModeV1: organization.workspacePathDisplayModeV1,
+            }).displayTitle
+            : null;
         const text = buildCanonicalSessionListSearchText({
             sessionId: entry.sessionId,
-            renderable: readSessionListRowForServerId(
-                state.sessionListRowStateByServerId,
-                entry.serverId,
-                entry.sessionId,
-            ) ?? state.sessionListRenderables?.[entry.sessionId] ?? null,
-            session,
+            renderable,
+            tags: organization?.sessionTags[entry.key],
+            workspaceDisplayLabel,
         });
         if (text) out[entry.key] = text;
+        const primaryText = buildCanonicalSessionListPrimarySearchText({
+            sessionId: entry.sessionId,
+            renderable,
+            workspaceDisplayLabel,
+        });
+        if (primaryText) primary[entry.key] = primaryText;
     }
 
-    return Object.keys(out).length > 0 ? out : EMPTY_SEARCH_TEXT_BY_SESSION_KEY;
+    return {
+        searchableTextBySessionKey: Object.keys(out).length > 0 ? out : EMPTY_SEARCH_TEXT_BY_SESSION_KEY,
+        primarySearchableTextBySessionKey: Object.keys(primary).length > 0 ? primary : EMPTY_SEARCH_TEXT_BY_SESSION_KEY,
+    };
 }
 
-export function createSessionListSearchTextSelector(
+function createSessionListSearchTextProjectionSelector(
     items: ReadonlyArray<SessionListIndexItem>,
     enabled: boolean,
-): (state: StorageState) => Readonly<Record<string, string>> {
+    organization?: SessionListSearchOrganization,
+): (state: StorageState) => SessionListSearchTextProjection {
     const sessionKeys = collectSessionKeys(items);
     let previousDeltaRevision: number | null = null;
-    let previousResult: Readonly<Record<string, string>> | null = null;
+    let previousResult: SessionListSearchTextProjection | null = null;
 
     return (state) => {
-        if (!enabled || sessionKeys.length === 0) return EMPTY_SEARCH_TEXT_BY_SESSION_KEY;
+        if (!enabled || sessionKeys.length === 0) return EMPTY_SEARCH_TEXT_PROJECTION;
         const renderableDelta = state.sessionListRenderableDelta;
         if (
             previousResult
@@ -119,16 +180,29 @@ export function createSessionListSearchTextSelector(
             return previousResult;
         }
 
-        previousResult = buildSearchTextBySessionKey(state, sessionKeys);
+        previousResult = buildSearchTextProjection(state, sessionKeys, organization);
         previousDeltaRevision = renderableDelta?.revision ?? null;
         return previousResult;
     };
 }
 
+export function createSessionListSearchTextSelector(
+    items: ReadonlyArray<SessionListIndexItem>,
+    enabled: boolean,
+    organization?: SessionListSearchOrganization,
+): (state: StorageState) => Readonly<Record<string, string>> {
+    const projectionSelector = createSessionListSearchTextProjectionSelector(items, enabled, organization);
+    return (state) => projectionSelector(state).searchableTextBySessionKey;
+}
+
 export function useSessionListSearchTextByKey(
     items: ReadonlyArray<SessionListIndexItem>,
     enabled: boolean,
-): Readonly<Record<string, string>> {
-    const selector = React.useMemo(() => createSessionListSearchTextSelector(items, enabled), [enabled, items]);
+    organization?: SessionListSearchOrganization,
+): SessionListSearchTextProjection {
+    const selector = React.useMemo(
+        () => createSessionListSearchTextProjectionSelector(items, enabled, organization),
+        [enabled, items, organization],
+    );
     return getStorage()(useShallow(selector));
 }

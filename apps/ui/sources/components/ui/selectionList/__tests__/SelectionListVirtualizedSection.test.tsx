@@ -45,6 +45,11 @@ function hasAncestor(node: any, possibleAncestor: any): boolean {
     return false;
 }
 
+function flattenStyle(style: unknown): Record<string, unknown> {
+    const parts = (Array.isArray(style) ? style.flat(Infinity) : [style]).filter(Boolean);
+    return Object.assign({}, ...(parts as Array<Record<string, unknown>>));
+}
+
 describe('SelectionListVirtualizedSection', () => {
     it('constructs lazy visuals only for the rendered window in the single-section path', async () => {
         legendListState.reset();
@@ -133,6 +138,27 @@ describe('SelectionListVirtualizedSection', () => {
         );
         expect(legendListState.props).not.toBeNull();
         expect(legendListState.props.data.length).toBe(3);
+    });
+
+    it('uses a shrinkable preferred height instead of a fixed minimum for short parent regions', async () => {
+        legendListState.reset();
+        const { SelectionListVirtualizedSection } = await import('../SelectionListVirtualizedSection');
+        const screen = await renderScreen(
+            <SelectionListVirtualizedSection
+                section={{ ...makeSection(3), id: 'short-parent' }}
+                stepId="root"
+                rootTestID="sl"
+                selectedOptionId={null}
+                onSelect={() => {}}
+                onPushStep={() => {}}
+                virtualization="force"
+            />,
+        );
+
+        const hostStyle = flattenStyle(screen.findByTestId('sl:section:short-parent')?.props.style);
+        expect(hostStyle.minHeight).toBe(0);
+        expect(hostStyle.height).toBe(224);
+        expect(hostStyle.maxHeight).toBe('100%');
     });
 
     it('keeps an interactive accessory outside the virtualized row pressable', async () => {

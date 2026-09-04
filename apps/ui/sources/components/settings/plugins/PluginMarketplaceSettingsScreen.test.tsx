@@ -13,10 +13,12 @@ import {
     clearDaemonMergedProjectionCacheForTests,
     loadDaemonMergedProjectionCacheEntry,
 } from '@/agents/backendCatalog/loadDaemonMergedProjectionInputs';
+import { readNewSessionDraftFromRepository } from '@/components/sessions/composer/newSessionDraftRepositoryAdapter';
 import { flattenTestStyle } from '@/dev/testkit';
 import { createPassThroughModule } from '@/dev/testkit/mocks/components';
 import { renderSettingsView } from '@/dev/testkit/harness/settingsViewHarness';
 import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
+import { resetSessionDraftRepositoryForTests } from '@/sync/ops/sessionDrafts/sessionDraftRepository';
 import { installSettingsViewCommonModuleMocks } from '../settingsViewTestHelpers';
 
 type InstalledPluginDiagnostic = Readonly<{
@@ -131,6 +133,9 @@ const activeAccountLifetime = vi.hoisted(() => Object.freeze({
     isCurrent: () => true,
     onRetire: () => Object.freeze({ dispose(): void {} }),
 }) satisfies ActiveServerAccountScopeLifetime);
+const activeAccountScopeState = vi.hoisted(() => ({
+    current: null as Readonly<{ serverId: string; accountId: string }> | null,
+}));
 const machineAdministrationFixture = vi.hoisted(() => ({
     activeMachines: [] as Array<Record<string, unknown>>,
     activeServerId: 'server-a',
@@ -157,8 +162,14 @@ const modalAlertAsyncMock = vi.hoisted(() => vi.fn(async (
     buttons?.[0]?.onPress?.();
 }));
 const prefetchMachineCapabilitiesMock = vi.hoisted(() => vi.fn());
+const screenFocusState = vi.hoisted(() => ({ value: true }));
 
 const MARKETPLACE_CAPABILITY_ID = 'tool.plugins';
+
+vi.mock('@react-navigation/native', async () => ({
+    ...(await import('@/dev/testkit/mocks/reactNavigation')).createReactNavigationNativeMock(),
+    useIsFocused: () => screenFocusState.value,
+}));
 
 function setMachineAdministrationTargetFixture(params: Readonly<{
     serverIdentityId?: string;
@@ -768,7 +779,7 @@ vi.mock('@/sync/store/hooks', () => ({
     useMachineRecordListsByServerId: () => machineAdministrationFixture.machineListByServerId,
     useMachineListStatusByServerId: () => machineAdministrationFixture.machineListStatusByServerId,
     useIsDataReady: () => true,
-    useActiveServerAccountScope: () => null,
+    useActiveServerAccountScope: () => activeAccountScopeState.current,
     useProfile: () => ({ id: 'prof_1', firstName: '', connectedServices: [] }),
     useSetting: () => machineAdministrationFixture.selections,
     // The administration-target owner persists a sole-candidate initialization
@@ -991,6 +1002,7 @@ vi.mock('@/agents/catalog/catalog', () => ({
     getAgentIconSource: () => null,
     getAgentIconTintColor: () => null,
     isBundledAgentId: (agentId: unknown) => agentId === 'claude' || agentId === 'codex',
+    resolveBundledAgentIdFromContributionIdentity: () => null,
     resolveAgentIdFromConnectedServiceId: () => null,
 }));
 
@@ -1032,6 +1044,8 @@ vi.mock('@happier-dev/agents', async (importOriginal) => {
 
 afterEach(() => {
     clearDaemonMergedProjectionCacheForTests();
+    resetSessionDraftRepositoryForTests();
+    activeAccountScopeState.current = null;
     getActiveServerIdMock.mockReset();
     useMachineCapabilitiesCacheMock.mockReset();
     getMachineCapabilitiesCacheStateMock.mockReset();
@@ -1056,6 +1070,7 @@ afterEach(() => {
     modalConfirmMock.mockReset();
     modalAlertAsyncMock.mockClear();
     prefetchMachineCapabilitiesMock.mockReset();
+    screenFocusState.value = true;
     machineAdministrationFixture.setSelections.mockReset();
     webhookFeature.enabled = true;
     observedFeatureIds.length = 0;
@@ -1644,6 +1659,127 @@ describe('PluginSettingsHomeScreen', () => {
                 params: { pluginId: 'development-plugin' },
             },
         }));
+    });
+
+    it('opens Edit with Agent as an ordinary New Session on the exact development target and source root', async () => {
+        const accountScope = { serverId: 'server-a', accountId: 'account-a' } as const;
+        activeAccountScopeState.current = accountScope;
+        const developmentPlugin = createInstalledPlugin({
+            pluginId: 'development-plugin',
+            title: 'Development Plugin',
+            version: '3.0.0-dev',
+            source: {
+                kind: 'path',
+                locator: '/plugins/development-plugin',
+                devWatch: true,
+            },
+        });
+        useMachineCapabilitiesCacheMock.mockReturnValue({
+            state: createMachineCapabilitiesState([developmentPlugin], [{
+                pluginId: 'development-plugin',
+                sourceRootPath: '/plugins/development-plugin',
+                watch: { state: 'configured' },
+                reload: { state: 'clear', diagnostics: [] },
+                actions: { test: true, pack: true },
+            }]),
+            refresh: vi.fn(),
+        });
+        machineMarketplaceSourceRegistryGetMock.mockResolvedValue(null);
+
+        const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
+        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        await act(async () => { await flushAsync(); await flushAsync(); });
+        await selectPluginManagementView(screen, 'development');
+
+        await act(async () => {
+            screen.pressByTestId('settings.plugins.management.development.development-plugin.action.editWithAgent');
+            await flushAsync();
+        });
+
+        expect(invokeWithAlertsMock).not.toHaveBeenCalled();
+        const route = routerPushSpy.mock.calls.at(-1)?.[0] as Readonly<{
+            pathname: string;
+            params: Readonly<{ draftId: string }>;
+        }>;
+        expect(route).toEqual({
+            pathname: '/new',
+            params: { draftId: expect.any(String) },
+        });
+        expect(readNewSessionDraftFromRepository({ scope: accountScope, draftId: route.params.draftId })).toMatchObject({
+            input: 'settingsPlugins.developmentEditWithAgentPrompt(pluginId=development-plugin)',
+            selectedMachineId: 'machine-1',
+            targetServerId: 'server-a',
+            selectedPath: '/plugins/development-plugin',
+            executionTarget: { serverId: 'server-a', machineId: 'machine-1' },
+            entryIntent: 'session',
+        });
+    });
+
+    it('creates through the deterministic scaffold owner before opening Create with Agent in that plugin root', async () => {
+        const accountScope = { serverId: 'server-a', accountId: 'account-a' } as const;
+        activeAccountScopeState.current = accountScope;
+        useMachineCapabilitiesCacheMock.mockReturnValue({
+            state: createMachineCapabilitiesState([]),
+            refresh: vi.fn(),
+        });
+        machineMarketplaceSourceRegistryGetMock.mockResolvedValue(null);
+        invokeWithAlertsMock.mockResolvedValue({
+            supported: true,
+            response: {
+                ok: true,
+                result: {
+                    action: 'create',
+                    pluginId: 'acme.agent-plugin',
+                    sourceRootPath: '/workspace/plugins/agent-plugin',
+                },
+            },
+        });
+        modalPromptMock
+            .mockResolvedValueOnce('/workspace/plugins/agent-plugin')
+            .mockResolvedValueOnce('Agent Plugin')
+            .mockResolvedValueOnce('acme.agent-plugin');
+
+        const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
+        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        await act(async () => { await flushAsync(); await flushAsync(); });
+        await selectPluginManagementView(screen, 'development');
+
+        await act(async () => {
+            screen.pressByTestId('settings.plugins.management.development.action.createWithAgent');
+            await flushAsync();
+            await flushAsync();
+            await flushAsync();
+            await flushAsync();
+            await flushAsync();
+        });
+
+        expect(invokeWithAlertsMock).toHaveBeenCalledWith(expect.objectContaining({
+            machineId: 'machine-1',
+            serverId: 'server-a',
+            request: {
+                id: MARKETPLACE_CAPABILITY_ID,
+                method: 'create',
+                params: {
+                    targetDir: '/workspace/plugins/agent-plugin',
+                    displayName: 'Agent Plugin',
+                    pluginId: 'acme.agent-plugin',
+                    ui: 'reactNative',
+                },
+            },
+        }));
+        const route = routerPushSpy.mock.calls.at(-1)?.[0] as Readonly<{
+            pathname: string;
+            params: Readonly<{ draftId: string }>;
+        }>;
+        expect(route.pathname).toBe('/new');
+        expect(readNewSessionDraftFromRepository({ scope: accountScope, draftId: route.params.draftId })).toMatchObject({
+            input: 'settingsPlugins.developmentCreateWithAgentPrompt(pluginId=acme.agent-plugin)',
+            selectedMachineId: 'machine-1',
+            targetServerId: 'server-a',
+            selectedPath: '/workspace/plugins/agent-plugin',
+            executionTarget: { serverId: 'server-a', machineId: 'machine-1' },
+            entryIntent: 'session',
+        });
     });
 
     it('lists a pending change this app never started and lets the present user decide it', async () => {
@@ -2416,12 +2552,53 @@ describe('PluginSettingsHomeScreen', () => {
         }));
     });
 
+    it.each([
+        ['Home', async () => (await import('./PluginSettingsHomeScreen')).PluginSettingsHomeScreen],
+        ['Detail', async () => (await import('./detail/PluginDetailScreen')).PluginDetailScreen],
+    ])('refreshes daemon-owned marketplace sources when the %s screen regains focus', async (_name, loadScreen) => {
+        useMachineCapabilitiesCacheMock.mockReturnValue({
+            state: createMachineCapabilitiesState([]),
+            refresh: vi.fn(),
+        });
+        machineMarketplaceSourceRegistryGetMock.mockResolvedValue({
+            t: 'happier_marketplace_source_registry_v1',
+            schemaVersion: 1,
+            sources: [],
+        });
+        screenFocusState.value = true;
+        const Screen = await loadScreen() as unknown as React.ComponentType<{
+            pluginId?: string;
+            revision?: number;
+        }>;
+        const props = _name === 'Detail' ? { pluginId: 'missing-plugin', revision: 1 } : { revision: 1 };
+        const screen = await renderSettingsView(React.createElement(Screen, props));
+        await act(async () => { await flushAsync(); await flushAsync(); });
+        expect(machineMarketplaceSourceRegistryGetMock).toHaveBeenCalledTimes(1);
+
+        screenFocusState.value = false;
+        screen.tree.update(React.createElement(Screen, { ...props, revision: 2 }));
+        await act(async () => { await flushAsync(); });
+        machineMarketplaceSourceRegistryGetMock.mockClear();
+
+        screenFocusState.value = true;
+        screen.tree.update(React.createElement(Screen, { ...props, revision: 3 }));
+        await act(async () => { await flushAsync(); await flushAsync(); });
+
+        expect(machineMarketplaceSourceRegistryGetMock).toHaveBeenCalledTimes(1);
+        expect(machineMarketplaceSourceRegistryGetMock).toHaveBeenCalledWith('machine-1', { serverId: 'server-a' });
+    });
+
     it('keeps direct marketplace administration disabled when the exact daemon target is unreachable', async () => {
         useMachineCapabilitiesCacheMock.mockReturnValue({
             state: createMachineCapabilitiesState([]),
             refresh: vi.fn(),
         });
-        endpointConnectivityState.status = 'offline';
+        // Exact daemon reachability belongs to the machine-inventory owner,
+        // not to the active server endpoint. Make the selected machine itself
+        // offline so this exercises the same authority production dispatch
+        // re-resolves immediately before issuing an administration RPC.
+        machineAdministrationFixture.activeMachines[0]!.active = false;
+        machineAdministrationFixture.activeMachines[0]!.activeAt = 0;
 
         const { PluginMarketplaceSourcesScreen } = await import('./PluginMarketplaceSourcesScreen');
         const screen = await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));

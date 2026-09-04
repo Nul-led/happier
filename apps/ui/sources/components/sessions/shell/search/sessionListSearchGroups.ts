@@ -2,6 +2,11 @@ import type {
     SessionListContextualSearchReason,
     SessionListIndexItem,
 } from '@/sync/domains/sessionList/sessionListIndex';
+import {
+    filterSessionListItemsForHeaderControls,
+    type SessionListHeaderFilterState,
+} from '../sessionListFilters';
+import { sessionTagKey } from '../sessionTagUtils';
 
 export const SESSION_LIST_SEARCH_IN_THIS_VIEW_GROUP_KEY = 'search:in-this-view';
 export const SESSION_LIST_SEARCH_OTHER_MATCHES_GROUP_KEY = 'search:other-matches';
@@ -13,6 +18,23 @@ export type SessionListSearchOutsideMatch = Readonly<{
     reasons: readonly SessionListContextualSearchReason[];
     sourceMachineId?: string | null;
 }>;
+
+export function resolveSessionListMetadataSearchTargets(params: Readonly<{
+    inventoryItems: ReadonlyArray<Extract<SessionListIndexItem, { type: 'session' }>>;
+    filters: SessionListHeaderFilterState;
+}>): ReadonlyArray<SessionListSearchOutsideMatch> {
+    return filterSessionListItemsForHeaderControls(params.inventoryItems, params.filters).flatMap((item) => {
+        if (item.type !== 'session' || !item.serverId) return [];
+        return [{
+            sessionKey: sessionTagKey(item.serverId, item.sessionId),
+            serverId: item.serverId,
+            sessionId: item.sessionId,
+            reasons: item.archivedAt !== null && item.archivedAt !== undefined
+                ? ['archived'] as const
+                : ['hidden-by-filters'] as const,
+        }];
+    });
+}
 
 /**
  * Resolves transcript matches that are valid but absent from the current filtered

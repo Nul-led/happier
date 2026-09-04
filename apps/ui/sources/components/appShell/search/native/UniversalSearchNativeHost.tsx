@@ -70,8 +70,11 @@ export type UniversalSearchNativeHostProps = Readonly<{
     onRequestClose: () => void;
     selectedOptionId?: string | null;
     listAccessibilityLabel?: string;
+    inputPrefix?: React.ReactNode;
     testID?: string;
     dynamicSectionCache: SelectionListDynamicSectionCache;
+    syncActiveStep?: SelectionListStep | null;
+    onActiveStepChange?: (step: SelectionListStep) => void;
 }>;
 
 /**
@@ -143,6 +146,11 @@ export function UniversalSearchNativeHost(props: UniversalSearchNativeHostProps)
             testID={testID}
             style={[RNStyleSheet.absoluteFill, rootPointerEvents.webStyle]}
             pointerEvents={rootPointerEvents.nativePointerEvents}
+            // Keep VoiceOver/TalkBack traversal inside the presented Search
+            // surface until the route is actually unmounted. This mirrors the
+            // native modal host contract while preserving the visual bottom
+            // placement of the SelectionList input.
+            accessibilityViewIsModal
         >
             {/*
               * The backdrop is a redundant affordance beside the explicit close capsule, so it is
@@ -168,7 +176,11 @@ export function UniversalSearchNativeHost(props: UniversalSearchNativeHostProps)
                         // The keyboard's own frame already clears the home indicator while it is
                         // up; with it down the plane is seated against the screen edge and owns
                         // that inset itself.
-                        { paddingBottom: keyboardHeight > 0 ? 0 : insets.bottom },
+                        {
+                            paddingBottom: keyboardHeight > 0 ? 0 : insets.bottom,
+                            paddingLeft: insets.left,
+                            paddingRight: insets.right,
+                        },
                     ]}
                 >
                     <OverlayScrim
@@ -205,6 +217,9 @@ export function UniversalSearchNativeHost(props: UniversalSearchNativeHostProps)
                         onSelect={props.onSelect}
                         onRequestClose={requestClose}
                         dynamicSectionCache={props.dynamicSectionCache}
+                        syncActiveStep={props.syncActiveStep}
+                        onActiveStepChange={props.onActiveStepChange}
+                        inputPrefix={props.inputPrefix}
                         inputSuffix={props.query.length > 0 ? (
                             <IconButton
                                 testID={`${testID}:clear`}

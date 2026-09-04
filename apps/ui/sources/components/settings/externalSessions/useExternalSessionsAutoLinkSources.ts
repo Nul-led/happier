@@ -38,6 +38,7 @@ export function useExternalSessionsAutoLinkSources(params: Readonly<{
     rawSettings: unknown;
     knownAgents: readonly KnownExternalSessionsAgent[];
     enabled?: boolean;
+    accountOperationsAvailable?: boolean;
     scope?: ExternalSessionsAutoLinkSourceScope;
 }>): readonly ExternalSessionsAutoLinkSourceDescriptor[] {
     const scopedMachineId = params.scope?.machineId;
@@ -77,8 +78,9 @@ export function useExternalSessionsAutoLinkSources(params: Readonly<{
                     ?? `${policy.qualifiedIdentity.agent.localId} (${policy.qualifiedIdentity.agent.pluginId})`,
                 sourcePolicyId: policy.sourcePolicyId,
                 enabled: true,
-                canChange: true,
+                canChange: params.accountOperationsAvailable !== false,
                 setEnabled: async (enabled: boolean) => {
+                    if (params.accountOperationsAvailable === false) return;
                     if (enabled) return;
                     if (settingsVersion === null) throw new Error('Account settings version is unavailable');
                     requireOneShotAccountSettingsMutationApplied(
@@ -105,6 +107,7 @@ export function useExternalSessionsAutoLinkSources(params: Readonly<{
             }));
     }, [
         agentTitleByKey,
+        params.accountOperationsAvailable,
         params.enabled,
         params.rawSettings,
         scopedAgentLocalId,

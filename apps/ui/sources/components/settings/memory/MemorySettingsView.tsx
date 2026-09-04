@@ -31,6 +31,7 @@ import {
     type MemoryStatusV1,
 } from '@happier-dev/protocol';
 import { MemorySettingsArchivedSection } from './MemorySettingsArchivedSection';
+import type { ArchivedMemoryStatusRequestState } from '@/sync/domains/memory/resolveArchivedMemoryEligibilityControl';
 import { MemorySettingsBudgetsSection } from './MemorySettingsBudgetsSection';
 import { MemorySettingsContentPolicySection } from './MemorySettingsContentPolicySection';
 import { MemorySettingsCoverageSection } from './MemorySettingsCoverageSection';
@@ -68,6 +69,7 @@ export const MemorySettingsView = React.memo(function MemorySettingsView() {
     const [settings, setSettings] = React.useState<MemorySettingsV1>(() => DEFAULT_MEMORY_SETTINGS);
     const [settingsRpcSupported, setSettingsRpcSupported] = React.useState(true);
     const [memoryStatus, setMemoryStatus] = React.useState<MemoryStatusV1 | null>(null);
+    const [memoryStatusRequestState, setMemoryStatusRequestState] = React.useState<ArchivedMemoryStatusRequestState>('unresolved');
     const [loading, setLoading] = React.useState(false);
     const [indexModeMenuOpen, setIndexModeMenuOpen] = React.useState(false);
     const [backfillMenuOpen, setBackfillMenuOpen] = React.useState(false);
@@ -79,8 +81,9 @@ export const MemorySettingsView = React.memo(function MemorySettingsView() {
         if (!target) return;
         setLoading(true);
         setMemoryStatus(null);
+        setMemoryStatusRequestState('loading');
         try {
-            const [settingsResult, status] = await Promise.all([
+            const [settingsResult, statusResult] = await Promise.all([
                 fetchDaemonMemorySettings({
                     machineId: target.machine.id,
                     serverId: target.serverId,
@@ -88,12 +91,14 @@ export const MemorySettingsView = React.memo(function MemorySettingsView() {
                 fetchDaemonMemoryStatus({
                     machineId: target.machine.id,
                     serverId: target.serverId,
-                }).catch(() => null),
+                }).then((status) => ({ status, requestState: 'resolved' as const }))
+                    .catch(() => ({ status: null, requestState: 'unreachable' as const })),
             ]);
             if (!isExecutionTargetCurrent(target)) return;
             setSettings(settingsResult.settings);
             setSettingsRpcSupported(settingsResult.supported);
-            setMemoryStatus(status);
+            setMemoryStatus(statusResult.status);
+            setMemoryStatusRequestState(statusResult.requestState);
         } finally {
             if (isExecutionTargetCurrent(target)) setLoading(false);
         }
@@ -105,6 +110,7 @@ export const MemorySettingsView = React.memo(function MemorySettingsView() {
             setSettings(DEFAULT_MEMORY_SETTINGS);
             setSettingsRpcSupported(false);
             setMemoryStatus(null);
+            setMemoryStatusRequestState('unresolved');
             setLoading(false);
             return;
         }
@@ -126,12 +132,15 @@ export const MemorySettingsView = React.memo(function MemorySettingsView() {
         if (!result.supported) {
             return;
         }
-        const status = await fetchDaemonMemoryStatus({
+        setMemoryStatusRequestState('loading');
+        const statusResult = await fetchDaemonMemoryStatus({
             machineId: target.machine.id,
             serverId: target.serverId,
-        }).catch(() => null);
+        }).then((status) => ({ status, requestState: 'resolved' as const }))
+            .catch(() => ({ status: null, requestState: 'unreachable' as const }));
         if (!isExecutionTargetCurrent(target)) return;
-        setMemoryStatus(status);
+        setMemoryStatus(statusResult.status);
+        setMemoryStatusRequestState(statusResult.requestState);
     }, [administrationTargetSelection.resolveExecutionTarget, isExecutionTargetCurrent, memorySearchEnabled]);
 
     const indexModeItems = [
@@ -318,6 +327,7 @@ export const MemorySettingsView = React.memo(function MemorySettingsView() {
             <MemorySettingsArchivedSection
                 settings={settings}
                 status={memoryStatus}
+                statusRequestState={memoryStatusRequestState}
                 writeSettings={writeSettings}
             />
 

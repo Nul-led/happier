@@ -115,8 +115,8 @@ vi.mock('@/sync/ops/machines', () => ({
     machineCreateDirectory: vi.fn(async () => ({ success: true })),
 }));
 
-vi.mock('@/sync/ops/machineRipgrep', () => ({
-    machineRipgrep: vi.fn(async () => ({ success: true, stdout: '', exitCode: 0 })),
+vi.mock('@/sync/ops/machineWorkspaceFileList', () => ({
+    machineWorkspaceFileList: vi.fn(async () => ({ ok: true, paths: [], truncated: false })),
 }));
 
 vi.mock('@expo/vector-icons', () => ({

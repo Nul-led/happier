@@ -23,16 +23,18 @@ import type {
     SelectionListStep,
     SelectionListVirtualizationMode,
 } from './_types';
+import { useSelectionListVirtualizedFocusReveal } from './useSelectionListVirtualizedFocusReveal';
 
 const stylesheet = StyleSheet.create(() => ({
     container: {
         flexDirection: 'column',
     },
     virtualizedHost: {
-        // virtualized list needs a measurable host. The caller (`SelectionList`) is
-        // expected to constrain the popover via `maxHeight`; this minHeight
-        // ensures virtualized list has a non-zero default when nothing else is set.
-        minHeight: SELECTION_LIST_VIRTUALIZED_ROW_ESTIMATED_HEIGHT_PX * 4,
+        // Keep the ordinary four-row measuring height, but let a shorter parent
+        // (keyboard, rotation, or compact modal viewport) remain authoritative.
+        height: SELECTION_LIST_VIRTUALIZED_ROW_ESTIMATED_HEIGHT_PX * 4,
+        maxHeight: '100%',
+        minHeight: 0,
         flexShrink: 1,
         flexGrow: 1,
     },
@@ -201,14 +203,17 @@ export function SelectionListVirtualizedSection(
     // (if any) owns its own scroll behavior.
     const virtualizedListRef = React.useRef<VirtualizedListRef | null>(null);
     const focusedOptionId = props.focusedOptionId ?? null;
-    React.useEffect(() => {
-        if (focusedOptionId === null) return;
-        const ref = virtualizedListRef.current;
-        if (!ref || typeof ref.scrollToIndex !== 'function') return;
-        const index = props.section.options.findIndex((opt) => opt.id === focusedOptionId);
-        if (index < 0) return;
-        ref.scrollToIndex({ index, viewPosition: 0.5, animated: !reducedMotion });
-    }, [focusedOptionId, props.section.options, reducedMotion]);
+    const focusedItemIndex = React.useMemo(
+        () => focusedOptionId === null
+            ? -1
+            : props.section.options.findIndex((option) => option.id === focusedOptionId),
+        [focusedOptionId, props.section.options],
+    );
+    const { onViewportLayout } = useSelectionListVirtualizedFocusReveal({
+        listRef: virtualizedListRef,
+        focusedItemIndex,
+        reducedMotion,
+    });
 
     if (useVirtualization) {
         return (
@@ -235,6 +240,7 @@ export function SelectionListVirtualizedSection(
                     recycleItems={false}
                     keyboardShouldPersistTaps="handled"
                     showsVerticalScrollIndicator={props.showsVerticalScrollIndicator === true}
+                    onLayout={onViewportLayout}
                 />
             </View>
         );

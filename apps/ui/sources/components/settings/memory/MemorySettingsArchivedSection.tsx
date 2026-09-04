@@ -7,7 +7,10 @@ import { Icon } from '@/components/ui/icons/Icon';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { Switch } from '@/components/ui/forms/Switch';
-import { resolveArchivedMemoryEligibilityControl } from '@/sync/domains/memory/resolveArchivedMemoryEligibilityControl';
+import {
+    resolveArchivedMemoryEligibilityControl,
+    type ArchivedMemoryStatusRequestState,
+} from '@/sync/domains/memory/resolveArchivedMemoryEligibilityControl';
 import { t } from '@/text';
 
 /**
@@ -21,27 +24,36 @@ import { t } from '@/text';
 export const MemorySettingsArchivedSection = React.memo(function MemorySettingsArchivedSection(props: Readonly<{
     settings: MemorySettingsV1;
     status: MemoryStatusV1 | null;
+    statusRequestState: ArchivedMemoryStatusRequestState;
     writeSettings: (next: MemorySettingsV1) => void | Promise<void>;
 }>) {
     const { theme } = useUnistyles();
     const control = resolveArchivedMemoryEligibilityControl({
         status: props.status,
-        desiredIncludeArchivedSessions: props.settings.includeArchivedSessions,
+        statusRequestState: props.statusRequestState,
     });
+
+    const unavailableCopy = control.state === 'loading'
+        ? t('common.loading')
+        : control.state === 'unreachable'
+            ? t('common.unavailable')
+            : t('memorySearchSettings.archived.unsupportedSubtitle');
 
     return (
         <ItemGroup
             title={t('memorySearchSettings.archived.groupTitle')}
-            footer={control.supported
+            footer={control.state === 'supported'
                 ? t('memorySearchSettings.archived.groupFooter')
-                : t('memorySearchSettings.archived.unsupportedFooter')}
+                : control.state === 'unsupported'
+                    ? t('memorySearchSettings.archived.unsupportedFooter')
+                    : unavailableCopy}
         >
             <Item
                 testID="memory-settings-include-archived-item"
                 title={t('memorySearchSettings.archived.includeTitle')}
                 subtitle={control.supported
                     ? t('memorySearchSettings.archived.includeSubtitle')
-                    : t('memorySearchSettings.archived.unsupportedSubtitle')}
+                    : unavailableCopy}
                 icon={<Icon name="archive" size={29} color={theme.colors.accent.purple} />}
                 rightElement={(
                     <Switch

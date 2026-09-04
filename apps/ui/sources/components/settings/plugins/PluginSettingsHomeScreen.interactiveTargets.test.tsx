@@ -3,6 +3,8 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 
 import { flattenTestStyle, renderSettingsView, standardCleanup } from '@/dev/testkit';
 
+vi.mock('@react-navigation/native', async () => (await import('@/dev/testkit/mocks/reactNavigation')).createReactNavigationNativeMock());
+
 const mocks = vi.hoisted(() => ({
     activeView: 'installed' as 'installed' | 'discover',
 }));

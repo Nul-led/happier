@@ -63,16 +63,13 @@ const flatListScrollToIndexMock = vi.hoisted(() => vi.fn());
 const machineCreateDirectoryMock = vi.hoisted(() => vi.fn<(machineId: string, path: string, options?: unknown) => Promise<{ success: true } | { success: false; error: string }>>(
     async () => ({ success: true as const }),
 ));
-const machineRipgrepMock = vi.hoisted(() => vi.fn<(machineId: string, args: readonly string[], cwd?: string, options?: unknown) => Promise<{
-    success: boolean;
-    stdout?: string;
-    stderr?: string;
+const machineWorkspaceFileListMock = vi.hoisted(() => vi.fn<(machineId: string, input: Readonly<{ rootPath: string; query?: string; includeHidden?: boolean }>, options?: unknown) => Promise<{
+    ok: boolean;
+    paths?: string[];
     exitCode?: number;
-    error?: string;
 }>>(async () => ({
-    success: true,
-    stdout: '',
-    exitCode: 0,
+    ok: true,
+    paths: [],
 })));
 const modalPromptMock = vi.hoisted(() => vi.fn<(...args: any[]) => Promise<string | null>>(async () => null));
 const modalAlertMock = vi.hoisted(() => vi.fn());
@@ -202,9 +199,9 @@ vi.mock('@/sync/ops/machines', () => ({
     machineCreateDirectory: (machineId: string, path: string, options?: unknown) => machineCreateDirectoryMock(machineId, path, options),
 }));
 
-vi.mock('@/sync/ops/machineRipgrep', () => ({
-    machineRipgrep: (machineId: string, args: readonly string[], cwd?: string, options?: unknown) =>
-        machineRipgrepMock(machineId, args, cwd, options),
+vi.mock('@/sync/ops/machineWorkspaceFileList', () => ({
+    machineWorkspaceFileList: (machineId: string, input: Readonly<{ rootPath: string; query?: string; includeHidden?: boolean }>, options?: unknown) =>
+        machineWorkspaceFileListMock(machineId, input, options),
 }));
 
 vi.mock('@/components/ui/buttons/RoundButton', () => ({
@@ -227,7 +224,7 @@ describe('MachinePathBrowserModal', () => {
         listMachineFileBrowserDirectoryEntriesMock.mockClear();
         flatListScrollToIndexMock.mockClear();
         machineCreateDirectoryMock.mockClear();
-        machineRipgrepMock.mockClear();
+        machineWorkspaceFileListMock.mockClear();
         modalPromptMock.mockClear();
         modalAlertMock.mockClear();
         itemRenderCounts.clear();
@@ -361,10 +358,9 @@ describe('MachinePathBrowserModal', () => {
             ],
             truncated: false,
         });
-        machineRipgrepMock.mockResolvedValueOnce({
-            success: true,
-            exitCode: 0,
-            stdout: 'apps/ui/README.md\napps/ui/src/index.ts\n',
+        machineWorkspaceFileListMock.mockResolvedValueOnce({
+            ok: true,
+            paths: ['apps/ui/README.md', 'apps/ui/src/index.ts'],
         });
 
         const screen = await renderScreen(
@@ -388,10 +384,9 @@ describe('MachinePathBrowserModal', () => {
         });
         await flushHookEffects({ cycles: 1, turns: 2 });
 
-        expect(machineRipgrepMock).toHaveBeenCalledWith(
+        expect(machineWorkspaceFileListMock).toHaveBeenCalledWith(
             'machine-1',
-            expect.arrayContaining(['--files']),
-            '/repo',
+            { rootPath: '/repo', query: 'readme', includeHidden: true },
             expect.anything(),
         );
 
@@ -417,10 +412,9 @@ describe('MachinePathBrowserModal', () => {
             truncated: false,
         });
 
-        machineRipgrepMock.mockResolvedValueOnce({
-            success: true,
-            exitCode: 0,
-            stdout: 'leeroy/.ssh/config\n',
+        machineWorkspaceFileListMock.mockResolvedValueOnce({
+            ok: true,
+            paths: ['leeroy/.ssh/config'],
         });
 
         const screen = await renderScreen(
@@ -447,10 +441,9 @@ describe('MachinePathBrowserModal', () => {
         });
         await flushHookEffects({ cycles: 1, turns: 2 });
 
-        expect(machineRipgrepMock).toHaveBeenCalledWith(
+        expect(machineWorkspaceFileListMock).toHaveBeenCalledWith(
             'machine-1',
-            expect.arrayContaining(['--files']),
-            '/Users',
+            { rootPath: '/Users', query: 'ssh', includeHidden: true },
             expect.anything(),
         );
 
@@ -475,9 +468,8 @@ describe('MachinePathBrowserModal', () => {
             truncated: false,
         });
 
-        machineRipgrepMock.mockResolvedValueOnce({
-            success: false,
-            error: "Access denied: Path '/' is outside the allowed directories",
+        machineWorkspaceFileListMock.mockResolvedValueOnce({
+            ok: false,
             exitCode: 1,
         });
 

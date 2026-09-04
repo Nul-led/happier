@@ -68,6 +68,7 @@ describe('SelectionList dynamic-section state rendering (Phase 2.2 mapping)', ()
             id: 'dyn',
             title: 'MESSAGES',
             debounceMs: 0,
+            resultFiltering: 'provider',
             resolve: () => new Promise((resolve) => { settle = resolve; }),
         });
         const { SelectionList } = await import('../SelectionList');
@@ -96,6 +97,72 @@ describe('SelectionList dynamic-section state rendering (Phase 2.2 mapping)', ()
         expect(screen.tree.root.findAllByProps({ accessibilityLiveRegion: 'polite' })).toHaveLength(1);
     });
 
+    it('announces the displayed result count after canonical host filtering', async () => {
+        const { act } = await import('react-test-renderer');
+        const root = makeStep({
+            id: 'dyn',
+            title: 'SESSIONS',
+            debounceMs: 0,
+            resolve: async () => ({
+                options: [
+                    { id: 'one', label: 'Needle one' },
+                    { id: 'two', label: 'Unrelated' },
+                    { id: 'three', label: 'Needle three' },
+                ],
+            }),
+        });
+        const { SelectionList } = await import('../SelectionList');
+        const screen = await renderScreen(
+            <SelectionList {...defaultProps(root)} inputValue="needle" />,
+        );
+
+        await act(async () => {
+            vi.advanceTimersByTime(1);
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+
+        const status = screen.findByTestId('sl:status');
+        expect(status?.props.accessibilityLabel).toContain('2 · SESSIONS');
+        expect(status?.props.accessibilityLabel).not.toContain('3 · SESSIONS');
+    });
+
+    it('publishes a new live-region event when a distinct settled query has the same announcement text', async () => {
+        const { act } = await import('react-test-renderer');
+        const root = makeStep({
+            id: 'dyn',
+            title: 'SESSIONS',
+            debounceMs: 0,
+            resultFiltering: 'provider',
+            resolve: async (query) => ({
+                options: [{ id: `result:${query}`, label: `Result for ${query}` }],
+            }),
+        });
+        const { SelectionList } = await import('../SelectionList');
+        const screen = await renderScreen(
+            <SelectionList {...defaultProps(root)} inputValue="first" />,
+        );
+
+        await act(async () => {
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+        const firstStatus = screen.findByTestId('sl:status');
+        expect(firstStatus?.props.accessibilityLabel).toBe('1 · SESSIONS');
+
+        await act(async () => {
+            screen.tree.update(
+                <SelectionList {...defaultProps(root)} inputValue="second" />,
+            );
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+
+        const secondStatus = screen.findByTestId('sl:status');
+        expect(secondStatus?.props.accessibilityLabel).toBe('1 · SESSIONS');
+        expect(secondStatus).not.toBe(firstStatus);
+    });
+
     it('announces a settled provider with no matches without turning it into an error alert', async () => {
         const { act } = await import('react-test-renderer');
         const root = makeStep({
@@ -117,6 +184,98 @@ describe('SelectionList dynamic-section state rendering (Phase 2.2 mapping)', ()
         expect(status?.props.role).toBe('status');
         expect(status?.props.role).not.toBe('alert');
         expect(screen.getTextContent()).toContain('FILES · No matches');
+    });
+
+    it('announces a provider emptyHint instead of the generic no-matches message', async () => {
+        const { act } = await import('react-test-renderer');
+        const root = makeStep({
+            id: 'dyn',
+            title: 'MESSAGES',
+            debounceMs: 0,
+            resolve: async () => ({ options: [], emptyHint: 'Still indexing messages…' }),
+        });
+        const { SelectionList } = await import('../SelectionList');
+        const screen = await renderScreen(<SelectionList {...defaultProps(root)} inputValue="query" />);
+
+        await act(async () => {
+            vi.advanceTimersByTime(1);
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+
+        expect(screen.findByTestId('sl:status')?.props.accessibilityLabel).toBe('MESSAGES · Still indexing messages…');
+    });
+
+    it('announces a provider notFoundHint through the shared status region', async () => {
+        const { act } = await import('react-test-renderer');
+        const root = makeStep({
+            id: 'dyn',
+            title: 'FILES',
+            debounceMs: 0,
+            resolve: async () => ({ options: [], notFound: true, notFoundHint: 'Folder not found.' }),
+        });
+        const { SelectionList } = await import('../SelectionList');
+        const screen = await renderScreen(<SelectionList {...defaultProps(root)} inputValue="query" />);
+        await act(async () => {
+            vi.advanceTimersByTime(1);
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+        expect(screen.findByTestId('sl:status')?.props.accessibilityLabel).toBe('FILES · Folder not found.');
+    });
+
+    it('announces a static resultHint through the shared status region', async () => {
+        const { SelectionList } = await import('../SelectionList');
+        const root: SelectionListStep = {
+            id: 'root',
+            inputPlaceholder: 'Search',
+            sections: [{
+                kind: 'static',
+                id: 'sessions',
+                title: 'SESSIONS',
+                options: [],
+                resultHint: 'Some Sessions could not be loaded.',
+            }],
+        };
+        const screen = await renderScreen(<SelectionList {...defaultProps(root)} inputValue="query" />);
+
+        expect(screen.findByTestId('sl:status')?.props.accessibilityLabel).toBe(
+            'SESSIONS · Some Sessions could not be loaded.',
+        );
+    });
+
+    it('removes a retired provider announcement with the provider section', async () => {
+        const { act } = await import('react-test-renderer');
+        const root = makeStep({
+            id: 'dyn',
+            title: 'FILES',
+            debounceMs: 0,
+            resolve: async () => ({ options: [{ id: 'file', label: 'File' }] }),
+        });
+        const { SelectionList } = await import('../SelectionList');
+        const screen = await renderScreen(<SelectionList {...defaultProps(root)} inputValue="query" />);
+
+        await act(async () => {
+            vi.advanceTimersByTime(1);
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+        expect(screen.findByTestId('sl:status')?.props.accessibilityLabel).toContain('FILES');
+
+        await act(async () => {
+            screen.tree.update(
+                <SelectionList
+                    {...defaultProps({
+                        id: 'root',
+                        inputPlaceholder: 'Search',
+                        sections: [],
+                    })}
+                    inputValue="query"
+                />,
+            );
+        });
+
+        expect(screen.findByTestId('sl:status')).toBeNull();
     });
 
     it('renders loading skeleton rows while the resolver is pending', async () => {

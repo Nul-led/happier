@@ -33,6 +33,7 @@ vi.mock('@/components/appShell/plugins/AppShellPluginUiProjection', () => ({
 
 const recoveryRuntime = vi.hoisted(() => ({
     serverId: 'server-work',
+    serverIdentityId: 'server-identity-work' as string | null,
     machineId: 'machine-work',
 }));
 
@@ -42,6 +43,12 @@ vi.mock('@/hooks/server/useActiveServerSnapshot', () => ({
         serverUrl: '',
         generation: 1,
     }),
+}));
+
+vi.mock('@/sync/domains/server/resolvePortableServerIdentityForRoutingId', () => ({
+    resolvePortableServerIdentityForRoutingId: (id: string) => (
+        id === recoveryRuntime.serverId ? recoveryRuntime.serverIdentityId : null
+    ),
 }));
 
 vi.mock('@/voice/credentials/useExecutionMachinePresentation', () => ({
@@ -559,7 +566,7 @@ describe('useVoiceAttemptControl recovery routing', () => {
                     globalConnectedServices: {
                         v: 1,
                         bindingsByServiceId: {
-                            'openai-codex': {
+                            'happier.agent.codex/openai-codex': {
                                 source: 'connected',
                                 selection: 'profile',
                                 profileId: 'account-work',
@@ -578,6 +585,7 @@ describe('useVoiceAttemptControl recovery routing', () => {
         platformState.os = 'web';
         platformState.openSettings.mockClear();
         routerMock.instance?.spies.push.mock.calls.splice(0);
+        recoveryRuntime.serverIdentityId = 'server-identity-work';
         const { registerVoiceAdapters } = await import('@/voice/session/voiceAdapterRegistry');
         registerVoiceAdapters([]);
     });
@@ -629,7 +637,7 @@ describe('useVoiceAttemptControl recovery routing', () => {
         await hook.unmount();
     });
 
-    it('sends Agent runtime update recovery to the fully qualified update target from every placement', async () => {
+    it('sends Agent runtime update recovery to the exact portable update target from every placement', async () => {
         const hook = await renderBothRecoveryOwners('update_agent_runtime');
         const expectedRoute = {
             pathname: '/(app)/settings/agents/[agentId]',
@@ -637,7 +645,7 @@ describe('useVoiceAttemptControl recovery routing', () => {
                 agentId: 'codex',
                 pluginId: 'happier.agent.codex',
                 machineId: 'machine-work',
-                serverId: 'server-work',
+                serverIdentityId: 'server-identity-work',
                 installIntent: 'update',
             },
         };
@@ -648,6 +656,20 @@ describe('useVoiceAttemptControl recovery routing', () => {
         routerMock.instance?.spies.push.mock.calls.splice(0);
         hook.getCurrent().model?.attemptControl.onRecover();
         expect(routerMock.instance?.spies.push.mock.calls.at(-1)?.[0]).toEqual(expectedRoute);
+
+        await hook.unmount();
+    });
+
+    it('withholds Agent runtime recovery when the routing server has no canonical portable identity', async () => {
+        recoveryRuntime.serverIdentityId = null;
+        connectedServices.snapshot = { entries: [CONNECTED_SERVICE_ENTRY] };
+        const hook = await renderBothRecoveryOwners('update_agent_runtime');
+
+        // A separate incomplete Connected Services setup may still provide a recovery action,
+        // but a device-local routing id must never become Agent Administration authority.
+        hook.getCurrent().control.onRecover();
+        expect(routerMock.instance?.spies.push.mock.calls.map((call) => call[0]))
+            .not.toContainEqual(expect.objectContaining({ pathname: '/(app)/settings/agents/[agentId]' }));
 
         await hook.unmount();
     });

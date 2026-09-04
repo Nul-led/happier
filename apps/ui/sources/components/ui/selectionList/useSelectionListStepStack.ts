@@ -90,14 +90,18 @@ function stepStackReducer(
                 if (state.stack.length <= 1) return state;
                 return { stack: state.stack.slice(0, 1), direction: 'backward' };
             }
-            const index = state.stack.findIndex((entry) => entry.id === action.step.id);
+            // Preserve the discriminated non-null value across callbacks;
+            // TypeScript does not carry a mutable parameter-property narrowing
+            // into `findIndex`/`map` closures.
+            const step = action.step;
+            const index = state.stack.findIndex((entry) => entry.id === step.id);
             if (index < 0) {
-                return { stack: [...state.stack, action.step], direction: 'forward' };
+                return { stack: [...state.stack, step], direction: 'forward' };
             }
-            if (state.stack[index] === action.step) return state;
+            if (state.stack[index] === step) return state;
             return {
                 stack: state.stack.map((entry, position) => (
-                    position === index ? action.step : entry
+                    position === index ? step : entry
                 )),
                 direction: state.direction,
             };

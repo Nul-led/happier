@@ -18,6 +18,7 @@ import type { RightSidebarPluginTabDefinition } from '@/components/appShell/righ
 import { selectPluginRightSidebarTabPlacements } from '@/sync/domains/plugins/ui/surfacePlacementSelectors';
 import { useLocalSetting } from '@/sync/domains/state/storage';
 import { t } from '@/text';
+import { UNIVERSAL_SEARCH_ROUTE } from '@/components/appShell/search/universalSearchRoutePresentation';
 
 /** The stable host-owned identity for the existing Sessions-list launcher. */
 export const BROWSE_EXISTING_SESSIONS_DESTINATION_ID = 'browseExistingSessions';
@@ -39,7 +40,7 @@ export type CompactAppBuiltinDestination = Readonly<{
     order: number;
     /** Hidden destinations remain catalogued for their exact route/tombstone owner. */
     visibility?: CompactAppDestinationVisibility;
-    routePath: '/search' | '/external/browse';
+    routePath: typeof UNIVERSAL_SEARCH_ROUTE | '/external/browse';
     availability: 'available';
 }>;
 
@@ -157,7 +158,7 @@ export function resolveCompactAppDestinations(input: Readonly<{
         icon: 'magnifying-glass',
         group: 'sessions',
         order: -1,
-        routePath: '/search',
+        routePath: UNIVERSAL_SEARCH_ROUTE,
         availability: 'available',
     }));
 

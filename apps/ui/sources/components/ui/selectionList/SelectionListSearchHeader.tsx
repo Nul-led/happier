@@ -177,6 +177,10 @@ export type SelectionListSearchHeaderProps = Readonly<{
     value: string;
     onChangeText: (next: string) => void;
     placeholder: string;
+    /** Keep the field discoverable but prevent editing/filtering for a step. */
+    inputReadOnly?: boolean;
+    /** Accessible name for non-search steps whose placeholder is empty. */
+    inputAccessibilityLabel?: string;
     /** True when the step stack has more than one entry — leading slot becomes a back chip. */
     canPop: boolean;
     /** Required when `canPop` is true. */
@@ -474,7 +478,9 @@ export function SelectionListSearchHeader(props: SelectionListSearchHeaderProps)
                         value={props.value}
                         onChangeText={props.onChangeText}
                         placeholder={props.placeholder}
-                        accessibilityLabel={props.placeholder}
+                        accessibilityLabel={props.inputAccessibilityLabel ?? props.placeholder}
+                        editable={props.inputReadOnly !== true}
+                        accessibilityState={props.inputReadOnly === true ? { disabled: true } : undefined}
                         placeholderTextColor={theme.colors.input.placeholder}
                         cursorColor={useOverlayInput ? theme.colors.input.text : undefined}
                         selectionColor={useOverlayInput ? theme.colors.input.text : undefined}

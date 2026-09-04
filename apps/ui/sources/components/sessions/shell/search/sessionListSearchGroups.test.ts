@@ -6,6 +6,7 @@ import {
     SESSION_LIST_SEARCH_IN_THIS_VIEW_GROUP_KEY,
     SESSION_LIST_SEARCH_OTHER_MATCHES_GROUP_KEY,
     appendSessionListSearchOtherMatches,
+    resolveSessionListMetadataSearchTargets,
     resolveSessionListSearchOutsideMatches,
 } from './sessionListSearchGroups';
 
@@ -28,6 +29,42 @@ function sessionItem(sessionId: string): SessionListIndexItem {
 }
 
 describe('resolveSessionListSearchOutsideMatches', () => {
+    it('projects unloaded current and archived metadata matches in exact-before-metadata order', () => {
+        const targets = resolveSessionListMetadataSearchTargets({
+            inventoryItems: [
+                { type: 'session', sessionId: 'current', serverId: 'server-a' },
+                { type: 'session', sessionId: 'archived', serverId: 'server-a', archivedAt: 3 },
+            ],
+            filters: {
+                searchQuery: 'Payments',
+                selectedTags: [],
+                sessionTags: {},
+                searchableTextBySessionKey: {
+                    'server-a:current': 'current\nrelease Payments migration',
+                    'server-a:archived': 'archived\nPayments',
+                },
+                primarySearchableTextBySessionKey: {
+                    'server-a:archived': 'archived\nPayments',
+                },
+            },
+        });
+
+        expect(targets).toEqual([
+            {
+                sessionKey: 'server-a:archived',
+                serverId: 'server-a',
+                sessionId: 'archived',
+                reasons: ['archived'],
+            },
+            {
+                sessionKey: 'server-a:current',
+                serverId: 'server-a',
+                sessionId: 'current',
+                reasons: ['hidden-by-filters'],
+            },
+        ]);
+    });
+
     it('keeps a valid hit whose session this list does not carry', () => {
         const outside = resolveSessionListSearchOutsideMatches({
             candidateSessionKeys: new Set(['server-a:in-view']),

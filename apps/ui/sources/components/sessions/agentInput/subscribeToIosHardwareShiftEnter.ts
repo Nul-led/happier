@@ -13,6 +13,7 @@ export type NativeHardwareKeyboardEvent = Readonly<{
     }>;
     repeat: boolean;
     target: string;
+    isEditableTarget?: boolean;
 }>;
 
 type HappierHardwareKeyboardShortcutsModule = {

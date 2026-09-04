@@ -20,7 +20,7 @@ export type VoiceAttemptRecoveryRuntimeTarget = Readonly<{
     agentId: string;
     pluginId: string;
     machineId: string;
-    serverId: string;
+    serverIdentityId: string;
 }>;
 
 export type VoiceAttemptRecoveryContext = Readonly<{
@@ -105,7 +105,7 @@ export function createVoiceAttemptRecoveryDispatch(params: Readonly<{
                     agentId: runtimeRecoveryTarget.agentId,
                     pluginId: runtimeRecoveryTarget.pluginId,
                     machineId: runtimeRecoveryTarget.machineId,
-                    serverId: runtimeRecoveryTarget.serverId,
+                    serverIdentityId: runtimeRecoveryTarget.serverIdentityId,
                     installIntent: recoveryAction === 'update_agent_runtime' ? 'update' : 'install',
                 },
             });

@@ -187,6 +187,17 @@ describe('SelectionList — columned rows through the virtualized body', () => {
         expect(lastRow.children.filter((child) => typeof child !== 'string')).toHaveLength(2);
     });
 
+    it('keeps the flat virtualized host shrinkable below its normal four-row height', async () => {
+        const screen = await renderColumnedVirtualizedList({
+            rootStep: makeStep(makeOptions(5), 'force'),
+        });
+
+        const hostStyle = flattenStyle(screen.findByTestId('sl:body')?.props.style);
+        expect(hostStyle.minHeight).toBe(0);
+        expect(hostStyle.height).toBe(224);
+        expect(hostStyle.maxHeight).toBe('100%');
+    });
+
     it('pairs the options row-major and keeps a section header full width', async () => {
         const screen = await renderColumnedVirtualizedList({
             rootStep: makeStep(makeOptions(5), 'force'),

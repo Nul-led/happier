@@ -477,7 +477,7 @@ function buildCreateWorktreeStep(params: WorktreeSelectionListBuilderParams): Se
     const localResolver = buildBranchesResolver(params, { includeRemotes: false });
     const remoteResolver = buildBranchesResolver(params, { includeRemotes: true });
     // FR3-6: scope the dynamic-section cache (cross-mount cache key in
-    // `useSelectionListDynamicSections.ts` falls back to `${id}::${id}::${seed}`
+    // `useSelectionListDynamicSections.ts` falls back to a tuple of `[id, id, seed]`
     // when `resolverKey` is absent — which is the SAME across every repo + machine
     // pair). Without an explicit key, switching machine or repo would surface
     // stale branch rows from the previous binding. Canonicalize `machinePath`

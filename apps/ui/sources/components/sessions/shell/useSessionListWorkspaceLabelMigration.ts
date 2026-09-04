@@ -1,14 +1,10 @@
 import * as React from 'react';
 
-import { migrateLegacyWorkspaceLabelsToWorkspaceRefs } from '@/sync/domains/workspaces/workspaceLabelsMigration';
-import type { WorkspaceRefV1 } from '@/sync/domains/workspaces/workspaceRefModel';
+import { migrateLegacyWorkspaceLabelInAccount } from '@/sync/ops/workspaceRefs';
 import type { WorkspaceScopeBase } from '@/sync/domains/workspaces/workspaceScope';
 
 export function useSessionListWorkspaceLabelMigration(input: Readonly<{
     workspaceLabels: Readonly<Record<string, string>>;
-    setWorkspaceLabels: (value: Record<string, string>) => void;
-    workspaceRefs: ReadonlyArray<WorkspaceRefV1>;
-    setWorkspaceRefs: (value: WorkspaceRefV1[]) => void;
     scopeHintByLegacyWorkspaceKey: ReadonlyMap<string, WorkspaceScopeBase>;
 }>) {
     React.useEffect(() => {
@@ -16,21 +12,20 @@ export function useSessionListWorkspaceLabelMigration(input: Readonly<{
         const legacyKeys = Object.keys(legacyWorkspaceLabels);
         if (legacyKeys.length === 0) return;
 
-        const result = migrateLegacyWorkspaceLabelsToWorkspaceRefs({
-            legacyWorkspaceLabels,
-            workspaceRefs: input.workspaceRefs,
-            nowMs: Date.now(),
-            resolveScopeForLegacyKey: (legacyKey) => input.scopeHintByLegacyWorkspaceKey.get(legacyKey) ?? null,
-        });
-        if (result.migratedCount <= 0) return;
-
-        input.setWorkspaceRefs(result.nextWorkspaceRefs);
-        input.setWorkspaceLabels(result.nextLegacyWorkspaceLabels);
+        void (async () => {
+            for (const [legacyKey, label] of Object.entries(legacyWorkspaceLabels)) {
+                const scope = input.scopeHintByLegacyWorkspaceKey.get(legacyKey) ?? null;
+                if (!scope || !label.trim()) continue;
+                await migrateLegacyWorkspaceLabelInAccount({
+                    scope,
+                    legacyKey,
+                    label,
+                    nowMs: Date.now(),
+                });
+            }
+        })();
     }, [
         input.scopeHintByLegacyWorkspaceKey,
-        input.setWorkspaceLabels,
-        input.setWorkspaceRefs,
         input.workspaceLabels,
-        input.workspaceRefs,
     ]);
 }

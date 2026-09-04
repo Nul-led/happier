@@ -25,6 +25,7 @@ import {
 interface PermissionFooterProps {
     permission: {
         id: string;
+        turnId?: string;
         status: "pending" | "approved" | "denied" | "canceled";
         reason?: string;
         mode?: string;
@@ -46,6 +47,7 @@ interface PermissionFooterProps {
 type PermissionRequestIdentity = Readonly<{
     sessionId: string;
     permissionId: string;
+    turnId?: string;
 }>;
 
 type PermissionActionInFlight = Readonly<{
@@ -64,7 +66,8 @@ function isSamePermissionRequest(
 ): boolean {
     return left !== null
         && left.sessionId === right.sessionId
-        && left.permissionId === right.permissionId;
+        && left.permissionId === right.permissionId
+        && left.turnId === right.turnId;
 }
 
 const BUTTON_HORIZONTAL_PADDING = 10;
@@ -221,9 +224,16 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
         minHeight: minimumInteractiveTargetSize,
     };
     const alignedButtonStyle = alignFirstButtonToStart ? styles.buttonAlignedToStart : null;
+    const storedTurnId = storage.getState().sessions[sessionId]?.agentState?.requests?.[permission.id]?.turnId;
+    const projectedTurnId = typeof permission.turnId === 'string' && permission.turnId.trim().length > 0
+        ? permission.turnId.trim()
+        : typeof storedTurnId === 'string' && storedTurnId.trim().length > 0
+            ? storedTurnId.trim()
+            : undefined;
     const requestIdentity: PermissionRequestIdentity = {
         sessionId,
         permissionId: permission.id,
+        ...(projectedTurnId ? { turnId: projectedTurnId } : {}),
     };
     const [loadingRequestIdentity, setLoadingRequestIdentity] = useState<PermissionRequestIdentity | null>(null);
     const [storedLoadingButton, setLoadingButton] = useState<'allow' | 'deny' | 'abort' | null>(null);
@@ -385,7 +395,7 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
         if (permission.status !== 'pending' || loadingButton !== null || loadingAllEdits || loadingForSession) return;
 
         await runPermissionAction('approve', (loading) => setLoadingButton(loading ? 'allow' : null), async () => {
-            await sessionAllow(sessionId, permission.id);
+            await sessionAllow(sessionId, permission.id, undefined, undefined, undefined, undefined, projectedTurnId);
         });
     };
 
@@ -397,9 +407,10 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
                 await sessionAllowWithPermissionUpdates(sessionId, permission.id, {
                     mode: 'acceptEdits',
                     updatedPermissions: [{ type: 'setMode', mode: 'acceptEdits', destination: 'session' }],
+                    turnId: projectedTurnId,
                 });
             } else {
-                await sessionAllow(sessionId, permission.id, 'acceptEdits');
+                await sessionAllow(sessionId, permission.id, 'acceptEdits', undefined, undefined, undefined, projectedTurnId);
             }
             // Update the session permission mode to 'acceptEdits' for future permissions
             storage.getState().updateSessionPermissionMode(sessionId, 'acceptEdits');
@@ -421,9 +432,10 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
                 await sessionAllowWithPermissionUpdates(sessionId, permission.id, {
                     allowedTools: [toolIdentifier],
                     updatedPermissions: [{ type: 'addRules', rules, behavior: 'allow', destination: 'session' }],
+                    turnId: projectedTurnId,
                 });
             } else {
-                await sessionAllow(sessionId, permission.id, undefined, [toolIdentifier]);
+                await sessionAllow(sessionId, permission.id, undefined, [toolIdentifier], undefined, undefined, projectedTurnId);
             }
         });
     };
@@ -459,9 +471,10 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
                 await sessionAllowWithPermissionUpdates(sessionId, permission.id, {
                     allowedTools: [toolIdentifier],
                     updatedPermissions: [{ type: 'addRules', rules, behavior: 'allow', destination: 'session' }],
+                    turnId: projectedTurnId,
                 });
             } else {
-                await sessionAllow(sessionId, permission.id, undefined, [toolIdentifier]);
+                await sessionAllow(sessionId, permission.id, undefined, [toolIdentifier], undefined, undefined, projectedTurnId);
             }
         });
     };
@@ -489,9 +502,10 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
                 await sessionAllowWithPermissionUpdates(sessionId, permission.id, {
                     allowedTools: [toolIdentifier],
                     updatedPermissions: [{ type: 'addRules', rules, behavior: 'allow', destination: 'session' }],
+                    turnId: projectedTurnId,
                 });
             } else {
-                await sessionAllow(sessionId, permission.id, undefined, [toolIdentifier]);
+                await sessionAllow(sessionId, permission.id, undefined, [toolIdentifier], undefined, undefined, projectedTurnId);
             }
         });
     };
@@ -500,7 +514,7 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
         if (permission.status !== 'pending' || loadingButton !== null || loadingAllEdits || loadingForSession) return;
 
         await runPermissionAction('deny', (loading) => setLoadingButton(loading ? 'deny' : null), async () => {
-            await sessionDeny(sessionId, permission.id, undefined, undefined, 'denied');
+            await sessionDeny(sessionId, permission.id, undefined, undefined, 'denied', undefined, projectedTurnId);
         });
     };
 
@@ -508,7 +522,7 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
         if (permission.status !== 'pending' || loadingButton !== null || loadingAllEdits || loadingForSession) return;
 
         await runPermissionAction('stop', (loading) => setLoadingButton(loading ? 'abort' : null), async () => {
-            await sessionDeny(sessionId, permission.id, undefined, undefined, 'abort');
+            await sessionDeny(sessionId, permission.id, undefined, undefined, 'abort', undefined, projectedTurnId);
             // Denying a single tool call is not always enough to stop the agent from continuing.
             // Also abort the current session run so the agent stops and waits for the user.
             await sessionAbort(sessionId);
@@ -522,7 +536,7 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
         if (permission.status !== 'pending' || loadingButton !== null || loadingForSession || loadingExecPolicy) return;
         
         await runPermissionAction('approve', (loading) => setLoadingButton(loading ? 'allow' : null), async () => {
-            await sessionAllow(sessionId, permission.id, undefined, undefined, 'approved');
+            await sessionAllow(sessionId, permission.id, undefined, undefined, 'approved', undefined, projectedTurnId);
         });
     };
     
@@ -530,7 +544,7 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
         if (permission.status !== 'pending' || loadingButton !== null || loadingForSession || loadingExecPolicy) return;
         
         await runPermissionAction('approve_for_session', setLoadingForSession, async () => {
-            await sessionAllow(sessionId, permission.id, undefined, undefined, 'approved_for_session');
+            await sessionAllow(sessionId, permission.id, undefined, undefined, 'approved_for_session', undefined, projectedTurnId);
         });
     };
 
@@ -544,7 +558,8 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
                 undefined,
                 undefined,
                 'approved_execpolicy_amendment',
-                { command: execPolicyCommand }
+                { command: execPolicyCommand },
+                projectedTurnId,
             );
         });
     };
@@ -555,7 +570,7 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
         if (permission.status !== 'pending' || loadingButton !== null || loadingAllEdits || loadingForSession || loadingExecPolicy) return;
         
         await runPermissionAction('stop', (loading) => setLoadingButton(loading ? 'abort' : null), async () => {
-            await sessionDeny(sessionId, permission.id, undefined, undefined, 'denied');
+            await sessionDeny(sessionId, permission.id, undefined, undefined, 'denied', undefined, projectedTurnId);
         });
     };
 

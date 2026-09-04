@@ -18,6 +18,9 @@ installSettingsViewCommonModuleMocks({
                     'common.version': 'Version',
                     'common.unavailable': 'Unavailable',
                     'settingsPlugins.trustPolicy.localTrusted': 'Locally trusted',
+                    'settingsPlugins.trustPolicy.trusted': 'Trusted',
+                    'settingsPlugins.trustPolicy.prompt': 'Approval required',
+                    'settingsPlugins.sourceKind.marketplace': 'Marketplace',
                     'settingsPlugins.sourceKind.path': 'Local path',
                 };
                 if (key === 'settingsPlugins.unknownValue') {
@@ -137,5 +140,42 @@ describe('PluginDetailSummaryGrid', () => {
 
         expect(screen.getTextContent()).not.toContain('internal-generation-27');
         expect(screen.getTextContent()).not.toContain('settingsPlugins.generationLabel');
+    });
+
+    it('presents the installed trust grant instead of the source future-admission policy', async () => {
+        const { PluginDetailSummaryGrid } = await import('./PluginDetailSummaryGrid');
+        const installedEntry = installed({
+            kind: 'marketplace',
+            locator: '@acme/tools',
+            trustPolicy: 'prompt',
+        });
+        const screen = await renderScreen(
+            <PluginDetailSummaryGrid
+                installed={{
+                    ...installedEntry,
+                    install: {
+                        ...installedEntry.install,
+                        trust: {
+                            pluginId: installedEntry.pluginId,
+                            distribution: {
+                                kind: 'npm',
+                                registryOrigin: 'https://registry.npmjs.org',
+                                packageName: '@acme/tools',
+                            },
+                            state: 'trusted',
+                            approvedAtMs: 1,
+                        },
+                    },
+                }}
+                projection={projection({
+                    sourceKind: 'marketplace',
+                    sourceLabel: 'Community npm',
+                    trustPolicy: 'prompt',
+                })}
+            />,
+        );
+
+        expect(screen.getTextContent()).toContain('Trusted');
+        expect(screen.getTextContent()).not.toContain('Approval required');
     });
 });

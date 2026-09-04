@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { useIsFocused } from '@react-navigation/native';
 import { Redirect, useNavigation } from 'expo-router';
 import type { PluginPortableReleaseManifestV1 } from '@happier-dev/protocol/plugins/availability';
 import { useUnistyles } from 'react-native-unistyles';
@@ -174,9 +175,10 @@ function PluginDetailCurrentContent(props: Readonly<{
 export const PluginDetailScreen = React.memo(function PluginDetailScreen(props: Readonly<{
     pluginId: string | null;
 }>) {
+    const isFocused = useIsFocused();
     const navigation = useNavigation() as NavigationLike;
     const { theme } = useUnistyles();
-    const state = usePluginSettingsScreenState();
+    const state = usePluginSettingsScreenState({ focused: isFocused });
     const accountAvailability = useActivePluginAccountAvailabilityReader();
     const installed = props.pluginId ? (state.installedPluginById.get(props.pluginId) ?? null) : null;
     const projection = props.pluginId ? (state.pluginProjectionById[props.pluginId] ?? null) : null;

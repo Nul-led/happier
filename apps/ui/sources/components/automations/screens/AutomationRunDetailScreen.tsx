@@ -34,6 +34,7 @@ import type {
     AutomationRunDetailRouteInspection,
 } from '@/sync/domains/automations/automationRunDetailInspection';
 import type { AutomationDefinitionRun } from '@/sync/domains/automations/automationTypes';
+import { formatAutomationErrorMessage } from '@/components/automations/automationErrorFormatting';
 
 const stylesheet = StyleSheet.create((theme) => ({
     loading: {
@@ -638,7 +639,7 @@ export function AutomationRunDetailScreen(): React.ReactElement {
             if (!isCurrentRoute(request.automationId, request.runId, request.generation)) return;
             await Modal.alert(
                 t('common.error'),
-                error instanceof Error ? error.message : t('automations.detail.runFailed'),
+                formatAutomationErrorMessage(error, t('automations.detail.runFailed')),
             );
         } finally {
             if (isCurrentRoute(request.automationId, request.runId, request.generation)) {
@@ -664,7 +665,7 @@ export function AutomationRunDetailScreen(): React.ReactElement {
             if (!isCurrentRoute(request.automationId, request.runId, request.generation)) return;
             await Modal.alert(
                 t('common.error'),
-                error instanceof Error ? error.message : t('automations.detail.runFailed'),
+                formatAutomationErrorMessage(error, t('automations.detail.runFailed')),
             );
         } finally {
             if (isCurrentRoute(request.automationId, request.runId, request.generation)) {
@@ -707,7 +708,7 @@ export function AutomationRunDetailScreen(): React.ReactElement {
             if (!isCurrentRoute(request.automationId, request.runId, request.generation)) return;
             await Modal.alert(
                 t('common.error'),
-                error instanceof Error ? error.message : t('automations.detail.runFailed'),
+                formatAutomationErrorMessage(error, t('automations.detail.runFailed')),
             );
         } finally {
             if (isCurrentRoute(request.automationId, request.runId, request.generation)) {

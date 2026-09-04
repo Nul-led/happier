@@ -159,6 +159,8 @@ export type BoundPluginSurfaceFacts = Readonly<{
     resourceScope?: readonly PluginUiSurfaceContextV1['resourceScope'][number][];
     /** Daemon addressing. Absent → the daemon-served methods are not installed. */
     machineId?: string | null;
+    /** Presentation-only label from the existing machine display projection. */
+    machineDisplayName?: string | null;
     serverId?: string | null;
     /** The projection generation this mount is bound to. */
     projectionGeneration?: number | string | null;
@@ -923,6 +925,7 @@ export function createBoundPluginSurfaceController(input: Readonly<{
                 : {}),
             host: {
                 machineId: daemon.machineId,
+                machineDisplayName: input.facts.machineDisplayName ?? null,
                 serverId: daemon.serverId ?? null,
                 expectedGeneration: daemon.expectedGeneration,
                 targetPluginId: input.facts.pluginId,

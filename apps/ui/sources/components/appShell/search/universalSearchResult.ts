@@ -22,11 +22,12 @@ export type UniversalSearchTarget =
      * is never re-derived from focus at activation, so focusing Home A while a
      * Home B result is open cannot retarget the navigation.
      */
-    | Readonly<{ kind: 'session'; serverId: string | null; sessionId: string; seq?: number }>
+    | Readonly<{ kind: 'session'; serverId: string; accountId: string; sessionId: string; seq?: number }>
     | Readonly<{
         kind: 'project';
         workspaceRefId: string;
         serverId: string;
+        accountId: string;
         machineId: string;
         rootPath: string;
     }>
@@ -44,6 +45,7 @@ export type UniversalSearchTarget =
         workspaceRefId: string | null;
         sessionId: string | null;
         serverId: string | null;
+        accountId: string;
     }>
     | Readonly<{
         kind: 'workspaceCommit';
@@ -52,6 +54,7 @@ export type UniversalSearchTarget =
         workspaceRefId: string | null;
         sessionId: string | null;
         serverId: string | null;
+        accountId: string;
     }>;
 
 export type UniversalSearchResult = Readonly<{
@@ -73,8 +76,8 @@ export type UniversalSearchResult = Readonly<{
     kind: string;
     title: string;
     subtitle?: string;
-    excerpt?: string;
-    sourceLabel?: string;
+    searchText?: string;
+    exactSearchText?: string;
     target: UniversalSearchTarget;
 }>;
 
@@ -112,10 +115,11 @@ export function buildUniversalSearchScopeKey(
 
 /** Key session display metadata by the same exact Home/session scope as its result. */
 export function buildUniversalSearchSessionTitleKey(
-    serverId: string | null | undefined,
+    accountId: string,
+    serverId: string,
     sessionId: string,
 ): string {
-    return buildUniversalSearchScopeKey([serverId, sessionId]);
+    return buildUniversalSearchScopeKey([accountId, serverId, sessionId]);
 }
 
 export const UNIVERSAL_SEARCH_SOURCE_IDS = Object.freeze({

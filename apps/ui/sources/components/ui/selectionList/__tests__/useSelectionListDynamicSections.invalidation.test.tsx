@@ -7,6 +7,10 @@ import type {
     SelectionListDynamicSection,
     SelectionListOption,
 } from '../_types';
+import {
+    createTestDynamicSectionCache,
+    type SelectionListDynamicSectionCache,
+} from '../selectionListDynamicSectionCache';
 
 type Capture = ReturnType<typeof useSelectionListDynamicSections>;
 
@@ -14,10 +18,12 @@ function HostHarness(props: {
     dynamicSections: ReadonlyArray<SelectionListDynamicSection>;
     inputValue: string;
     onState: (state: Capture) => void;
+    cache?: SelectionListDynamicSectionCache;
 }): null {
     const state = useSelectionListDynamicSections({
         dynamicSections: props.dynamicSections,
         inputValue: props.inputValue,
+        ...(props.cache ? { cache: props.cache } : {}),
     });
     React.useEffect(() => {
         props.onState(state);
@@ -70,6 +76,124 @@ function lastState(): Capture {
  *     fetches (covered by the second test below — unchanged).
  */
 describe('useSelectionListDynamicSections — resolverKey-driven invalidation (R16a)', () => {
+    it('cancels a removed section before its pending debounce can dispatch', async () => {
+        const resolve = vi.fn(async () => ({ options: [] }));
+        const section: SelectionListDynamicSection = {
+            id: 'pending',
+            debounceMs: 100,
+            resolve,
+        };
+
+        await act(async () => {
+            renderer = createRenderer(
+                <HostHarness dynamicSections={[section]} inputValue="needle" onState={onState} />,
+            );
+        });
+        await act(async () => {
+            renderer!.update(
+                <HostHarness dynamicSections={[]} inputValue="needle" onState={onState} />,
+            );
+        });
+        await act(async () => {
+            vi.advanceTimersByTime(101);
+        });
+
+        expect(resolve).not.toHaveBeenCalled();
+        expect(lastState().has('pending')).toBe(false);
+    });
+
+    it('retires removed sections and prevents their late work from repopulating state or cache', async () => {
+        let resolveRemoved!: (value: { options: ReadonlyArray<SelectionListOption> }) => void;
+        let removedSignal: AbortSignal | undefined;
+        const cache = createTestDynamicSectionCache();
+        const removedSection: SelectionListDynamicSection = {
+            id: 'removed',
+            resolverKey: 'target-a',
+            debounceMs: 0,
+            resolve: (_seed, signal) => {
+                removedSignal = signal;
+                return new Promise((resolve) => { resolveRemoved = resolve; });
+            },
+        };
+
+        await act(async () => {
+            renderer = createRenderer(
+                <HostHarness
+                    dynamicSections={[removedSection]}
+                    inputValue="needle"
+                    onState={onState}
+                    cache={cache}
+                />,
+            );
+            vi.advanceTimersByTime(1);
+        });
+        expect(removedSignal?.aborted).toBe(false);
+
+        await act(async () => {
+            renderer!.update(
+                <HostHarness
+                    dynamicSections={[]}
+                    inputValue="needle"
+                    onState={onState}
+                    cache={cache}
+                />,
+            );
+        });
+
+        expect(removedSignal?.aborted).toBe(true);
+        expect(lastState().has('removed')).toBe(false);
+
+        await act(async () => {
+            resolveRemoved({ options: [{ id: 'late', label: 'Late result' }] });
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+
+        expect(lastState().has('removed')).toBe(false);
+        expect(cache.size()).toBe(0);
+    });
+
+    it('does not publish an aborted rejection while the replacement query is still debouncing', async () => {
+        let rejectFirst!: (error: Error) => void;
+        let firstSignal: AbortSignal | undefined;
+        const section: SelectionListDynamicSection = {
+            id: 'replace',
+            debounceMs: 100,
+            resolve: (seed, signal) => {
+                if (seed === 'first') {
+                    firstSignal = signal;
+                    return new Promise((_resolve, reject) => { rejectFirst = reject; });
+                }
+                return Promise.resolve({ options: [{ id: 'fresh', label: 'Fresh' }] });
+            },
+        };
+
+        await act(async () => {
+            renderer = createRenderer(
+                <HostHarness dynamicSections={[section]} inputValue="first" onState={onState} />,
+            );
+        });
+        await act(async () => {
+            vi.advanceTimersByTime(101);
+        });
+        expect(firstSignal?.aborted).toBe(false);
+
+        await act(async () => {
+            renderer!.update(
+                <HostHarness dynamicSections={[section]} inputValue="second" onState={onState} />,
+            );
+        });
+        expect(firstSignal?.aborted).toBe(true);
+
+        await act(async () => {
+            rejectFirst(new Error('aborted request'));
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+
+        expect(lastState().get('replace')?.status).not.toBe('error');
+    });
+
     it('does NOT invalidate cached state when only the resolver closure identity changes (no resolverKey bump)', async () => {
         const baseOptions: ReadonlyArray<SelectionListOption> = [
             { id: 'cached-a', label: 'Cached A' },

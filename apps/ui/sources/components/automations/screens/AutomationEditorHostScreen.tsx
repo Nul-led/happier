@@ -25,12 +25,15 @@ import {
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { layout } from '@/components/ui/layout/layout';
 import { ItemList } from '@/components/ui/lists/ItemList';
+import { Item } from '@/components/ui/lists/Item';
+import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
 import { useAutomationsSupport } from '@/hooks/server/useAutomationsSupport';
 import { Modal } from '@/modal';
 import { fetchAccountEncryptionMode } from '@/sync/api/account/apiAccountEncryptionMode';
 import { isAutomationApiErrorCode } from '@/sync/api/automations/apiAutomations';
+import { formatAutomationErrorMessage } from '@/components/automations/automationErrorFormatting';
 import { resolveAccountScopedCryptoMaterialFromCredentials } from '@/sync/domains/connectedServices/resolveAccountScopedCryptoMaterialFromCredentials';
 import {
     automationEditorDraftFromDetail,
@@ -82,6 +85,13 @@ function definitionSeedForNonEvent(
 }
 
 type AutomationEditorHydrationTrigger = AutomationDefinitionDetail['triggers'][number];
+
+type AutomationEditorHydrationState =
+    | Readonly<{ kind: 'loading' }>
+    | Readonly<{ kind: 'ready' }>
+    | Readonly<{ kind: 'privateUnavailable' }>
+    | Readonly<{ kind: 'notFound' }>
+    | Readonly<{ kind: 'failed' }>;
 
 function buildTriggerSeeds(params: Readonly<{
     definition: NonNullable<ReturnType<typeof useAutomation>>;
@@ -292,7 +302,7 @@ export function AutomationEditorHostScreen(props: Readonly<{
     const [draftLifetimeIdentity, setDraftLifetimeIdentity] = React.useState<string | null>(null);
     const latestDraftRef = React.useRef(draft);
     latestDraftRef.current = draft;
-    const [loadError, setLoadError] = React.useState(false);
+    const [hydrationState, setHydrationState] = React.useState<AutomationEditorHydrationState>({ kind: 'loading' });
     const [submitting, setSubmitting] = React.useState(false);
     const [stalePrefill, setStalePrefill] = React.useState<ExactTurnAutomationPrefill | null>(null);
     const [eventEditSeeds, setEventEditSeeds] = React.useState<ReadonlyMap<string, PluginEventAutomationEditSeed>>(
@@ -305,7 +315,7 @@ export function AutomationEditorHostScreen(props: Readonly<{
     React.useEffect(() => {
         let alive = true;
         const accountLifetime = captureActiveServerAccountScopeLifetime();
-        setLoadError(false);
+        setHydrationState({ kind: 'loading' });
         setDraft(null);
         hydratedDraftRef.current = null;
         isDirtyRef.current = false;
@@ -322,8 +332,21 @@ export function AutomationEditorHostScreen(props: Readonly<{
             );
             if (capturedIdentity !== editorLifetimeIdentity) return;
             const refreshed = await sync.refreshAutomationDefinitionDetail(props.automationId);
+            if (!alive || !accountLifetime.isCurrent() || capturedIdentity !== editorLifetimeIdentity) return;
+            if (!refreshed) {
+                setHydrationState({ kind: 'notFound' });
+                return;
+            }
+            if (refreshed.detail.kind === 'unavailable') {
+                setHydrationState({ kind: 'privateUnavailable' });
+                return;
+            }
+            if (refreshed.detail.kind !== 'available') {
+                setHydrationState({ kind: 'failed' });
+                return;
+            }
             const mode = await fetchAccountEncryptionMode(credentials);
-            if (!alive || !accountLifetime.isCurrent() || !refreshed || refreshed.detail.kind !== 'available') return;
+            if (!alive || !accountLifetime.isCurrent() || capturedIdentity !== editorLifetimeIdentity) return;
             const access: PluginEventAutomationStoredContentAccess = mode.mode === 'plain'
                 ? { mode: 'plain' }
                 : { mode: 'e2ee', material: resolveAccountScopedCryptoMaterialFromCredentials(credentials) };
@@ -331,7 +354,10 @@ export function AutomationEditorHostScreen(props: Readonly<{
             const hydrated = seeds
                 ? automationEditorDraftFromDetail(refreshed.detail.value, seeds)
                 : null;
-            if (!hydrated) throw new Error('Automation definition is unavailable');
+            if (!hydrated) {
+                setHydrationState({ kind: 'privateUnavailable' });
+                return;
+            }
             const observed = exactTurnBindingRef.current;
             const current = observed
                 ? readExactActiveParentTurn(storage.getState().sessions[observed.sourceSessionId])
@@ -363,9 +389,12 @@ export function AutomationEditorHostScreen(props: Readonly<{
                 isDirtyRef.current = withPrefill !== hydrated;
                 setIsDirty(isDirtyRef.current);
                 setDraft(withPrefill);
+                setHydrationState({ kind: 'ready' });
             }
         })().catch(() => {
-            if (alive && accountLifetime?.isCurrent()) setLoadError(true);
+            if (alive && (!accountLifetime || accountLifetime.isCurrent())) {
+                setHydrationState({ kind: 'failed' });
+            }
         });
         return () => { alive = false; };
         // Rehydration is keyed by the mounted definition/Account identity, the
@@ -393,8 +422,8 @@ export function AutomationEditorHostScreen(props: Readonly<{
         ?? null
     ), [draft?.assignments]);
 
-    const handleSave = React.useCallback(async (): Promise<boolean> => {
-        const capturedDraft = latestDraftRef.current;
+    const handleSave = React.useCallback(async (draftOverride?: AutomationEditorDraft): Promise<boolean> => {
+        const capturedDraft = draftOverride ?? latestDraftRef.current;
         const capturedDraftLifetimeIdentity = draftLifetimeIdentity;
         const accountLifetime = captureActiveServerAccountScopeLifetime();
         const observed = exactTurnBinding;
@@ -519,7 +548,7 @@ export function AutomationEditorHostScreen(props: Readonly<{
                     await Modal.alert(t('automations.exactTurn.staleTitle'), t('automations.exactTurn.staleBody'));
                 }
             } else if (accountLifetime.isCurrent()) {
-                await Modal.alert(t('common.error'), error instanceof Error ? error.message : t('automations.edit.updateFailed'));
+                await Modal.alert(t('common.error'), formatAutomationErrorMessage(error, t('automations.edit.updateFailed')));
             }
         } finally {
             if (mountedRef.current) setSubmitting(false);
@@ -616,17 +645,44 @@ export function AutomationEditorHostScreen(props: Readonly<{
         router.setParams(buildExactTurnAutomationRouteParams(recovered));
     }, [router, stalePrefill]);
 
-    if (!draft || draftLifetimeIdentity !== editorLifetimeIdentity) {
+    if (hydrationState.kind !== 'ready' || !draft || draftLifetimeIdentity !== editorLifetimeIdentity) {
         return (
             <View style={stylesheet.root}>
                 <View style={stylesheet.content}>
-                    {loadError ? (
+                    {definition && hydrationState.kind !== 'notFound' ? (
+                        <View testID="automation-editor-public-facts">
+                            <ItemGroup>
+                                <Item title={definition.name} showChevron={false} />
+                                <Item
+                                    title={t('automations.detail.overview.statusTitle')}
+                                    detail={definition.enabled
+                                        ? t('automations.detail.status.active')
+                                        : t('automations.detail.status.paused')}
+                                    showChevron={false}
+                                />
+                            </ItemGroup>
+                        </View>
+                    ) : null}
+                    {hydrationState.kind === 'failed' ? (
                         <SurfaceStateCard
+                            testID="automation-editor-load-failed"
                             kind="error"
                             title={t('common.error')}
                             reason={t('automations.edit.loadTemplateFailed')}
                             action={{ label: t('common.retry'), onPress: () => setReloadGeneration((value) => value + 1) }}
                             accessibilitySemantics="alert"
+                        />
+                    ) : hydrationState.kind === 'privateUnavailable' ? (
+                        <SurfaceStateCard
+                            testID="automation-editor-private-unavailable"
+                            kind="unavailable"
+                            title={t('automations.edit.loadTemplateFailed')}
+                        />
+                    ) : hydrationState.kind === 'notFound' ? (
+                        <SurfaceStateCard
+                            testID="automation-editor-not-found"
+                            kind="unavailable"
+                            title={t('automations.detail.notFound')}
                         />
                     ) : (
                         <View style={stylesheet.centered}><ActivitySpinner size="small" /></View>
@@ -690,7 +746,7 @@ export function AutomationEditorHostScreen(props: Readonly<{
                                 onCancel={editorProps.onCancel}
                             />
                         )}
-                        onSubmit={() => { void handleSave(); }}
+                        onSubmit={(submittedDraft) => { void handleSave(submittedDraft); }}
                         onCancel={handleCancel}
                         submitting={submitting}
                         submitDisabled={!draft.name.trim()}

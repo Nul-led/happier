@@ -40,7 +40,7 @@ function createState(overrides: Partial<StorageState>): StorageState {
 }
 
 describe('createSessionListSearchTextSelector', () => {
-    it('exposes the same metadata normalization for archived and active session surfaces', () => {
+    it('keeps transcript-derived summary text out while indexing canonical local metadata', () => {
         const session = createRenderable({
             id: 'session1',
             metadata: {
@@ -53,7 +53,90 @@ describe('createSessionListSearchTextSelector', () => {
         });
 
         expect(buildCanonicalSessionListSearchText({ sessionId: session.id, renderable: session }))
-            .toBe('session1\nBuild lane\nParser follow-up\n/workspace/project\nbuilder\nmachine-a');
+            .toBe('session1\nBuild lane\n/workspace/project\nbuilder\nmachine-a');
+    });
+
+    it('includes canonical tag and workspace display labels without reading transcript bodies', () => {
+        const session = createRenderable({
+            id: 'session1',
+            metadata: {
+                name: 'Build lane',
+                summaryText: 'Bounded first-message title',
+                path: '/workspace/project',
+            },
+        });
+
+        expect(buildCanonicalSessionListSearchText({
+            sessionId: session.id,
+            renderable: session,
+            tags: ['release', 'customer-visible'],
+            workspaceDisplayLabel: 'Payments workspace',
+        })).toBe([
+            'session1',
+            'Build lane',
+            '/workspace/project',
+            'release',
+            'customer-visible',
+            'Payments workspace',
+        ].join('\n'));
+    });
+
+    it('projects exact server-qualified organization metadata into the contextual haystack', () => {
+        const selector = createSessionListSearchTextSelector([
+            { type: 'session', sessionId: 'session1', serverId: 'server1', serverName: undefined },
+        ], true, {
+            sessionTags: { 'server1:session1': ['release'] },
+            workspaceRefs: [{
+                id: 'workspace-ref-1',
+                serverId: 'server1',
+                machineId: 'machine-a',
+                rootPath: '/workspace/project',
+                label: 'Payments workspace',
+                createdAtMs: 1,
+                lastOpenedAtMs: null,
+            }],
+        });
+        const result = selector(createState({
+            sessionListRowStateByServerId: {
+                server1: {
+                    session1: createRenderable({
+                        id: 'session1',
+                        metadata: { machineId: 'machine-a', path: '/workspace/project' },
+                    }),
+                },
+            },
+        }));
+
+        expect(result['server1:session1']).toContain('release');
+        expect(result['server1:session1']).toContain('Payments workspace');
+    });
+
+    it('does not read same-id metadata from another Home through the bare-id Session store', () => {
+        const selector = createSessionListSearchTextSelector([
+            { type: 'session', sessionId: 'same-session', serverId: 'home-a', serverName: undefined },
+        ], true);
+        const otherHomeSession = {
+            ...createRenderable({
+                id: 'same-session',
+                metadata: { name: 'Home B private title', path: '/home-b/repo' },
+            }),
+            metadataLayoutVersion: 0,
+            agentState: null,
+        } as Session;
+        const result = selector(createState({
+            sessions: { 'same-session': otherHomeSession },
+            sessionListRowStateByServerId: {
+                'home-a': {
+                    'same-session': createRenderable({
+                        id: 'same-session',
+                        metadata: { name: 'Home A title', path: '/home-a/repo' },
+                    }),
+                },
+            },
+        }));
+
+        expect(result['home-a:same-session']).toContain('Home A title');
+        expect(result['home-a:same-session']).not.toContain('Home B private title');
     });
 
     it('reuses cached text without reading rows on an empty session-list delta tick', () => {
@@ -67,7 +150,7 @@ describe('createSessionListSearchTextSelector', () => {
                 return { name: 'Build lane', path: '/repo' };
             },
         });
-        const sessionListRenderables = { session1: renderable };
+        const sessionListRowStateByServerId = { server1: { session1: renderable } };
         const selector = createSessionListSearchTextSelector([
             { type: 'session', sessionId: 'session1', serverId: 'server1', serverName: undefined },
         ], true);
@@ -79,7 +162,7 @@ describe('createSessionListSearchTextSelector', () => {
                 removedSessionIds: [],
                 rebuiltSessionListIndex: true,
             },
-            sessionListRenderables,
+            sessionListRowStateByServerId,
         }));
         const readsAfterFirstSelection = metadataReads;
 
@@ -90,7 +173,7 @@ describe('createSessionListSearchTextSelector', () => {
                 removedSessionIds: [],
                 rebuiltSessionListIndex: false,
             },
-            sessionListRenderables,
+            sessionListRowStateByServerId,
         }));
 
         expect(second).toBe(first);
@@ -98,10 +181,7 @@ describe('createSessionListSearchTextSelector', () => {
         expect(metadataReads).toBe(readsAfterFirstSelection);
     });
 
-    it('indexes private layout-v1 workspace fields from the owner view, not shared metadata', () => {
-        const selector = createSessionListSearchTextSelector([
-            { type: 'session', sessionId: 'session1', serverId: 'server1', serverName: undefined },
-        ], true);
+    it('the canonical builder indexes private layout-v1 workspace fields from the owner view, not shared metadata', () => {
         const session: Session = {
             id: 'session1',
             seq: 0,
@@ -131,14 +211,10 @@ describe('createSessionListSearchTextSelector', () => {
                 machineId: 'private-machine',
             },
         };
-        const result = selector(createState({
-            sessions: {
-                session1: session,
-            },
-        }));
+        const result = buildCanonicalSessionListSearchText({ sessionId: 'session1', session });
 
-        expect(result['server1:session1']).toContain('/private/repo');
-        expect(result['server1:session1']).not.toContain('/must-not-index');
+        expect(result).toContain('/private/repo');
+        expect(result).not.toContain('/must-not-index');
     });
 
     it('does not index hydrated transcript or tool-call text into the immediate local haystack', () => {
@@ -146,11 +222,11 @@ describe('createSessionListSearchTextSelector', () => {
             { type: 'session', sessionId: 'session1', serverId: 'server1', serverName: undefined },
         ], true);
         const result = selector(createState({
-            sessionListRenderables: {
-                session1: createRenderable({
+            sessionListRowStateByServerId: {
+                server1: { session1: createRenderable({
                     id: 'session1',
                     metadata: { name: 'Canonical metadata title', path: '/workspace/project' },
-                }),
+                }) },
             },
             sessionMessages: {
                 session1: {
@@ -176,8 +252,8 @@ describe('createSessionListSearchTextSelector', () => {
             { type: 'session', sessionId: 'session1', serverId: 'server1', serverName: undefined },
         ], true);
         const result = selector(createState({
-            sessionListRenderables: {
-                session1: createRenderable({ id: 'session1', metadata: { name: 'Metadata only' } }),
+            sessionListRowStateByServerId: {
+                server1: { session1: createRenderable({ id: 'session1', metadata: { name: 'Metadata only' } }) },
             },
             sessionPending: {
                 session1: {

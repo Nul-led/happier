@@ -54,6 +54,7 @@ import { serverAccountScopeKeySuffix } from '@/sync/domains/scope/serverAccountS
 import { readPluginEventAutomationPrivateDetail } from '@/components/automations/editor/pluginEventAutomationEditSeed';
 import { buildPluginEventAutomationPayloadBrowser } from '@/components/automations/editor/pluginEventAutomationPayloadBrowser';
 import { AutomationHistoryGapRecoveryAction } from './AutomationHistoryGapRecoveryAction';
+import { formatAutomationErrorMessage } from '@/components/automations/automationErrorFormatting';
 
 import {
     canPresentAutomationSourceSummary,
@@ -657,6 +658,12 @@ export function AutomationDetailScreen() {
     // Cached detail rows stay visible during a pending authoritative refresh,
     // but mutations stay disabled until that refresh succeeds.
     const mutationsEnabled = !loading && !refreshFailed;
+    const enabledMutationPendingRef = React.useRef(false);
+    const [enabledMutationPending, setEnabledMutationPending] = React.useState(false);
+    React.useEffect(() => {
+        enabledMutationPendingRef.current = false;
+        setEnabledMutationPending(false);
+    }, [automationId, routeGeneration]);
 
     const refresh = React.useCallback(async () => {
         if (!automationId) return;
@@ -745,7 +752,7 @@ export function AutomationDetailScreen() {
             if (!isCurrentRoute(request.automationId, request.generation)) return;
             await Modal.alert(
                 t('common.error'),
-                error instanceof Error ? error.message : t('automations.detail.refreshFailed'),
+                formatAutomationErrorMessage(error, t('automations.detail.refreshFailed')),
             );
         } finally {
             if (isCurrentRoute(request.automationId, request.generation)) {
@@ -796,7 +803,9 @@ export function AutomationDetailScreen() {
     }, [automationId, router]);
 
     const handleToggleEnabled = React.useCallback(async () => {
-        if (!automationId || !automation || !mutationsEnabled) return;
+        if (!automationId || !automation || !mutationsEnabled || enabledMutationPendingRef.current) return;
+        enabledMutationPendingRef.current = true;
+        setEnabledMutationPending(true);
         const request = { automationId, generation: routeGeneration };
         try {
             if (automation.enabled) {
@@ -808,8 +817,13 @@ export function AutomationDetailScreen() {
             if (!isCurrentRoute(request.automationId, request.generation)) return;
             await Modal.alert(
                 t('common.error'),
-                error instanceof Error ? error.message : t('automations.edit.updateFailed')
+                formatAutomationErrorMessage(error, t('automations.edit.updateFailed'))
             );
+        } finally {
+            enabledMutationPendingRef.current = false;
+            if (isCurrentRoute(request.automationId, request.generation)) {
+                setEnabledMutationPending(false);
+            }
         }
     }, [automation, automationId, isCurrentRoute, mutationsEnabled, routeGeneration]);
 
@@ -834,7 +848,7 @@ export function AutomationDetailScreen() {
             if (!isCurrentRoute(request.automationId, request.generation)) return;
             await Modal.alert(
                 t('common.error'),
-                error instanceof Error ? error.message : t('automations.detail.deleteFailed')
+                formatAutomationErrorMessage(error, t('automations.detail.deleteFailed'))
             );
         }
     }, [automationId, isCurrentRoute, mutationsEnabled, routeGeneration, router]);
@@ -861,7 +875,7 @@ export function AutomationDetailScreen() {
             if (!isCurrentRoute(request.automationId, request.generation)) return;
             await Modal.alert(
                 t('common.error'),
-                error instanceof Error ? error.message : t('automations.detail.clearHistoryFailed'),
+                formatAutomationErrorMessage(error, t('automations.detail.clearHistoryFailed')),
             );
         } finally {
             if (isCurrentRoute(request.automationId, request.generation)) {
@@ -917,7 +931,7 @@ export function AutomationDetailScreen() {
                 ) return;
                 await Modal.alert(
                     t('common.error'),
-                    error instanceof Error ? error.message : t('automations.detail.assignmentsUpdateFailed')
+                    formatAutomationErrorMessage(error, t('automations.detail.assignmentsUpdateFailed'))
                 );
             }
         });
@@ -1181,7 +1195,8 @@ export function AutomationDetailScreen() {
                     <Item
                         title={automation.enabled ? t('automations.detail.pauseAutomation') : t('automations.detail.resumeAutomation')}
                         onPress={mutationsEnabled ? () => void handleToggleEnabled() : undefined}
-                        disabled={!mutationsEnabled}
+                        disabled={!mutationsEnabled || enabledMutationPending}
+                        loading={enabledMutationPending}
                         showChevron={false}
                     />
                     <Item

@@ -10,7 +10,7 @@ vi.mock('react-native', async () => {
     return createReactNativeWebMock();
 });
 
-function makeRootStep(): SelectionListStep {
+function makeRootStep(overrides: Partial<SelectionListStep> = {}): SelectionListStep {
     return {
         id: 'root',
         title: 'Events',
@@ -23,6 +23,7 @@ function makeRootStep(): SelectionListStep {
                 { id: 'event-b', label: 'Event B' },
             ],
         }],
+        ...overrides,
     };
 }
 
@@ -40,7 +41,7 @@ function defaultProps(overrides: Partial<SelectionListProps> = {}): SelectionLis
 
 describe('SelectionList controlled active step', () => {
     it('reports the active step through onActiveStepChange and shows the back chip after an openStep push', async () => {
-        const onActiveStepChange = vi.fn();
+        const onActiveStepChange = vi.fn<(step: SelectionListStep) => void>();
         const { SelectionList } = await import('../SelectionList');
         const screen = await renderScreen(
             <SelectionList {...defaultProps({ onActiveStepChange })} />,
@@ -62,7 +63,7 @@ describe('SelectionList controlled active step', () => {
             inputPlaceholder: 'Search destinations',
             sections: [{ kind: 'static', id: 's', options: [{ id: 'x', label: 'X' }] }],
         };
-        const onActiveStepChange = vi.fn();
+        const onActiveStepChange = vi.fn<(step: SelectionListStep) => void>();
         const { SelectionList } = await import('../SelectionList');
         const screen = await renderScreen(
             <SelectionList
@@ -129,7 +130,7 @@ describe('SelectionList controlled active step', () => {
             title: 'Detail',
             sections: [{ kind: 'static', id: 's', options: [{ id: 'x', label: 'X' }] }],
         };
-        const onActiveStepChange = vi.fn();
+        const onActiveStepChange = vi.fn<(step: SelectionListStep) => void>();
         const props = (overrides: Partial<SelectionListProps>) => defaultProps({
             onActiveStepChange,
             rootStep: makeRootStep({
@@ -176,7 +177,7 @@ describe('SelectionList controlled active step', () => {
             title: 'Destination',
             sections: [{ kind: 'static', id: 's', options: [{ id: 'd', label: 'D' }] }],
         };
-        const onActiveStepChange = vi.fn();
+        const onActiveStepChange = vi.fn<(step: SelectionListStep) => void>();
         const { SelectionList } = await import('../SelectionList');
         const screen = await renderScreen(
             <SelectionList

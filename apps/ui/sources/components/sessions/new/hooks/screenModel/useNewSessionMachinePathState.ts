@@ -98,6 +98,8 @@ export function useNewSessionMachinePathState(params: Readonly<{
         }
         return resolvePersistedMachineId() ?? resolveMachineId(null);
     });
+    const selectedMachineIdRef = React.useRef<string | null>(selectedMachineId);
+    selectedMachineIdRef.current = selectedMachineId;
     const hasUserSelectedMachineRef = React.useRef(false);
     const selectedMachineOnlineSeenByIdRef = React.useRef<Map<string, boolean>>(new Map());
     const lastAppliedPersistedMachineIdRef = React.useRef<string>('');
@@ -199,7 +201,7 @@ export function useNewSessionMachinePathState(params: Readonly<{
         }
 
         lastAppliedPersistedMachineIdRef.current = reconciledPersistedMachineId;
-        if (reconciledPersistedMachineId === selectedMachineId) {
+        if (reconciledPersistedMachineId === selectedMachineIdRef.current) {
             return;
         }
 
@@ -214,7 +216,6 @@ export function useNewSessionMachinePathState(params: Readonly<{
         getPersistedPathForMachine,
         params.machineIdParam,
         resolvePersistedMachineId,
-        selectedMachineId,
     ]);
 
     // Ensure a machine is pre-selected once machines have loaded (wizard expects this).
@@ -222,6 +223,10 @@ export function useNewSessionMachinePathState(params: Readonly<{
         if (selectedMachineId !== null) return;
         if (params.machines.length === 0) return;
         if (normalizeMachineIdParam(params.machineIdParam)) return;
+        // Let persisted reconciliation own hydration when its preferred machine is available.
+        // Otherwise this fallback can enqueue a competing selection in the same effect flush,
+        // causing the persisted effect to run again against a stale selectedMachineId.
+        if (resolvePersistedMachineId() !== null) return;
         const machineIdToUse = resolveMachineId(null);
         const trimmedPath = normalizePathParam(params.pathParam);
 

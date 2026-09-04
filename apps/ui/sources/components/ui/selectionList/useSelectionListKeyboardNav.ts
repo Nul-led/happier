@@ -361,7 +361,11 @@ export function useSelectionListRovingFocus(
                     ? virtualizedOptionSource.getOptionId(index)
                     : null
                 : flatVisibleOptionIds[index] ?? null,
-            explicit: state.explicit,
+            // A new query/result identity invalidates the old "I aimed at this
+            // row" action intent. Preserve the best visual focus identity or
+            // nearest position above, but require a fresh Arrow gesture before
+            // Tab may activate a row in the replacement result set.
+            explicit: false,
         };
         setState(current);
     }
@@ -584,6 +588,11 @@ export function useSelectionListKeyboardNav(
                     optionId !== undefined
                     && hasExplicitRowFocus
                 ) {
+                    // Activation is allowed to keep the list mounted. Retire
+                    // the one-shot Tab intent before invoking consumer code so
+                    // a subsequent Tab resumes native traversal instead of
+                    // repeating the same action.
+                    clearExplicitRowFocus();
                     onActivate(optionId);
                     return consume(event);
                 }

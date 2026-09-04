@@ -279,12 +279,12 @@ export function SessionAutomationsScreen(props: {
                         <View style={styles.resolvingLinks}>
                             <ActivitySpinner size="small" color={theme.colors.text.secondary} />
                         </View>
-                    ) : (
+                    ) : !directDetailResolution.hasFailure && !pagination.hasMore ? (
                         <AutomationsEmptyState
                             title={t('automations.session.emptyTitle')}
                             body={t('automations.session.emptyBody')}
                         />
-                    )}
+                    ) : null}
                     {paginationFooter}
                     {actionsFooter}
                 </View>

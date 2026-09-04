@@ -96,6 +96,8 @@ async function setupHarness() {
       refreshSessions: vi.fn(async () => {}),
       refreshMachines: vi.fn(async () => {}),
       sendMessage: vi.fn(async () => {}),
+      acquireUserRequestLease: vi.fn(() => () => {}),
+      getCredentials: vi.fn(() => ({ secret: 'test-secret' })),
       ensureSessionVisibleForMessageRoute: vi.fn(async (sessionId: string) => {
         const currentStorageState = activeHarnessStorageState.current ?? storageState;
         currentStorageState.sessions[sessionId] = { id: sessionId };

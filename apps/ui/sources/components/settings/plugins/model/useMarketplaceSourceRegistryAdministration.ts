@@ -31,6 +31,8 @@ export type MarketplaceSourceRegistryAdministrationV1 = Readonly<{
     registry: MarketplaceSourceRegistryV1 | null;
     loading: boolean;
     loadError: boolean;
+    mutationInFlight: boolean;
+    mutationOutcomeUnknown: boolean;
     refresh: () => void;
     upsertSource: (input: Extract<MarketplaceSourceRegistryMutationV1, { kind: 'upsert' }>['input']) => Promise<MarketplaceSourceRegistryMutationSettlementV1>;
     setSourceEnabled: (sourceId: string, enabled: boolean) => Promise<MarketplaceSourceRegistryMutationSettlementV1>;
@@ -47,6 +49,7 @@ export type MarketplaceSourceRegistryAdministrationParamsV1 = Readonly<{
      */
     scopeKey: string | null;
     enabled: boolean;
+    focused: boolean;
     executionTarget: FreshMachineAdministrationExecutionTargetV1 | null;
     resolveCurrentExecutionTarget: (
         expected: FreshMachineAdministrationExecutionTargetV1 | null,
@@ -56,12 +59,15 @@ export type MarketplaceSourceRegistryAdministrationParamsV1 = Readonly<{
 export function useMarketplaceSourceRegistryAdministration(
     params: MarketplaceSourceRegistryAdministrationParamsV1,
 ): MarketplaceSourceRegistryAdministrationV1 {
-    const { scopeKey, enabled, executionTarget, resolveCurrentExecutionTarget } = params;
+    const { scopeKey, enabled, focused, executionTarget, resolveCurrentExecutionTarget } = params;
     const [registry, setRegistry] = React.useState<MarketplaceSourceRegistryV1 | null>(null);
     const [loading, setLoading] = React.useState(false);
     const [loadError, setLoadError] = React.useState(false);
+    const [mutationInFlight, setMutationInFlight] = React.useState(false);
+    const [mutationOutcomeUnknown, setMutationOutcomeUnknown] = React.useState(false);
     const [refreshKey, setRefreshKey] = React.useState(0);
-    const requestIdRef = React.useRef(0);
+    const readRequestIdRef = React.useRef(0);
+    const mutationInFlightRef = React.useRef(false);
     const lastScopeKeyRef = React.useRef<string | null>(scopeKey);
     const scopeIsCurrent = lastScopeKeyRef.current === scopeKey;
     const visibleRegistry = scopeIsCurrent ? registry : null;
@@ -71,22 +77,23 @@ export function useMarketplaceSourceRegistryAdministration(
     React.useEffect(() => {
         if (lastScopeKeyRef.current === scopeKey) return;
         lastScopeKeyRef.current = scopeKey;
-        requestIdRef.current += 1;
+        readRequestIdRef.current += 1;
         registryRef.current = null;
         setRegistry(null);
         setLoading(false);
         setLoadError(false);
+        setMutationOutcomeUnknown(false);
     }, [scopeKey]);
 
     React.useEffect(() => {
         const requestedTarget = resolveCurrentExecutionTarget(executionTarget);
-        if (!enabled || !requestedTarget) {
-            requestIdRef.current += 1;
+        if (!enabled || !focused || !requestedTarget) {
+            readRequestIdRef.current += 1;
             setLoading(false);
             return;
         }
 
-        const requestId = ++requestIdRef.current;
+        const requestId = ++readRequestIdRef.current;
         setLoading(true);
         setLoadError(false);
         void (async () => {
@@ -95,14 +102,15 @@ export function useMarketplaceSourceRegistryAdministration(
                     serverId: requestedTarget.serverId,
                 });
                 if (
-                    requestIdRef.current !== requestId
+                    readRequestIdRef.current !== requestId
                     || !resolveCurrentExecutionTarget(requestedTarget)
                 ) return;
                 setRegistry(nextRegistry);
+                setMutationOutcomeUnknown(false);
                 setLoading(false);
             } catch {
                 if (
-                    requestIdRef.current !== requestId
+                    readRequestIdRef.current !== requestId
                     || !resolveCurrentExecutionTarget(requestedTarget)
                 ) return;
                 // A failed read of the SAME machine says nothing about which
@@ -116,7 +124,7 @@ export function useMarketplaceSourceRegistryAdministration(
                 setLoading(false);
             }
         })();
-    }, [enabled, executionTarget, refreshKey, resolveCurrentExecutionTarget, scopeKey]);
+    }, [enabled, executionTarget, focused, refreshKey, resolveCurrentExecutionTarget, scopeKey]);
 
     const refresh = React.useCallback(() => {
         setRefreshKey((previous) => previous + 1);
@@ -134,26 +142,43 @@ export function useMarketplaceSourceRegistryAdministration(
         if (!enabled || !issuedTarget || !currentRegistry) {
             throw new Error('Marketplace source registry is unavailable');
         }
-        const requestId = ++requestIdRef.current;
-        const result = await machineMarketplaceSourceRegistryMutate(issuedTarget.machine.id, mutation, {
-            serverId: issuedTarget.serverId,
-        });
-        if (
-            requestIdRef.current !== requestId
-            || !resolveCurrentExecutionTarget(issuedTarget)
-        ) return { status: 'superseded' };
-        if (result.status === 'outcomeUnknown') {
-            // Re-read only through the incumbent registry owner. The mutation
-            // itself is never replayed, and the effect above retains the same
-            // exact-target currentness fence around the returned snapshot.
-            refresh();
-            return result;
+        if (mutationInFlightRef.current) {
+            throw new Error('Marketplace source registry mutation is already in progress');
         }
-        if (result.status === 'unavailable') return result;
-        setRegistry(result.registry);
-        setLoadError(false);
-        return { status: 'success' };
-    }, [enabled, executionTarget, refresh, resolveCurrentExecutionTarget]);
+        mutationInFlightRef.current = true;
+        setMutationInFlight(true);
+        // A mutation makes an older read snapshot obsolete. Reads have their
+        // own fence so invalidating one cannot also discard an independently
+        // committed mutation, and its visible loading lifecycle is settled
+        // immediately instead of being stranded behind that invalidation.
+        readRequestIdRef.current += 1;
+        setLoading(false);
+        try {
+            const result = await machineMarketplaceSourceRegistryMutate(issuedTarget.machine.id, mutation, {
+                serverId: issuedTarget.serverId,
+            });
+            if (!resolveCurrentExecutionTarget(issuedTarget)) {
+                return { status: 'superseded' };
+            }
+            if (result.status === 'outcomeUnknown') {
+                // A lost response cannot prove whether the daemon committed.
+                // Keep the last visible daemon snapshot and the uncertainty
+                // notice until a later user/focus refresh reads authority again.
+                setMutationOutcomeUnknown(true);
+                return result;
+            }
+            if (result.status === 'unavailable') return result;
+            readRequestIdRef.current += 1;
+            setLoading(false);
+            setRegistry(result.registry);
+            setLoadError(false);
+            setMutationOutcomeUnknown(false);
+            return { status: 'success' };
+        } finally {
+            mutationInFlightRef.current = false;
+            setMutationInFlight(false);
+        }
+    }, [enabled, executionTarget, resolveCurrentExecutionTarget]);
 
     const upsertSource = React.useCallback(async (
         input: Extract<MarketplaceSourceRegistryMutationV1, { kind: 'upsert' }>['input'],
@@ -183,6 +208,8 @@ export function useMarketplaceSourceRegistryAdministration(
         registry: visibleRegistry,
         loading,
         loadError,
+        mutationInFlight,
+        mutationOutcomeUnknown,
         refresh,
         upsertSource,
         setSourceEnabled,
@@ -191,6 +218,8 @@ export function useMarketplaceSourceRegistryAdministration(
     }), [
         loadError,
         loading,
+        mutationInFlight,
+        mutationOutcomeUnknown,
         refresh,
         visibleRegistry,
         removeSource,

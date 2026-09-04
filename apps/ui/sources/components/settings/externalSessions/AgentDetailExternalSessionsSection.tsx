@@ -1,10 +1,12 @@
 import * as React from 'react';
 import { useRouter } from 'expo-router';
+import type { MachineAdministrationTargetV1 } from '@happier-dev/protocol';
 
 import { resolveAgentUiBehavior } from '@/agents/registry/registryUiBehavior';
 import { buildExternalSessionsAgentBrowseHref } from '@/components/sessions/external/browse/externalSessionBrowseNavigation';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { useSetting } from '@/sync/domains/state/storage';
+import { buildMachineAdministrationTargetRouteParams } from '@/sync/domains/machines/administration/targetSelection';
 
 import { ExternalSessionsAgentSettingsSection } from './ExternalSessionsAgentSettingsSection';
 import { useExternalSessionsIntegrationController } from './externalSessionsIntegrationController';
@@ -33,6 +35,8 @@ export const AgentDetailExternalSessionsSection = React.memo(function AgentDetai
         machineId: string | null;
         daemonStateVersion: number | null;
         serverId: string | null;
+        administrationTarget: MachineAdministrationTargetV1 | null;
+        accountSettingsAvailable: boolean;
         agent: ExternalSessionsQualifiedAgent | null;
         browseAvailable: boolean;
         refreshKey: string | null;
@@ -96,6 +100,7 @@ export const AgentDetailExternalSessionsSection = React.memo(function AgentDetai
         rawSettings: rawExternalSessionsSettings,
         knownAgents: autoLinkKnownAgents,
         enabled: machineId !== null && agent !== null,
+        accountOperationsAvailable: props.accountSettingsAvailable,
         ...(machineId && agent ? { scope: { machineId, agent } } : {}),
     });
 
@@ -129,7 +134,9 @@ export const AgentDetailExternalSessionsSection = React.memo(function AgentDetai
             onManageAll={() => {
                 router.push({
                     pathname: '/settings/external-sessions',
-                    params: { machineId: machineId ?? '' },
+                    params: props.administrationTarget
+                        ? buildMachineAdministrationTargetRouteParams(props.administrationTarget)
+                        : {},
                 });
             }}
         />

@@ -49,6 +49,7 @@ function projection(overrides: Partial<PluginUiProjectionModel> = {}): PluginUiP
                 pluginId: 'happier.triage',
                 contributionKind: 'searchProvider' as const,
                 descriptorId: 'entries',
+                identity: Object.freeze({ pluginId: 'happier.triage', localId: 'entries' }),
                 action: Object.freeze({ pluginId: 'happier.triage', localId: 'search' }),
             }),
         }),
@@ -135,6 +136,23 @@ describe('buildPluginSearchProviderSections', () => {
         expect(sections({ scopedLaunchFacts: { ...SCOPED, interactionEnabled: false } })).toHaveLength(0);
     });
 
+    it('omits an ambient provider projected for another Home when Search scope changes', () => {
+        const scopedProvider = {
+            ...SCOPED,
+            serverId: 'server-2',
+            machineId: 'machine-2',
+        };
+        const providerWithOrigin = projection({
+            searchProvidersById: Object.freeze({
+                'searchProvider:happier.triage:entries': Object.freeze({
+                    ...projection().searchProvidersById['searchProvider:happier.triage:entries'],
+                    hostOrigin: hostOrigin('happier.triage', 'machine-1', 7),
+                }),
+            }),
+        });
+        expect(sections({ projection: providerWithOrigin, scopedLaunchFacts: scopedProvider })).toHaveLength(0);
+    });
+
     it('queries the declared Action through the one dispatcher and renders its rows', async () => {
         dispatchSemanticCommand.mockResolvedValue({
             ok: true,
@@ -181,6 +199,7 @@ describe('buildPluginSearchProviderSections', () => {
                     pluginId: 'acme.first',
                     contributionKind: 'searchProvider' as const,
                     descriptorId: 'entries',
+                    identity: Object.freeze({ pluginId: 'acme.first', localId: 'entries' }),
                     action: Object.freeze({ pluginId: 'acme.first', localId: 'search' }),
                     hostOrigin: firstOrigin,
                 }),
@@ -189,6 +208,7 @@ describe('buildPluginSearchProviderSections', () => {
                     pluginId: 'acme.second',
                     contributionKind: 'searchProvider' as const,
                     descriptorId: 'entries',
+                    identity: Object.freeze({ pluginId: 'acme.second', localId: 'entries' }),
                     action: Object.freeze({ pluginId: 'acme.second', localId: 'search' }),
                     hostOrigin: secondOrigin,
                 }),
@@ -274,6 +294,7 @@ describe('buildPluginSearchProviderSections', () => {
                     pluginId: 'acme.healthy',
                     contributionKind: 'searchProvider' as const,
                     descriptorId: 'entries',
+                    identity: Object.freeze({ pluginId: 'acme.healthy', localId: 'entries' }),
                     action: Object.freeze({ pluginId: 'acme.healthy', localId: 'search' }),
                 }),
             }),
@@ -374,6 +395,37 @@ describe('buildPluginSearchProviderSections', () => {
         expect(dispatchSemanticCommand).not.toHaveBeenCalled();
     });
 
+    it('does not publish query rows after the captured Account lifetime retires', async () => {
+        let resolveQuery!: (value: unknown) => void;
+        dispatchSemanticCommand.mockImplementationOnce(() => new Promise((resolve) => {
+            resolveQuery = resolve;
+        }));
+        let current = true;
+        const accountLifetime = {
+            scope: { serverId: 'server-a', accountId: 'account-a' },
+            isCurrent: () => current,
+            onRetire: () => ({ dispose: () => undefined }),
+        };
+        const section = sections({ accountLifetime, accountLifetimeRevision: 1 })[0]!;
+        const pending = section.resolve('private', new AbortController().signal);
+        await vi.waitFor(() => expect(dispatchSemanticCommand).toHaveBeenCalledTimes(1));
+
+        current = false;
+        resolveQuery({
+            ok: true,
+            result: {
+                items: [{
+                    id: 'private-entry',
+                    title: 'Private entry',
+                    command: { kind: 'executeAction', action: 'open-entry' },
+                }],
+                truncated: false,
+            },
+        });
+
+        await expect(pending).resolves.toEqual({ options: [] });
+    });
+
     it('commits without dispatching, then activates through the incumbent semantic-command owner', async () => {
         dispatchSemanticCommand.mockResolvedValueOnce({
             ok: true,
@@ -421,11 +473,17 @@ describe('buildPluginSearchProviderSections', () => {
         });
         const onCommitActivation = vi.fn();
         let current = true;
+        const accountLifetime = {
+            scope: { serverId: 'server-a', accountId: 'account-a' },
+            isCurrent: () => current,
+            onRetire: () => ({ dispose: () => undefined }),
+        };
         const built = buildPluginSearchProviderSections({
             projection: projection(),
             scopedLaunchFacts: SCOPED,
             rowLimit: 8,
-            scopeIsCurrent: () => current,
+            accountLifetime,
+            accountLifetimeRevision: 1,
             onCommitActivation,
         } as Parameters<typeof buildPluginSearchProviderSections>[0]);
         const resolved = await built[0]!.resolve('pr', new AbortController().signal);
@@ -434,6 +492,47 @@ describe('buildPluginSearchProviderSections', () => {
         expect(dispatchSemanticCommand).toHaveBeenCalledTimes(1);
         const outcome = await onCommitActivation.mock.calls[0]![0]();
         expect(outcome).toEqual({
+            ok: false,
+            code: 'stale_surface',
+            reason: 'plugin_ui_generation_retired',
+        });
+        expect(dispatchSemanticCommand).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not accept a replacement Account lifetime merely because its scope strings are identical', async () => {
+        dispatchSemanticCommand.mockResolvedValueOnce({
+            ok: true,
+            result: {
+                items: [{ id: 'entry-1', title: 'Private result', command: { kind: 'executeAction', action: 'open-entry' } }],
+                truncated: false,
+            },
+        });
+        const onCommitActivation = vi.fn();
+        let admittingLifetimeCurrent = true;
+        const admittingLifetime = {
+            scope: { serverId: 'server-a', accountId: 'account-a' },
+            isCurrent: () => admittingLifetimeCurrent,
+            onRetire: () => ({ dispose: () => undefined }),
+        };
+        const built = buildPluginSearchProviderSections({
+            projection: projection(),
+            scopedLaunchFacts: SCOPED,
+            accountLifetime: admittingLifetime,
+            accountLifetimeRevision: 4,
+            onCommitActivation,
+        } as Parameters<typeof buildPluginSearchProviderSections>[0]);
+        const resolved = await built[0]!.resolve('private', new AbortController().signal);
+
+        admittingLifetimeCurrent = false;
+        const replacementLifetime = {
+            scope: { ...admittingLifetime.scope },
+            isCurrent: () => true,
+            onRetire: () => ({ dispose: () => undefined }),
+        };
+        expect(replacementLifetime.scope).toEqual(admittingLifetime.scope);
+        resolved.options[0]!.onSelect?.();
+
+        await expect(onCommitActivation.mock.calls[0]![0]()).resolves.toEqual({
             ok: false,
             code: 'stale_surface',
             reason: 'plugin_ui_generation_retired',

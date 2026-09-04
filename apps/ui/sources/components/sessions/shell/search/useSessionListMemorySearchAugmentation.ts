@@ -3,8 +3,9 @@ import * as React from 'react';
 import type { MemorySearchHitV1 } from '@happier-dev/protocol';
 
 import {
-    hasLocalMemorySearchSessionForServerScope,
-    hydrateMemorySearchSessionTargets,
+    captureMemorySearchSessionReadAuthority,
+    authorizeMemorySearchResult,
+    readMemorySearchSessionHydrationConcurrencyLimit,
     readMemorySearchSessionForServerScope,
 } from '@/sync/domains/memory/hydrateMemorySearchSessionTargets';
 import { normalizeMemorySearchSessionId } from '@/sync/domains/memory/applyMemorySearchSessionEligibility';
@@ -17,6 +18,8 @@ import {
 import type { ServerCredentialAccountScopeBinding } from '@/sync/domains/scope/useServerCredentialAccountScopes';
 import { useServerCredentialAccountScopes } from '@/sync/domains/scope/useServerCredentialAccountScopes';
 import { serverAccountScopeKeySuffix } from '@/sync/domains/scope/serverAccountScope';
+import { createServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import { ensureSessionMetadataInventoryForServerAccountScope } from '@/sync/domains/session/fetchSessionMetadataInventoryForServerAccountScope';
 
 import { sessionTagKey } from '../sessionTagUtils';
 
@@ -35,6 +38,7 @@ const EMPTY_MEMORY_MATCHED_SESSION_TARGETS: ReadonlyArray<SessionListMemorySearc
 export type SessionListMemorySearchTarget = Readonly<{
     sessionKey: string;
     serverId: string;
+    accountId: string;
     sessionId: string;
     reasons: readonly ['transcript'];
     /** Exact daemon source captured at query time; Home search has no machine source. */
@@ -50,9 +54,13 @@ export type SessionListMemorySearchAugmentationState = Readonly<{
     lastSuccessfulQuery?: string;
     lastSuccessfulScopeKey?: string;
     activeScopeKey: string;
+    sessionInventoryStatus: 'idle' | 'loading' | 'ready' | 'error';
+    retrySessionInventory: () => void;
 }>;
 
-const IDLE_MEMORY_SEARCH_STATE: SessionListMemorySearchAugmentationState = {
+type MemorySearchState = Omit<SessionListMemorySearchAugmentationState, 'sessionInventoryStatus' | 'retrySessionInventory'>;
+
+const IDLE_MEMORY_SEARCH_STATE: MemorySearchState = {
     memoryMatchedSessionKeys: EMPTY_MEMORY_MATCHED_SESSION_KEYS,
     memoryMatchedSessionTargets: EMPTY_MEMORY_MATCHED_SESSION_TARGETS,
     isSearchingMemory: false,
@@ -86,23 +94,29 @@ export type SessionListMemorySearchContext = Readonly<{
     serverId: string;
     machineId: string | null;
     activeScopeKey: string;
-    accountId: string | null;
     accountBinding: ServerCredentialAccountScopeBinding | null;
+    inventoryServerId: string;
 }>;
 
 export function useSessionListMemorySearchContext(
     target?: Readonly<{ serverId?: string | null }>,
 ): SessionListMemorySearchContext {
-    const providerDecision = useMemorySearchProvider(target);
+    const requestedServerId = String(target?.serverId ?? '').trim();
+    const providerDecision = useMemorySearchProvider(target === undefined
+        ? { kind: 'ambient' }
+        : requestedServerId
+            ? { kind: 'exact', serverId: requestedServerId }
+            : { kind: 'none' });
     const isHomeProvider = providerDecision.provider === 'home';
     const machineId = providerDecision.daemonTarget?.machineId ?? null;
     const serverId = isHomeProvider
         ? providerDecision.homeServerId ?? ''
         : providerDecision.daemonTarget?.serverId ?? '';
-    const credentialBindings = useServerCredentialAccountScopes([serverId]);
-    const accountBinding = serverId ? credentialBindings.get(serverId) ?? null : null;
+    const inventoryServerId = requestedServerId || serverId;
+    const credentialBindings = useServerCredentialAccountScopes([inventoryServerId]);
+    const accountBinding = inventoryServerId ? credentialBindings.get(inventoryServerId) ?? null : null;
     const accountScope = accountBinding
-        ? { serverId, accountId: accountBinding.accountId }
+        ? { serverId: inventoryServerId, accountId: accountBinding.accountId }
         : null;
     const activeScopeKey = buildSessionListMemorySearchScopeKey({
         accountScope,
@@ -117,9 +131,9 @@ export function useSessionListMemorySearchContext(
         serverId,
         machineId,
         activeScopeKey,
-        accountId: accountBinding?.accountId ?? null,
         accountBinding,
-    }), [accountBinding, activeScopeKey, isHomeProvider, machineId, providerDecision, serverId]);
+        inventoryServerId,
+    }), [accountBinding, activeScopeKey, inventoryServerId, isHomeProvider, machineId, providerDecision, serverId]);
 }
 
 function isAbortSupersession(error: unknown, signal: AbortSignal): boolean {
@@ -127,10 +141,10 @@ function isAbortSupersession(error: unknown, signal: AbortSignal): boolean {
 }
 
 function resolveIdleMemorySearchState(
-    current: SessionListMemorySearchAugmentationState,
+    current: MemorySearchState,
     activeScopeKey: string,
     memorySearchUnavailableReason?: string,
-): SessionListMemorySearchAugmentationState {
+): MemorySearchState {
     const hasMemoryMatches = current.memoryMatchedSessionKeys.size > 0;
     if (
         !hasMemoryMatches
@@ -152,10 +166,10 @@ function resolveIdleMemorySearchState(
 }
 
 function resolveRefreshingMemorySearchState(
-    current: SessionListMemorySearchAugmentationState,
+    current: MemorySearchState,
     normalizedQuery: string,
     activeScopeKey: string,
-): SessionListMemorySearchAugmentationState {
+): MemorySearchState {
     if (current.lastSuccessfulQuery === normalizedQuery && current.lastSuccessfulScopeKey === activeScopeKey) {
         if (!current.isSearchingMemory && current.memorySearchUnavailableReason === undefined) {
             return current;
@@ -193,13 +207,60 @@ export function useSessionListMemorySearchAugmentationForContext(
     input: SessionListMemorySearchAugmentationInput,
     context: SessionListMemorySearchContext,
 ): SessionListMemorySearchAugmentationState {
-    const { accountBinding, accountId, activeScopeKey, isHomeProvider, machineId, providerDecision, serverId } = context;
+    const { accountBinding, activeScopeKey, inventoryServerId, isHomeProvider, machineId, providerDecision, serverId } = context;
     const queryAvailable = providerDecision.queryAvailable;
     const unavailableReason = providerDecision.unavailableReason;
     const normalizedQuery = input.searchQuery.trim();
-    const [state, setState] = React.useState<SessionListMemorySearchAugmentationState>(IDLE_MEMORY_SEARCH_STATE);
+    const hasInventoryQuery = normalizedQuery.length > 0;
+    const [state, setState] = React.useState<MemorySearchState>(IDLE_MEMORY_SEARCH_STATE);
+    const [sessionInventoryStatus, setSessionInventoryStatus] = React.useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+    const [sessionInventoryAttempt, retrySessionInventory] = React.useReducer((attempt: number) => attempt + 1, 0);
     const activeScopeKeyRef = React.useRef(activeScopeKey);
     activeScopeKeyRef.current = activeScopeKey;
+
+    React.useEffect(() => {
+        if (
+            input.enabled === false
+            || !hasInventoryQuery
+            || !inventoryServerId
+            || !accountBinding
+            || !accountBinding.isCurrent()
+        ) {
+            setSessionInventoryStatus('idle');
+            return;
+        }
+        const scope = createServerAccountScope(inventoryServerId, accountBinding.accountId);
+        if (!scope) {
+            setSessionInventoryStatus('error');
+            return;
+        }
+        const controller = new AbortController();
+        let current = true;
+        setSessionInventoryStatus('loading');
+        void ensureSessionMetadataInventoryForServerAccountScope({
+            scope,
+            accountLifetime: accountBinding,
+            signal: controller.signal,
+            ...(sessionInventoryAttempt > 0 ? { refresh: true } : {}),
+        }).then(() => {
+            if (current && !controller.signal.aborted && accountBinding.isCurrent()) {
+                setSessionInventoryStatus('ready');
+            }
+        }).catch((error: unknown) => {
+            if (!current || isAbortSupersession(error, controller.signal) || !accountBinding.isCurrent()) return;
+            setSessionInventoryStatus('error');
+        });
+        return () => {
+            current = false;
+            controller.abort();
+        };
+    }, [
+        accountBinding,
+        input.enabled,
+        inventoryServerId,
+        hasInventoryQuery,
+        sessionInventoryAttempt,
+    ]);
 
     React.useEffect(() => {
         if (
@@ -232,10 +293,29 @@ export function useSessionListMemorySearchAugmentationForContext(
             && activeScopeKeyRef.current === activeScopeKey
         );
 
-        const applySearchHits = async (hits: ReadonlyArray<MemorySearchHitV1>) => {
+        const applySearchHits = async (
+            hits: ReadonlyArray<MemorySearchHitV1>,
+            authority: Awaited<ReturnType<typeof captureMemorySearchSessionReadAuthority>>,
+        ) => {
+            // Both indexes are derived state that can outlive the Account's access
+            // or its caller-visible transcript ceiling. Reauthorize every retained
+            // range through the exact-server Session reader before it becomes a row.
+            const authorizedResult = await authorizeMemorySearchResult({
+                result: { v: 1, ok: true, hits: [...hits] },
+                serverId,
+                accountId: accountBinding.accountId,
+                authority,
+                accountLifetime: accountBinding,
+                readSessionForServerScope: readMemorySearchSessionForServerScope,
+                concurrencyLimit: readMemorySearchSessionHydrationConcurrencyLimit(),
+                signal,
+            });
+            if (!isCurrentRequest()) return;
+            if (authorizedResult.ok !== true) return;
+
             const seenKeys = new Set<string>();
             const hitTargets: SessionListMemorySearchTarget[] = [];
-            for (const hit of hits) {
+            for (const hit of authorizedResult.hits) {
                 const sessionId = normalizeMemorySearchSessionId(hit.sessionId);
                 if (!sessionId) continue;
                 const sessionKey = sessionTagKey(serverId, sessionId);
@@ -244,26 +324,14 @@ export function useSessionListMemorySearchAugmentationForContext(
                 hitTargets.push({
                     sessionKey,
                     serverId,
+                    accountId: accountBinding.accountId,
                     sessionId,
                     reasons: ['transcript'],
                     sourceMachineId: isHomeProvider ? null : machineId,
                 });
             }
 
-            // Both indexes are derived state that can outlive the Account's access
-            // to a Session, so every hit the local server-scoped projection does not
-            // already carry is authorized and materialized through the canonical
-            // explicit-server reader before it can become a row.
-            const authorizedTargets = await hydrateMemorySearchSessionTargets({
-                targets: hitTargets,
-                hasLocalSession: hasLocalMemorySearchSessionForServerScope,
-                readSessionForServerScope: readMemorySearchSessionForServerScope,
-                signal,
-            });
-            if (!isCurrentRequest()) return;
-
-            const authorizedKeys = new Set(authorizedTargets.map((target) => target.sessionKey));
-            const nextTargets = hitTargets.filter((target) => authorizedKeys.has(target.sessionKey));
+            const nextTargets = hitTargets;
 
             const nextKeys = new Set(nextTargets.map((target) => target.sessionKey));
             if (!isCurrentRequest()) return;
@@ -281,7 +349,13 @@ export function useSessionListMemorySearchAugmentationForContext(
 
         const timeout = setTimeout(() => {
             void (async () => {
+                let authority: Awaited<ReturnType<typeof captureMemorySearchSessionReadAuthority>> | null = null;
                 try {
+                    if (!isCurrentRequest()) return;
+                    authority = await captureMemorySearchSessionReadAuthority({
+                        serverId,
+                        accountId: accountBinding.accountId,
+                    });
                     if (!isCurrentRequest()) return;
                     setState((current) => ({
                         ...current,
@@ -294,7 +368,7 @@ export function useSessionListMemorySearchAugmentationForContext(
                         // Home search never requires a machine or a running daemon.
                         const homeResult = await searchHomeMemory({
                             serverId,
-                            accountId: accountId ?? '',
+                            accountId: accountBinding.accountId,
                             query: normalizedQuery,
                             scope: { type: 'global' },
                             mode: 'auto',
@@ -309,12 +383,13 @@ export function useSessionListMemorySearchAugmentationForContext(
                             setState((current) => resolveIdleMemorySearchState(current, activeScopeKey, homeResult.errorCode));
                             return;
                         }
-                        await applySearchHits(homeResult.hits);
+                        await applySearchHits(homeResult.hits, authority);
                         return;
                     }
 
                     const result = await searchDaemonMemory({
                         serverId,
+                        accountId: accountBinding.accountId,
                         machineId,
                         query: normalizedQuery,
                         scope: { type: 'global' },
@@ -332,11 +407,13 @@ export function useSessionListMemorySearchAugmentationForContext(
                         return;
                     }
 
-                    await applySearchHits(result.hits);
+                    await applySearchHits(result.hits, authority);
                 } catch (error) {
                     // A superseded query owns no state: the query that replaced it does.
                     if (isAbortSupersession(error, signal) || !isCurrentRequest()) return;
                     setState((current) => resolveIdleMemorySearchState(current, activeScopeKey, 'rpc_error'));
+                } finally {
+                    await authority?.release();
                 }
             })();
         }, SESSION_LIST_MEMORY_SEARCH_DEBOUNCE_MS);
@@ -349,7 +426,6 @@ export function useSessionListMemorySearchAugmentationForContext(
     }, [
         activeScopeKey,
         accountBinding,
-        accountId,
         input.enabled,
         input.eligibleSessionIds,
         isHomeProvider,
@@ -362,9 +438,18 @@ export function useSessionListMemorySearchAugmentationForContext(
     ]);
 
     if (state.activeScopeKey !== activeScopeKey) {
-        return { ...IDLE_MEMORY_SEARCH_STATE, activeScopeKey };
+        return {
+            ...IDLE_MEMORY_SEARCH_STATE,
+            activeScopeKey,
+            sessionInventoryStatus,
+            retrySessionInventory,
+        };
     }
-    return state;
+    return {
+        ...state,
+        sessionInventoryStatus,
+        retrySessionInventory,
+    };
 }
 
 export function useSessionListMemorySearchAugmentation(

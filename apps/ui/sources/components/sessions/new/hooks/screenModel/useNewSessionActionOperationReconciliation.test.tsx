@@ -273,6 +273,42 @@ describe('useNewSessionActionOperationReconciliation', () => {
         }
     });
 
+    it('does not route a completed launch after the new-session surface unmounts during hydration', async () => {
+        storageState.sessions = {};
+        let resolveVisibility: ((result: { kind: 'available' }) => void) | null = null;
+        ensureSessionVisibleForMessageRouteMock.mockImplementationOnce(async () => (
+            await new Promise<{ kind: 'available' }>((resolve) => {
+                resolveVisibility = resolve;
+            })
+        ));
+        actionOperationStore.mergeSnapshots([operation('succeeded')]);
+        const disableDraftPersistence = vi.fn();
+        const router = { replace: vi.fn() };
+
+        const hook = await renderHook(() => useNewSessionActionOperationReconciliation({
+            draftId: 'draft-a',
+            requestId: 'request-1',
+            draftScope,
+            localCreationInFlight: false,
+            disableDraftPersistence,
+            resetLaunchRequestId: vi.fn(),
+            router,
+        }));
+
+        await vi.waitFor(() => expect(ensureSessionVisibleForMessageRouteMock).toHaveBeenCalledTimes(1));
+        await hook.unmount();
+        storageState.sessions = { 'session-created': { id: 'session-created' } };
+        await act(async () => {
+            resolveVisibility?.({ kind: 'available' });
+            await Promise.resolve();
+        });
+
+        expect(router.replace).not.toHaveBeenCalled();
+        expect(disableDraftPersistence).not.toHaveBeenCalled();
+        expect(clearCapturedDraftMock).not.toHaveBeenCalled();
+        expect(presentationAcknowledgeRequestMock).not.toHaveBeenCalled();
+    });
+
     it('preserves an outcome-unknown first turn instead of projecting it as accepted', async () => {
         actionOperationStore.mergeSnapshots([operation('succeeded', {
             result: {

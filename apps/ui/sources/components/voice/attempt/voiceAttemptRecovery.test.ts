@@ -33,7 +33,7 @@ const RUNTIME_TARGET = {
   agentId: 'codex',
   pluginId: 'acme.installed-agent',
   machineId: 'm2',
-  serverId: 'server1',
+  serverIdentityId: 'server-identity-1',
 } as const;
 
 function context(overrides: Partial<{
@@ -133,7 +133,7 @@ describe('the one Voice recovery dispatch every placement fires', () => {
   it.each([
     ['install_agent_runtime', 'install'],
     ['update_agent_runtime', 'update'],
-  ] as const)('routes %s to the exact qualified Agent runtime target', async (action, installIntent) => {
+  ] as const)('routes %s to the exact portable Agent runtime target', async (action, installIntent) => {
     const navigate = vi.fn();
     (await dispatch(action, navigate))();
     expect(navigate).toHaveBeenCalledWith({
@@ -142,10 +142,18 @@ describe('the one Voice recovery dispatch every placement fires', () => {
         agentId: 'codex',
         pluginId: 'acme.installed-agent',
         machineId: 'm2',
-        serverId: 'server1',
+        serverIdentityId: 'server-identity-1',
         installIntent,
       },
     });
+  });
+
+  it('never hands a device-local routing id to the Agent route as selection authority', async () => {
+    const navigate = vi.fn();
+    (await dispatch('install_agent_runtime', navigate))();
+    const params = navigate.mock.calls[0]?.[0]?.params as Record<string, unknown> | undefined;
+    expect(params).toBeDefined();
+    expect(params).not.toHaveProperty('serverId');
   });
 
   it('fails Agent runtime recovery closed when exact target identity is unavailable', async () => {

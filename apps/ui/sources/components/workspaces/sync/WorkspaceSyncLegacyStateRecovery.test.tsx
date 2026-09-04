@@ -3,14 +3,17 @@ import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
+import { RPC_ERROR_CODES } from '@happier-dev/protocol/rpc';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const inspect = vi.hoisted(() => vi.fn());
-const machines = vi.hoisted(() => [{ id: 'machine-local', metadata: { displayName: 'This computer' } }]);
+const machineState = vi.hoisted(() => ({
+    machines: [{ id: 'machine-local', metadata: { displayName: 'This computer' } }] as readonly Record<string, unknown>[],
+}));
 
 vi.mock('@/sync/domains/state/storage', () => ({
-    useAllMachines: () => machines,
+    useAllMachines: () => machineState.machines,
 }));
 vi.mock('@/components/settings/machines/localControl/useLocalDaemonControl', () => ({
     useLocalDaemonControl: () => ({ status: { machineId: 'machine-local' } }),
@@ -33,6 +36,39 @@ vi.mock('@/components/ui/lists/Item', () => ({
 describe('WorkspaceSyncLegacyStateRecovery', () => {
     beforeEach(() => {
         inspect.mockReset();
+        machineState.machines = [{ id: 'machine-local', metadata: { displayName: 'This computer' } }];
+    });
+
+    it('reports an old daemon without the inspection RPC as update-required, not as a detector failure', async () => {
+        inspect.mockRejectedValue(Object.assign(new Error('RPC method not available'), { rpcErrorCode: RPC_ERROR_CODES.METHOD_NOT_AVAILABLE }));
+        const { WorkspaceSyncLegacyStateRecovery } = await import('./WorkspaceSyncLegacyStateRecovery');
+        const screen = await renderScreen(<WorkspaceSyncLegacyStateRecovery />);
+        await act(async () => undefined);
+
+        expect(screen.findByTestId('workspace-sync-legacy-outdated-machine-local')).not.toBeNull();
+        expect(screen.findAllByType('Item').some((item) => item.props.testID === 'workspace-sync-legacy-inspection-failed')).toBe(false);
+    });
+
+    it('uses machine daemon version evidence to report a released daemon that predates the inspection RPC', async () => {
+        machineState.machines = [{ id: 'machine-local', metadata: { displayName: 'This computer' }, daemonState: { cliVersion: '0.2.11' } }];
+        inspect.mockRejectedValue(new Error('machine offline'));
+        const { WorkspaceSyncLegacyStateRecovery } = await import('./WorkspaceSyncLegacyStateRecovery');
+        const screen = await renderScreen(<WorkspaceSyncLegacyStateRecovery />);
+        await act(async () => undefined);
+
+        expect(screen.findByTestId('workspace-sync-legacy-outdated-machine-local')).not.toBeNull();
+        expect(screen.findAllByType('Item').some((item) => item.props.testID === 'workspace-sync-legacy-inspection-failed')).toBe(false);
+    });
+
+    it('still reports an inspection failure as a detector failure when the daemon is current', async () => {
+        machineState.machines = [{ id: 'machine-local', metadata: { displayName: 'This computer' }, daemonState: { cliVersion: '9.0.0' } }];
+        inspect.mockRejectedValue(new Error('detector crashed'));
+        const { WorkspaceSyncLegacyStateRecovery } = await import('./WorkspaceSyncLegacyStateRecovery');
+        const screen = await renderScreen(<WorkspaceSyncLegacyStateRecovery />);
+        await act(async () => undefined);
+
+        expect(screen.findByTestId('workspace-sync-legacy-inspection-failed')).not.toBeNull();
+        expect(screen.findAllByType('Item').some((item) => String(item.props.testID ?? '').startsWith('workspace-sync-legacy-outdated'))).toBe(false);
     });
 
     it('shows the exact copyable quarantine and offline-only recovery without a delete action', async () => {

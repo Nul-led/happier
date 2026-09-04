@@ -4,6 +4,8 @@ import { PluginManifestV2Schema } from '@happier-dev/protocol';
 
 import { renderScreen, standardCleanup } from '@/dev/testkit';
 
+vi.mock('@react-navigation/native', async () => (await import('@/dev/testkit/mocks/reactNavigation')).createReactNavigationNativeMock());
+
 const PLUGIN_ID = 'example.tasks';
 
 const declaration = PluginManifestV2Schema.parse({

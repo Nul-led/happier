@@ -38,6 +38,7 @@ import {
     areSessionListIndexItemsEqual,
     buildSessionListIndexNodeId,
     resolveSessionListItemOrganizationEligibility,
+    type SessionListContextualSearchReason,
     type SessionListIndexItem,
 } from '@/sync/domains/sessionList/sessionListIndex';
 import { normalizeSessionListShellState } from './normalizeSessionListShellState';
@@ -84,7 +85,6 @@ import {
     writeSessionOrganizationPinForSessionKey,
     writeSessionOrganizationTagLabels,
     writeSessionOrganizationTagLabelsForSessionKey,
-    writeSessionOrganizationWorkspaceLabels,
     writeSessionOrganizationWorkspaceOrder,
     type SessionOrganizationMutationScope,
 } from '@/sync/ops/sessionOrganization';
@@ -123,7 +123,8 @@ import {
 } from './sessionListFilters';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { HappyError } from '@/utils/errors/errors';
-import { useActiveServerAccountScope } from '@/sync/store/hooks';
+import { useActiveServerAccountScope, useSessionListRowStateByServerId } from '@/sync/store/hooks';
+import { readSessionListRowsForServerId } from '@/sync/domains/session/listing/sessionListRowStateLookup';
 import { deleteSessionDraft } from '@/sync/ops/sessionDrafts/sessionDraftRepository';
 import {
     SESSION_LIST_MEMORY_SEARCH_MIN_QUERY_LENGTH,
@@ -132,6 +133,10 @@ import {
     type SessionListMemorySearchTarget,
 } from './search/useSessionListMemorySearchAugmentation';
 import { useSessionListHeaderFilterRetention } from './search/useSessionListHeaderFilterRetention';
+import {
+    resolveSessionListMetadataSearchTargets,
+    type SessionListSearchOutsideMatch,
+} from './search/sessionListSearchGroups';
 import { buildSessionListRetentionKey } from './scroll/sessionListRetentionKey';
 import { useSessionListPaneSourceScopeKey } from './sessionListPaneRetention';
 import {
@@ -159,6 +164,7 @@ import {
     useSessionListSelectionController,
 } from './selection/SessionListSelectionContext';
 import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
+import { transcriptSearchUnavailableHint } from '@/components/appShell/search/transcriptSearchUnavailableHint';
 
 const NATIVE_LIST_ALL_RENDERED_ROW_STORE_MAX_ITEMS = 200;
 const EMPTY_MEMORY_MATCHED_SESSION_KEYS: ReadonlySet<string> = new Set();
@@ -494,7 +500,7 @@ export function useSessionListViewStateFromPaneState(
     const sessionListFolderSortModeV1 = useSetting('sessionListFolderSortModeV1') === 'mixed' ? 'mixed' : 'foldersFirst';
     const sessionFolderViewModeV1 = useSetting('sessionFolderViewModeV1') === 'tree' ? 'tree' : 'off';
     const sessionTagsEnabled = useSetting('sessionTagsEnabled');
-    const [workspaceRefsV1, setWorkspaceRefsV1] = useSettingMutable('workspaceRefsV1');
+    const workspaceRefsV1 = useSetting('workspaceRefsV1');
     const workspacePathDisplayModeV1 = useSetting('workspacePathDisplayModeV1');
     const workspaceFaviconsEnabled = useSetting('workspaceFaviconsEnabled') !== false;
     const workspaceMachineSubtitlesEnabled = useSetting('workspaceMachineSubtitlesEnabled') !== false;
@@ -707,17 +713,6 @@ export function useSessionListViewStateFromPaneState(
             });
         });
     }, [activeOrganizationServerId, availableSessionFoldersV1, getAvailableOrganizationMutationScope, runOrganizationMutation]);
-    const setWorkspaceLabelsV1 = React.useCallback((nextLabelsRaw: Record<string, string>) => {
-        runOrganizationMutation(async () => {
-            const scope = await getAvailableOrganizationMutationScope(activeOrganizationServerId);
-            if (!scope) return;
-            await writeSessionOrganizationWorkspaceLabels({
-                scope,
-                current: availableWorkspaceLabelsV1,
-                next: nextLabelsRaw,
-            });
-        });
-    }, [activeOrganizationServerId, availableWorkspaceLabelsV1, getAvailableOrganizationMutationScope, runOrganizationMutation]);
     const memorySearch = useSessionListMemorySearchAugmentationForContext(
         {
             searchQuery,
@@ -759,41 +754,136 @@ export function useSessionListViewStateFromPaneState(
         memorySearch.memoryMatchedSessionTargets,
         searchQuery,
     ]);
-    // The render/materialization owner compares these exact transcript targets with
-    // the current filtered view. It keeps in-view rows ordinary and projects every
-    // absent or filter-hidden target under `Other matches` without mutating filters.
+    const searchOrganization = React.useMemo(() => ({
+        sessionTags: normalizedShellState.sessionTags,
+        workspaceRefs: normalizedShellState.workspaceRefs,
+        workspacePathDisplayModeV1,
+    }), [
+        normalizedShellState.sessionTags,
+        normalizedShellState.workspaceRefs,
+        workspacePathDisplayModeV1,
+    ]);
+    const sessionListRowsByServerId = useSessionListRowStateByServerId();
+    const inventorySessionItems = React.useMemo<ReadonlyArray<Extract<SessionListIndexItem, { type: 'session' }>>>(() => {
+        if (!activeOrganizationServerId || searchQuery.trim().length === 0) return [];
+        const rows = readSessionListRowsForServerId(sessionListRowsByServerId, activeOrganizationServerId);
+        if (!rows) return [];
+        return Object.values(rows).map((session) => ({
+            type: 'session',
+            sessionId: session.id,
+            serverId: activeOrganizationServerId,
+            archivedAt: session.archivedAt ?? null,
+        }));
+    }, [activeOrganizationServerId, searchQuery, sessionListRowsByServerId]);
+    const {
+        searchableTextBySessionKey,
+        primarySearchableTextBySessionKey,
+    } = useSessionListSearchTextByKey(
+        inventorySessionItems.length > 0
+            ? inventorySessionItems
+            : renderPaneState.visibleSessionListIndex ?? [],
+        searchQuery.trim().length > 0,
+        searchOrganization,
+    );
+    const inventoryMetadataMatchedSessionTargets = React.useMemo<ReadonlyArray<SessionListSearchOutsideMatch>>(() => {
+        if (inventorySessionItems.length === 0) return [];
+        return resolveSessionListMetadataSearchTargets({
+            inventoryItems: inventorySessionItems,
+            filters: {
+                searchQuery,
+                selectedTags: selectedHeaderTags,
+                searchableTextBySessionKey,
+                primarySearchableTextBySessionKey,
+                sessionTags: normalizedShellState.sessionTags,
+            },
+        });
+    }, [
+        inventorySessionItems,
+        normalizedShellState.sessionTags,
+        primarySearchableTextBySessionKey,
+        searchQuery,
+        searchableTextBySessionKey,
+        selectedHeaderTags,
+    ]);
+    // Metadata bands lead, transcript-only matches retain provider order, and a
+    // duplicate exact identity becomes one ordinary Session row with all reasons.
+    const activeContextualSearchTargets = React.useMemo(() => {
+        const merged = new Map<string, SessionListSearchOutsideMatch>();
+        for (const target of [...inventoryMetadataMatchedSessionTargets, ...activeMemoryMatchedSessionTargets]) {
+            const previous = merged.get(target.sessionKey);
+            if (!previous) {
+                merged.set(target.sessionKey, target);
+                continue;
+            }
+            const reasons: SessionListContextualSearchReason[] = [
+                ...new Set([...previous.reasons, ...target.reasons]),
+            ];
+            merged.set(target.sessionKey, {
+                ...previous,
+                reasons,
+                sourceMachineId: previous.sourceMachineId ?? target.sourceMachineId,
+            });
+        }
+        return [...merged.values()];
+    }, [activeMemoryMatchedSessionTargets, inventoryMetadataMatchedSessionTargets]);
+    // The render/materialization owner compares exact targets with the current
+    // filtered view, retaining local rows and grouping every absent match after it.
     const searchOtherMatches = React.useMemo(() => {
-        if (activeMemoryMatchedSessionTargets.length === 0) return null;
+        if (activeContextualSearchTargets.length === 0) return null;
         return {
-            matches: activeMemoryMatchedSessionTargets,
+            matches: activeContextualSearchTargets,
             inThisViewTitle: t('sessionsList.searchGroupInThisView'),
             otherMatchesTitle: t('sessionsList.searchGroupOtherMatches'),
         };
-    }, [activeMemoryMatchedSessionTargets]);
-    const searchableTextBySessionKey = useSessionListSearchTextByKey(
-        renderPaneState.visibleSessionListIndex ?? [],
-        searchQuery.trim().length > 0,
-    );
+    }, [activeContextualSearchTargets]);
     const searchTrailingAccessory = React.useMemo(() => {
-        if (
-            !memorySearch.isSearchingMemory
-            || searchQuery.trim().length < SESSION_LIST_MEMORY_SEARCH_MIN_QUERY_LENGTH
-        ) {
-            return undefined;
-        }
+        const queryLength = searchQuery.trim().length;
+        const inventoryLoading = memorySearch.sessionInventoryStatus === 'loading' && queryLength > 0;
+        const transcriptLoading = memorySearch.isSearchingMemory
+            && queryLength >= SESSION_LIST_MEMORY_SEARCH_MIN_QUERY_LENGTH;
+        if (!inventoryLoading && !transcriptLoading) return undefined;
         return (
             <ActivitySpinner
                 testID="session-list-memory-search-loading-indicator"
                 size={14}
             />
         );
-    }, [memorySearch.isSearchingMemory, searchQuery]);
+    }, [memorySearch.isSearchingMemory, memorySearch.sessionInventoryStatus, searchQuery]);
+    const searchStatus = React.useMemo(() => {
+        if (memorySearch.sessionInventoryStatus === 'error' && searchQuery.trim().length > 0) {
+            return {
+                message: t('errors.searchFailed'),
+                onRetry: memorySearch.retrySessionInventory,
+            };
+        }
+        if (
+            searchQuery.trim().length < SESSION_LIST_MEMORY_SEARCH_MIN_QUERY_LENGTH
+            || !memorySearch.memorySearchUnavailableReason
+        ) {
+            return undefined;
+        }
+        return {
+            message: transcriptSearchUnavailableHint(memorySearch.memorySearchUnavailableReason),
+        };
+    }, [
+        memorySearch.memorySearchUnavailableReason,
+        memorySearch.retrySessionInventory,
+        memorySearch.sessionInventoryStatus,
+        searchQuery,
+    ]);
     const headerFilters = React.useMemo(() => ({
         searchQuery,
         selectedTags: selectedHeaderTags,
         searchableTextBySessionKey,
+        primarySearchableTextBySessionKey,
         memoryMatchedSessionKeys: activeMemoryMatchedSessionKeys,
-    }), [activeMemoryMatchedSessionKeys, searchQuery, searchableTextBySessionKey, selectedHeaderTags]);
+    }), [
+        activeMemoryMatchedSessionKeys,
+        primarySearchableTextBySessionKey,
+        searchQuery,
+        searchableTextBySessionKey,
+        selectedHeaderTags,
+    ]);
     const universalSearchScope = React.useMemo(() => (
         draftScope && activeOrganizationServerId
             ? {
@@ -815,6 +905,7 @@ export function useSessionListViewStateFromPaneState(
         allKnownTags: sessionTagsEnabled === true ? allKnownTags : EMPTY_KNOWN_TAGS,
         selectedTags: selectedHeaderTags,
         searchQuery,
+        searchStatus,
         searchTrailingAccessory,
         onSelectedTagsChange: setSelectedHeaderTags,
         onSearchQueryChange: setSearchQuery,
@@ -823,6 +914,7 @@ export function useSessionListViewStateFromPaneState(
         allKnownTags,
         handleOpenUniversalSearch,
         searchQuery,
+        searchStatus,
         searchTrailingAccessory,
         selectedHeaderTags,
         sessionTagsEnabled,
@@ -1440,7 +1532,6 @@ export function useSessionListViewStateFromPaneState(
         handleToggleCollapse,
     } = useSessionListWorkspaceHeaderActions({
         workspaceRefs: normalizedShellState.workspaceRefs,
-        setWorkspaceRefs: setWorkspaceRefsV1,
         collapsedGroupKeys: normalizedShellState.collapsedGroupKeys,
         setCollapsedGroupKeys: setCollapsedGroupKeysV1,
     });
@@ -1694,9 +1785,6 @@ export function useSessionListViewStateFromPaneState(
 
     useSessionListWorkspaceLabelMigration({
         workspaceLabels: normalizedShellState.workspaceLabels,
-        setWorkspaceLabels: setWorkspaceLabelsV1,
-        workspaceRefs: normalizedShellState.workspaceRefs,
-        setWorkspaceRefs: setWorkspaceRefsV1,
         scopeHintByLegacyWorkspaceKey,
     });
 

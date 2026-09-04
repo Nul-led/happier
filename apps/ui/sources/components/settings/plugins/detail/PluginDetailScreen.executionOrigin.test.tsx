@@ -6,6 +6,8 @@ import { renderScreen, standardCleanup } from '@/dev/testkit';
 import type { PluginMachineMaterializationAdmission } from '@/sync/domains/plugins/availability/reader';
 import type { InstalledPluginEntry } from '../model/pluginMarketplaceModel';
 
+vi.mock('@react-navigation/native', async () => (await import('@/dev/testkit/mocks/reactNavigation')).createReactNavigationNativeMock());
+
 type AccountSettingsOneShotMutation = Readonly<{
     expectedSettingsVersion: number;
     mutate: (raw: Readonly<Record<string, unknown>>) => {

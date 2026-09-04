@@ -11,6 +11,7 @@ describe('buildUniversalSearchWorkspaceFileResults', () => {
                 { fileName: 'src/', filePath: '', fullPath: 'src/', fileType: 'folder' },
                 { fileName: 'index.ts', filePath: 'src/', fullPath: 'src/index.ts', fileType: 'file' },
             ],
+            accountId: 'account-a',
             scope,
             workspaceRefId: null,
             sessionId: 'session-a',
@@ -29,6 +30,7 @@ describe('buildUniversalSearchWorkspaceFileResults', () => {
     it('captures a saved workspace activation target without fabricating a Session', () => {
         const results = buildUniversalSearchWorkspaceFileResults({
             files: [{ fileName: 'README.md', filePath: '', fullPath: 'README.md', fileType: 'file' }],
+            accountId: 'account-a',
             scope: { serverId: 'server-a', machineId: 'machine-a', rootPath: '/repo' },
             workspaceRefId: 'workspace-a',
             sessionId: null,

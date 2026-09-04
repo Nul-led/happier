@@ -649,6 +649,9 @@ describe('AutomationPluralEditorScreen', () => {
         await act(async () => {
             screen.findByProps({ testID: 'automation-trigger-row-turn-c' }).props.onPress();
         });
+        await act(async () => {
+            screen.findByProps({ testID: 'automation-lifecycle-policy-nextMatches' }).props.onPress();
+        });
         const countInput = () => screen.findByProps({ testID: 'automation-lifecycle-match-count' });
         expect(countInput().props.value).toBe('2');
 
@@ -671,6 +674,7 @@ describe('AutomationPluralEditorScreen', () => {
             screen.findByProps({ testID: 'automation-trigger-row-turn-c' }).props.onPress();
         });
         expect(countInput().props.value).toBe('2');
+        onChange.mockClear();
 
         // Clearing stays editable without committing a partial value.
         await act(async () => {
@@ -710,6 +714,43 @@ describe('AutomationPluralEditorScreen', () => {
         expect(next.triggers[1]).toBe(draft.triggers[1]);
         expect(next.triggers[3]).toBe(draft.triggers[3]);
         expect(next.triggers[4]).toBe(draft.triggers[4]);
+    });
+
+    it('validates the local occurrence-count draft on Done and preserves a valid value for outer Save', async () => {
+        const { AutomationPluralEditorScreen } = await import('./AutomationPluralEditorScreen');
+        const savedDrafts: AutomationEditorDraft[] = [];
+        function StatefulEditorHost(): React.ReactElement {
+            const [value, setValue] = React.useState<AutomationEditorDraft>(() => createDraft());
+            return (
+                <AutomationPluralEditorScreen
+                    variant="edit"
+                    value={value}
+                    onChange={setValue}
+                    onSubmit={(submittedDraft) => savedDrafts.push(submittedDraft)}
+                />
+            );
+        }
+        const screen = await renderScreen(<StatefulEditorHost />);
+
+        await act(async () => {
+            screen.findByProps({ testID: 'automation-trigger-row-turn-c' }).props.onPress();
+        });
+        await act(async () => {
+            screen.findByProps({ testID: 'automation-lifecycle-policy-nextMatches' }).props.onPress();
+        });
+        const countInput = () => screen.findByProps({ testID: 'automation-lifecycle-match-count' });
+
+        await act(async () => countInput().props.onChangeText(''));
+        await act(async () => screen.findByProps({ testID: 'automation-trigger-editor-done' }).props.onPress());
+        expect(countInput().props.value).toBe('');
+        expect(screen.findByProps({ testID: 'automation-trigger-editor-done' })).toBeDefined();
+
+        await act(async () => countInput().props.onChangeText('6'));
+        await act(async () => screen.findByProps({ testID: 'automation-editor-submit' }).props.onPress());
+
+        expect(savedDrafts).toHaveLength(1);
+        expect(savedDrafts[0]?.triggers.find((trigger) => trigger.clientId === 'turn-c'))
+            .toMatchObject({ definition: { policy: { kind: 'nextMatches', count: 6 } } });
     });
 
     it('authors a selected Event set and one shared future occurrence policy', async () => {

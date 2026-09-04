@@ -66,6 +66,7 @@ import {
     readInstalledPlugins,
     isPluginMutationVisibleAfterRefresh,
     readPluginChangeKind,
+    readPluginCreateResult,
     readPendingPluginChangeDecision,
     readPendingPluginChangeDecisionId,
     readPendingPluginChangeListingId,
@@ -185,6 +186,8 @@ export type PluginSettingsScreenState = Readonly<{
     marketplaceSourceRegistry: MarketplaceSourceRegistryV1 | null;
     marketplaceSourceRegistryLoading: boolean;
     marketplaceSourceRegistryLoadError: boolean;
+    marketplaceSourceRegistryMutationInFlight: boolean;
+    marketplaceSourceRegistryMutationOutcomeUnknown: boolean;
     refreshMarketplaceSourceRegistry: () => void;
     upsertMarketplaceSource: MarketplaceSourceRegistryAdministrationV1['upsertSource'];
     setMarketplaceSourceEnabled: MarketplaceSourceRegistryAdministrationV1['setSourceEnabled'];
@@ -204,7 +207,14 @@ export type PluginSettingsScreenState = Readonly<{
             : readonly []
         : readonly [];
     runCatalogAction: (params: PluginMarketplaceActionRequest) => void;
-    runDevelopmentCreate: (params: Readonly<{ targetDir: string; displayName: string; pluginId: string; ui?: PluginScaffoldUiMode }>) => void;
+    runDevelopmentCreate: (params: Readonly<{
+        targetDir: string;
+        displayName: string;
+        pluginId: string;
+        ui?: PluginScaffoldUiMode;
+        /** Called with the scaffold result after the canonical create commits. */
+        onCreated?: (created: Readonly<{ pluginId: string; sourceRootPath: string }>) => void;
+    }>) => void;
     runDevelopmentSourceInstall: (sourceRootPath: string) => void;
     runDevelopmentAction: (action: 'test' | 'pack', pluginId: string) => void;
     runInstalledPluginAction: (action: InstalledPluginActionId, pluginId: string) => void;
@@ -213,10 +223,10 @@ export type PluginSettingsScreenState = Readonly<{
     setDiscoverSearchText: (value: string) => void;
     setSelectedDiscoverSourceId: (sourceId: string | null) => void;
     loadMoreDiscover: () => void;
-    setMarketplaceSourceProfile: (sourceId: string, profileId: string | null) => Promise<void>;
+    setMarketplaceSourceProfile: MarketplaceSourceRegistryAdministrationV1['setSourceRegistryProfile'];
 }>;
 
-export function usePluginSettingsScreenState(): PluginSettingsScreenState {
+export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolean }> = {}): PluginSettingsScreenState {
     const activeServer = useActiveServerSnapshot();
     // The one administration-target owner. It supplies the selection, the exact
     // Settings/Secrets record target, and the single currentness fence every
@@ -464,6 +474,7 @@ export function usePluginSettingsScreenState(): PluginSettingsScreenState {
     const marketplaceSourceRegistryAdministration = useMarketplaceSourceRegistryAdministration({
         scopeKey: selectedMachineScopeKey,
         enabled: daemonAdministrationAvailable,
+        focused: params.focused ?? true,
         executionTarget,
         resolveCurrentExecutionTarget,
     });
@@ -1233,6 +1244,7 @@ export function usePluginSettingsScreenState(): PluginSettingsScreenState {
         displayName: string;
         pluginId: string;
         ui?: PluginScaffoldUiMode;
+        onCreated?: (created: Readonly<{ pluginId: string; sourceRootPath: string }>) => void;
     }>) => {
         const initialTarget = resolveCurrentExecutionTarget(executionTarget);
         if (
@@ -1248,13 +1260,18 @@ export function usePluginSettingsScreenState(): PluginSettingsScreenState {
         void (async () => {
             markPluginActionStarted(mutationAuthorityKey, params.pluginId);
             try {
-                await invokeWithAlerts({
+                const response = await invokeWithAlerts({
                     machineId: initialTarget.machine.id,
                     serverId: initialTarget.serverId,
                     request: {
                         id: MARKETPLACE_CAPABILITY_ID,
                         method: 'create',
-                        params,
+                        params: {
+                            targetDir: params.targetDir,
+                            displayName: params.displayName,
+                            pluginId: params.pluginId,
+                            ...(params.ui ? { ui: params.ui } : {}),
+                        },
                     },
                     timeoutMs: 5 * 60_000,
                     isAuthorityCurrent: () => (
@@ -1268,6 +1285,12 @@ export function usePluginSettingsScreenState(): PluginSettingsScreenState {
                         successMessage: t('settingsPlugins.developmentCreateSucceeded'),
                     },
                 });
+                if (!('response' in response) || !response.response.ok) return;
+                const created = readPluginCreateResult(response.response.result);
+                // Only the daemon's returned source root seeds a follow-on
+                // flow; an unparseable result never falls back to the folder
+                // the prompt collected.
+                if (created) params.onCreated?.(created);
             } finally {
                 markPluginActionFinished(mutationAuthorityKey, params.pluginId);
             }
@@ -1747,6 +1770,8 @@ export function usePluginSettingsScreenState(): PluginSettingsScreenState {
         marketplaceSourceRegistry,
         marketplaceSourceRegistryLoading: marketplaceSourceRegistryAdministration.loading,
         marketplaceSourceRegistryLoadError: marketplaceSourceRegistryAdministration.loadError,
+        marketplaceSourceRegistryMutationInFlight: marketplaceSourceRegistryAdministration.mutationInFlight,
+        marketplaceSourceRegistryMutationOutcomeUnknown: marketplaceSourceRegistryAdministration.mutationOutcomeUnknown,
         pluginProjectionById,
         pluginProjectionV2,
         pluginTruthSettled,

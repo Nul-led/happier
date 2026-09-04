@@ -15,10 +15,14 @@ import { Text } from '@/components/ui/text/Text';
 import { layout } from '@/components/ui/layout/layout';
 import { Modal } from '@/modal';
 import { useHappyAction } from '@/hooks/ui/useHappyAction';
-import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { listServerProfiles, type ServerProfile } from '@/sync/domains/server/serverProfiles';
+import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
 import { readCurrentAppRuntimeInfo } from '@/sync/runtime/readCurrentAppRuntimeInfo';
-import { readIrohHomeTransportDiagnostics } from '@/sync/runtime/irohHomeTransportDiagnostics';
+import {
+  readIrohHomeTransportDiagnostics,
+  readIrohHomeTransportDiagnosticsRevision,
+  subscribeIrohHomeTransportDiagnostics,
+} from '@/sync/runtime/irohHomeTransportDiagnostics';
 import {
   useIsDataReady,
   useLastSyncAt,
@@ -81,10 +85,19 @@ export const SystemStatusView = React.memo(function SystemStatusView() {
   const { theme } = useUnistyles();
   const copyFeedback = useTemporaryCopyFeedback();
 
-  const activeServerSnapshot = getActiveServerSnapshot();
+  const activeServerSnapshot = useActiveServerSnapshot();
   const activeServerUrl = React.useMemo(
     () => sanitizeBugReportUrl(activeServerSnapshot.serverUrl) ?? activeServerSnapshot.serverUrl,
     [activeServerSnapshot.serverUrl],
+  );
+  const homeTransportDiagnosticsRevision = React.useSyncExternalStore(
+    subscribeIrohHomeTransportDiagnostics,
+    readIrohHomeTransportDiagnosticsRevision,
+    readIrohHomeTransportDiagnosticsRevision,
+  );
+  const homeTransportDiagnostics = React.useMemo(
+    () => readIrohHomeTransportDiagnostics(),
+    [homeTransportDiagnosticsRevision],
   );
 
   const profile = useProfile();
@@ -152,7 +165,6 @@ export const SystemStatusView = React.memo(function SystemStatusView() {
   const [refreshingMachines, runRefreshMachineAttribution] = useHappyAction(refreshMachineAttribution);
 
   const [copying, copySystemStatusJson] = useHappyAction(async () => {
-    const homeTransports = readIrohHomeTransportDiagnostics();
     const payload = {
       capturedAt: new Date().toISOString(),
       environment: {
@@ -194,9 +206,18 @@ export const SystemStatusView = React.memo(function SystemStatusView() {
         : null,
       serverProfiles: serverProfiles.map((p) => ({
         id: p.id,
+        serverIdentityId: p.serverIdentityId ?? null,
         name: p.name,
         source: p.source ?? null,
         serverUrl: sanitizeBugReportUrl(p.serverUrl) ?? p.serverUrl,
+        canonicalServerUrl: p.canonicalServerUrl
+          ? sanitizeBugReportUrl(p.canonicalServerUrl) ?? p.canonicalServerUrl
+          : null,
+        publicServerUrl: p.publicServerUrl === undefined
+          ? 'unknown'
+          : p.publicServerUrl === null
+            ? null
+            : sanitizeBugReportUrl(p.publicServerUrl) ?? p.publicServerUrl,
         lastUsedAt: p.lastUsedAt,
       })),
       machines: Object.entries(machineListByServerId).flatMap(([serverId, list]) =>
@@ -230,7 +251,7 @@ export const SystemStatusView = React.memo(function SystemStatusView() {
         }),
       ),
       machineListStatusByServerId,
-      homeTransports,
+      homeTransports: homeTransportDiagnostics,
     };
 
     const copied = await setClipboardStringSafe(JSON.stringify(payload, null, 2));
@@ -254,6 +275,27 @@ export const SystemStatusView = React.memo(function SystemStatusView() {
     for (const p of serverProfiles) map.set(p.id, p);
     return map;
   }, [serverProfiles]);
+
+  const activeHomeProfile = React.useMemo(() => serverProfiles.find((candidate) => (
+    candidate.id === activeServerSnapshot.serverId
+    || candidate.serverIdentityId === activeServerSnapshot.serverId
+  )) ?? null, [activeServerSnapshot.serverId, serverProfiles]);
+  const activeTransportDiagnostics = homeTransportDiagnostics.find((candidate) => (
+    candidate.homeServerIdentityId === (activeHomeProfile?.serverIdentityId ?? activeServerSnapshot.serverId)
+  )) ?? null;
+  const currentTransportPath = activeTransportDiagnostics?.current ?? null;
+  const lastKnownTransportPath = currentTransportPath ? null : activeTransportDiagnostics?.lastKnown ?? null;
+  const effectiveCarrier = activeServerSnapshot.carrier ?? null;
+  const observedCarrier = currentTransportPath?.carrier ?? lastKnownTransportPath?.carrier ?? null;
+  const effectiveObservedPath = currentTransportPath?.observedPath
+    ?? lastKnownTransportPath?.observedPath
+    ?? null;
+  const observedPathLabel = effectiveObservedPath === 'direct'
+    ? t('connectionStatus.values.pathDirect')
+    : effectiveObservedPath === 'relay'
+      ? t('connectionStatus.values.pathRelay')
+      : t('status.unknown');
+  const appliedIrohConfiguration = activeTransportDiagnostics?.effectiveConfiguration;
 
   const openDiagnosis = React.useCallback(() => {
     router.push('/settings/diagnosis');
@@ -290,7 +332,7 @@ export const SystemStatusView = React.memo(function SystemStatusView() {
             detail={String(socket.status)}
             subtitle={
               socket.lastError
-                ? <Text style={{ color: theme.colors.text.secondary }}>{t('systemStatus.ui.socketLastError', { error: socket.lastError })}</Text>
+                ? <Text style={{ color: theme.colors.text.secondary }}>{t('systemStatus.ui.socketLastError', { error: sanitizeDoctorDiagnosticErrorMessage(socket.lastError) })}</Text>
                 : undefined
             }
             icon={<Icon name="cloud" size={24} color={theme.colors.accent.blue} />}
@@ -312,6 +354,60 @@ export const SystemStatusView = React.memo(function SystemStatusView() {
             icon={<Icon name="hard-drives" size={24} color={theme.colors.accent.blue} />}
             onPress={() => router.push('/settings/server')}
           />
+          <Item
+            title={t('connectionStatus.labels.homeIdentity')}
+            detail={activeHomeProfile?.serverIdentityId ?? activeServerSnapshot.serverId ?? t('status.unknown')}
+            icon={<Icon name="hard-drives" size={24} color={theme.colors.accent.blue} />}
+            copy={activeHomeProfile?.serverIdentityId ?? activeServerSnapshot.serverId ?? false}
+          />
+          <Item
+            title={t('connectionStatus.labels.canonicalAddress')}
+            detail={activeHomeProfile?.canonicalServerUrl ?? activeServerSnapshot.serverUrl ?? t('status.unknown')}
+            icon={<Icon name="link" size={24} color={theme.colors.accent.blue} />}
+            copy={activeHomeProfile?.canonicalServerUrl ?? activeServerSnapshot.serverUrl ?? false}
+          />
+          <Item
+            title={t('connectionStatus.labels.publicIngress')}
+            detail={activeHomeProfile?.publicServerUrl === null
+              ? t('connectionStatus.values.publicIngressAbsent')
+              : activeHomeProfile?.publicServerUrl === undefined
+                ? t('status.unknown')
+                : activeHomeProfile.publicServerUrl}
+            icon={<Icon name="cloud" size={24} color={theme.colors.accent.blue} />}
+            copy={typeof activeHomeProfile?.publicServerUrl === 'string' ? activeHomeProfile.publicServerUrl : false}
+          />
+          <Item
+            title={t('connectionStatus.labels.effectiveCarrier')}
+            detail={effectiveCarrier === 'iroh'
+              ? 'Iroh'
+              : effectiveCarrier === 'https'
+                ? 'HTTPS'
+                : t('status.unknown')}
+            icon={<Icon name="wifi-high" size={24} color={theme.colors.accent.blue} />}
+          />
+          {currentTransportPath || lastKnownTransportPath ? (
+            <Item
+              title={currentTransportPath
+                ? t('connectionStatus.labels.currentPath')
+                : t('connectionStatus.labels.lastKnownPath')}
+              detail={observedCarrier
+                ? `${observedCarrier === 'iroh' ? 'Iroh' : 'HTTPS'} · ${observedPathLabel}`
+                : observedPathLabel}
+              icon={<Icon name="wifi-high" size={24} color={theme.colors.accent.blue} />}
+            />
+          ) : null}
+          {appliedIrohConfiguration ? (
+            <Item
+              title={t('connectionStatus.labels.relayConfiguration')}
+              detail={appliedIrohConfiguration.policy === 'disabled'
+                ? t('connectionStatus.values.relayDisabled')
+                : t('connectionStatus.values.relayAutomatic', {
+                  relays: appliedIrohConfiguration.relayUrls.join(', ') || t('status.unknown'),
+                  direct: appliedIrohConfiguration.directAddressCount,
+                })}
+              icon={<Icon name="wifi-high" size={24} color={theme.colors.accent.blue} />}
+            />
+          ) : null}
         </ItemGroup>
 
         <ItemGroup title={t('systemStatus.sections.identity')}>

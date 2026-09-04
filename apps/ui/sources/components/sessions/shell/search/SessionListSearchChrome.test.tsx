@@ -106,6 +106,35 @@ describe('SessionListSearchChrome', () => {
         expect(onSearchEverything).toHaveBeenCalledWith('vector');
     });
 
+    it('keeps local escalation available beside a polite retryable search-source status', async () => {
+        const { SessionListSearchChrome } = await import('./SessionListSearchChrome');
+        const onRetrySearch = vi.fn();
+        const screen = await renderScreen(
+            <SessionListSearchChrome
+                allKnownTags={[]}
+                selectedTags={[]}
+                searchQuery="vector"
+                searchStatus={{
+                    message: 'Transcript search is temporarily unavailable.',
+                    onRetry: onRetrySearch,
+                }}
+                onSelectedTagsChange={vi.fn()}
+                onSearchQueryChange={vi.fn()}
+                onSearchEverything={vi.fn()}
+            />,
+        );
+
+        const status = screen.root.findByProps({ testID: 'session-list-search-status' });
+        expect(status.props.accessibilityLiveRegion).toBe('polite');
+        expect(status.props.role).toBe('status');
+        expect(screen.root.findByProps({ testID: 'session-list-search-everything' })).toBeDefined();
+
+        const retry = screen.root.findByProps({ testID: 'session-list-search-retry' });
+        expect(retry.props.accessibilityRole).toBe('button');
+        await act(async () => retry.props.onPress?.({ stopPropagation: vi.fn() }));
+        expect(onRetrySearch).toHaveBeenCalledOnce();
+    });
+
     it('hides the escalation while the contextual query is empty', async () => {
         const { SessionListSearchChrome } = await import('./SessionListSearchChrome');
         const screen = await renderScreen(
@@ -138,6 +167,46 @@ describe('SessionListSearchChrome', () => {
 
         expect(shell.props.accessibilityRole).toBeUndefined();
         expect(shell.props.onPress).toBeUndefined();
+        expect(shell.props.accessible).toBe(false);
+        expect(shell.props.focusable).toBe(false);
+    });
+
+    it('keeps clear and close as distinct accessible actions', async () => {
+        const { SessionListSearchChrome } = await import('./SessionListSearchChrome');
+
+        function Harness() {
+            const [query, setQuery] = React.useState('vector');
+            return (
+                <SessionListSearchChrome
+                    allKnownTags={[]}
+                    selectedTags={[]}
+                    searchQuery={query}
+                    onSelectedTagsChange={vi.fn()}
+                    onSearchQueryChange={setQuery}
+                />
+            );
+        }
+
+        const screen = await renderScreen(<Harness />);
+        const openedInput = screen.root.findByProps({ testID: 'session-list-search-input' });
+        const clear = screen.root.findByProps({ testID: 'session-list-search-clear' });
+        const close = screen.root.findByProps({ testID: 'session-list-search-close' });
+        expect(clear.props.accessibilityRole).toBe('button');
+        expect(close.props.accessibilityRole).toBe('button');
+
+        await act(async () => {
+            clear.props.onPress?.({ stopPropagation: vi.fn() });
+        });
+
+        expect(screen.root.findByProps({ testID: 'session-list-search-input' })).toBe(openedInput);
+
+        await act(async () => {
+            screen.root.findByProps({ testID: 'session-list-search-close' }).props.onPress?.({
+                stopPropagation: vi.fn(),
+            });
+        });
+
+        expect(screen.root.findAllByProps({ testID: 'session-list-search-input' })).toHaveLength(0);
     });
 
     it('renders the search trailing accessory in a stable hidden slot when search is open', async () => {
@@ -278,6 +347,32 @@ describe('SessionListSearchChrome', () => {
         const orderingTrigger = screen.root.findByProps({ testID: 'session-list-ordering-menu-trigger' });
         expect(flatten(orderingTrigger.props.style)).toMatchObject({ minWidth: minimum, minHeight: minimum });
         expect(orderingTrigger.props.hitSlop).toBeUndefined();
+    });
+
+    it('uses real minimum touch boxes for expanded search actions', async () => {
+        const { SessionListSearchChrome } = await import('./SessionListSearchChrome');
+        const { resolveMinimumInteractiveTargetSize } = await import('@/components/ui/interactiveTargetSize');
+        const screen = await renderScreen(
+            <SessionListSearchChrome
+                allKnownTags={[]}
+                selectedTags={[]}
+                searchQuery="vector"
+                onSelectedTagsChange={vi.fn()}
+                onSearchQueryChange={vi.fn()}
+            />,
+        );
+        const minimum = resolveMinimumInteractiveTargetSize(Platform.OS);
+        const flatten = (style: unknown): Record<string, unknown> => (
+            Array.isArray(style)
+                ? style.reduce<Record<string, unknown>>((acc, entry) => ({ ...acc, ...flatten(entry) }), {})
+                : (style as Record<string, unknown> | null) ?? {}
+        );
+
+        for (const testID of ['session-list-search-clear', 'session-list-search-close']) {
+            const action = screen.root.findByProps({ testID });
+            expect(flatten(action.props.style)).toMatchObject({ minWidth: minimum, minHeight: minimum });
+            expect(action.props.hitSlop).toBeUndefined();
+        }
     });
 
     it('lets the expanded field use available width and Dynamic Type height', async () => {

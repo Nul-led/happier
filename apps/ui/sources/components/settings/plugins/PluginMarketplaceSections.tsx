@@ -214,7 +214,9 @@ export function DevelopmentPluginsSection(props: Readonly<{
     canRunActions: boolean;
     isPluginActionInFlight: (pluginId: string) => boolean;
     onCreate: () => void;
+    onCreateWithAgent: () => void;
     onDevelopSourceRoot: () => void;
+    onEditWithAgent: (pluginId: string) => void;
     onRunAction: (action: 'test' | 'pack', pluginId: string) => void;
 }>) {
     const { theme } = useUnistyles();
@@ -226,6 +228,15 @@ export function DevelopmentPluginsSection(props: Readonly<{
                 subtitle={t('settingsPlugins.developmentCreateSubtitle')}
                 icon={<Icon name="plus-circle" size={29} color={theme.colors.text.secondary} />}
                 onPress={props.onCreate}
+                disabled={!props.canRunActions || !props.createAvailable}
+                showChevron={false}
+            />
+            <Item
+                testID="settings.plugins.management.development.action.createWithAgent"
+                title={t('settingsPlugins.developmentCreateWithAgent')}
+                subtitle={t('settingsPlugins.developmentCreateWithAgentSubtitle')}
+                icon={<Icon name="magic-wand" size={29} color={theme.colors.text.secondary} />}
+                onPress={props.onCreateWithAgent}
                 disabled={!props.canRunActions || !props.createAvailable}
                 showChevron={false}
             />
@@ -262,6 +273,15 @@ export function DevelopmentPluginsSection(props: Readonly<{
                         icon={<Icon name="code" size={29} color={theme.colors.text.secondary} />}
                         showChevron={false}
                         mode="info"
+                    />
+                    <Item
+                        testID={`settings.plugins.management.development.${entry.installed.pluginId}.action.editWithAgent`}
+                        title={t('settingsPlugins.developmentEditWithAgent')}
+                        subtitle={t('settingsPlugins.developmentEditWithAgentSubtitle')}
+                        icon={<Icon name="sparkle" size={29} color={theme.colors.text.secondary} />}
+                        onPress={() => props.onEditWithAgent(entry.installed.pluginId)}
+                        disabled={!props.canRunActions}
+                        showChevron={false}
                     />
                     <Item
                         testID={`settings.plugins.management.development.${entry.installed.pluginId}.action.test`}

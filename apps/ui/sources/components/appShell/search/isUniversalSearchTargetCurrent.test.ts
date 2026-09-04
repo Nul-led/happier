@@ -8,8 +8,8 @@ import type { UniversalSearchTarget } from './universalSearchResult';
 describe('isUniversalSearchTargetCurrent', () => {
     it('keeps an exact scoped transcript target current when its session is not hydrated', () => {
         expect(isUniversalSearchTargetCurrent({
-            target: { kind: 'session', serverId: 'home-b', sessionId: 'archived-unloaded', seq: 42 },
-            accountScope: { serverId: 'home-b', current: true },
+            target: { kind: 'session', serverId: 'home-b', accountId: 'account-b', sessionId: 'archived-unloaded', seq: 42 },
+            accountScope: { serverId: 'home-b', accountId: 'account-b', current: true },
             workspaces: [],
             settingsPages: new Map(),
             resolveSessionWorkspaceTarget: () => null,
@@ -19,8 +19,8 @@ describe('isUniversalSearchTargetCurrent', () => {
 
     it('rejects the same unloaded result after its producing Home scope retires', () => {
         expect(isUniversalSearchTargetCurrent({
-            target: { kind: 'session', serverId: 'home-b', sessionId: 'archived-unloaded' },
-            accountScope: { serverId: 'home-a', current: true },
+            target: { kind: 'session', serverId: 'home-b', accountId: 'account-b', sessionId: 'archived-unloaded' },
+            accountScope: { serverId: 'home-a', accountId: 'account-a', current: true },
             workspaces: [],
             settingsPages: new Map(),
             resolveSessionWorkspaceTarget: () => null,
@@ -39,6 +39,7 @@ describe('isUniversalSearchTargetCurrent', () => {
                     workspaceRefId: null,
                     sessionId: 'session-a',
                     serverId: 'server-a',
+                    accountId: 'account-a',
                 }
                 : {
                     kind,
@@ -47,6 +48,7 @@ describe('isUniversalSearchTargetCurrent', () => {
                     workspaceRefId: null,
                     sessionId: 'session-a',
                     serverId: 'server-a',
+                    accountId: 'account-a',
                 };
             const originalScope: WorkspaceTargetForSession = {
                 serverId: 'server-a',
@@ -58,7 +60,7 @@ describe('isUniversalSearchTargetCurrent', () => {
             let reachable = true;
             const isCurrent = () => isUniversalSearchTargetCurrent({
                 target,
-                accountScope: { serverId: 'server-a', current: true },
+                accountScope: { serverId: 'server-a', accountId: 'account-a', current: true },
                 workspaces: [],
                 settingsPages: new Map(),
                 resolveSessionWorkspaceTarget: () => currentScope,
@@ -91,10 +93,11 @@ describe('isUniversalSearchTargetCurrent', () => {
                 kind: 'project',
                 workspaceRefId: 'workspace-a',
                 serverId: 'server-a',
+                accountId: 'account-a',
                 machineId: 'machine-a',
                 rootPath: 'C:\\Repo\\',
             },
-            accountScope: null,
+            accountScope: { serverId: 'server-a', accountId: 'account-a', current: true },
             workspaces: [{
                 id: 'workspace-a',
                 serverId: 'server-a',
@@ -112,6 +115,42 @@ describe('isUniversalSearchTargetCurrent', () => {
         })).toBe(true);
     });
 
+    it('rejects a saved project when its Account lifetime or machine reachability retires', () => {
+        const target: UniversalSearchTarget = {
+            kind: 'project',
+            workspaceRefId: 'workspace-a',
+            serverId: 'server-a',
+            accountId: 'account-a',
+            machineId: 'machine-a',
+            rootPath: '/repo',
+        };
+        const workspaces = [{
+            id: 'workspace-a',
+            serverId: 'server-a',
+            machineId: 'machine-a',
+            rootPath: '/repo',
+            label: null,
+            createdAtMs: 1,
+            lastOpenedAtMs: null,
+        }];
+        const isCurrent = (accountScope: { serverId: string; accountId: string; current: boolean } | null, reachable: boolean) => (
+            isUniversalSearchTargetCurrent({
+                target,
+                accountScope,
+                workspaces,
+                settingsPages: new Map(),
+                resolveSessionWorkspaceTarget: () => null,
+                isWorkspaceScopeReachable: () => reachable,
+            })
+        );
+
+        expect(isCurrent(null, true)).toBe(false);
+        expect(isCurrent({ serverId: 'server-b', accountId: 'account-a', current: true }, true)).toBe(false);
+        expect(isCurrent({ serverId: 'server-a', accountId: 'account-b', current: true }, true)).toBe(false);
+        expect(isCurrent({ serverId: 'server-a', accountId: 'account-a', current: false }, true)).toBe(false);
+        expect(isCurrent({ serverId: 'server-a', accountId: 'account-a', current: true }, false)).toBe(false);
+    });
+
     it('keeps a saved workspace file current without requiring a Session', () => {
         expect(isUniversalSearchTargetCurrent({
             target: {
@@ -121,8 +160,9 @@ describe('isUniversalSearchTargetCurrent', () => {
                 workspaceRefId: 'workspace-a',
                 sessionId: null,
                 serverId: 'server-a',
+                accountId: 'account-a',
             },
-            accountScope: { serverId: 'server-a', current: true },
+            accountScope: { serverId: 'server-a', accountId: 'account-a', current: true },
             workspaces: [{
                 id: 'workspace-a',
                 serverId: 'server-a',
@@ -149,8 +189,9 @@ describe('isUniversalSearchTargetCurrent', () => {
                 workspaceRefId: 'workspace-a',
                 sessionId: null,
                 serverId: 'server-a',
+                accountId: 'account-a',
             },
-            accountScope: { serverId: 'server-a', current: true },
+            accountScope: { serverId: 'server-a', accountId: 'account-a', current: true },
             workspaces: [{
                 id: 'workspace-a',
                 serverId: 'server-a',

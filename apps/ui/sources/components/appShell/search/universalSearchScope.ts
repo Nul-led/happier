@@ -1,6 +1,8 @@
 import type { Session } from '@/sync/domains/state/storageTypes';
 import type { WorkspaceRefV1 } from '@/sync/domains/workspaces/workspaceRefModel';
 import type { ServerProfile } from '@/sync/domains/server/serverProfiles';
+import { resolveServerProfileScopeId } from '@/sync/domains/server/serverProfiles';
+import { resolveServerProfileScopeIdForSelectionIdentifier } from '@/sync/domains/server/selection/serverSelectionProfileScopeIds';
 import type { UniversalSearchScopeSeed } from './UniversalSearchRuntimeContext';
 import { buildUniversalSearchScopeKey } from './universalSearchResult';
 
@@ -9,6 +11,43 @@ export type UniversalSearchScopeChoice = Readonly<{
     label: string;
     scope: UniversalSearchScopeSeed;
 }>;
+
+type UniversalSearchRouteScopeParams = Readonly<{
+    accountId?: string | string[];
+    serverId?: string | string[];
+    sessionId?: string | string[];
+    machineId?: string | string[];
+    rootPath?: string | string[];
+}>;
+
+function routeScopePart(value: string | string[] | undefined): string | null {
+    return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
+}
+
+/**
+ * A route with no scope facts uses the normal ambient invocation owner. Once any
+ * scope parameter is supplied, the route represents one complete explicit scope;
+ * omitted/empty dimensions stay null and never inherit unrelated ambient state.
+ */
+export function resolveUniversalSearchRouteInitialScope(
+    params: UniversalSearchRouteScopeParams,
+): UniversalSearchScopeSeed | undefined {
+    const hasScopeParameter = [
+        params.accountId,
+        params.serverId,
+        params.sessionId,
+        params.machineId,
+        params.rootPath,
+    ].some((value) => value !== undefined);
+    if (!hasScopeParameter) return undefined;
+    return {
+        accountId: routeScopePart(params.accountId),
+        serverId: routeScopePart(params.serverId),
+        sessionId: routeScopePart(params.sessionId),
+        machineId: routeScopePart(params.machineId),
+        rootPath: routeScopePart(params.rootPath),
+    };
+}
 
 export function buildUniversalSearchScopeKeyFromSeed(scope: UniversalSearchScopeSeed): string {
     return buildUniversalSearchScopeKey([
@@ -25,14 +64,19 @@ export function buildUniversalSearchScopeChoices(input: Readonly<{
     profiles: readonly ServerProfile[];
     workspaces: readonly WorkspaceRefV1[];
     sessions: readonly Session[];
-    readMachineTarget(sessionId: string): Readonly<{ machineId?: string; basePath?: string }> | null;
+    readMachineTarget(target: Readonly<{
+        accountId: string;
+        serverId: string;
+        sessionId: string;
+    }>): Readonly<{ machineId?: string; basePath?: string }> | null;
 }>): readonly UniversalSearchScopeChoice[] {
     const choices: UniversalSearchScopeChoice[] = input.profiles.flatMap((profile) => {
-        const accountId = input.accountIdByServerId.get(profile.id);
+        const serverId = resolveServerProfileScopeId(profile);
+        const accountId = input.accountIdByServerId.get(serverId);
         if (!accountId) return [];
         const scope = {
             accountId,
-            serverId: profile.id,
+            serverId,
             sessionId: null,
             machineId: null,
             rootPath: null,
@@ -40,16 +84,22 @@ export function buildUniversalSearchScopeChoices(input: Readonly<{
         return [{ key: buildUniversalSearchScopeKeyFromSeed(scope), label: profile.name, scope }];
     });
     for (const workspace of input.workspaces) {
-        const accountId = input.accountIdByServerId.get(workspace.serverId);
+        const serverId = resolveServerProfileScopeIdForSelectionIdentifier(input.profiles, workspace.serverId);
+        if (!serverId) continue;
+        const accountId = input.accountIdByServerId.get(serverId);
         if (!accountId) continue;
         const session = input.sessions.find((candidate) => {
-            if (candidate.serverId !== workspace.serverId) return false;
-            const target = input.readMachineTarget(candidate.id);
+            if (resolveServerProfileScopeIdForSelectionIdentifier(input.profiles, candidate.serverId) !== serverId) return false;
+            const target = input.readMachineTarget({
+                accountId,
+                serverId,
+                sessionId: candidate.id,
+            });
             return target?.machineId === workspace.machineId && target.basePath === workspace.rootPath;
         });
         const scope = {
             accountId,
-            serverId: workspace.serverId,
+            serverId,
             machineId: workspace.machineId,
             rootPath: workspace.rootPath,
             sessionId: session?.id ?? null,

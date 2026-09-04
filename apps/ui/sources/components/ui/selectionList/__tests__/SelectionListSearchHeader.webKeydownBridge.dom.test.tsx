@@ -357,7 +357,114 @@ describe('SelectionListSearchHeader web keydown bridge', () => {
             });
             expect(refinedExplicitTab.defaultPrevented).toBe(true);
             expect(onActivate).toHaveBeenCalledTimes(2);
-            expect(onActivate).toHaveBeenLastCalledWith('refined-row-b');
+            // Replacing every identity preserves the nearest visual position
+            // (row B); the fresh ArrowDown then wraps to row A.
+            expect(onActivate).toHaveBeenLastCalledWith('refined-row-a');
+        } finally {
+            await act(async () => {
+                root.unmount();
+            });
+            container.remove();
+        }
+    });
+});
+
+describe('SelectionList web focus ownership', () => {
+    it('keeps DOM focus on the combobox input while aria-activedescendant moves between untabbable options', async () => {
+        const { SelectionList } = await import('../SelectionList');
+        const container = document.createElement('div');
+        document.body.append(container);
+        const root = createRoot(container);
+
+        try {
+            await act(async () => {
+                root.render(
+                    <SelectionList
+                        rootStep={{
+                            id: 'root',
+                            inputPlaceholder: 'Search commands',
+                            sections: [{
+                                kind: 'static',
+                                id: 'commands',
+                                options: [
+                                    { id: 'first', label: 'First command' },
+                                    { id: 'second', label: 'Second command' },
+                                ],
+                            }],
+                        }}
+                        onSelect={() => {}}
+                        onRequestClose={() => {}}
+                        autoFocusInputOnWeb
+                        keyboardHintsEnabled={false}
+                        disableTransitions
+                        testID="focus-list"
+                    />,
+                );
+            });
+
+            const input = container.querySelector('[data-testid="focus-list:header:input"]');
+            const options = Array.from(container.querySelectorAll<HTMLElement>('[role="option"]'));
+            expect(input).toBeInstanceOf(HTMLInputElement);
+            expect(options).toHaveLength(2);
+            expect(document.activeElement).toBe(input);
+            expect(options.map((option) => option.tabIndex)).toEqual([-1, -1]);
+            expect(input?.getAttribute('aria-activedescendant')).toBe(options[0]?.id);
+
+            const arrowDown = new KeyboardEvent('keydown', {
+                key: 'ArrowDown',
+                code: 'ArrowDown',
+                bubbles: true,
+                cancelable: true,
+            });
+            await act(async () => {
+                input!.dispatchEvent(arrowDown);
+            });
+
+            expect(arrowDown.defaultPrevented).toBe(true);
+            expect(document.activeElement).toBe(input);
+            expect(options.map((option) => option.tabIndex)).toEqual([-1, -1]);
+            expect(input?.getAttribute('aria-activedescendant')).toBe(options[1]?.id);
+        } finally {
+            await act(async () => {
+                root.unmount();
+            });
+            container.remove();
+        }
+    });
+
+    it('retains a single roving DOM Tab stop when the list has no input', async () => {
+        const { SelectionList } = await import('../SelectionList');
+        const container = document.createElement('div');
+        document.body.append(container);
+        const root = createRoot(container);
+
+        try {
+            await act(async () => {
+                root.render(
+                    <SelectionList
+                        rootStep={{
+                            id: 'root',
+                            sections: [{
+                                kind: 'static',
+                                id: 'commands',
+                                options: [
+                                    { id: 'first', label: 'First command' },
+                                    { id: 'second', label: 'Second command' },
+                                ],
+                            }],
+                        }}
+                        onSelect={() => {}}
+                        onRequestClose={() => {}}
+                        keyboardHintsEnabled={false}
+                        disableTransitions
+                        testID="headerless-list"
+                    />,
+                );
+            });
+
+            const options = Array.from(container.querySelectorAll<HTMLElement>('[role="option"]'));
+            expect(options).toHaveLength(2);
+            expect(options.map((option) => option.tabIndex)).toEqual([0, -1]);
         } finally {
             await act(async () => {
                 root.unmount();
