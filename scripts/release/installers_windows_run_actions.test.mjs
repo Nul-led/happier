@@ -24,6 +24,9 @@ test('install.ps1 supports a whitelisted post-install -Run action', async () => 
   assert.match(trimmed, /auth-login/i);
   assert.match(trimmed, /service-install/i);
   assert.match(trimmed, /providers-setup/i);
+  assert.match(trimmed, /Personal Home[^\n]*0\.3 preview/i);
+  assert.match(trimmed, /hprev home create/i);
+  assert.match(trimmed, /Advanced\/operator generic server runtime/i);
 
   // Ensure the script does not accept arbitrary execution.
   assert.doesNotMatch(trimmed, /Invoke-Expression\s+\$Run/i);

@@ -52,9 +52,12 @@ test('reusable tests callers explicitly select jobs without inheriting caller ev
   };
 
   for (const [job, input] of Object.entries(defaultJobs)) {
+    const expected = job === 'ui'
+      ? `\${{ always() && (!inputs.select_jobs_explicitly || inputs.${input}) }}`
+      : `\${{ !inputs.select_jobs_explicitly || inputs.${input} }}`;
     assert.equal(
       parsed?.jobs?.[job]?.if,
-      `\${{ !inputs.select_jobs_explicitly || inputs.${input} }}`,
+      expected,
       `${job} must obey the explicit reusable-workflow selection boundary`,
     );
   }
@@ -141,7 +144,7 @@ test('the existing Home Iroh real lane owns both real Chromium completion vertic
   );
   assert.equal(
     uiPackage?.scripts?.['proof:browser-iroh-real-verticals'],
-    'node ./tools/iroh/runBrowserIrohSharedEndpointProof.mjs --real-home-vertical --machine-transfer-vertical',
-    'one existing runner invocation must execute both A7.3 and A7.4 completion verticals',
+    'node --test ./tools/iroh/browserMachineTransferJourney.test.mjs && node ./tools/iroh/runBrowserIrohSharedEndpointProof.mjs --real-home-vertical --machine-transfer-vertical',
+    'the real lane must run the Machine contract test before both completion verticals',
   );
 });

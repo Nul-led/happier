@@ -653,6 +653,10 @@ jobs:
           test -d "${PACKAGED_PAYLOAD_PATH}"
           PACKAGED_IROH_ROOT="${PACKAGED_PAYLOAD_PATH}/node_modules/@happier-dev/iroh-native"
           test -f "${PACKAGED_IROH_ROOT}/native/happier-iroh-native-lifecycle.${IROH_ADDON_TARGET}.node"
+          node "${PACKAGED_IROH_ROOT}/scripts/generate-native-release-evidence.mjs" \
+            --manifest-path "${GITHUB_WORKSPACE}/packages/iroh-native/rust/Cargo.toml" \
+            --output-dir "${PACKAGED_IROH_ROOT}/release-evidence" \
+            --check
           node "${PACKAGED_IROH_ROOT}/scripts/verify-node-addon-load.mjs" --package-root "$PACKAGED_IROH_ROOT"
           bun "${PACKAGED_IROH_ROOT}/scripts/verify-node-addon-load.mjs" --package-root "$PACKAGED_IROH_ROOT"
           PACKAGED_IROH_SMOKE="${PACKAGED_PAYLOAD_PATH}/iroh-native-compiled-smoke${{ matrix.platform_key == 'windows-x64' && '.exe' || '' }}"

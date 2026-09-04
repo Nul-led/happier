@@ -440,6 +440,8 @@ jobs:
       changed_ui: ${{ steps.plan.outputs.changed_ui }}
       changed_cli: ${{ steps.plan.outputs.changed_cli }}
       changed_server: ${{ steps.plan.outputs.changed_server }}
+      changed_iroh_relay: ${{ steps.plan.outputs.changed_iroh_relay }}
+      changed_iroh_transport: ${{ steps.plan.outputs.changed_iroh_transport }}
       changed_website: ${{ steps.plan.outputs.changed_website }}
       changed_docs: ${{ steps.plan.outputs.changed_docs }}
       changed_cli_stack_shared: ${{ steps.plan.outputs.changed_cli_stack_shared }}
@@ -560,6 +562,16 @@ jobs:
             --base "$base_sha" \
             --head "$plan_head_sha" \
             --out "$GITHUB_OUTPUT"
+
+      # The pinned Iroh version, source and checksum have to describe one
+      # release across the native lockfile, the Tauri lockfile and the stock
+      # relay image. Prove that whenever either side moves; this is a source
+      # property, so it never implies republishing the relay image (Lane 06 A10).
+      - name: Verify pinned Iroh version parity
+        if: ${{ steps.plan.outputs.changed_iroh_transport == 'true' || steps.plan.outputs.changed_iroh_relay == 'true' }}
+        run: |
+          set -euo pipefail
+          node packages/iroh-native/scripts/verify-iroh-lock-parity.mjs
 
       - name: Compute versioned component changes (latest release tags..release head)
         id: versioned_plan
@@ -1356,7 +1368,7 @@ jobs:
       retry_version: ${{ needs.publish_hstack_binaries.outputs.version }}
 
   publish_docker:
-    if: always() && needs.plan.result == 'success' && needs.release_admission.result == 'success' && needs.prepare_release_candidate.result == 'success' && needs.verify_release_candidates.result == 'success' && inputs.dry_run != true && (inputs.force_deploy == true || needs.plan.outputs.publish_server == 'true' || needs.plan.outputs.publish_cli == 'true' || needs.plan.outputs.changed_ui == 'true' || needs.plan.outputs.changed_server == 'true' || needs.plan.outputs.changed_cli == 'true' || needs.plan.outputs.changed_cli_stack_shared == 'true' || needs.plan.outputs.changed_shared == 'true') && (needs.promote_cli_binaries.result == 'success' || needs.promote_cli_binaries.result == 'skipped') && (needs.promote_server_runtime.result == 'success' || needs.promote_server_runtime.result == 'skipped') && (needs.promote_ui_web.result == 'success' || needs.promote_ui_web.result == 'skipped')
+    if: always() && needs.plan.result == 'success' && needs.release_admission.result == 'success' && needs.prepare_release_candidate.result == 'success' && needs.verify_release_candidates.result == 'success' && inputs.dry_run != true && (inputs.force_deploy == true || needs.plan.outputs.publish_server == 'true' || needs.plan.outputs.publish_cli == 'true' || needs.plan.outputs.changed_ui == 'true' || needs.plan.outputs.changed_server == 'true' || needs.plan.outputs.changed_cli == 'true' || needs.plan.outputs.changed_cli_stack_shared == 'true' || needs.plan.outputs.changed_shared == 'true' || needs.plan.outputs.changed_iroh_relay == 'true') && (needs.promote_cli_binaries.result == 'success' || needs.promote_cli_binaries.result == 'skipped') && (needs.promote_server_runtime.result == 'success' || needs.promote_server_runtime.result == 'skipped') && (needs.promote_ui_web.result == 'success' || needs.promote_ui_web.result == 'skipped')
     needs: [plan, release_admission, prepare_release_candidate, verify_release_candidates, publish_cli_binaries, publish_server_runtime, promote_cli_binaries, promote_server_runtime, promote_ui_web]
     permissions:
       contents: read
@@ -1371,6 +1383,7 @@ jobs:
       push_latest: true
       build_relay: ${{ inputs.force_deploy == true || needs.plan.outputs.publish_server == 'true' || needs.plan.outputs.changed_ui == 'true' || needs.plan.outputs.changed_server == 'true' || needs.plan.outputs.changed_shared == 'true' }}
       build_dev_box: ${{ inputs.force_deploy == true || needs.plan.outputs.publish_cli == 'true' || needs.plan.outputs.changed_cli == 'true' || needs.plan.outputs.changed_cli_stack_shared == 'true' || needs.plan.outputs.changed_shared == 'true' }}
+      build_iroh_relay: ${{ inputs.force_deploy == true || needs.plan.outputs.changed_iroh_relay == 'true' }}
 
   deploy_website:
     if: always() && needs.plan.result == 'success' && needs.release_admission.result == 'success' && needs.prepare_release_candidate.result == 'success' && inputs.dry_run != true && contains(format(',{0},', inputs.deploy_targets), ',website,') && (needs.deploy_plan.outputs.deploy_website_needed == 'true' || needs.plan.outputs.bump_website != 'none' || inputs.force_deploy == true)

@@ -303,6 +303,8 @@ jobs:
         shard: ${{ fromJSON(inputs.ui_e2e_specs != '' && '[1]' || '[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18]') }}
     runs-on: ${{ needs.trusted_ref_guard.outputs.ubuntu_2204 }}
     timeout-minutes: 120
+    outputs:
+      command_executed: ${{ github.event_name == 'workflow_call' || steps.changes.outputs.ui_e2e == 'true' }}
     env:
       # UI E2E boots Expo web; keep web assets available to avoid CI-only runtime surprises.
       HAPPIER_UI_VENDOR_WEB_ASSETS: "1"
@@ -431,6 +433,8 @@ jobs:
     name: Workspace sync (Mutagen + Iroh real)
     runs-on: ${{ needs.trusted_ref_guard.outputs.ubuntu_2204 }}
     timeout-minutes: 45
+    outputs:
+      command_executed: ${{ github.event_name == 'workflow_call' || steps.changes.outputs.workspace_sync_real == 'true' }}
     # Reading the public happier-dev/mutagen release is the only privileged thing
     # this lane does; it needs no repository secret.
     permissions:
@@ -1083,7 +1087,7 @@ jobs:
   server-db-contract:
     if: ${{ !inputs.select_jobs_explicitly || inputs.run_server_db_contract }}
     needs: [trusted_ref_guard]
-    name: Server DB Contract (Postgres)
+    name: Server DB Contract (Postgres + SQLite lineage)
     runs-on: ${{ needs.trusted_ref_guard.outputs.ubuntu_2204 }}
     timeout-minutes: 25
     services:
@@ -1133,6 +1137,9 @@ jobs:
 
       - name: Check provider schema synchronization
         run: yarn --cwd apps/server schema:sync:check
+
+      - name: Run SQLite migration lineage contract
+        run: yarn --cwd apps/server test:integration -- scripts/migrations/sessionAttentionLineage.sqlite.integration.spec.ts
 
       - name: Migrate (Postgres)
         env:
@@ -2398,18 +2405,12 @@ jobs:
         with:
           args: --frozen-lockfile --ignore-engines
 
-      - name: Prepare immutable server-v0.2.1 artifact
-        run: |
-          set -euo pipefail
-          artifact_dir="${RUNNER_TEMP}/happier-server-v0.2.1"
-          echo "HAPPIER_E2E_RELEASED_SERVER_V0_2_1_DIR=${artifact_dir}" >> "$GITHUB_ENV"
-          HAPPIER_E2E_RELEASED_SERVER_V0_2_1_DIR="${artifact_dir}" \
-            yarn workspace @happier-dev/tests prepare:compat:released-server-v0.2.1
-
       - name: Install exact-compatibility Playwright browser
         run: npx playwright install --with-deps chromium
 
       - name: Run exact server-v0.2.1 compatibility gate
+        env:
+          HAPPIER_E2E_RELEASED_SERVER_V0_2_1_DIR: ${{ runner.temp }}/happier-server-v0.2.1
         run: yarn workspace @happier-dev/tests test:compat:released-server-v0.2.1
 
       - name: Run core e2e suite (slow)
@@ -2733,40 +2734,26 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Checkout collector
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
       - name: Collect every lane conclusion
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
-          # Lanes whose selection this run actually requested. A required lane may not be
-          # reported as skipped: only an unselected lane is allowed to skip.
-          CI_REQUIRED_LANES: ${{ (!inputs.select_jobs_explicitly || inputs.run_workspace_sync_real) && 'workspace-sync-real' || '' }}
+          CI_INPUTS_JSON: ${{ toJSON(inputs) }}
+          CI_EVENT_NAME: ${{ github.event_name }}
           CI_RUN_ID: ${{ github.run_id }}
           CI_SOURCE_SHA: ${{ github.sha }}
           CI_WORKFLOW: ${{ github.workflow }}
         run: |
           node --input-type=module <<'NODE'
           import { writeFileSync } from 'node:fs';
+          import { collectCiSummary, jobsForSelectedInputs } from './scripts/release/ciSummaryCollector.mjs';
 
           const needs = JSON.parse(process.env.NEEDS_JSON);
-          const requiredLanes = new Set(
-            String(process.env.CI_REQUIRED_LANES ?? '')
-              .split(',')
-              .map((id) => id.trim())
-              .filter(Boolean),
-          );
-          const lanes = Object.entries(needs).map(([id, value]) => ({
-            id,
-            required: requiredLanes.has(id),
-            result: value?.result ?? null,
-            conclusion: value?.conclusion ?? null,
-            outputs: value?.outputs ?? {},
-          }));
-          // Only success and intentionally skipped lanes are acceptable. Treat every other or
-          // unknown result (timed_out, startup_failure, stale, action_required, null, ...) as a
-          // failure so the collector can never report a false-green release attestation. A lane
-          // this run explicitly selected must actually succeed; skipping it is a false green.
-          const failures = lanes.filter(({ id, result }) =>
-            requiredLanes.has(id) ? result !== 'success' : result !== 'success' && result !== 'skipped',
-          );
+          const inputs = JSON.parse(process.env.CI_INPUTS_JSON || '{}');
+          const requiredLanes = jobsForSelectedInputs({ inputs, eventName: process.env.CI_EVENT_NAME });
+          const { lanes, failures } = collectCiSummary({ needs, requiredJobs: requiredLanes });
           for (const lane of lanes) console.log(`${lane.id} => ${lane.result ?? 'unknown'}`);
           const summary = {
             schemaVersion: 1,

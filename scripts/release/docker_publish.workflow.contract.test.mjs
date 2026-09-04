@@ -129,8 +129,8 @@ test('publish-docker supports workflow_call and is wired from release workflow',
   );
   assert.match(
     release,
-    /publish_docker:[\s\S]*?\(inputs\.force_deploy == true \|\| needs\.plan\.outputs\.publish_server == 'true' \|\| needs\.plan\.outputs\.publish_cli == 'true' \|\| needs\.plan\.outputs\.changed_ui == 'true' \|\| needs\.plan\.outputs\.changed_server == 'true' \|\| needs\.plan\.outputs\.changed_cli == 'true' \|\| needs\.plan\.outputs\.changed_cli_stack_shared == 'true' \|\| needs\.plan\.outputs\.changed_shared == 'true'\)/,
-    'publish_docker should run when freshly published CLI or server artifacts need a new embedded image even without diff flags',
+    /publish_docker:[\s\S]*?\(inputs\.force_deploy == true \|\| needs\.plan\.outputs\.publish_server == 'true' \|\| needs\.plan\.outputs\.publish_cli == 'true' \|\| needs\.plan\.outputs\.changed_ui == 'true' \|\| needs\.plan\.outputs\.changed_server == 'true' \|\| needs\.plan\.outputs\.changed_cli == 'true' \|\| needs\.plan\.outputs\.changed_cli_stack_shared == 'true' \|\| needs\.plan\.outputs\.changed_shared == 'true' \|\| needs\.plan\.outputs\.changed_iroh_relay == 'true'\)/,
+    'publish_docker should run when freshly published CLI or server artifacts need a new embedded image or the planner selected the Iroh relay image, even without diff flags',
   );
   assert.match(release, /uses:\s+\.\/\.github\/workflows\/publish-docker\.yml/);
   assert.match(release, /build_relay:/);
@@ -147,6 +147,11 @@ test('publish-docker supports workflow_call and is wired from release workflow',
     /build_dev_box:\s*\$\{\{\s*inputs\.force_deploy == true \|\| needs\.plan\.outputs\.publish_cli == 'true' \|\| needs\.plan\.outputs\.changed_cli == 'true' \|\| needs\.plan\.outputs\.changed_cli_stack_shared == 'true' \|\| needs\.plan\.outputs\.changed_shared == 'true'\s*\}\}/,
     'dev-box should rebuild for CLI-affecting changes, not stack-only changes',
   );
+  assert.match(
+    release,
+    /build_iroh_relay:\s*\$\{\{\s*inputs\.force_deploy == true \|\| needs\.plan\.outputs\.changed_iroh_relay == 'true'\s*\}\}/,
+    'the stock Iroh relay image should build only from the exact planner relay decision or an explicit forced deploy',
+  );
   assert.doesNotMatch(
     release,
     /build_dev_box:[^\n]*changed_stack/,
@@ -161,6 +166,46 @@ test('publish-docker supports workflow_call and is wired from release workflow',
   );
   assert.match(nightly, /server_version:\s*\${{\s*needs\.server_runtime\.outputs\.version\s*}}/);
   assert.match(nightly, /cli_version:\s*\${{\s*needs\.cli\.outputs\.version\s*}}/);
+});
+
+test('the stock Iroh relay image follows the exact release planner relay decision', async () => {
+  const publishDockerYaml = YAML.parse(await loadWorkflow('publish-docker.yml'));
+  const triggers = publishDockerYaml?.on ?? publishDockerYaml?.true;
+  const callInputs = triggers?.workflow_call?.inputs;
+  assert.equal(
+    callInputs?.build_iroh_relay?.default,
+    false,
+    'a called Docker publication must not force the stock Iroh relay image when the caller passes no relay decision',
+  );
+  assert.equal(
+    triggers?.workflow_dispatch?.inputs?.build_iroh_relay?.default,
+    false,
+    'a manual Docker publication must opt into the stock Iroh relay instead of rebuilding it by default',
+  );
+
+  const release = await loadWorkflow('release.yml');
+  assert.match(
+    release,
+    /changed_iroh_relay:\s*\${{\s*steps\.plan\.outputs\.changed_iroh_relay\s*}}/,
+    'the release plan must expose the exact changed_iroh_relay planner decision',
+  );
+
+  const planner = await readFile(
+    join(repoRoot, 'scripts', 'pipeline', 'release', 'compute-changed-components.mjs'),
+    'utf8',
+  );
+  assert.match(
+    planner,
+    /changed_iroh_relay:\s*String\(Boolean\(classified\.iroh_relay\)\)/,
+    'the changed-components planner must emit the changed_iroh_relay decision consumed by the release plan',
+  );
+
+  const nightly = await loadWorkflow('nightly-dev.yml');
+  assert.match(
+    nightly,
+    /docker:[\s\S]*?build_iroh_relay:\s*true\b/,
+    'the rolling dev channel must state its always-rebuild relay decision explicitly instead of relying on a called default',
+  );
 });
 
 test('Docker publishing installs and builds its release-runtime dependency', async () => {

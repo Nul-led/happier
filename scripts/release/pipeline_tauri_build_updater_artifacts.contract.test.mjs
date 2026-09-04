@@ -8,10 +8,40 @@ import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');
 
+function runPipeline({ environment, extraArgs = [] }) {
+  return execFileSync(
+    process.execPath,
+    [
+      resolve(repoRoot, 'scripts', 'pipeline', 'tauri', 'build-updater-artifacts.mjs'),
+      '--environment',
+      environment,
+      '--dry-run',
+      ...extraArgs,
+    ],
+    {
+      cwd: repoRoot,
+      env: { ...process.env },
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 30_000,
+    },
+  );
+}
+
 test('tauri build-updater-artifacts script enables Expo Router web modal support', () => {
   const script = fs.readFileSync(resolve(repoRoot, 'scripts', 'pipeline', 'tauri', 'build-updater-artifacts.mjs'), 'utf8');
 
   assert.match(script, /EXPO_UNSTABLE_WEB_MODAL:\s*'1'/);
+});
+
+test('tauri bundle-only finalization regenerates the shared Iroh release evidence', async () => {
+  const out = await runPipeline({
+    environment: 'production',
+    extraArgs: ['--bundle-only'],
+  });
+
+  assert.match(out, /generate-native-release-evidence\.mjs/);
+  assert.match(out, /packages[/\\]iroh-native[/\\]release-evidence/);
 });
 
 test('tauri build-updater-artifacts script supports preview dry-run', async () => {

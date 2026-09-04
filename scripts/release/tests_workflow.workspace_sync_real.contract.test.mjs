@@ -289,19 +289,14 @@ test('manual dispatch can select the real workspace-sync lane by name', () => {
   assert.doesNotMatch(raw, /wsrepl_lima/u, 'the retired WSREPL selection must not survive as a second owner');
 });
 
-test('ci_summary cannot report a false green for a selected real workspace-sync lane', () => {
+test('ci_summary delegates every selector to the generic fail-closed collector', () => {
   const tests = loadWorkflow('tests.yml');
   const summary = tests.jobs.ci_summary;
   assert.ok(summary.needs.includes('workspace-sync-real'), 'ci_summary must depend on the real workspace-sync lane');
 
   const collector = summary.steps.find((step) => step.name === 'Collect every lane conclusion');
-  assert.equal(
-    collector.env.CI_REQUIRED_LANES,
-    "${{ (!inputs.select_jobs_explicitly || inputs.run_workspace_sync_real) && 'workspace-sync-real' || '' }}",
-    'ci_summary must learn which lanes were actually selected',
-  );
-  // A required lane that is skipped, cancelled, or otherwise not successful is a failure.
-  assert.match(collector.run, /requiredLanes/u);
-  assert.match(collector.run, /result !== 'success' && result !== 'skipped'/u);
-  assert.match(collector.run, /requiredLanes\.has\(id\) \? result !== 'success'/u);
+  assert.equal(collector.env.CI_INPUTS_JSON, '${{ toJSON(inputs) }}');
+  assert.match(collector.run, /jobsForSelectedInputs/u);
+  assert.match(collector.run, /collectCiSummary/u);
+  assert.doesNotMatch(collector.run, /workspace-sync-real/u, 'the summary must not special-case one selector');
 });

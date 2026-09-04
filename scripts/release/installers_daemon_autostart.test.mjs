@@ -939,3 +939,15 @@ test('install.sh --help documents the non-interactive flag', async () => {
   assert.match(help, /--non-interactive/, 'usage should document the --non-interactive alias');
   assert.match(help, /HAPPIER_NONINTERACTIVE/, 'usage should point at the matching environment variable');
 });
+
+test('install.sh --help makes Personal Home the routine local-hosting journey', async () => {
+  const installerPath = join(repoRoot, 'scripts', 'release', 'installers', 'install.sh');
+  const res = spawnSync('bash', [installerPath, '--help'], { encoding: 'utf8' });
+  assert.equal(res.status, 0, `--help failed: ${String(res.stderr ?? '')}`);
+  const help = String(res.stdout ?? '');
+
+  assert.match(help, /Personal Home[^\n]*0\.3 preview/i);
+  assert.match(help, /hprev home create/);
+  assert.match(help, /Advanced\/operator generic server runtime/);
+  assert.doesNotMatch(help, /Relay setup \(install CLI if needed, then host a relay locally\)/);
+});

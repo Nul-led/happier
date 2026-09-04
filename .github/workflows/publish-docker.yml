@@ -55,7 +55,7 @@ on:
       build_iroh_relay:
         description: "Build/push stock Iroh relay image"
         required: true
-        default: true
+        default: false
         type: boolean
   workflow_call:
     inputs:
@@ -96,7 +96,7 @@ on:
         type: boolean
       build_iroh_relay:
         required: false
-        default: true
+        default: false
         type: boolean
 
 permissions:

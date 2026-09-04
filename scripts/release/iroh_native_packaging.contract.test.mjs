@@ -9,7 +9,10 @@ async function read(relativePath) {
 }
 
 test('CLI native release matrix builds and loads the Iroh addon from the packaged payload', async () => {
-  const workflow = await read('.github/workflows/publish-cli-binaries.yml');
+  const [workflow, builder] = await Promise.all([
+    read('.github/workflows/publish-cli-binaries.yml'),
+    read('scripts/pipeline/release/build-cli-binaries.mjs'),
+  ]);
 
   assert.match(workflow, /rustup toolchain install 1\.94\.1 --profile minimal/u);
   assert.match(workflow, /rustup default 1\.94\.1/u);
@@ -22,6 +25,11 @@ test('CLI native release matrix builds and loads the Iroh addon from the package
   assert.match(workflow, /platform_key: windows-x64[\s\S]*?iroh_addon_target: win32-x64/u);
   assert.match(workflow, /happier-iroh-native-lifecycle\.\$\{IROH_ADDON_TARGET\}\.node/u);
   assert.match(workflow, /--package-root "\$PACKAGED_IROH_ROOT"/u);
+  assert.match(builder, /includeIrohNativeReleaseEvidence:\s*true/u);
+  assert.match(
+    workflow,
+    /generate-native-release-evidence\.mjs[\s\S]*?--output-dir "\$\{PACKAGED_IROH_ROOT\}\/release-evidence"[\s\S]*?--check/u,
+  );
   assert.match(workflow, /PACKAGED_IROH_SMOKE[\s\S]*?"\$PACKAGED_IROH_SMOKE"/u);
 });
 
@@ -32,7 +40,10 @@ test('the addon smoke accepts an explicit package root for packaged hosts', asyn
 });
 
 test('server release builds and loads one native Iroh leaf on each supported target', async () => {
-  const workflow = await read('.github/workflows/publish-server-runtime.yml');
+  const [workflow, builder] = await Promise.all([
+    read('.github/workflows/publish-server-runtime.yml'),
+    read('scripts/pipeline/release/build-server-binaries.mjs'),
+  ]);
 
   for (const [platformKey, runner, serverTarget, bunTarget, addonTarget] of [
     ['linux-x64', 'ubuntu-24.04', 'linux-x64', 'bun-linux-x64-baseline', 'linux-x64'],
@@ -62,5 +73,10 @@ test('server release builds and loads one native Iroh leaf on each supported tar
   assert.match(workflow, /bun "\$\{PACKAGED_IROH_ROOT\}\/scripts\/verify-node-addon-load\.mjs" --package-root "\$PACKAGED_IROH_ROOT"/u);
   assert.match(workflow, /bun build --compile --target "\$BUN_TARGET"/u);
   assert.match(workflow, /"\$PACKAGED_IROH_SMOKE"/u);
+  assert.match(builder, /includeIrohNativeReleaseEvidence:\s*true/u);
+  assert.match(
+    workflow,
+    /generate-native-release-evidence\.mjs[\s\S]*?--output-dir "\$\{PACKAGED_IROH_ROOT\}\/release-evidence"[\s\S]*?--check/u,
+  );
   assert.doesNotMatch(workflow, /--targets[^\n]*musl/u);
 });
