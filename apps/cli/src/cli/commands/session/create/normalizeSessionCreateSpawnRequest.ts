@@ -4,6 +4,7 @@ import {
   buildBackendTargetKeyV2,
   findSpawnConfigOptionAliasConflicts,
   mergeSpawnConfigOptionAliases,
+  parseBackendTargetKeyV2,
   readBackendTargetRefV2,
   parseAgentPermissionIntentV1Alias,
   resolveSessionModelSelectionInputRefV1,
@@ -109,7 +110,17 @@ function resolveAgentTarget(
   agentTarget: SessionSpawnNewInputV2['agentTarget'];
   backendTargetKey: string;
 }> {
-  const requestedBackendTarget = request.backendTargetKey
+  const requestedAgentIdentity = request.backendTargetKey
+    ? (() => {
+        try {
+          const parsed = parseBackendTargetKeyV2(request.backendTargetKey);
+          return parsed.kind === 'agent' ? parsed.identity : null;
+        } catch {
+          return null;
+        }
+      })()
+    : null;
+  const requestedBackendTarget = request.backendTargetKey && !requestedAgentIdentity
     ? (() => {
         try {
           return readBackendTargetRefV2(request.backendTargetKey);
@@ -118,13 +129,15 @@ function resolveAgentTarget(
         }
       })()
     : null;
-  const selectedAgentId = requestedBackendTarget?.backendId ?? nonEmptyString(deps.defaultAgentId);
+  const selectedAgentId = requestedAgentIdentity
+    ? `${requestedAgentIdentity.pluginId}/${requestedAgentIdentity.localId}`
+    : requestedBackendTarget?.backendId ?? nonEmptyString(deps.defaultAgentId);
   if (!selectedAgentId) {
     invalidSessionCreateArgument('the default Agent is unavailable.');
   }
   const agent = [...deps.readAgentDefinitions()].find((candidate) => candidate.id === selectedAgentId);
   if (!agent?.identity) {
-    invalidSessionCreateArgument('--backend does not resolve to a current qualified Agent identity.');
+    invalidSessionCreateArgument('--backend does not identify an executable Agent.');
   }
   const backendTarget = readBackendTargetRefV2({
     kind: 'backend',

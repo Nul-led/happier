@@ -238,14 +238,15 @@ export function createAccountPluginSettingsRecordStorage(params: Readonly<{
                 { expectedRevision: request.expectedRevision, content },
                 requestConfig(credentials, options?.signal),
             );
-            const parsed = PluginAccountSettingsMutationResponseV1Schema.safeParse(response.data);
-            if (parsed.success) return parsed.data;
             if (
                 response.status === 503
                 && PluginAccountSettingsStorageUnavailableV1Schema.safeParse(response.data).success
             ) {
                 return unavailableWrite();
             }
+            if (response.status < 200 || response.status >= 300) return outcomeUnknownWrite();
+            const parsed = PluginAccountSettingsMutationResponseV1Schema.safeParse(response.data);
+            if (parsed.success) return parsed.data;
             return outcomeUnknownWrite();
         } catch (error) {
             if (isPluginError(error)) throw error;

@@ -7,13 +7,12 @@ import {
   createMarketplaceNpmDiscoveryProjectionV1,
   deriveMarketplaceNpmCompatibilityPlatformsV1,
   MarketplaceIndexEntryV1Schema,
-  MarketplaceNpmDiscoveryProjectionV1Schema,
   MarketplaceIndexSourceSnapshotV1Schema,
   marketplaceNpmDiscoveryProjectionEqualV1,
-  type MarketplaceNpmDiscoveryProjectionV1,
   type MarketplaceIndexSourceKindV1,
   type MarketplaceIndexSourceSnapshotV1,
 } from '@happier-dev/protocol';
+import { readMarketplaceNpmDiscoveryProjectionV1 } from '@happier-dev/protocol/marketplace/internal';
 
 import {
   assertRemoteAcquisitionUrl,
@@ -91,6 +90,19 @@ type CommunityNpmSearchCandidate = Readonly<{
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * A configured source's title is editable local presentation metadata; it
+ * never participates in matching a remote catalog to its binding. Serving
+ * overlays the configured title so a local rename neither rejects the remote
+ * document nor discards cached authority.
+ */
+function withConfiguredSourcePresentation(
+  snapshot: MarketplaceIndexSourceSnapshotV1,
+  sourceTitle: string,
+): MarketplaceIndexSourceSnapshotV1 {
+  return { ...snapshot, source: { ...snapshot.source, title: sourceTitle } };
 }
 
 function readCommunityNpmPublisher(candidate: Readonly<Record<string, unknown>>): CommunityNpmSearchCandidate['publisher'] | null {
@@ -208,6 +220,7 @@ export async function parseCommunityNpmDiscovery(
 
   const entries: MarketplaceIndexSourceSnapshotV1['entries'] = [];
   let skippedMetadataCandidates = 0;
+  let skippedUnsupportedDiscoveryVersions = 0;
   for (let index = 0; index < requests.length; index += MAX_CONCURRENT_COMMUNITY_NPM_METADATA_REQUESTS) {
     const resolved = await Promise.allSettled(requests.slice(index, index + MAX_CONCURRENT_COMMUNITY_NPM_METADATA_REQUESTS).map(async (candidate) => ({
       artifact: await resolveNpmArtifactMetadata({
@@ -223,53 +236,72 @@ export async function parseCommunityNpmDiscovery(
         skippedMetadataCandidates += 1;
         continue;
       }
-      const entry = parseCommunityNpmMetadataEntry(result.value.artifact, result.value.publisher);
-      if (entry) {
-        entries.push(entry);
+      const outcome = parseCommunityNpmMetadataEntry(result.value.artifact, result.value.publisher);
+      if (outcome.status === 'listed') {
+        entries.push(outcome.entry);
+      } else if (outcome.reason === 'unsupported-discovery-version') {
+        skippedUnsupportedDiscoveryVersions += 1;
       } else {
         skippedMetadataCandidates += 1;
       }
     }
   }
 
+  const diagnostics: MarketplaceIndexSourceSnapshotV1['diagnostics'] = [];
+  if (skippedMetadataCandidates > 0) {
+    diagnostics.push({
+      code: 'community_npm_metadata_skipped',
+      message: `Skipped metadata for ${skippedMetadataCandidates} community npm package${skippedMetadataCandidates === 1 ? '' : 's'}.`,
+    });
+  }
+  if (skippedUnsupportedDiscoveryVersions > 0) {
+    diagnostics.push({
+      code: 'community_npm_discovery_version_unsupported',
+      message: `Skipped ${skippedUnsupportedDiscoveryVersions} community npm package${skippedUnsupportedDiscoveryVersions === 1 ? '' : 's'} publishing an unsupported marketplaceDiscovery version.`,
+    });
+  }
+
   const snapshot = MarketplaceIndexSourceSnapshotV1Schema.parse({
     source,
     freshness: { state: 'fresh', fetchedAtMs: null },
     entries,
-    diagnostics: skippedMetadataCandidates > 0
-      ? [{
-        code: 'community_npm_metadata_skipped',
-        message: `Skipped metadata for ${skippedMetadataCandidates} community npm package${skippedMetadataCandidates === 1 ? '' : 's'}.`,
-      }]
-      : [],
+    diagnostics,
   });
   return { ...snapshot, communityNpmPage: { from, size, returned: searchHits.length, total } };
 }
 
+type CommunityNpmMetadataEntryOutcome =
+  | Readonly<{ status: 'listed'; entry: MarketplaceIndexSourceSnapshotV1['entries'][number] }>
+  | Readonly<{ status: 'skipped'; reason: 'unsupported-discovery-version' | 'unusable-metadata' }>;
+
 function parseCommunityNpmMetadataEntry(
   artifact: ResolvedNpmArtifact,
   publisher: Readonly<{ id: string; displayName: string }>,
-): MarketplaceIndexSourceSnapshotV1['entries'][number] | null {
+): CommunityNpmMetadataEntryOutcome {
   const happier = artifact.versionMetadata.happier;
-  if (!isRecord(happier)) return null;
-  const parsedDiscovery = MarketplaceNpmDiscoveryProjectionV1Schema.safeParse(happier.marketplaceDiscovery);
-  if (!parsedDiscovery.success || !artifact.compatibility?.projection) return null;
-  let expectedDiscovery: MarketplaceNpmDiscoveryProjectionV1;
+  if (!isRecord(happier)) return { status: 'skipped', reason: 'unusable-metadata' };
+  // Forward-compatible reader admission: unknown additive fields are
+  // normalized away, malformed or missing known fields skip the package, and
+  // a newer projection version gets its own diagnostic reason.
+  const discovery = readMarketplaceNpmDiscoveryProjectionV1(happier.marketplaceDiscovery);
+  if (discovery.status === 'unsupported-version') return { status: 'skipped', reason: 'unsupported-discovery-version' };
+  if (discovery.status !== 'parsed' || !artifact.compatibility?.projection) return { status: 'skipped', reason: 'unusable-metadata' };
+  let expectedDiscovery;
   try {
     expectedDiscovery = createMarketplaceNpmDiscoveryProjectionV1({
       compatibility: artifact.compatibility.projection,
-      manifestDigest: parsedDiscovery.data.manifestDigest,
+      manifestDigest: discovery.projection.manifestDigest,
     });
   } catch {
-    return null;
+    return { status: 'skipped', reason: 'unusable-metadata' };
   }
-  if (!marketplaceNpmDiscoveryProjectionEqualV1(parsedDiscovery.data, expectedDiscovery)) return null;
+  if (!marketplaceNpmDiscoveryProjectionEqualV1(discovery.projection, expectedDiscovery)) return { status: 'skipped', reason: 'unusable-metadata' };
   const happierRange = artifact.compatibility.projection.manifest.engines?.happier;
-  if (!happierRange) return null;
+  if (!happierRange) return { status: 'skipped', reason: 'unusable-metadata' };
   const parsed = MarketplaceIndexEntryV1Schema.safeParse({
-    pluginId: parsedDiscovery.data.pluginId,
+    pluginId: discovery.projection.pluginId,
     publisher,
-    display: parsedDiscovery.data.display,
+    display: discovery.projection.display,
     distribution: {
       kind: 'npm',
       registryOrigin: artifact.registryOrigin,
@@ -277,20 +309,20 @@ function parseCommunityNpmMetadataEntry(
       version: artifact.version,
       integrity: artifact.integrity,
     },
-    manifestDigest: parsedDiscovery.data.manifestDigest,
+    manifestDigest: discovery.projection.manifestDigest,
     compatibility: {
       happier: happierRange,
       platforms: deriveMarketplaceNpmCompatibilityPlatformsV1(artifact.compatibility.projection),
     },
-    summary: parsedDiscovery.data.summary,
+    summary: discovery.projection.summary,
     review: { status: 'unreviewed', reviewedAt: null },
     categories: [],
     media: [],
     updatePolicy: 'reviewEveryUpdate',
     links: {},
   });
-  if (!parsed.success) return null;
-  return parsed.data;
+  if (!parsed.success) return { status: 'skipped', reason: 'unusable-metadata' };
+  return { status: 'listed', entry: parsed.data };
 }
 
 /**
@@ -326,7 +358,7 @@ async function readCache(
     if (record.t !== 'happier_marketplace_index_source_cache_v1' || record.sourceUrl !== source.sourceUrl || typeof record.requestUrl !== 'string' || typeof record.fetchedAtMs !== 'number' || record.fetchedAtMs > nowMs) return { record: null, corrupt: true };
     const snapshot = MarketplaceIndexSourceSnapshotV1Schema.safeParse(record.snapshot);
     if (!snapshot.success) return { record: null, corrupt: true };
-    if (snapshot.data.source.id !== source.id || snapshot.data.source.title !== source.title || snapshot.data.source.kind !== source.kind || snapshot.data.source.sourceUrl !== source.sourceUrl) return { record: null, corrupt: true };
+    if (snapshot.data.source.id !== source.id || snapshot.data.source.kind !== source.kind || snapshot.data.source.sourceUrl !== source.sourceUrl) return { record: null, corrupt: true };
     const page = isRecord(record.communityNpmPage)
       && Number.isSafeInteger(record.communityNpmPage.from)
       && Number.isSafeInteger(record.communityNpmPage.size)
@@ -412,7 +444,7 @@ export async function loadMarketplaceIndexSource(params: Readonly<{
       try {
         const response = opened.response;
         if (response.status === 304 && revalidatable) {
-          const snapshot: LoadedMarketplaceIndexSource = { ...revalidatable.snapshot, freshness: { state: 'fresh', fetchedAtMs: now() }, ...(revalidatable.communityNpmPage ? { communityNpmPage: revalidatable.communityNpmPage } : {}) };
+          const snapshot: LoadedMarketplaceIndexSource = { ...withConfiguredSourcePresentation(revalidatable.snapshot, params.source.title), freshness: { state: 'fresh', fetchedAtMs: now() }, ...(revalidatable.communityNpmPage ? { communityNpmPage: revalidatable.communityNpmPage } : {}) };
           await writeJsonAtomic(cachePath, { ...revalidatable, fetchedAtMs: now(), snapshot } satisfies CacheRecord);
           return snapshot;
         }
@@ -437,7 +469,9 @@ export async function loadMarketplaceIndexSource(params: Readonly<{
         } else {
           parsed = MarketplaceIndexSourceSnapshotV1Schema.parse(body);
         }
-        if (parsed.source.id !== params.source.id || parsed.source.title !== params.source.title || parsed.source.kind !== params.source.kind || parsed.source.sourceUrl !== sourceUrl) throw new Error('Marketplace index source identity does not match its configured binding');
+        // Immutable identity decides the binding match; the editable local
+        // title is overlaid as presentation metadata, never compared.
+        if (parsed.source.id !== params.source.id || parsed.source.kind !== params.source.kind || parsed.source.sourceUrl !== sourceUrl) throw new Error('Marketplace index source identity does not match its configured binding');
         const invalidReview = parsed.entries.find((entry) => (
           params.source.kind === 'curated'
             ? entry.review.status === 'unreviewed'
@@ -445,8 +479,9 @@ export async function loadMarketplaceIndexSource(params: Readonly<{
         ));
         if (invalidReview) throw new Error(`Marketplace source '${params.source.id}' claims review authority outside its source kind`);
         const { communityNpmPage = null, ...parsedSnapshot } = parsed;
-        const snapshot: LoadedMarketplaceIndexSource = { ...parsedSnapshot, freshness: { state: 'fresh', fetchedAtMs: now() }, ...(communityNpmPage ? { communityNpmPage } : {}) };
-        await writeJsonAtomic(cachePath, { t: 'happier_marketplace_index_source_cache_v1', sourceUrl, requestUrl, fetchedAtMs: now(), etag: response.headers.get('etag'), lastModified: response.headers.get('last-modified'), snapshot: parsedSnapshot, communityNpmPage } satisfies CacheRecord);
+        const boundSnapshot = withConfiguredSourcePresentation(parsedSnapshot, params.source.title);
+        const snapshot: LoadedMarketplaceIndexSource = { ...boundSnapshot, freshness: { state: 'fresh', fetchedAtMs: now() }, ...(communityNpmPage ? { communityNpmPage } : {}) };
+        await writeJsonAtomic(cachePath, { t: 'happier_marketplace_index_source_cache_v1', sourceUrl, requestUrl, fetchedAtMs: now(), etag: response.headers.get('etag'), lastModified: response.headers.get('last-modified'), snapshot: boundSnapshot, communityNpmPage } satisfies CacheRecord);
         return snapshot;
       } finally {
         await opened.dispose().catch(() => undefined);
@@ -457,7 +492,7 @@ export async function loadMarketplaceIndexSource(params: Readonly<{
       // slot may hold another query's snapshot, and serving that as this
       // query's result would let one search masquerade as another.
       if (revalidatable && now() - revalidatable.fetchedAtMs >= 0 && now() - revalidatable.fetchedAtMs <= CACHE_MAX_STALE_MS) {
-        return { ...revalidatable.snapshot, freshness: { state: isOfflineRefreshError(error) ? 'stale-offline' : 'stale', fetchedAtMs: revalidatable.fetchedAtMs, staleSinceMs: now() }, diagnostics: [...revalidatable.snapshot.diagnostics.slice(0, 127), { code: 'marketplace_source_refresh_failed', message }], ...(revalidatable.communityNpmPage ? { communityNpmPage: revalidatable.communityNpmPage } : {}) };
+        return { ...withConfiguredSourcePresentation(revalidatable.snapshot, params.source.title), freshness: { state: isOfflineRefreshError(error) ? 'stale-offline' : 'stale', fetchedAtMs: revalidatable.fetchedAtMs, staleSinceMs: now() }, diagnostics: [...revalidatable.snapshot.diagnostics.slice(0, 127), { code: 'marketplace_source_refresh_failed', message }], ...(revalidatable.communityNpmPage ? { communityNpmPage: revalidatable.communityNpmPage } : {}) };
       }
       return {
         source: params.source,

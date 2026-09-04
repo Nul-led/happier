@@ -13,6 +13,23 @@ vi.mock('@/session/actions/createCliActionExecutorFromCredentials', () => ({
   createCliActionExecutorFromCredentials,
 }));
 
+const { readAgentCatalogSnapshot } = vi.hoisted(() => ({
+  readAgentCatalogSnapshot: vi.fn(() => ({
+    agentDefinitionsById: new Map([
+      [
+        'com.acme.review/review-bot',
+        {
+          id: 'com.acme.review/review-bot',
+          identity: { pluginId: 'com.acme.review', localId: 'review-bot' },
+        },
+      ],
+    ]),
+  })),
+}));
+vi.mock('@/agent/catalog/snapshot', () => ({
+  readAgentCatalogSnapshot,
+}));
+
 vi.mock('@/session/services/resolveSessionTransportContext', () => ({
   resolveSessionTransportContext,
 }));
@@ -116,6 +133,35 @@ describe('happier session run list', () => {
           runs: [expect.objectContaining({ runId: 'run-1' })],
         }),
       }));
+    } finally {
+      output.restore();
+    }
+  });
+
+  it('resolves a qualified external Agent list filter through the catalog', async () => {
+    resolveSessionTarget.mockResolvedValueOnce({ ok: true, sessionId: 'sess-1' });
+    execute.mockResolvedValueOnce({ ok: true, result: { ok: true, runs: [] } });
+    const { handleSessionCommand } = await import('../handleSessionCommand');
+    const output = captureConsoleJsonOutput();
+    try {
+      await handleSessionCommand(
+        ['run', 'list', 'sess-1', '--agent', 'agent:com.acme.review/review-bot', '--json'],
+        {
+          readCredentialsFn: async () => ({
+            token: 'token_test',
+            encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
+          }),
+        },
+      );
+
+      expect(execute).toHaveBeenCalledWith(
+        'execution.run.list',
+        {
+          backendTarget: { kind: 'backend', backendId: 'com.acme.review/review-bot', sourceKind: 'built_in' },
+        },
+        { surface: 'cli', defaultSessionId: 'sess-1' },
+      );
+      expect(output.json()).toEqual(expect.objectContaining({ ok: true, kind: 'session_run_list' }));
     } finally {
       output.restore();
     }

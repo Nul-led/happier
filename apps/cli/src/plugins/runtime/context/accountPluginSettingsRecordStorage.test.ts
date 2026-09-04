@@ -158,6 +158,25 @@ describe('Account plugin Settings record storage', () => {
         await expect(adapter.writeRecord(model, request)).resolves.toEqual({ status: 'outcomeUnknown' });
     });
 
+    it('does not accept a success-shaped mutation body from a non-success HTTP status', async () => {
+        const get = vi.fn().mockResolvedValue({ status: 200, data: { mode: 'plain', updatedAt: 1 } });
+        const post = vi.fn().mockResolvedValue({
+            status: 409,
+            data: { status: 'updated', revision: 5 },
+        });
+        const adapter = createAccountPluginSettingsRecordStorage({
+            readCredentials: async () => plainCredentials,
+            isCurrentAccount: () => true,
+            http: { get, post },
+            resolveBaseUrl: () => 'https://server.example',
+        });
+
+        await expect(adapter.writeRecord(model, {
+            expectedRevision: 4,
+            values: { theme: 'light' },
+        })).resolves.toEqual({ status: 'outcomeUnknown' });
+    });
+
     it('accepts an exact applied response after caller cancellation begins post-submit', async () => {
         const controller = new AbortController();
         const get = vi.fn().mockResolvedValue({ status: 200, data: { mode: 'plain', updatedAt: 1 } });

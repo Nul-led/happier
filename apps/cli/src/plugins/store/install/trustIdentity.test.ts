@@ -178,6 +178,21 @@ describe('whole-plugin installation trust identity', () => {
     })).rejects.toThrow(/integrity/i);
   });
 
+  it('drops unsupported remote archive query parameters from durable identity', async () => {
+    await expect(createArchivePluginDistributionIdentity({
+      source: { kind: 'remoteUrl', url: 'https://example.test/plugins/acme.tgz?download=1' },
+      integrity: archiveIntegrityA,
+    })).resolves.toMatchObject({
+      source: { canonicalUrl: 'https://example.test/plugins/acme.tgz?download=1' },
+    });
+    await expect(createArchivePluginDistributionIdentity({
+      source: { kind: 'remoteUrl', url: 'https://example.test/plugins/acme.tgz?download=1&token=secret' },
+      integrity: archiveIntegrityA,
+    })).resolves.toMatchObject({
+      source: { canonicalUrl: 'https://example.test/plugins/acme.tgz?download=1' },
+    });
+  });
+
   it('fails closed for malformed or missing trust records', () => {
     const distribution = createNpmPluginDistributionIdentity({
       registryOrigin: 'https://registry.example.test',

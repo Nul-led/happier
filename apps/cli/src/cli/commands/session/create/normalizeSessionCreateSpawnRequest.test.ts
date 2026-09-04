@@ -121,6 +121,38 @@ describe('normalizeSessionCreateSpawnRequest', () => {
     });
   });
 
+  it('resolves a qualified external Agent key through the catalog before legacy conversion', async () => {
+    const normalized = await normalizeSessionCreateSpawnRequest({
+      directory: '/repo/project',
+      backendTargetKey: 'agent:com.acme.review/review-bot',
+      modelId: 'review-model',
+    }, createDeps({
+      readAgentDefinitions: () => [
+        {
+          id: 'com.acme.review/review-bot',
+          identity: { pluginId: 'com.acme.review', localId: 'review-bot' },
+        },
+      ],
+    }));
+
+    expect(normalized.agentId).toBe('com.acme.review/review-bot');
+    expect(normalized.input.agentTarget).toEqual({
+      kind: 'agent',
+      identity: { pluginId: 'com.acme.review', localId: 'review-bot' },
+    });
+    expect(normalized.input.modelSelection?.ref).toMatchObject({
+      agentTargetKey: 'backend:com.acme.review/review-bot',
+      modelId: 'review-model',
+    });
+  });
+
+  it('still rejects a qualified Agent key that no catalog Agent owns', async () => {
+    await expect(normalizeSessionCreateSpawnRequest({
+      directory: '/repo/project',
+      backendTargetKey: 'agent:com.acme.review/review-bot',
+    }, createDeps())).rejects.toThrow(/--backend does not identify an executable Agent/);
+  });
+
   it('normalizes explicit environment variables into the strict V2 Action input', async () => {
     await expect(normalizeSessionCreateSpawnRequest({
       directory: '/repo/project',

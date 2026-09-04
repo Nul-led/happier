@@ -727,7 +727,12 @@ describe('createDaemonArchivePluginChangePreparer', () => {
     const service = createDaemonPluginChangeService({
       prepare: createDaemonArchivePluginChangePreparer({
         happyHomeDir,
-        runtimeLifecycle: { prepare: async () => ({ abort: async () => undefined, adopt: async () => undefined }) },
+        runtimeLifecycle: {
+          prepare: async () => ({
+            abort: async () => undefined,
+            adopt: async () => 'remote-archive-generation',
+          }),
+        },
       }),
       createPendingChangeId: () => 'pending-remote-archive',
     });
@@ -748,7 +753,7 @@ describe('createDaemonArchivePluginChangePreparer', () => {
       pendingChangeId: begun.pendingChangeId,
       decision: 'installAndTrust',
     });
-    expect(committed).toMatchObject({ kind: 'committed', appliedGeneration: expect.any(String), pendingSurfaces: [] });
+    expect(committed).toMatchObject({ kind: 'committed', appliedGeneration: null, pendingSurfaces: [] });
     expect(origin.observedUrls).toEqual([archivePathAndQuery]);
     expect((await createPluginRegistryStateStore({ happyHomeDir }).read()).plugins['acme.archive-candidate'])
       .toMatchObject({

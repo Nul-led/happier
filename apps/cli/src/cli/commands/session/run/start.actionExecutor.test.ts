@@ -30,6 +30,23 @@ vi.mock('@/session/actions/ensureCliActionPolicySettings', () => ({
   ensureCliActionPolicySettings,
 }));
 
+const { readAgentCatalogSnapshot } = vi.hoisted(() => ({
+  readAgentCatalogSnapshot: vi.fn(() => ({
+    agentDefinitionsById: new Map([
+      [
+        'com.acme.review/review-bot',
+        {
+          id: 'com.acme.review/review-bot',
+          identity: { pluginId: 'com.acme.review', localId: 'review-bot' },
+        },
+      ],
+    ]),
+  })),
+}));
+vi.mock('@/agent/catalog/snapshot', () => ({
+  readAgentCatalogSnapshot,
+}));
+
 describe('happier session run start (action executor)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -100,6 +117,37 @@ describe('happier session run start (action executor)', () => {
           runId: 'run-1',
         }),
       }));
+    } finally {
+      output.restore();
+    }
+  });
+
+  it('resolves a qualified external Agent run start target through the catalog', async () => {
+    execute.mockResolvedValueOnce({ ok: true, result: { ok: true, runId: 'run-ext-1' } });
+
+    const { handleSessionCommand } = await import('../handleSessionCommand');
+    const output = captureConsoleJsonOutput();
+    try {
+      await handleSessionCommand(
+        ['run', 'start', 'sess-1', '--intent', 'review', '--agent', 'agent:com.acme.review/review-bot', '--json'],
+        {
+          readCredentialsFn: async () => ({
+            token: 'token_test',
+            encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
+          }),
+        },
+      );
+
+      expect(execute).toHaveBeenCalledWith(
+        'execution.run.start',
+        expect.objectContaining({
+          sessionId: 'sess-1',
+          intent: 'review',
+          backendTarget: { kind: 'backend', backendId: 'com.acme.review/review-bot', sourceKind: 'built_in' },
+        }),
+        { surface: 'cli', defaultSessionId: 'sess-1' },
+      );
+      expect(output.json()).toEqual(expect.objectContaining({ ok: true, kind: 'session_run_start' }));
     } finally {
       output.restore();
     }

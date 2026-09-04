@@ -10,6 +10,7 @@ import {
   type BackendTargetRefV1,
 } from '@happier-dev/protocol';
 import { getAgentCatalogDefinition } from '@happier-dev/agents';
+import { readAgentCatalogSnapshot } from '@/agent/catalog/snapshot';
 import type { createCliActionExecutor } from '@/session/actions/createCliActionExecutor';
 import {
   normalizeActionExecuteResult,
@@ -192,5 +193,16 @@ export function parseSingleBackendTargetFromFlag(value: string | null): BackendT
     return null;
   }
 
-  return convertBackendTargetRefV2ToV1(readBackendTargetRefV2(backendTargetKeys[0]));
+  const key = backendTargetKeys[0];
+  const parsed = parseBackendTargetKeyV2(key);
+  if (parsed.kind === 'agent') {
+    const definition = [...readAgentCatalogSnapshot().agentDefinitionsById.values()].find((candidate) => (
+      candidate.identity !== undefined
+      && candidate.identity.pluginId === parsed.identity.pluginId
+      && candidate.identity.localId === parsed.identity.localId
+    ));
+    if (!definition) return null;
+    return { kind: 'builtInAgent', agentId: definition.id };
+  }
+  return convertBackendTargetRefV2ToV1(readBackendTargetRefV2(key));
 }

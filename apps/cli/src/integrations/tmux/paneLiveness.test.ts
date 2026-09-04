@@ -5,10 +5,10 @@ import { evaluateTmuxPaneLiveness, type TmuxPaneLivenessExecutor } from './paneL
 describe('evaluateTmuxPaneLiveness', () => {
   it('parses live pane metadata from tmux display-message output', async () => {
     const executor: TmuxPaneLivenessExecutor = async (args) => {
-      expect(args).toEqual(['display-message', '-p', '-t', 'happy:claude.1', '#{pane_dead}\t#{pane_pid}\t#{pane_current_command}']);
+      expect(args).toEqual(['display-message', '-p', '-t', 'happy:claude.1', '#{pane_dead}|#{pane_pid}|#{pane_current_command}']);
       return {
         returncode: 0,
-        stdout: '0\t12345\tclaude\n',
+        stdout: '0|12345|claude\n',
         stderr: '',
         command: [],
       };
@@ -27,10 +27,28 @@ describe('evaluateTmuxPaneLiveness', () => {
     });
   });
 
+  it.each([
+    '0\t12345\tclaude\n',
+    '0_12345_claude\n',
+  ])('accepts legacy tmux liveness output without probing the target again: %s', async (stdout) => {
+    const executor: TmuxPaneLivenessExecutor = async (args) => {
+      expect(args[0]).toBe('display-message');
+      return { returncode: 0, stdout, stderr: '', command: [...args] };
+    };
+
+    await expect(evaluateTmuxPaneLiveness({ executor, target: 'happy:claude.1', observedAt: 44 })).resolves.toEqual({
+      paneAlive: true,
+      paneDead: false,
+      panePid: 12345,
+      paneCurrentCommand: 'claude',
+      observedAt: 44,
+    });
+  });
+
   it('redacts sensitive pane command metadata', async () => {
     const executor: TmuxPaneLivenessExecutor = async () => ({
       returncode: 0,
-      stdout: '0\t12345\tclaude ANTHROPIC_API_KEY=sk-ant-secret-value Authorization: Bearer provider-bearer-secret\n',
+      stdout: '0|12345|claude ANTHROPIC_API_KEY=sk-ant-secret-value Authorization: Bearer provider-bearer-secret\n',
       stderr: '',
       command: [],
     });

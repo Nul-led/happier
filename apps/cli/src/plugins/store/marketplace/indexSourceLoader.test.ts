@@ -75,19 +75,23 @@ function communityNpmSearchPayload(packageNames: readonly string[] = ['@acme/com
   };
 }
 
-function communityNpmMetadataClient(happier: unknown): NpmRegistryJsonClient {
+function communityNpmMetadataClient(
+  happier: unknown,
+  packageName = '@acme/community',
+): NpmRegistryJsonClient {
+  const encodedName = encodeURIComponent(packageName).replaceAll('%40', '@').replaceAll('%2F', '/');
   return {
     getJson: vi.fn(async () => ({
-      name: '@acme/community',
+      name: packageName,
       'dist-tags': { latest: '1.0.0' },
       versions: {
         '1.0.0': {
-          name: '@acme/community',
+          name: packageName,
           version: '1.0.0',
           happier,
           dist: {
             integrity: COMMUNITY_INTEGRITY,
-            tarball: 'https://registry.npmjs.org/@acme/community/-/community-1.0.0.tgz',
+            tarball: `https://registry.npmjs.org/${packageName}/-/${encodedName.split('/').pop()}-1.0.0.tgz`,
           },
         },
       },
@@ -190,6 +194,97 @@ describe('loadMarketplaceIndexSource', () => {
       url: 'https://registry.npmjs.org/%40acme%2Fcommunity',
       headers: { accept: 'application/json' },
     }));
+  });
+
+  it('lists community packages whose discovery projection carries unknown additive fields', async () => {
+    const client = communityNpmMetadataClient(communityHappierMetadata({
+      marketplaceDiscovery: {
+        version: 1,
+        pluginId: 'acme.community',
+        manifestDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        futureListingFact: { addedIn: 2, notes: ['ignored'] },
+        display: { title: 'Community', description: null, badgeUrl: 'https://cdn.example/badge.png' },
+        summary: {
+          contributions: [],
+          requiredHostAccess: [],
+          optionalHostAccess: [],
+          executableRealms: ['daemon'],
+          installFootprint: { bytes: 1_024 },
+        },
+      },
+    }));
+
+    const parsed = await parseCommunityNpmDiscovery(communityNpmSearchPayload(), communitySource, { client });
+    expect(parsed.entries).toHaveLength(1);
+    expect(parsed.entries[0]).toMatchObject({
+      pluginId: 'acme.community',
+      display: { title: 'Community', description: null },
+      summary: { contributions: [], requiredHostAccess: [], optionalHostAccess: [], executableRealms: ['daemon'] },
+    });
+    expect(parsed.diagnostics).toEqual([]);
+  });
+
+  it('skips community packages whose discovery projection malformed a known field', async () => {
+    const client = communityNpmMetadataClient(communityHappierMetadata({
+      marketplaceDiscovery: {
+        version: 1,
+        pluginId: 'acme.community',
+        manifestDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        display: { title: 42, description: null },
+        summary: { contributions: [], requiredHostAccess: [], optionalHostAccess: [], executableRealms: ['daemon'] },
+      },
+    }));
+
+    const parsed = await parseCommunityNpmDiscovery(communityNpmSearchPayload(), communitySource, { client });
+    expect(parsed.entries).toEqual([]);
+    expect(parsed.diagnostics).toEqual([expect.objectContaining({ code: 'community_npm_metadata_skipped' })]);
+  });
+
+  it('skips community packages whose discovery projection omits a compatibility-critical field', async () => {
+    const client = communityNpmMetadataClient(communityHappierMetadata({
+      marketplaceDiscovery: {
+        version: 1,
+        pluginId: 'acme.community',
+        display: { title: 'Community', description: null },
+        summary: { contributions: [], requiredHostAccess: [], optionalHostAccess: [], executableRealms: ['daemon'] },
+      },
+    }));
+
+    const parsed = await parseCommunityNpmDiscovery(communityNpmSearchPayload(), communitySource, { client });
+    expect(parsed.entries).toEqual([]);
+    expect(parsed.diagnostics).toEqual([expect.objectContaining({ code: 'community_npm_metadata_skipped' })]);
+  });
+
+  it('skips packages publishing an unsupported marketplaceDiscovery version with their own diagnostic', async () => {
+    const healthyClient = communityNpmMetadataClient(communityHappierMetadata());
+    const futureClient = communityNpmMetadataClient(communityHappierMetadata({
+      marketplaceDiscovery: {
+        version: 2,
+        pluginId: 'acme.community',
+        manifestDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        display: { title: 'Community', description: null },
+        summary: { contributions: [], requiredHostAccess: [], optionalHostAccess: [], executableRealms: ['daemon'] },
+      },
+    }), '@acme/future');
+    const client: NpmRegistryJsonClient = {
+      getJson: vi.fn(async (input) => {
+        if (input.url.endsWith('%40acme%2Ffuture')) return await futureClient.getJson(input);
+        return await healthyClient.getJson(input);
+      }),
+    };
+
+    const parsed = await parseCommunityNpmDiscovery(
+      communityNpmSearchPayload(['@acme/future', '@acme/community']),
+      communitySource,
+      { client },
+    );
+
+    expect(parsed.entries).toHaveLength(1);
+    expect(parsed.entries[0]).toMatchObject({ pluginId: 'acme.community' });
+    expect(parsed.diagnostics).toEqual([{
+      code: 'community_npm_discovery_version_unsupported',
+      message: 'Skipped 1 community npm package publishing an unsupported marketplaceDiscovery version.',
+    }]);
   });
 
   it('rejects community metadata whose discovery projection contradicts its generated compatibility manifest', async () => {
@@ -410,11 +505,50 @@ describe('loadMarketplaceIndexSource', () => {
     expect(result.diagnostics).toEqual([expect.objectContaining({ code: 'marketplace_cache_corrupt' })]);
   });
 
-  it('does not reuse cached curation authority after the configured source binding changes', async () => {
+  it('matches a remote catalog on immutable identity and overlays the configured source title', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'happier-marketplace-index-'));
+    homes.push(home);
+    const remoteCatalog = { ...snapshot(), source: { ...source, title: 'Remotely published title' } };
+    const result = await loadMarketplaceIndexSource({
+      resolveAddresses: testResolveAddresses,
+      source: { ...source, title: 'Locally renamed' },
+      happyHomeDir: home,
+      fetchImpl: async () => new Response(JSON.stringify(remoteCatalog), { status: 200 }),
+      now: () => 100,
+    });
+    expect(result.freshness.state).toBe('fresh');
+    expect(result.source).toEqual({ ...source, title: 'Locally renamed' });
+  });
+
+  it('keeps cached catalog authority when only the editable local source title changes', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'happier-marketplace-index-'));
+    homes.push(home);
+    await loadMarketplaceIndexSource({ resolveAddresses: testResolveAddresses, source, happyHomeDir: home, fetchImpl: async () => new Response(JSON.stringify(snapshot()), { status: 200, headers: { etag: '"v1"' } }), now: () => 100 });
+    const rebound = { ...source, title: 'Renamed locally' };
+
+    const offline = await loadMarketplaceIndexSource({ resolveAddresses: testResolveAddresses, source: rebound, happyHomeDir: home, fetchImpl: async () => { throw new Error('offline'); }, now: () => 200 });
+    expect(offline.freshness).toMatchObject({ state: 'stale-offline', fetchedAtMs: 100, staleSinceMs: 200 });
+    expect(offline.source.title).toBe('Renamed locally');
+
+    const revalidated = await loadMarketplaceIndexSource({
+      resolveAddresses: testResolveAddresses,
+      source: rebound,
+      happyHomeDir: home,
+      fetchImpl: async (_url: string | URL | Request, init?: RequestInit) => {
+        expect(new Headers(init?.headers).get('if-none-match')).toBe('"v1"');
+        return new Response(null, { status: 304 });
+      },
+      now: () => 300,
+    });
+    expect(revalidated.freshness).toMatchObject({ state: 'fresh', fetchedAtMs: 300 });
+    expect(revalidated.source.title).toBe('Renamed locally');
+  });
+
+  it('does not reuse cached curation authority after the configured source identity changes', async () => {
     const home = await mkdtemp(join(tmpdir(), 'happier-marketplace-index-'));
     homes.push(home);
     await loadMarketplaceIndexSource({ resolveAddresses: testResolveAddresses, source, happyHomeDir: home, fetchImpl: async () => new Response(JSON.stringify(snapshot()), { status: 200 }), now: () => 100 });
-    const rebound = { ...source, title: 'Rebound title' };
+    const rebound = { ...source, id: 'marketplace:other' };
     const result = await loadMarketplaceIndexSource({ resolveAddresses: testResolveAddresses, source: rebound, happyHomeDir: home, fetchImpl: async () => { throw new Error('offline'); }, now: () => 200 });
     expect(result.entries).toEqual([]);
     expect(result.freshness.state).toBe('corrupt');
