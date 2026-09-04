@@ -245,3 +245,82 @@ export async function startLoopbackOauthPkceFlow<TTokens>(
 
   return await callbackResultPromise;
 }
+
+export type LoopbackRedirectParameters = Readonly<Record<string, string>>;
+
+function createLoopbackOauthAbortError(): Error {
+  const error = new Error('Authentication cancelled');
+  error.name = 'AbortError';
+  return error;
+}
+
+/**
+ * Captures a server-owned browser redirect on loopback. Account Service OAuth
+ * uses this existing listener/port owner but has no authorization-code/PKCE
+ * exchange: its callback carries a short-lived server pending handle instead.
+ */
+export async function captureLoopbackOauthRedirect(opts: Readonly<{
+  callbackPath: `/${string}`;
+  resolveAuthorizationUrl(callbackOrigin: string): Promise<string>;
+  openAuthorizationUrl(url: string): Promise<void>;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}>): Promise<LoopbackRedirectParameters> {
+  if (opts.signal?.aborted) throw createLoopbackOauthAbortError();
+  const port = await findAvailableLoopbackPort();
+  if (opts.signal?.aborted) throw createLoopbackOauthAbortError();
+  const callbackOrigin = `http://127.0.0.1:${port}`;
+  const timeoutMs = opts.timeoutMs ?? 5 * 60 * 1000;
+
+  return await new Promise<LoopbackRedirectParameters>((resolve, reject) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let finish!: (result: { ok: true; value: LoopbackRedirectParameters } | { ok: false; error: unknown }) => void;
+    const onAbort = (): void => finish({ ok: false, error: createLoopbackOauthAbortError() });
+    const server = createServer((req, res) => {
+      if (settled) {
+        res.writeHead(410).end('Authentication cancelled');
+        return;
+      }
+      const requestUrl = new URL(req.url ?? '/', callbackOrigin);
+      if (requestUrl.pathname !== opts.callbackPath) {
+        res.writeHead(404).end('Not found');
+        return;
+      }
+      const parameters = Object.fromEntries(requestUrl.searchParams.entries());
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(renderDefaultSuccessHtml());
+      finish({ ok: true, value: parameters });
+    });
+    finish = (result) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      opts.signal?.removeEventListener('abort', onAbort);
+      try {
+        server.close();
+      } catch {
+        // The operation may be cancelled before the listener starts.
+      }
+      if (result.ok) resolve(result.value);
+      else reject(result.error);
+    };
+
+    opts.signal?.addEventListener('abort', onAbort, { once: true });
+    if (opts.signal?.aborted) {
+      onAbort();
+      return;
+    }
+    timer = setTimeout(() => finish({ ok: false, error: new Error('Authentication timeout') }), timeoutMs);
+    server.once('error', (error) => finish({ ok: false, error }));
+    server.listen(port, '127.0.0.1', () => {
+      if (settled) return;
+      void opts.resolveAuthorizationUrl(callbackOrigin)
+        .then(async (authorizationUrl) => {
+          if (settled) return;
+          await opts.openAuthorizationUrl(authorizationUrl);
+        })
+        .then(() => undefined, (error) => finish({ ok: false, error }));
+    });
+  });
+}

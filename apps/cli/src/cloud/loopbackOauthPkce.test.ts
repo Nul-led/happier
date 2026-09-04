@@ -2,7 +2,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { startLoopbackOauthPkceFlow } from './loopbackOauthPkce';
+import { captureLoopbackOauthRedirect, startLoopbackOauthPkceFlow } from './loopbackOauthPkce';
+import { isLoopbackPortAvailable } from './loopbackPort';
 
 type RequestHandler = (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
 
@@ -156,5 +157,61 @@ describe('startLoopbackOauthPkceFlow', () => {
 
     expect(exchangeCodeForTokens).not.toHaveBeenCalled();
     expect(fakeServer.closed).toBe(true);
+  });
+});
+
+describe('captureLoopbackOauthRedirect', () => {
+  it('does not start a listener or browser flow for an already-aborted operation', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const resolveAuthorizationUrl = vi.fn(async () => 'https://provider.example/authorize');
+    const openAuthorizationUrl = vi.fn(async () => undefined);
+
+    await expect(captureLoopbackOauthRedirect({
+      callbackPath: '/oauth/provider',
+      signal: controller.signal,
+      timeoutMs: 10,
+      resolveAuthorizationUrl,
+      openAuthorizationUrl,
+    })).rejects.toMatchObject({ name: 'AbortError' });
+
+    expect(resolveAuthorizationUrl).not.toHaveBeenCalled();
+    expect(openAuthorizationUrl).not.toHaveBeenCalled();
+  });
+
+  it('settles once on later abort, closes the listener, and ignores a late browser-open completion', async () => {
+    const controller = new AbortController();
+    let callbackOrigin = '';
+    let releaseOpen!: () => void;
+    const openPending = new Promise<void>((resolve) => {
+      releaseOpen = resolve;
+    });
+    let markOpenStarted!: () => void;
+    const openStarted = new Promise<void>((resolve) => {
+      markOpenStarted = resolve;
+    });
+    const flow = captureLoopbackOauthRedirect({
+      callbackPath: '/oauth/provider',
+      signal: controller.signal,
+      timeoutMs: 10,
+      resolveAuthorizationUrl: async (origin) => {
+        callbackOrigin = origin;
+        return 'https://provider.example/authorize';
+      },
+      openAuthorizationUrl: async () => {
+        markOpenStarted();
+        await openPending;
+      },
+    });
+    await openStarted;
+
+    controller.abort();
+    await expect(flow).rejects.toMatchObject({ name: 'AbortError' });
+    releaseOpen();
+    await Promise.resolve();
+
+    const port = Number(new URL(callbackOrigin).port);
+    await expect(isLoopbackPortAvailable(port)).resolves.toBe(true);
+    await expect(fetch(`${callbackOrigin}/oauth/provider?pending=late`)).rejects.toThrow();
   });
 });

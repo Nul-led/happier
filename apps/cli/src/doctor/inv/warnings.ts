@@ -1,6 +1,7 @@
 import { configuration } from '@/configuration';
 import { resolveBackgroundServiceRepairPlanForCurrentRuntime } from '@/diagnostics/backgroundServiceRepair/resolveBackgroundServiceRepairPlanForCurrentRuntime';
 import { resolveDaemonServiceCliRuntimeFromEnv } from '@/daemon/service/cli';
+import { findServerProfileIdentityConflicts } from '@/server/serverProfiles';
 
 import { getReleaseRingCatalogEntry } from '@happier-dev/release-runtime/releaseRings';
 import type { DoctorSnapshot } from '@happier-dev/protocol';
@@ -70,6 +71,15 @@ export async function readDoctorWarnings(params: Readonly<{
   });
 
   const warnings: DoctorWarning[] = [];
+  const homeIdentityConflicts = await findServerProfileIdentityConflicts().catch(() => []);
+  for (const conflict of homeIdentityConflicts) {
+    warnings.push({
+      code: 'homeIdentityProfileConflict',
+      severity: 'warning',
+      message: `Home identity ${conflict.homeServerIdentityId} is claimed by multiple profiles: ${conflict.profileIds.join(', ')}. Credentials were not moved.`,
+      repairCommands: ['happier server list'],
+    });
+  }
   if (repairState.plan.actions.length > 0) {
     warnings.push(buildRepairRecommendedWarning(repairState.plan.actions.length));
   }

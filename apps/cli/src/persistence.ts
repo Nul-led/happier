@@ -718,7 +718,10 @@ export async function readStoredCredentials(): Promise<StoredCredentials | null>
     !existsSync(primaryPath);
 
   const path = existsSync(primaryPath) ? primaryPath : canUseLegacy ? legacyPath : null;
-  if (!path) return null;
+  return path ? await readStoredCredentialsFile(path) : null;
+}
+
+async function readStoredCredentialsFile(path: string): Promise<StoredCredentials | null> {
   try {
     const keyBase64 = (await readFile(path, 'utf8'));
     const credentials = credentialsSchema.parse(JSON.parse(keyBase64));
@@ -750,6 +753,22 @@ export async function readStoredCredentials(): Promise<StoredCredentials | null>
   } catch {
     return null
   }
+}
+
+/**
+ * Read the actual stored credential for one configured profile without making
+ * that profile active. Doctor uses this for inactive profiles so historical
+ * account metadata is never presented as proof that a bearer still exists.
+ */
+export async function readStoredCredentialsForServerId(serverIdRaw: string): Promise<StoredCredentials | null> {
+  const serverId = String(serverIdRaw ?? '').trim();
+  if (!isServerIdFilesystemSafe(serverId)) return null;
+  const primaryPath = join(configuration.serversDir, serverId, 'access.key');
+  if (existsSync(primaryPath)) return await readStoredCredentialsFile(primaryPath);
+  if (serverId === 'cloud' && existsSync(configuration.legacyPrivateKeyFile)) {
+    return await readStoredCredentialsFile(configuration.legacyPrivateKeyFile);
+  }
+  return null;
 }
 
 export async function writeCredentialsLegacy(credentials: { secret: Uint8Array, token: string }): Promise<void> {
@@ -796,6 +815,30 @@ export async function writeCredentialsTokenOnly(credentials: { token: string }):
       await unlink(configuration.legacyPrivateKeyFile).catch(() => {});
     }
   }
+}
+
+/** Writes a token to an explicit stable profile/identity without changing the active server. */
+export async function writeCredentialsTokenOnlyForServerId(
+  serverIdRaw: string,
+  credentials: Readonly<{ token: string }>,
+): Promise<void> {
+  const serverId = String(serverIdRaw ?? '').trim();
+  const token = String(credentials.token ?? '').trim();
+  if (!isServerIdFilesystemSafe(serverId) || !token) throw new Error('Invalid server credential target.');
+  const serverDir = join(configuration.serversDir, serverId);
+  const credentialPath = join(serverDir, 'access.key');
+  await mkdir(serverDir, { recursive: true });
+  await bestEffortChmod(serverDir, 0o700);
+  await writeFile(credentialPath, JSON.stringify({ token }, null, 2), { mode: 0o600 });
+  await bestEffortChmod(credentialPath, 0o600);
+}
+
+export async function removeStoredCredentialsForServerId(serverIdRaw: string): Promise<void> {
+  const serverId = String(serverIdRaw ?? '').trim();
+  if (!isServerIdFilesystemSafe(serverId)) throw new Error('Invalid server credential target.');
+  await unlink(join(configuration.serversDir, serverId, 'access.key')).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== 'ENOENT') throw error;
+  });
 }
 
 export async function clearCredentials(): Promise<void> {

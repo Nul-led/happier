@@ -5,7 +5,6 @@ import type { AgentId } from '@happier-dev/agents';
 import {
   accountSettingsParse,
   AccountSettingsV2GetResponseSchema,
-  normalizeCodexBackendMode,
   type AccountSettings,
   type AccountSettingsV2GetResponse,
   type BackendTargetRefV1,
@@ -164,17 +163,6 @@ function resolveLiveApplyDisposition(params: Readonly<{
   return null;
 }
 
-function migrateAccountSettingsForCodexAppServerDefault(settings: AccountSettings): AccountSettings {
-  const schemaVersion = settings.schemaVersion;
-  if (!Number.isFinite(schemaVersion) || schemaVersion >= 6) return settings;
-  const existingCodexBackendMode = normalizeCodexBackendMode(settings.codexBackendMode);
-  return {
-    ...settings,
-    schemaVersion: 6,
-    codexBackendMode: existingCodexBackendMode ?? 'appServer',
-  };
-}
-
 /**
  * Apply an authoritative user-scoped settings projection to this process.
  * Live updates intentionally do not write the durable cache; bootstrap remains its sole owner.
@@ -222,7 +210,7 @@ export async function applyAccountSettingsV2Update(params: Readonly<{
       );
     }
   }
-  const settings = migrateAccountSettingsForCodexAppServerDefault(accountSettingsParse(rawSettings ?? {}));
+  const settings = accountSettingsParse(rawSettings ?? {});
 
   if (params.shouldCommit && !params.shouldCommit()) {
     throw createAccountSettingsLiveApplyError(
@@ -618,14 +606,14 @@ export async function bootstrapAccountSettingsContext(params: Readonly<{
     if (!content) {
       return {
         rawSettings: {},
-        settings: migrateAccountSettingsForCodexAppServerDefault(accountSettingsParse({})),
+        settings: accountSettingsParse({}),
       };
     }
     if (content.t === 'plain') {
       const rawSettings = readRawAccountSettingsObject(content.v);
       return {
         rawSettings,
-        settings: migrateAccountSettingsForCodexAppServerDefault(accountSettingsParse(rawSettings)),
+        settings: accountSettingsParse(rawSettings),
       };
     }
     const ciphertext = typeof content.c === 'string' ? content.c : '';
@@ -639,7 +627,7 @@ export async function bootstrapAccountSettingsContext(params: Readonly<{
     }
     return {
       rawSettings: decrypted,
-      settings: migrateAccountSettingsForCodexAppServerDefault(accountSettingsParse(decrypted)),
+      settings: accountSettingsParse(decrypted),
     };
   };
 

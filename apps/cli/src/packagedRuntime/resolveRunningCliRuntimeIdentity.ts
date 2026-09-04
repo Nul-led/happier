@@ -61,7 +61,12 @@ export function resolveRunningCliRuntimeIdentity(
 
   const snapshotRoot = resolveRunnerSnapshotRuntimeRootFromPath(modulePath);
   if (snapshotRoot) {
-    return describeRuntimeEntrypoint(join(snapshotRoot, 'index.mjs'), 'runner-snapshot');
+    const normalizedModulePath = modulePath.replaceAll('\\', '/');
+    const snapshotTree = normalizedModulePath.slice(snapshotRoot.length + 1).split('/')[0];
+    const entrypoint = snapshotTree === 'package-dist' || snapshotTree === 'dist'
+      ? join(snapshotRoot, snapshotTree, 'index.mjs')
+      : join(snapshotRoot, 'index.mjs');
+    return describeRuntimeEntrypoint(entrypoint, 'runner-snapshot');
   }
 
   const packagedRuntime = resolveExecutingPackagedRuntimeTree(moduleUrl);

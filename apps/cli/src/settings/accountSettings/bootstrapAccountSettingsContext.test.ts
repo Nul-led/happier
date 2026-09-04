@@ -242,7 +242,7 @@ describe('bootstrapAccountSettingsContext', () => {
     expect(resolveCachePath).toHaveBeenCalledWith(expect.objectContaining({ token: tokenB }));
   });
 
-  it('forces Codex appServer default for schemaVersion < 6', async () => {
+  it('does not synthesize a generic Codex setting or schema-v6 migration during bootstrap', async () => {
     const nowMs = 1_000_000;
     const applySideEffects = vi.fn();
 
@@ -252,7 +252,6 @@ describe('bootstrapAccountSettingsContext', () => {
       refresh: 'auto',
       nowMs,
       ttlMs: 60_000,
-      agentId: 'codex',
       deps: {
         resolveCachePath: () => '/tmp/server/account.settings.cache.json',
         readCache: async () => ({
@@ -263,49 +262,15 @@ describe('bootstrapAccountSettingsContext', () => {
         }),
         writeCache: async () => {},
         fetchFromServer: async () => ({ settingsContent: null, settingsVersion: 999 }),
-        decryptCiphertext: async () => ({ schemaVersion: 5, codexBackendMode: 'mcp' }),
+        decryptCiphertext: async () => ({ schemaVersion: 5 }),
         applySideEffects,
       },
     });
 
-    expect(applySideEffects).toHaveBeenCalledWith(
-      expect.objectContaining({
-        settings: expect.objectContaining({ schemaVersion: 6, codexBackendMode: 'appServer' }),
-      }),
-    );
-  });
-
-  it('normalizes legacy mcp_resume codex backend mode when migrating schemaVersion < 6', async () => {
-    const nowMs = 1_000_000;
-    const applySideEffects = vi.fn();
-
-    await bootstrapAccountSettingsContext({
-      credentials: createCredentialsStub(),
-      mode: 'blocking',
-      refresh: 'auto',
-      nowMs,
-      ttlMs: 60_000,
-      agentId: 'codex',
-      deps: {
-        resolveCachePath: () => '/tmp/server/account.settings.cache.json',
-        readCache: async () => ({
-          version: 1,
-          cachedAt: nowMs - 1_000,
-          settingsCiphertext: 'cipher',
-          settingsVersion: 123,
-        }),
-        writeCache: async () => {},
-        fetchFromServer: async () => ({ settingsContent: null, settingsVersion: 999 }),
-        decryptCiphertext: async () => ({ schemaVersion: 5, codexBackendMode: '  mcp_resume  ' }),
-        applySideEffects,
-      },
-    });
-
-    expect(applySideEffects).toHaveBeenCalledWith(
-      expect.objectContaining({
-        settings: expect.objectContaining({ schemaVersion: 6, codexBackendMode: 'acp' }),
-      }),
-    );
+    expect(applySideEffects).toHaveBeenCalledOnce();
+    const appliedSettings = applySideEffects.mock.calls[0]?.[0].settings;
+    expect(appliedSettings?.schemaVersion).toBe(5);
+    expect(appliedSettings).not.toHaveProperty('codexBackendMode');
   });
 
   it('rejects disabled configured ACP backend targets during bootstrap side effects', async () => {

@@ -89,4 +89,20 @@ describe('resolveRunningCliRuntimeIdentity', () => {
       tree: 'runner-snapshot',
     });
   });
+
+  it('reports the package-dist entrypoint for a packaged pinned runner snapshot', () => {
+    const root = createRoot();
+    const snapshotDir = join(root, '.runner-snapshots', 'abc123');
+    const packageDistDir = join(snapshotDir, 'package-dist');
+    mkdirSync(packageDistDir, { recursive: true });
+    const entrypoint = join(packageDistDir, 'index.mjs');
+    writeFileSync(entrypoint, 'export const x = 1;\n', 'utf8');
+
+    expect(
+      resolveRunningCliRuntimeIdentity(pathToFileURL(join(packageDistDir, 'chunk.mjs')).href),
+    ).toMatchObject({
+      entrypoint,
+      tree: 'runner-snapshot',
+    });
+  });
 });

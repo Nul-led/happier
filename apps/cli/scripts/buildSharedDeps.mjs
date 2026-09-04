@@ -2429,13 +2429,28 @@ async function prepareBundledWorkspaceDependenciesForCli(opts = {}) {
       force: publishesArtifact || mustRebuildBootstrapOutputs,
     },
   });
-  // The artifact inventory must describe the packages THIS publication build compiled.
-  // Scoping it to what the workspace owner reported as rebuilt lets a package it
-  // considered already-current keep an inventory entry from an earlier generation.
+  // The inventory must describe both packages compiled by this run and plugin runtime
+  // trees changed by another canonical compiler since their last publication. Package
+  // currentness intentionally avoids recompiling a newer `dist`, so it cannot by itself
+  // decide whether the generated plugin projection still describes those bytes.
+  const failedPluginWorkspaceNames = new Set(
+    buildResult.failedPluginBuilds.map(({ workspaceName }) => workspaceName),
+  );
   const rebuiltPluginWorkspaceNames = resolveSelectedBundledPluginWorkspaceNames({
     repoRoot: resolvedRepoRoot,
-    workspaceNames: publishesArtifact ? workspaceNames : buildResult.builtWorkspaceNames,
-  });
+    workspaceNames: publishesArtifact
+      ? workspaceNames
+      : [
+        ...buildResult.builtWorkspaceNames,
+        ...collectDivergedBundledPluginWorkspaceNames({
+          repoRoot: resolvedRepoRoot,
+          workspaceNames,
+          ...(opts.readBundledPluginArtifactInventoryImpl
+            ? { readInventory: opts.readBundledPluginArtifactInventoryImpl }
+            : {}),
+        }),
+      ],
+  }).filter((workspaceName) => !failedPluginWorkspaceNames.has(workspaceName));
 
   return {
     resolvedRepoRoot,
@@ -2582,6 +2597,7 @@ async function publishPreparedBundledWorkspaceDependenciesForCli(prepared, opts 
   } = prepared;
   const ensureWorkspacePackagesBuilt =
     opts.ensureWorkspacePackagesBuiltByNameImpl ?? ensureWorkspacePackagesBuiltByName;
+  const publicationEnv = opts.publishBundledPluginArtifactsEnv ?? opts.env ?? process.env;
 
   let bundledPluginPublicationAttempted = false;
   try {
@@ -2590,9 +2606,17 @@ async function publishPreparedBundledWorkspaceDependenciesForCli(prepared, opts 
       workspaceNames: rebuiltPluginWorkspaceNames,
       syncId: opts.syncId ?? `build-shared-publish.${process.pid}`,
       syncBundledWorkspaceDistImpl: opts.syncBundledWorkspaceDistImpl,
-      env: opts.publishBundledPluginArtifactsEnv ?? opts.env ?? process.env,
+      env: publicationEnv,
       quiet: opts.quiet === true,
-      bundledPluginArtifactPublication: opts.bundledPluginArtifactPublication,
+      bundledPluginArtifactPublication: opts.bundledPluginArtifactPublication
+        ?? (String(publicationEnv.HAPPIER_DEV_TARGET_EXECUTION ?? '').trim() === '1'
+          ? {
+              // A one-way execution replica owns the ignored build and installed-package
+              // trees consumed by this run. Keep their generated projection coherent on
+              // that replica; the source checkout remains the upstream sync authority.
+              mode: 'write',
+            }
+          : undefined),
       publishBundledPluginArtifactsImpl: opts.publishBundledPluginArtifactsImpl,
     });
   } catch (error) {

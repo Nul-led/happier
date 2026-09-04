@@ -25,5 +25,5 @@ func peerIdentityCommand(args []string) error {
 	if ucred == nil || ucred.Pid <= 0 {
 		return fmt.Errorf("SO_PEERCRED on descriptor %d reported no peer pid", inheritedIpcDescriptor)
 	}
-	return emit(map[string]any{"t": "peer-identity", "pid": int(ucred.Pid), "uid": int(ucred.Uid)})
+	return emitUnixPeerIdentity(map[string]any{"t": "peer-identity", "pid": int(ucred.Pid), "uid": int(ucred.Uid)})
 }

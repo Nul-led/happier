@@ -1311,7 +1311,11 @@ describe('buildSharedDeps', () => {
     writeBundledPluginSourceIntegrityInventory(inventoryPath, [{ packageName, files }]);
   };
 
-  const runSourceDevRuntimeClosure = async (repoRoot: string, publishReadiness: () => unknown) => (
+  const runSourceDevRuntimeClosure = async (
+    repoRoot: string,
+    publishReadiness: () => unknown,
+    publishBundledPluginArtifactsImpl: (options: { mode?: string; workspaceNames?: readonly string[] }) => Promise<boolean> = async () => true,
+  ) => (
     await main({
       mode: 'runtime',
       repoRoot,
@@ -1319,7 +1323,7 @@ describe('buildSharedDeps', () => {
       inspectSourceDevSharedDepsForSourceDevImpl: () => ({ current: false, reason: 'not-current' }),
       // Nothing rebuilt in this run — the drift arrived from outside it.
       ensureWorkspacePackagesBuiltByNameImpl: async () => ({ ok: true, built: [], skipped: [] }),
-      publishBundledPluginArtifactsImpl: async () => true,
+      publishBundledPluginArtifactsImpl,
       withBuildSharedDepsLockImpl: async (operation: (context: { heldLockValue: string }) => Promise<unknown>) => (
         await operation({ heldLockValue: 'shared-copy-lock' })
       ),
@@ -1331,12 +1335,76 @@ describe('buildSharedDeps', () => {
     })
   );
 
+  it('republishes plugin artifacts that drifted after an otherwise-current workspace build', async () => {
+    const repoRoot = createTempDirSync('happier-cli-runtime-stale-inventory-repair-');
+    try {
+      const currentBytes = 'export const rebuiltElsewhere = true;\n';
+      writeStaleInventoryFixtureRepo(
+        repoRoot,
+        'export const published = true;\n',
+        currentBytes,
+      );
+      writeFileSync(resolve(repoRoot, 'package.json'), JSON.stringify({
+        private: true,
+        workspaces: ['apps/*', 'packages/*', 'packages/plugins/*'],
+      }), 'utf8');
+      writeFileSync(resolve(repoRoot, 'packages', 'plugins', 'pi', 'tsconfig.json'), '{}\n', 'utf8');
+      mkdirSync(resolve(repoRoot, 'packages', 'plugins', 'pi', 'dist'), { recursive: true });
+      writeFileSync(
+        resolve(repoRoot, 'packages', 'plugins', 'pi', 'dist', 'index.js'),
+        currentBytes,
+        'utf8',
+      );
+      const publishReadiness = vi.fn(() => ({ stamped: true }));
+      const publishBundledPluginArtifacts = vi.fn(async () => {
+        const packageJson = readFileSync(
+          resolve(repoRoot, 'apps', 'cli', 'node_modules', '@happier-dev', 'plugins-pi', 'package.json'),
+          'utf8',
+        );
+        writeBundledPluginSourceIntegrityInventory(resolve(
+          repoRoot,
+          'apps/cli/scripts/build-owned/generatedBundledPluginSourceIntegrities.json',
+        ), [{
+          packageName: '@happier-dev/plugins-pi',
+          files: [
+            {
+              relativePath: 'dist/index.js',
+              byteLength: Buffer.byteLength(currentBytes, 'utf8'),
+              digest: `sha256:${createHash('sha256').update(Buffer.from(currentBytes, 'utf8')).digest('hex')}`,
+            },
+            {
+              relativePath: 'package.json',
+              byteLength: Buffer.byteLength(packageJson, 'utf8'),
+              digest: `sha256:${createHash('sha256').update(Buffer.from(packageJson, 'utf8')).digest('hex')}`,
+            },
+          ],
+        }]);
+        return true;
+      });
+
+      await runSourceDevRuntimeClosure(
+        repoRoot,
+        publishReadiness,
+        publishBundledPluginArtifacts,
+      );
+
+      expect(publishBundledPluginArtifacts).toHaveBeenCalledWith(expect.objectContaining({
+        mode: 'write',
+        workspaceNames: ['plugins-pi'],
+      }));
+      expect(publishReadiness).toHaveBeenCalledTimes(1);
+    } finally {
+      removeTempDirSync(repoRoot);
+    }
+  });
+
   it('never stamps the runtime closure ready when the copied plugin bytes disagree with the inventory', async () => {
     // F-1 (09:50 inventory vs 19:16 bundles) and F-6 (20:21 vs 20:52) both landed a stale
     // inventory this way: another lane rebuilt a plugin directly, so `built` is empty here
     // and the publisher never runs. The daemon then boots on a closure whose inventory
     // cannot describe the shipped bytes and dies at `generationStore` -> `expectedByteLength`.
-    // The publisher cannot catch this — it is scoped to what THIS run rebuilt.
+    // If the canonical publisher fails to repair the inventory, the final verifier still
+    // rejects the incoherent closure rather than publishing daemon readiness.
     const repoRoot = createTempDirSync('happier-cli-stale-inventory-');
     try {
       writeStaleInventoryFixtureRepo(
@@ -1847,7 +1915,7 @@ describe('buildSharedDeps', () => {
     }
   });
 
-  it('checks generated plugin sources instead of writing them on a synchronized dev target by default', async () => {
+  it('publishes target-local plugin projections on a synchronized dev target', async () => {
     const repoRoot = createTempDirSync('happier-cli-remote-plugin-publication-');
     const publicationModes: Array<string | undefined> = [];
     try {
@@ -1879,7 +1947,7 @@ describe('buildSharedDeps', () => {
         },
       });
 
-      expect(publicationModes).toEqual(['check']);
+      expect(publicationModes).toEqual(['write']);
     } finally {
       removeTempDirSync(repoRoot);
     }

@@ -11,11 +11,11 @@ import {
   ProviderModelDescriptorV1Schema,
 } from '@happier-dev/protocol';
 import {
-  buildClaudeModelOptions,
-  CLAUDE_EFFORT_LEVELS,
-  normalizeClaudeModelDisplayName,
-  type ClaudeEffortLevel,
-} from '@happier-dev/agents/providers/claude-model-options';
+  ANTHROPIC_EFFORT_LEVELS,
+  buildAnthropicModelOptions,
+  normalizeAnthropicModelDisplayName,
+  type AnthropicEffortLevel,
+} from '@happier-dev/plugins-claude/provider/catalog';
 
 export type ParsedProviderCatalogResponse = Readonly<{
   models: readonly ProviderCatalogProbeModelV1[];
@@ -105,15 +105,15 @@ function optionalOwnContextWindowTokens(value: unknown): number | undefined {
 
 function readAnthropicEffortCapability(value: unknown): Readonly<{
   supported: boolean;
-  levels: readonly ClaudeEffortLevel[];
+  levels: readonly AnthropicEffortLevel[];
 }> | undefined {
   const capabilities = optionalOwnObject(value, 'capabilities', 'Anthropic model capabilities');
   if (!capabilities) return undefined;
   const effort = optionalOwnObject(capabilities, 'effort', 'Anthropic model effort capability');
   if (!effort) return undefined;
   const supported = requiredOwnBoolean(effort, 'supported', 'Anthropic model effort capability');
-  const levels: ClaudeEffortLevel[] = [];
-  for (const level of CLAUDE_EFFORT_LEVELS) {
+  const levels: AnthropicEffortLevel[] = [];
+  for (const level of ANTHROPIC_EFFORT_LEVELS) {
     const tier = optionalOwnObject(effort, level, `Anthropic model effort tier ${level}`);
     if (tier && requiredOwnBoolean(tier, 'supported', `Anthropic model effort tier ${level}`)) {
       levels.push(level);
@@ -180,11 +180,11 @@ function parseAnthropicModels(input: unknown): ParsedProviderCatalogResponse {
     models: normalizeModels(rows.map((row) => {
       const id = requiredOwnString(row, 'id');
       const nameRaw = optionalOwnString(row, 'display_name');
-      const name = nameRaw === undefined ? undefined : normalizeClaudeModelDisplayName(nameRaw, id);
+      const name = nameRaw === undefined ? undefined : normalizeAnthropicModelDisplayName(nameRaw, id);
       const contextWindowTokens = optionalOwnContextWindowTokens(row);
       const effort = readAnthropicEffortCapability(row);
       const modelOptions = effort?.supported
-        ? buildClaudeModelOptions({ supportedLevels: effort.levels })
+        ? buildAnthropicModelOptions({ supportedLevels: effort.levels })
         : [];
       return {
         id,

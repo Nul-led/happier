@@ -451,6 +451,35 @@ describe('updateAccountSettingsV2WithRetry', () => {
     });
   });
 
+  it('never exceeds three attempts when an untyped caller supplies a larger override', async () => {
+    const updateSettings = vi.fn(async (request: Readonly<{
+      expectedVersion: number;
+      content: AccountSettingsStoredContentEnvelope | null;
+    }>): Promise<AccountSettingsV2UpdateResponse> => ({
+      success: false,
+      error: 'version-mismatch',
+      currentVersion: request.expectedVersion + 1,
+      currentContent: { t: 'plain', v: accountSettingsParse({ schemaVersion: 7 }) },
+    }));
+
+    const result = await updateAccountSettingsV2WithRetry({
+      credentials: createLegacyCredentialsStub(),
+      mutation: { operations: [{ op: 'set', key: 'reviewPromptLikedApp', value: true }] },
+      maxAttempts: 10,
+      deps: {
+        fetchSettings: async () => ({
+          content: { t: 'plain', v: accountSettingsParse({ schemaVersion: 7 }) },
+          version: 1,
+        }),
+        resolveAccountEncryptionMode: resolvePlainAccountEncryptionMode,
+        updateSettings,
+      },
+    } as Parameters<typeof updateAccountSettingsV2WithRetry>[0] & { maxAttempts: number });
+
+    expect(result).toEqual({ status: 'conflict', currentVersion: 4 });
+    expect(updateSettings).toHaveBeenCalledTimes(3);
+  });
+
   it('rejects malformed known raw fields before applying an unrelated immutable operation', async () => {
     const calls: Array<{ expectedVersion: number; content: AccountSettingsStoredContentEnvelope | null }> = [];
 

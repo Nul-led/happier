@@ -107,5 +107,5 @@ func peerIdentityCommand(args []string) error {
 	if err != nil {
 		return fmt.Errorf("LOCAL_PEERCRED on descriptor %d: %w", inheritedIpcDescriptor, err)
 	}
-	return emit(map[string]any{"t": "peer-identity", "pid": int(peerPid), "uid": int(peerUid)})
+	return emitUnixPeerIdentity(map[string]any{"t": "peer-identity", "pid": int(peerPid), "uid": int(peerUid)})
 }

@@ -10,7 +10,7 @@ import {
   createPluginUiTestkit,
   createSurfaceContextFixture,
 } from '@happier-dev/plugin-sdk/testing';
-import type { RenderContext, RenderSurface } from '@happier-dev/plugin-sdk/ui';
+import type { RenderContext, RenderSurface, SurfaceContext } from '@happier-dev/plugin-sdk/ui';
 import { buildUiSurfaceTargets } from '@happier-dev/plugin-sdk/ui/build';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -191,9 +191,28 @@ describe('generated scaffold UI products', () => {
     hostedClient.createPluginUiRenderContext.mockReset();
 
     try {
-      const surface = createSurfaceContextFixture({ locale: 'de-CH' });
-      const watchContext = vi.fn(async () => ({ dispose() {} }));
-      const executeAction = vi.fn(async () => null);
+      const surface = createSurfaceContextFixture({
+        locale: 'de-CH',
+        translations: {
+          'scaffold.main.greeting': 'Hallo von der erzeugten Oberfläche',
+          'scaffold.action.saveNote': 'Notiz speichern',
+          'scaffold.status.connecting': 'Verbindung wird hergestellt…',
+          'scaffold.status.ready': 'Bereit',
+          'scaffold.status.saved': 'Gespeichert',
+          'scaffold.status.actionFailed': 'Aktion fehlgeschlagen',
+          'scaffold.status.startFailed': 'Start fehlgeschlagen',
+        },
+      });
+      let publishContext: (surface: SurfaceContext) => void = () => {
+        throw new Error('watchContext subscriber was not installed');
+      };
+      const watchContext = vi.fn(async (subscriber: (surface: SurfaceContext) => void) => {
+        publishContext = subscriber;
+        return { dispose() {} };
+      });
+      const executeAction = vi.fn()
+        .mockResolvedValueOnce(null)
+        .mockRejectedValueOnce(new Error('private raw exception detail'));
       // This minimal host boundary is deliberately restricted to the public
       // methods the generated hosted bootstrap uses.
       hostedClient.createPluginUiRenderContext.mockResolvedValue({
@@ -231,20 +250,55 @@ describe('generated scaffold UI products', () => {
 
       const surfaceRoot = document.querySelector<HTMLElement>('#root');
       expect(surfaceRoot?.lang).toBe('de-CH');
-      expect(surfaceRoot?.querySelector('[data-role="title"]')?.textContent).toBe('Hello from Generated hosted surface');
+      expect(surfaceRoot?.querySelector('[data-role="title"]')?.textContent).toBe('Hallo von der erzeugten Oberfläche');
+      const status = surfaceRoot?.querySelector<HTMLElement>('[data-role="status"]');
+      expect(status?.textContent).toBe('Bereit');
+      expect(status?.getAttribute('role')).toBe('status');
+      expect(status?.getAttribute('aria-live')).toBe('polite');
+      expect(status?.getAttribute('aria-atomic')).toBe('true');
       expect(hostedClient.applyPluginUiThemeCssVariables).toHaveBeenCalledWith(surface.theme, document.documentElement);
       expect(watchContext).toHaveBeenCalledWith(expect.any(Function), {
         signal: expect.any(AbortSignal),
       });
 
+      const frenchSurface = createSurfaceContextFixture({
+        locale: 'fr',
+        translations: {
+          'scaffold.main.greeting': 'Bonjour de la surface générée',
+          'scaffold.action.saveNote': 'Enregistrer la note',
+          'scaffold.status.ready': 'Prêt',
+          'scaffold.status.saved': 'Enregistré',
+          'scaffold.status.actionFailed': 'Échec de l’action',
+        },
+      });
+      publishContext(frenchSurface);
+      expect(surfaceRoot?.lang).toBe('fr');
+      expect(status?.textContent).toBe('Prêt');
+
       const save = surfaceRoot?.querySelector<HTMLButtonElement>('[data-role="save"]');
+      expect(save?.textContent).toBe('Enregistrer la note');
+      expect(save?.style.minHeight).toBe('44px');
+      expect(save?.style.minWidth).toBe('44px');
       save?.click();
       await vi.waitFor(() => {
         expect(executeAction).toHaveBeenCalledWith('save-note', { note: 'hello' }, {
           signal: expect.any(AbortSignal),
         });
       });
-      expect(surfaceRoot?.querySelector('[data-role="status"]')?.textContent).toBe('Saved');
+      expect(status?.textContent).toBe('Enregistré');
+
+      publishContext(surface);
+      expect(status?.textContent).toBe('Gespeichert');
+
+      save?.click();
+      await vi.waitFor(() => {
+        expect(status?.textContent).toBe('Aktion fehlgeschlagen');
+      });
+      publishContext(frenchSurface);
+      expect(status?.textContent).toBe('Échec de l’action');
+      expect(status?.textContent).not.toContain('private raw exception detail');
+      expect(status?.getAttribute('role')).toBe('alert');
+      expect(status?.getAttribute('aria-live')).toBe('assertive');
     } finally {
       document.body.replaceChildren();
       await rm(root, { recursive: true, force: true });

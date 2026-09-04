@@ -4,19 +4,19 @@
       "packageName": "@happier-dev/plugins-antigravity",
       "files": [
         {
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-DAYIXK3H.js",
-          "byteLength": 5600355,
-          "digest": "sha256:71b03aeea59381a6b18f42d930040c16c94cc521eba70be2b078859f4cb942e4"
+          "relativePath": ".happier-plugin/.happier-chunks/chunk-OGCI6QRH.js",
+          "byteLength": 5612786,
+          "digest": "sha256:67880df8ffe8895e9971a47816599f941a566f7a0f2354570aca2325db392876"
         },
         {
           "relativePath": ".happier-plugin/agent/runtime/factory.js",
           "byteLength": 221,
-          "digest": "sha256:582c7df39992cf914bf903ed315df976388ee6a79b96dca2e6367afed289e5e7"
+          "digest": "sha256:19a361f337f63a3f6099ab6328cd4b628aee38e673d4f8d4cffe44133c643abf"
         },
         {
           "relativePath": ".happier-plugin/daemon.js",
           "byteLength": 34438,
-          "digest": "sha256:f571e59da91ec79b55d94d2fc71302658933ccfa70ac03ddffa5a014ebe1f611"
+          "digest": "sha256:1b89b7756b81c43235c365b290886fdd16a3bfdf5fd3f668b05d113f78b0619d"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -1410,8 +1410,8 @@
       "files": [
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 2317449,
-          "digest": "sha256:e266274f748f5b02dd95368e9c4660de475baada3ab07507d66cc6eed1138f87"
+          "byteLength": 2320515,
+          "digest": "sha256:95bc7877b5f37ee0b07cd8c709580ab7e369a1bc00a241ddea79636c102c8651"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -1470,18 +1470,18 @@
         },
         {
           "relativePath": "dist/discordActions.d.ts.map",
-          "byteLength": 26715,
-          "digest": "sha256:0cb73d308ba0d3ffa3dbc0dafded1256970b09d57bbfa4d063f9897f062e1c1d"
+          "byteLength": 26764,
+          "digest": "sha256:b458d23c7c175930a5402894c924ccb5cc7e61eabbbe1a90a4e8142cc911b95b"
         },
         {
           "relativePath": "dist/discordActions.js",
-          "byteLength": 23227,
-          "digest": "sha256:c8b09c57e285d624400ac22e9e0deb717ef6f594ec892d1575cb9f28afd183e0"
+          "byteLength": 23276,
+          "digest": "sha256:b2ac9398f12b702f60dafa1eeb8a1a60f584d07f1b01b0cf14ed36c79090c698"
         },
         {
           "relativePath": "dist/discordActions.js.map",
-          "byteLength": 43976,
-          "digest": "sha256:71d0a43e828869a43f6dda6f96fc5d93bab8734b21355cd92cff146abe13b63b"
+          "byteLength": 44059,
+          "digest": "sha256:98ee36b50e48692da0b7b1e438ab73d3a63e6174c8b07b1adf2d5c1e0abd9089"
         },
         {
           "relativePath": "dist/discordApi.d.ts",
@@ -1490,18 +1490,18 @@
         },
         {
           "relativePath": "dist/discordApi.d.ts.map",
-          "byteLength": 22049,
-          "digest": "sha256:0f30422d821a88763376d5dde65432d9d2699c0dafab8471bc75c257369df437"
+          "byteLength": 22292,
+          "digest": "sha256:84cb74ccd38685ac82670cb71c877de6fea50ef633e64dd5603154d88bc70c90"
         },
         {
           "relativePath": "dist/discordApi.js",
-          "byteLength": 16863,
-          "digest": "sha256:59dc98bfb0233f4c3084df5dc7be82f870a8689a2c5625e5e3cd82756be28f0e"
+          "byteLength": 17149,
+          "digest": "sha256:dedf21da4054bb07e3e88563665956e1c5f6c4b3952164e6fac98cc2cf435fbe"
         },
         {
           "relativePath": "dist/discordApi.js.map",
-          "byteLength": 35136,
-          "digest": "sha256:89b7304c3996949e22b8e78f011f4143abc1278a524f9f070ec5fef299854880"
+          "byteLength": 35589,
+          "digest": "sha256:c8ca79324a548b9d31016e7bce91835be25ba2c98de5fa129b0087445ba16b95"
         },
         {
           "relativePath": "dist/discordAutomationEvent.d.ts",
@@ -1510,18 +1510,18 @@
         },
         {
           "relativePath": "dist/discordAutomationEvent.d.ts.map",
-          "byteLength": 19777,
-          "digest": "sha256:3cc49dcd2ac16272249ef19173df040c22a03bda300ce88da85b6f4eb0f41d6d"
+          "byteLength": 20021,
+          "digest": "sha256:f6e0b1d6f7b5055169061cedd15b21081fa84aafe4adfe72262087c2ea4bc7bf"
         },
         {
           "relativePath": "dist/discordAutomationEvent.js",
-          "byteLength": 15539,
-          "digest": "sha256:37c1c64e031849f9c40b85203153618f7035b09457da35f253eb45a524af0669"
+          "byteLength": 15801,
+          "digest": "sha256:f2af1cae53c6ac4752d3ef3db213f3ed5dd5bf353b8b7769f5e813df3528aca5"
         },
         {
           "relativePath": "dist/discordAutomationEvent.js.map",
-          "byteLength": 26426,
-          "digest": "sha256:94b408a2a546cdd28f25d8c561544b3309d34d033c808ca4f6db18a13434748e"
+          "byteLength": 26815,
+          "digest": "sha256:01b5fea9258bfab081425fbe3761034ee73ba17e4287e8202ad69ed3ac7fabae"
         },
         {
           "relativePath": "dist/discordAutomationEventAdmission.d.ts",
@@ -1565,23 +1565,23 @@
         },
         {
           "relativePath": "dist/discordEndpointResolution.d.ts",
-          "byteLength": 1016,
-          "digest": "sha256:7f53d6231ffb84998658c1ebe69498085594665f51ceb6043d2639aa9f01caff"
+          "byteLength": 1329,
+          "digest": "sha256:03e91ff65b92f8cda7d810fc9f181dd60e098e6064b3615fc1ecc29c22351716"
         },
         {
           "relativePath": "dist/discordEndpointResolution.d.ts.map",
-          "byteLength": 4025,
-          "digest": "sha256:97acd8f23b8b24ffccb0bff3548ea5869f5bd0e706202203756cd983595e3e33"
+          "byteLength": 4578,
+          "digest": "sha256:c31d2990e0c4f740d9c6cc8bf991b0b24264ba023b325502d23dc3ff8eaabc96"
         },
         {
           "relativePath": "dist/discordEndpointResolution.js",
-          "byteLength": 2616,
-          "digest": "sha256:2cefb78d2c9eac4dd66efe87866e023dd113e51240a7b7aab4b773fdf6a468e3"
+          "byteLength": 2687,
+          "digest": "sha256:62a8824feda973a95cee5b01184c5ca07a9ea5678b0e64b359cef067cb2fcded"
         },
         {
           "relativePath": "dist/discordEndpointResolution.js.map",
-          "byteLength": 5771,
-          "digest": "sha256:bf21cce575c71eceaa0b7a0e84b9cc378448c487236b94d0b64cb0a4047210e3"
+          "byteLength": 6180,
+          "digest": "sha256:e57184abd626d37075648f468eec6adfa352ac83dd42bf07bdf08fc126cfdacf"
         },
         {
           "relativePath": "dist/discordGateway.d.ts",
@@ -1630,18 +1630,18 @@
         },
         {
           "relativePath": "dist/discordGatewaySupervisor.d.ts.map",
-          "byteLength": 38086,
-          "digest": "sha256:e0b5edcd3b7d638a41cf906a40642fb88c4d2e15e7a1cb8a9d943378975d0c03"
+          "byteLength": 39208,
+          "digest": "sha256:17d5b972c9d2f3f9f886089e83a16b2671c115e0db53c686da2446b4e01a6e54"
         },
         {
           "relativePath": "dist/discordGatewaySupervisor.js",
-          "byteLength": 34341,
-          "digest": "sha256:3bddcc86c8b151e269d45b2529019828960ab2582e95b70d6d1b8ba1046ef197"
+          "byteLength": 35407,
+          "digest": "sha256:6eaa118c7138efe717a0c516acf9a19e192a7a58c0935d339db8307e843cab44"
         },
         {
           "relativePath": "dist/discordGatewaySupervisor.js.map",
-          "byteLength": 61795,
-          "digest": "sha256:8f0f002011931d144ba7889058166ba0bf90fc080c842d85427319a32cdf6f9b"
+          "byteLength": 63385,
+          "digest": "sha256:e7ea28616bb3e62291763b690843d9ddf2cc907e07e707bfaf8b80f4062add12"
         },
         {
           "relativePath": "dist/discordGatewayWorker.d.ts",
@@ -1690,18 +1690,18 @@
         },
         {
           "relativePath": "dist/discordMessage.d.ts.map",
-          "byteLength": 12033,
-          "digest": "sha256:f6dd94473e43c5979f68c9518e6d1ed55bdb6cab211155fd1ca176f537b190cc"
+          "byteLength": 14951,
+          "digest": "sha256:b6813595ee13afbb2118f52e7a2cd48ebb40133238acd5611ccbea2334a4a774"
         },
         {
           "relativePath": "dist/discordMessage.js",
-          "byteLength": 7801,
-          "digest": "sha256:81a53a50c6476de392ba9cebd980ce705434f96fa6b65a756068444c2665df0f"
+          "byteLength": 10612,
+          "digest": "sha256:67357ab0a44a6e1e86006270ba2c9214ac05580f1cfef11ec385fb6a57ea9a73"
         },
         {
           "relativePath": "dist/discordMessage.js.map",
-          "byteLength": 17696,
-          "digest": "sha256:5679e0db8881dea87be60dad2f59e98a217a2e7752be84ae2d27ebbc43dc9f34"
+          "byteLength": 23417,
+          "digest": "sha256:4f1281973a0d46ad35e96f5bf51adaed412f970d0715f4330383d5975e40917c"
         },
         {
           "relativePath": "dist/discordObservation.d.ts",
@@ -1855,13 +1855,13 @@
       "files": [
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 2235775,
-          "digest": "sha256:bd90c593861af70029050d64c50aaf4136b76f08fe26a8208315857813decaeb"
+          "byteLength": 2236100,
+          "digest": "sha256:a5ca5a22ca8ed7ca3acdd30b9f21cf96eb622bb90a76ac678a46705a0cf9f3ce"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
-          "byteLength": 174115,
-          "digest": "sha256:c6887007a446a86f0320b76cb74414dfb55eccde2224174bfb4c436f72b7bb5d"
+          "byteLength": 174161,
+          "digest": "sha256:ea8d9ce554778c2179bd3eb0a53fab31c1e089058dcf2163a924facdb3070e91"
         },
         {
           "relativePath": "dist/activate.d.ts",
@@ -1910,18 +1910,18 @@
         },
         {
           "relativePath": "dist/automationEvents.d.ts.map",
-          "byteLength": 11549,
-          "digest": "sha256:c5404eb62ef7f83ec98adfc0d82ae0fde1ccb7b081adb7ad679c316f086a5b6d"
+          "byteLength": 11793,
+          "digest": "sha256:8661bc759a631a95f2e0f3b64d0fd0f6f9db06d11c9e6e68434afc1b2b209fd1"
         },
         {
           "relativePath": "dist/automationEvents.js",
-          "byteLength": 7955,
-          "digest": "sha256:819e4d4e80d8de3fbc42470fc9e64cc5ddbf9711c0ac15fe4e8a3c8b2c18c27d"
+          "byteLength": 8214,
+          "digest": "sha256:0c9fdf6cacbc52e13c42bd73d5c81af5809836a2ec76c36206882730317abda5"
         },
         {
           "relativePath": "dist/automationEvents.js.map",
-          "byteLength": 13785,
-          "digest": "sha256:25f3fa37c58404518fec90d868b459dadc599ac2aa66a764f449f379c73bbdb3"
+          "byteLength": 14088,
+          "digest": "sha256:8087772a6a8d1cb1fc4f9cb84c3c0935fbd2e9eadaa4d48d9379309bf9142dcd"
         },
         {
           "relativePath": "dist/channelActions.d.ts",
@@ -1930,18 +1930,18 @@
         },
         {
           "relativePath": "dist/channelActions.d.ts.map",
-          "byteLength": 39206,
-          "digest": "sha256:239fcbb09bf7d4147026c61e5aa7b95dee9036b5496bea708bb90e3475c71f04"
+          "byteLength": 40205,
+          "digest": "sha256:e5b591b3e924030938dc461b3e51c931c25610626f0474fc14753854628605a0"
         },
         {
           "relativePath": "dist/channelActions.js",
-          "byteLength": 34671,
-          "digest": "sha256:4c855f669e85038343b87849c875bbeaf6bcf997864356df65e8bf263075e6e0"
+          "byteLength": 35625,
+          "digest": "sha256:3832e1500f98b36ba75b4fdbd4332275f7a2ba8e7e99e808679d6dd1aaa65ebc"
         },
         {
           "relativePath": "dist/channelActions.js.map",
-          "byteLength": 64802,
-          "digest": "sha256:77d0676a35db88fbf44706f29c07102e8e009784dd920b25b042297f790cc97b"
+          "byteLength": 66501,
+          "digest": "sha256:e26eef0bbf42b8367211e73dfa36e274a60b99650cd4e19d0dec511424e4365c"
         },
         {
           "relativePath": "dist/channelsCoreCaller.d.ts",
@@ -2030,38 +2030,38 @@
         },
         {
           "relativePath": "dist/plugin.d.ts.map",
-          "byteLength": 15026,
-          "digest": "sha256:07a9fa3336daad0b43a7621b179c8580a942f978cfde8185c6652ed2dc850b8e"
+          "byteLength": 15072,
+          "digest": "sha256:cd51326694f0fdc6e42b6b1733101a66deaaf340811aa586f6a03405e09f39d3"
         },
         {
           "relativePath": "dist/plugin.js",
-          "byteLength": 16520,
-          "digest": "sha256:6587487bf3f774bd6e49f9d9ad0ab043efe5b8a0b705c78f7b4e47b5120f1e1d"
+          "byteLength": 16566,
+          "digest": "sha256:0c7dcc4f6016484f160a2e1515c5fbcd4b6178cb1ae86a36a78edb74a703dee1"
         },
         {
           "relativePath": "dist/plugin.js.map",
-          "byteLength": 23481,
-          "digest": "sha256:d0e139c66848f96403d17caf2ef07cc44a9e59911bb258a46bc42a66844f4914"
+          "byteLength": 23527,
+          "digest": "sha256:b8ccd6637529857318e984cc2d3b21d3ee05bdf19a24d8ffbbf30582e70a63d6"
         },
         {
           "relativePath": "dist/telegramBotApi.d.ts",
-          "byteLength": 4506,
-          "digest": "sha256:222633a9d7c4ea85887526b7c8ddc127e6a6bd4dc86e9ed11435d03f0b4936cb"
+          "byteLength": 4526,
+          "digest": "sha256:74f95a0cf041ae92d30aa4ec922d5e8c9200834f674b9ec9994882aee5d2440e"
         },
         {
           "relativePath": "dist/telegramBotApi.d.ts.map",
-          "byteLength": 27326,
-          "digest": "sha256:2c9b190d6aef2ee6339fc46a56e021eaad601312310f715f7a3457e17cb9161f"
+          "byteLength": 27242,
+          "digest": "sha256:3a407d32cb98fb4b18145ca53ac90b063289158677cd7ed7d14bc611403ff1bd"
         },
         {
           "relativePath": "dist/telegramBotApi.js",
-          "byteLength": 20092,
-          "digest": "sha256:eb80101fa580b4e286759744727a7dd56bc4a547b26a7b7438e4f8ff9712a435"
+          "byteLength": 19960,
+          "digest": "sha256:2e991b4210a7182d9d7de01dc06c9b3193713b018ba4cc82908e90c6cd26e972"
         },
         {
           "relativePath": "dist/telegramBotApi.js.map",
-          "byteLength": 41967,
-          "digest": "sha256:93d0bfa5a976ea5b78b3845e0a6e119524baa0e69e24f4e1ee86707af269d45f"
+          "byteLength": 41751,
+          "digest": "sha256:c6ebf278486fc6000eae91530a812b1929928be786687511ba54064a07bbd1c0"
         },
         {
           "relativePath": "dist/ui/translations.d.ts",
@@ -2095,13 +2095,13 @@
       "files": [
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 7608205,
-          "digest": "sha256:a5d0f33ea55a4b447171bf4bde331d53ece5c5f82fbb7052e6e900e388155a2b"
+          "byteLength": 7650327,
+          "digest": "sha256:26c8b02cbdbbade41e9de6bcb7a192ef377222e7f7d1877288cb0f57d6b74de8"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
-          "byteLength": 1885407,
-          "digest": "sha256:96e48c92cc27af7623ce0a5d789fa795522792cd8f577f972eb9c74153d7f377"
+          "byteLength": 1909404,
+          "digest": "sha256:0c07472ceb37949f95b21b20119e535a8115306c6831b8be9433234c62757ade"
         },
         {
           "relativePath": "dist/accountLocalBindingPolicy.d.ts",
@@ -2210,18 +2210,18 @@
         },
         {
           "relativePath": "dist/checkpointedPollSupervisor.d.ts.map",
-          "byteLength": 16130,
-          "digest": "sha256:21a103a5924b0dae12bed7e43b81bc49e5ccef2359716e0cce3d163a8cf527c6"
+          "byteLength": 16175,
+          "digest": "sha256:8f2f10c961c1bd449cb762e29d91a1b09fd523c1e4e11bb594ee183e93de9a9c"
         },
         {
           "relativePath": "dist/checkpointedPollSupervisor.js",
-          "byteLength": 14691,
-          "digest": "sha256:a9876209b137005946220dc29fd04e31a4af46a8d8db40821023fe48fe4b20a7"
+          "byteLength": 14733,
+          "digest": "sha256:a36c832a95a398c2b691ef3cd66bc5aa6a5c941600f27ba215118b83be496c41"
         },
         {
           "relativePath": "dist/checkpointedPollSupervisor.js.map",
-          "byteLength": 23154,
-          "digest": "sha256:82c58b9f2c30c9e24443c211f7c6a275cf60ce7c4d39b110cde92f0d4b223cb7"
+          "byteLength": 23212,
+          "digest": "sha256:6a9d0ba7e2376f0dcef6c2e3f50931e0cc486f5588704c77f6c2b224d7c4b2be"
         },
         {
           "relativePath": "dist/collections.d.ts",
@@ -2230,18 +2230,18 @@
         },
         {
           "relativePath": "dist/collections.d.ts.map",
-          "byteLength": 82552,
-          "digest": "sha256:d2d972a14b29988467d560bbfcc14b0f80d0c278d6205a576a351bebf9336a08"
+          "byteLength": 82613,
+          "digest": "sha256:ea9596e200f06b1d4ee90a7f1ae3182d5b2c8c3e3978668b7eb943d392c29f41"
         },
         {
           "relativePath": "dist/collections.js",
-          "byteLength": 82575,
-          "digest": "sha256:73c456ea8b4addc4f4a3b808de02e5d78aa9680149f42ee5a5c8f0a64fb35903"
+          "byteLength": 82639,
+          "digest": "sha256:6a3701b9bcc004d9d5196d1ca9e613bcc8d08075e52b4a2be2d309f1161cd6b9"
         },
         {
           "relativePath": "dist/collections.js.map",
-          "byteLength": 125429,
-          "digest": "sha256:c7d47fafb3c824adbced84c341ff8777098f43ba815e05d89507d6c791cdbc3b"
+          "byteLength": 125503,
+          "digest": "sha256:c7c4ff22a4f8f167c0abc03345c3b7a8d50ee1b5dab4beb7ff8eb264859dfdd4"
         },
         {
           "relativePath": "dist/commandPolicy.d.ts",
@@ -2285,23 +2285,23 @@
         },
         {
           "relativePath": "dist/connectionLifecycle.d.ts",
-          "byteLength": 19589,
-          "digest": "sha256:499e0a35c73acd57d6d75644093d2f28d29dca71a0b323e83a284ec007482e6d"
+          "byteLength": 19659,
+          "digest": "sha256:bbadd72ef82edf98feb758b709c0a686e9616c38e9cb4fc18f6fda6f3fae519e"
         },
         {
           "relativePath": "dist/connectionLifecycle.d.ts.map",
-          "byteLength": 49560,
-          "digest": "sha256:61f294ce48772494b6498af3251fa4a60c72539cb32e1731ef937b7506dc9c2b"
+          "byteLength": 50989,
+          "digest": "sha256:02ed5e1e65156c889027a492881da517f6c68a63ce4081676dcfb63cce0e3d40"
         },
         {
           "relativePath": "dist/connectionLifecycle.js",
-          "byteLength": 26396,
-          "digest": "sha256:206b6872e0756c53a7183203a2ced42e3265f6f362e04ad16d3ed78613dca30d"
+          "byteLength": 27456,
+          "digest": "sha256:90e0424dafcabacacadb95a458d7995d7a6a6baf34a385f4582526837bfb7111"
         },
         {
           "relativePath": "dist/connectionLifecycle.js.map",
-          "byteLength": 56153,
-          "digest": "sha256:540fdec8a69b83ce99651010d74f3698ca9511365cecc4b846a5d83301da1304"
+          "byteLength": 58167,
+          "digest": "sha256:1a81eb9ccea8d1172cdbaa9873816207d12c22f457c8f57f86dd0219c5a1ff62"
         },
         {
           "relativePath": "dist/connectionPollFailure.d.ts",
@@ -2425,8 +2425,8 @@
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native-web/channels-app-native/entry.mjs.bundle",
-          "byteLength": 2897496,
-          "digest": "sha256:b35024da5ce0a24093adc8191f1ddb746ab96ffaeb220ed777a830c0d3d9cbe8"
+          "byteLength": 2911449,
+          "digest": "sha256:92866e17b4654c8d338db9c385b7598ea2a934a2f12ccb0382c5907cc135928b"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/android/android.bundle",
@@ -2440,63 +2440,43 @@
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/android/src_manifest_ts.chunk.bundle",
-          "byteLength": 1586950,
-          "digest": "sha256:c1b9e45633351421b1529d2c6f31f7b4ad27805f8bfa564e44a9e75b99dc30d9"
+          "byteLength": 1612587,
+          "digest": "sha256:b7eb5d266998d53b95c893ba0f429bf5ffc20ceed0f6f8bf3134a5e1450a9718"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/android/src_manifest_ts.chunk.bundle.map",
-          "byteLength": 450143,
-          "digest": "sha256:bc54da275b8b587a353437173034f20470e0e9eddefd5e791943e88bbc3149e2"
+          "byteLength": 453692,
+          "digest": "sha256:fbe364e54020b7dd7494df9878d7f00332f71d126c9550a8456e0ff7bf7926c9"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/android/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle",
-          "byteLength": 947561,
-          "digest": "sha256:c6049dad5311a0457b2612a0b2fe76c6fad2ab5a4574bdc82659d385156a041a"
+          "byteLength": 965551,
+          "digest": "sha256:d13a8df186642ebc55f84a641d6fa3087c4a14f2468ac7a063129d15bf691f4b"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/android/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map",
-          "byteLength": 417306,
-          "digest": "sha256:94da0636093591375be4c8ab8985dcffe58427fdaed013b447422287b542a31e"
+          "byteLength": 424496,
+          "digest": "sha256:860346172a097f65e57c97ba42b784e5bb839ad4fe703178f2358b086d6bfff0"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/android/vendors-node_modules_happier-dev_channels-protocol_dist_index_js-node_modules_happier-dev_plu-5e1afb.chunk.bundle",
-          "byteLength": 6204404,
-          "digest": "sha256:2327a27ff3e7bd1eb568fbba497603c36a8058313453e067a1c78796f2cf8470"
+          "byteLength": 6216865,
+          "digest": "sha256:ae4a5dcc0b71474424d54babcf53172b132b5dcd3f69cfd43f0ddd9ea4c6bb28"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/android/vendors-node_modules_happier-dev_channels-protocol_dist_index_js-node_modules_happier-dev_plu-5e1afb.chunk.bundle.map",
-          "byteLength": 1212681,
-          "digest": "sha256:698f1847c012c1d0ac21131f5be2be97b03588d63db137c41a61df736a413ce5"
-        },
-        {
-          "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/android/vendors-node_modules_happier-dev_channels-protocol_dist_index_js-node_modules_happier-dev_plu-be29ad.chunk.bundle",
-          "byteLength": 6192722,
-          "digest": "sha256:c3fdcaca3386e112f5af13d6b36779ed5e6f58ee3a17c6413e903ef984edf68a"
-        },
-        {
-          "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/android/vendors-node_modules_happier-dev_channels-protocol_dist_index_js-node_modules_happier-dev_plu-be29ad.chunk.bundle.map",
-          "byteLength": 1211121,
-          "digest": "sha256:a50c021c9f71dba493e1ddd20e80081769ed5e1163e8157c657bded2b69b28f2"
-        },
-        {
-          "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_storage_index_js-node_modules_happier-dev_pr-f3a793.chunk.bundle",
-          "byteLength": 4824200,
-          "digest": "sha256:fed61bbb0feda8a61416f4c237b38d18d3d7ea338a96e5e4ded4041ae4b30f9a"
-        },
-        {
-          "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_storage_index_js-node_modules_happier-dev_pr-f3a793.chunk.bundle.map",
-          "byteLength": 868412,
-          "digest": "sha256:15be80c2bf168e38515b2b030f0b0f3349ff48ccd4883a2d6743cdca1024bdea"
+          "byteLength": 1214576,
+          "digest": "sha256:ffadabe4de89b1fc7632531306704cdae21d1a77af55f011b7eb1c29c835c1cf"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_storage_index_js.chunk.bundle",
-          "byteLength": 4853341,
-          "digest": "sha256:22d8ec6071f087d9fe2c9c88e6e3188abaa184bb969d6d40fb17f9463d42b4ab"
+          "byteLength": 4877352,
+          "digest": "sha256:36259d83e5c44e33ee74585685716990a38c52124ce94e95f848a46c3eeae79d"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_storage_index_js.chunk.bundle.map",
-          "byteLength": 873049,
-          "digest": "sha256:fef6c3f12c420797f00b1e16597111bdb58ec5e5ca41b8aa39219dd8d69d79ab"
+          "byteLength": 877736,
+          "digest": "sha256:426b76ae8840988bbad0706f20424d01b4348c54830341234fb3b560ac6d2c76"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/ios/ios.bundle",
@@ -2510,68 +2490,48 @@
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/ios/src_manifest_ts.chunk.bundle",
-          "byteLength": 1586950,
-          "digest": "sha256:c1b9e45633351421b1529d2c6f31f7b4ad27805f8bfa564e44a9e75b99dc30d9"
+          "byteLength": 1612587,
+          "digest": "sha256:b7eb5d266998d53b95c893ba0f429bf5ffc20ceed0f6f8bf3134a5e1450a9718"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/ios/src_manifest_ts.chunk.bundle.map",
-          "byteLength": 450143,
-          "digest": "sha256:bc54da275b8b587a353437173034f20470e0e9eddefd5e791943e88bbc3149e2"
+          "byteLength": 453692,
+          "digest": "sha256:fbe364e54020b7dd7494df9878d7f00332f71d126c9550a8456e0ff7bf7926c9"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/ios/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle",
-          "byteLength": 947561,
-          "digest": "sha256:c6049dad5311a0457b2612a0b2fe76c6fad2ab5a4574bdc82659d385156a041a"
+          "byteLength": 965551,
+          "digest": "sha256:d13a8df186642ebc55f84a641d6fa3087c4a14f2468ac7a063129d15bf691f4b"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/ios/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map",
-          "byteLength": 417306,
-          "digest": "sha256:94da0636093591375be4c8ab8985dcffe58427fdaed013b447422287b542a31e"
+          "byteLength": 424496,
+          "digest": "sha256:860346172a097f65e57c97ba42b784e5bb839ad4fe703178f2358b086d6bfff0"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/ios/vendors-node_modules_happier-dev_channels-protocol_dist_index_js-node_modules_happier-dev_plu-5e1afb.chunk.bundle",
-          "byteLength": 6204404,
-          "digest": "sha256:2327a27ff3e7bd1eb568fbba497603c36a8058313453e067a1c78796f2cf8470"
+          "byteLength": 6216865,
+          "digest": "sha256:ae4a5dcc0b71474424d54babcf53172b132b5dcd3f69cfd43f0ddd9ea4c6bb28"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/ios/vendors-node_modules_happier-dev_channels-protocol_dist_index_js-node_modules_happier-dev_plu-5e1afb.chunk.bundle.map",
-          "byteLength": 1212681,
-          "digest": "sha256:698f1847c012c1d0ac21131f5be2be97b03588d63db137c41a61df736a413ce5"
-        },
-        {
-          "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/ios/vendors-node_modules_happier-dev_channels-protocol_dist_index_js-node_modules_happier-dev_plu-be29ad.chunk.bundle",
-          "byteLength": 6192722,
-          "digest": "sha256:c3fdcaca3386e112f5af13d6b36779ed5e6f58ee3a17c6413e903ef984edf68a"
-        },
-        {
-          "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/ios/vendors-node_modules_happier-dev_channels-protocol_dist_index_js-node_modules_happier-dev_plu-be29ad.chunk.bundle.map",
-          "byteLength": 1211121,
-          "digest": "sha256:a50c021c9f71dba493e1ddd20e80081769ed5e1163e8157c657bded2b69b28f2"
-        },
-        {
-          "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_storage_index_js-node_modules_happier-dev_pr-f3a793.chunk.bundle",
-          "byteLength": 4824200,
-          "digest": "sha256:fed61bbb0feda8a61416f4c237b38d18d3d7ea338a96e5e4ded4041ae4b30f9a"
-        },
-        {
-          "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_storage_index_js-node_modules_happier-dev_pr-f3a793.chunk.bundle.map",
-          "byteLength": 868412,
-          "digest": "sha256:15be80c2bf168e38515b2b030f0b0f3349ff48ccd4883a2d6743cdca1024bdea"
+          "byteLength": 1214576,
+          "digest": "sha256:ffadabe4de89b1fc7632531306704cdae21d1a77af55f011b7eb1c29c835c1cf"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_storage_index_js.chunk.bundle",
-          "byteLength": 4853341,
-          "digest": "sha256:22d8ec6071f087d9fe2c9c88e6e3188abaa184bb969d6d40fb17f9463d42b4ab"
+          "byteLength": 4877352,
+          "digest": "sha256:36259d83e5c44e33ee74585685716990a38c52124ce94e95f848a46c3eeae79d"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_storage_index_js.chunk.bundle.map",
-          "byteLength": 873049,
-          "digest": "sha256:fef6c3f12c420797f00b1e16597111bdb58ec5e5ca41b8aa39219dd8d69d79ab"
+          "byteLength": 877736,
+          "digest": "sha256:426b76ae8840988bbad0706f20424d01b4348c54830341234fb3b560ac6d2c76"
         },
         {
           "relativePath": "dist/happier-plugin-ui/ui-artifacts.json",
           "byteLength": 7705,
-          "digest": "sha256:8a64f6fe2c7167ab66c3fe7ba1793c9510e32436beea10db68f11905c60e0ba2"
+          "digest": "sha256:14e404ef5163d6423d90d3b16cff25cdf1f836052ee5418ade96816b71dcdf9d"
         },
         {
           "relativePath": "dist/index.d.ts",
@@ -2600,18 +2560,18 @@
         },
         {
           "relativePath": "dist/ingress.d.ts.map",
-          "byteLength": 302481,
-          "digest": "sha256:5abaffd334b321bd56d4b2d191d243e1f278aa7f3cd150df6a7ab6a387abb289"
+          "byteLength": 303786,
+          "digest": "sha256:276004318c6a976c3101c773c813e9694ac12da2a6cb524a78cb1f6663612498"
         },
         {
           "relativePath": "dist/ingress.js",
-          "byteLength": 265668,
-          "digest": "sha256:1565cf87a51b5aa3f930ef21686b108fccae088c885a999a31eeb284d1a93116"
+          "byteLength": 266862,
+          "digest": "sha256:916650fb5d1b97773f3fdb26dc3ebe0fdfb3aa63e5c7b8143c3cef5ea92873e3"
         },
         {
           "relativePath": "dist/ingress.js.map",
-          "byteLength": 488063,
-          "digest": "sha256:65abbe1806c3b48e9ae65218f4c6024c389391ef67456d4d7de1516050fca677"
+          "byteLength": 490612,
+          "digest": "sha256:09e560415e5c56b965f28d924b74ed56a1e54c97d8f29d8921ad12b4ee7095ee"
         },
         {
           "relativePath": "dist/management.d.ts",
@@ -2620,28 +2580,28 @@
         },
         {
           "relativePath": "dist/management.d.ts.map",
-          "byteLength": 257159,
-          "digest": "sha256:157ca43d436aa00250b5dfc1f54a46fa0f9bc9a059597d57e3cd68576b73685b"
+          "byteLength": 257745,
+          "digest": "sha256:7ac8f798d4f4209752220785274e9c9113dedcd8e958b57fb112202408db7950"
         },
         {
           "relativePath": "dist/management.js",
-          "byteLength": 225152,
-          "digest": "sha256:c95b93e0b314de1627aeb52441ba5625e83b6c581666b496ebf95fe8fee61b6f"
+          "byteLength": 225681,
+          "digest": "sha256:d5d13a2916cb1c4aebd5844ebd8051e59d499e480a9a2214092fc835c39d88c3"
         },
         {
           "relativePath": "dist/management.js.map",
-          "byteLength": 398418,
-          "digest": "sha256:a78d67d23537e94167866b85dd5abe5726fb9de498ec1e118ac247eff8f7618f"
+          "byteLength": 399203,
+          "digest": "sha256:c1b0388aa90b5e315ba0f0430a789ad7fdf8f3a7187857ec912579e50ba5762d"
         },
         {
           "relativePath": "dist/manifest.d.ts",
-          "byteLength": 1013436,
-          "digest": "sha256:b31d33e7e0a9829e48b0e2e886ee7cf79d23e9d8dd9fa1e8aa243ccaea5244e6"
+          "byteLength": 1037433,
+          "digest": "sha256:c57d5714ff81751f59a677ded0be811214c9057284311926d718336e0145513f"
         },
         {
           "relativePath": "dist/manifest.d.ts.map",
-          "byteLength": 51726,
-          "digest": "sha256:62328337d235ff50820d88d127cee9d5cbbc446d7068bb596c6005e5b3b5559a"
+          "byteLength": 51906,
+          "digest": "sha256:b8f02ad96716b2bca9a2bd6999251c86d766d2d270bc2a1248e199ef6c62ea3e"
         },
         {
           "relativePath": "dist/manifest.js",
@@ -2660,18 +2620,18 @@
         },
         {
           "relativePath": "dist/outwardDelivery.d.ts.map",
-          "byteLength": 173631,
-          "digest": "sha256:c444f640a047ed573092f76443ad849d9d0bfc938c7a9379387eec66f3ab61c7"
+          "byteLength": 173629,
+          "digest": "sha256:8ade028b89d2e5002536b8b29eb244062e3a3282261e7a57b971b141f914351a"
         },
         {
           "relativePath": "dist/outwardDelivery.js",
-          "byteLength": 126878,
-          "digest": "sha256:93e21a86a9abfc76063bb77811554c5e68756a5a15694c4bb1f66f7ffecc69e3"
+          "byteLength": 126901,
+          "digest": "sha256:625ed7bbc6bab6d85c8bade7f93a44b11f1e43b40f66fb03d229b656fa533d22"
         },
         {
           "relativePath": "dist/outwardDelivery.js.map",
-          "byteLength": 249686,
-          "digest": "sha256:95e58039dbfb32faaffbb71b892b69c0c98a6d406ab2f987a2ca5d7aa229af9a"
+          "byteLength": 249594,
+          "digest": "sha256:59b5ab5aefa449bf63ab26349bded1337dd2ee12342cd05d8d2bf3ee4d61a1be"
         },
         {
           "relativePath": "dist/outwardDeliverySupervisor.d.ts",
@@ -3160,38 +3120,38 @@
         },
         {
           "relativePath": "dist/ui/renderSurface.d.ts.map",
-          "byteLength": 519247,
-          "digest": "sha256:441552845df21de2aa410645fb9d62d9fedd2b7714eb3afd0d0bd1f3a5070013"
+          "byteLength": 535983,
+          "digest": "sha256:ea1d8d611516a6c8296e0fefb3b492eb786146cdf7c843b8874258917a1b956e"
         },
         {
           "relativePath": "dist/ui/renderSurface.js",
-          "byteLength": 464695,
-          "digest": "sha256:18b78b37a06f596f54c23eb587f897f9fc3e633e53d6b791a9dc648686f2e800"
+          "byteLength": 479354,
+          "digest": "sha256:a5d87c1e9c4b1d2a15ff040bab1bae4fc88b13b347d6b31ec0aeb8ad0f9001b6"
         },
         {
           "relativePath": "dist/ui/renderSurface.js.map",
-          "byteLength": 850090,
-          "digest": "sha256:ef3f3625df87457830126b2b7ff2b42281613cedbc7b6841c1b1fe235eef8616"
+          "byteLength": 875516,
+          "digest": "sha256:3e55604a34872e37b4d87cbd9ce249a1474f317e52119e1d370b19401881867b"
         },
         {
           "relativePath": "dist/ui/translations.d.ts",
-          "byteLength": 1605040,
-          "digest": "sha256:17881dfe9da97baddecad4af21281b74e7d5da476668fb8847dd3ca2443fa9b9"
+          "byteLength": 1651594,
+          "digest": "sha256:f6eefa9a9e558c812e9fe5f8fba804945628110397c26e349d6810ddf570e37a"
         },
         {
           "relativePath": "dist/ui/translations.d.ts.map",
-          "byteLength": 823753,
-          "digest": "sha256:be528d363d2ba5de7514b918846fc6db5bfc9f8e8b39a6b8b47a5d5bd3ae7579"
+          "byteLength": 847570,
+          "digest": "sha256:c988010ce5fa25c15173d2002e3843312d688f94db697295fc32881d1b1ba6b3"
         },
         {
           "relativePath": "dist/ui/translations.js",
-          "byteLength": 803560,
-          "digest": "sha256:43c9bf2d418e5552d7d5fe3998fe181193414860de3e9c31f522f7f5d6478d53"
+          "byteLength": 826837,
+          "digest": "sha256:0a16107c38cce4f21e3537c08bb19e4b80b16033e5ae6b60d890cf7e1068422e"
         },
         {
           "relativePath": "dist/ui/translations.js.map",
-          "byteLength": 973146,
-          "digest": "sha256:67f5a2139a3984400cb2d3997b54f01cdb2f31d616df1016e6e2f65a5b88c4bf"
+          "byteLength": 1001053,
+          "digest": "sha256:6921c5b80a9dc003876f1550b0525cb30187bb6418bbf166c2ef8818d17b7019"
         },
         {
           "relativePath": "package.json",
@@ -3204,19 +3164,19 @@
       "packageName": "@happier-dev/plugins-claude",
       "files": [
         {
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-EBQBYBCG.js",
-          "byteLength": 6954821,
-          "digest": "sha256:f1af3175ccb8f527aa891c4f6323d17ece021b731c92c3116a54b3d6309485d2"
+          "relativePath": ".happier-plugin/.happier-chunks/chunk-YMNB2LKC.js",
+          "byteLength": 6975548,
+          "digest": "sha256:d94efb226a1ac0457e32210337c59af0618a99b09d8964d28fb64643a9c2bc2d"
         },
         {
           "relativePath": ".happier-plugin/agent/runtime/nativeRuntime.js",
           "byteLength": 507,
-          "digest": "sha256:b5e0a13f6434716120957dcf98558ec11c1450b3f4a18734e5f7da3d877bd594"
+          "digest": "sha256:100cc0e992732eb4d379833481318e26c9a3917811801b620cca2921ddbad520"
         },
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 132403,
-          "digest": "sha256:cf3bc3bb23881c1a3917a75480afb3b86e0b1e50399e68b62c0cbc39995c36b1"
+          "byteLength": 132409,
+          "digest": "sha256:c8a8fb761fe99bfc2af9e8d3c638f32f4b2816acc05e684a9c4668e4b6076702"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -3685,23 +3645,23 @@
         },
         {
           "relativePath": "dist/agent/contextWindow.d.ts",
-          "byteLength": 3103,
-          "digest": "sha256:518698ad8b0d7d263fb9f6ed9206b648941d3068d2cc0c4cfb1c9330d42fcbf7"
+          "byteLength": 3247,
+          "digest": "sha256:b78251bf73b7a4fc884574e84fdc105bb4ca478f649e8d758546645f688e03b9"
         },
         {
           "relativePath": "dist/agent/contextWindow.d.ts.map",
-          "byteLength": 5902,
-          "digest": "sha256:37db6132f9986e5b50295eea5baa1a809414fea1b444fcdc5af71d7d4bb9e5a0"
+          "byteLength": 5531,
+          "digest": "sha256:601834838e0eadeddfeea1ae8a0dc33b0f521c9f4abf3abf503aba2c95a380d4"
         },
         {
           "relativePath": "dist/agent/contextWindow.js",
-          "byteLength": 4610,
-          "digest": "sha256:7d07541fed653bd21cb5132fc1d6685c74a2b4dd0c06d44aff7aeac8f46656f6"
+          "byteLength": 4298,
+          "digest": "sha256:bbddd0c589a271d868ae54aa601e5b17ccd8132867f2ec056c382ea58b57ca38"
         },
         {
           "relativePath": "dist/agent/contextWindow.js.map",
-          "byteLength": 7328,
-          "digest": "sha256:7493d6bb9fe5e3e2c76e25a9542a311eef4bd20cfb4ec5af19c8427037952bf9"
+          "byteLength": 6464,
+          "digest": "sha256:e7d32459010ae848cd3c772ca673b12e3fe299d1a3b6f86c385e78b1f7f323b5"
         },
         {
           "relativePath": "dist/agent/definition.d.ts",
@@ -3990,18 +3950,18 @@
         },
         {
           "relativePath": "dist/agent/models.d.ts.map",
-          "byteLength": 4379,
-          "digest": "sha256:daf8f979ddf52c00cc6a4a29094c2baca7336b01f5b9b70d162d22f73f402622"
+          "byteLength": 1094,
+          "digest": "sha256:e4b760796399cf040bf6245ade0a2ae8e8a83c21ca78ee45c47337f1fae837bc"
         },
         {
           "relativePath": "dist/agent/models.js",
-          "byteLength": 3716,
-          "digest": "sha256:bb55a4550da0856517d71dd3362363290d6e6c35e3c987860d992c3178745d5e"
+          "byteLength": 638,
+          "digest": "sha256:cb9f6921b1ba15c3f97ca9fa60b887b6afb71edc96133fb6a1b130847500667a"
         },
         {
           "relativePath": "dist/agent/models.js.map",
-          "byteLength": 6385,
-          "digest": "sha256:277ce141289c85878ca3eade94aee5e49f1354909e6719322fa8e1c13832fb2a"
+          "byteLength": 1402,
+          "digest": "sha256:8a94c1ff22b6f520e7c5d2735de71e6ed7c16bb7a4b2c8e880166385fee4bd5b"
         },
         {
           "relativePath": "dist/agent/permissions/askUserQuestion.d.ts",
@@ -4045,23 +4005,23 @@
         },
         {
           "relativePath": "dist/agent/permissions/createClaudePermissionEngine.d.ts",
-          "byteLength": 1055,
-          "digest": "sha256:8eb20337310db646d767c6311f1f7845ea1df86a6103789ad1a18fe1ee392c38"
+          "byteLength": 912,
+          "digest": "sha256:2222d4d3d404459e33d3fc5a2725928645a4b99b2fb973284f92af6fc168ed29"
         },
         {
           "relativePath": "dist/agent/permissions/createClaudePermissionEngine.d.ts.map",
-          "byteLength": 5893,
-          "digest": "sha256:20d94b998ae45522f8727c05d9a3b52c27912f2d06ee0e9f0e246095cbc5b544"
+          "byteLength": 5638,
+          "digest": "sha256:2fda4f2bef17421ddd42af68bfd47e70ab1e75d42800e463f81538094467bae3"
         },
         {
           "relativePath": "dist/agent/permissions/createClaudePermissionEngine.js",
-          "byteLength": 3389,
-          "digest": "sha256:00bc4b7789f99b0ff2c2e2e2368c6a80cfe899b66cf5564e580c5be3791ff0a1"
+          "byteLength": 3409,
+          "digest": "sha256:9a32356dfa82b47a371620e274ac23dd9ba7ad8828dbe0657d29219ba7234348"
         },
         {
           "relativePath": "dist/agent/permissions/createClaudePermissionEngine.js.map",
-          "byteLength": 7740,
-          "digest": "sha256:063b1dde7e7a362cee56cd3216d114569435ee909d84555faa49c21bb9591e60"
+          "byteLength": 7653,
+          "digest": "sha256:65596e09acc402203160aead9a8386ad4c9bbac1da5d75757c41a4c3855528b6"
         },
         {
           "relativePath": "dist/agent/permissions/index.d.ts",
@@ -4485,23 +4445,23 @@
         },
         {
           "relativePath": "dist/agent/runtime/reasoningEffort.d.ts",
-          "byteLength": 2347,
-          "digest": "sha256:310609dd32d69f958ae4c3fc3cddd87b297b7cbd7cb27467f3f544e27ef0e4c8"
+          "byteLength": 1963,
+          "digest": "sha256:b9c9abc2ce7a01f8b18fea82d185772fad7b3b2b36531812dc09eb6b868dc495"
         },
         {
           "relativePath": "dist/agent/runtime/reasoningEffort.d.ts.map",
-          "byteLength": 12736,
-          "digest": "sha256:08f5e98ac834ab54b0f6ce17f365cedc4b70c5f0b59500b7ca8d1c27b2a192dd"
+          "byteLength": 9845,
+          "digest": "sha256:bdf775e57dea6a45ee702d152fb4d484cd5f212ce560363919970955cfa43dcc"
         },
         {
           "relativePath": "dist/agent/runtime/reasoningEffort.js",
-          "byteLength": 9502,
-          "digest": "sha256:9dcb01eef71a0d75be6c83d0ad0e682fe8eed374f5a17528ae8260a0d12418b3"
+          "byteLength": 7231,
+          "digest": "sha256:67aa393856d2f36c3ebbe4adceb1de02849748341455a718ccd2abbb690e3558"
         },
         {
           "relativePath": "dist/agent/runtime/reasoningEffort.js.map",
-          "byteLength": 19505,
-          "digest": "sha256:0979b9d7cc8d0455cd11ec7f157c40815d90b6d81bba90dec8403e6d8ee57e75"
+          "byteLength": 14527,
+          "digest": "sha256:3de908f957cf4a290cbc9217b7a62030e116372868544ddb5555ee54154c6f25"
         },
         {
           "relativePath": "dist/agent/runtime/remote/sdk/goalStatusTail.d.ts",
@@ -4985,23 +4945,23 @@
         },
         {
           "relativePath": "dist/agent/runtime/terminal/unified/nativeSession.d.ts",
-          "byteLength": 985,
-          "digest": "sha256:e8e8442f7acf99fa04918063ef88cc30d0233a321d95096f3fe6a7a705acff93"
+          "byteLength": 1479,
+          "digest": "sha256:0bf849e625e2861841ad25521e9d63cf49b299d83dce483fbc1cb297c74553e3"
         },
         {
           "relativePath": "dist/agent/runtime/terminal/unified/nativeSession.d.ts.map",
-          "byteLength": 11141,
-          "digest": "sha256:bbd3d79f372fcd201722ac0acdee0f060d08fbdc3fa3dd3f2daeaef3385c2e68"
+          "byteLength": 11698,
+          "digest": "sha256:e9da3f9caa5bcefb90e428d81a4ce15358b7f22db131f03d315ba46a8f66b047"
         },
         {
           "relativePath": "dist/agent/runtime/terminal/unified/nativeSession.js",
-          "byteLength": 9305,
-          "digest": "sha256:b20401460c409a87d96a818fec09ebeba68cca4de499013704a606f1cf029078"
+          "byteLength": 9422,
+          "digest": "sha256:a6f56fd9a105c1f872671369e9b9d9c5d0584e4ba5762d9e04e744de10ca3681"
         },
         {
           "relativePath": "dist/agent/runtime/terminal/unified/nativeSession.js.map",
-          "byteLength": 17505,
-          "digest": "sha256:af0c22e4392d01df7ad8c306a880d57a1f92408d5a5bdf5f91d680a595fd6895"
+          "byteLength": 17878,
+          "digest": "sha256:e0713a2ef5e963cced36be8c5ec289f4fc9edb5f9c067225647e5cc8f8acc561"
         },
         {
           "relativePath": "dist/agent/runtime/terminal/unified/ownInjectedTextLog.d.ts",
@@ -5062,26 +5022,6 @@
           "relativePath": "dist/agent/runtime/terminal/unified/pendingInputInterruptAndRunActivation.js.map",
           "byteLength": 810,
           "digest": "sha256:b2b7ed33287562eae6505d4058cbec71502a0f98e039664ce4c79ac7bc6c8c74"
-        },
-        {
-          "relativePath": "dist/agent/runtime/terminal/unified/permissionHooks.d.ts",
-          "byteLength": 684,
-          "digest": "sha256:06c1afc7a8a9533c40f2fc0615539bd7b789feef6858cab038dd5ab388870938"
-        },
-        {
-          "relativePath": "dist/agent/runtime/terminal/unified/permissionHooks.d.ts.map",
-          "byteLength": 5150,
-          "digest": "sha256:435329b61adec5199f4f438f9d0c1c61956b06fa8f4a7055079b0bb3cc9acf3e"
-        },
-        {
-          "relativePath": "dist/agent/runtime/terminal/unified/permissionHooks.js",
-          "byteLength": 3915,
-          "digest": "sha256:5a431f890ef7bc6b50febcd5ed3c6c24ef3ea6fbd1886b58aa90dbccf37241ae"
-        },
-        {
-          "relativePath": "dist/agent/runtime/terminal/unified/permissionHooks.js.map",
-          "byteLength": 7988,
-          "digest": "sha256:11e66fa1cceffe3f39a2903be084d155d89b4628daf383fb9096707fe9cd7b57"
         },
         {
           "relativePath": "dist/agent/runtime/terminal/unified/promptEchoSuppression.d.ts",
@@ -5190,18 +5130,18 @@
         },
         {
           "relativePath": "dist/agent/runtime/terminal/unified/resumeChoice/startup.d.ts.map",
-          "byteLength": 17198,
-          "digest": "sha256:39dd0ae10448c9ea745487246395b09cdb60130c5ff673a4649e4f007d4737e2"
+          "byteLength": 17998,
+          "digest": "sha256:be9ed772a859c9ab815ad578856cb773f968a59bb4abc34bca5e1edf01b2f750"
         },
         {
           "relativePath": "dist/agent/runtime/terminal/unified/resumeChoice/startup.js",
-          "byteLength": 13787,
-          "digest": "sha256:a6f56e0516e66294ddbec41e0d46eba062ea31c81ed4ab74d4bec78e229ff69e"
+          "byteLength": 14664,
+          "digest": "sha256:a49eae0d11b4e40ec93aea9bd77b931e638a37d78bfae661a5538886c14eb774"
         },
         {
           "relativePath": "dist/agent/runtime/terminal/unified/resumeChoice/startup.js.map",
-          "byteLength": 25697,
-          "digest": "sha256:704f202a3e526f8481fb0092ee545b29ef2b57d8da2a8e29846093ddba8434fa"
+          "byteLength": 26992,
+          "digest": "sha256:f3f11d37744c332d73f1239b5e75e6a3c313018f5afe63375bf8b21af670e11c"
         },
         {
           "relativePath": "dist/agent/runtime/terminal/unified/resumeChoice/types.d.ts",
@@ -5305,23 +5245,23 @@
         },
         {
           "relativePath": "dist/agent/runtime/terminal/unified/screenState.d.ts",
-          "byteLength": 8296,
-          "digest": "sha256:e5933c5a7def444c1441dd7bfd887a18dca800982fdfce8393bebd9951c22fc9"
+          "byteLength": 8702,
+          "digest": "sha256:18aee7d7d886e5a83d45524455226cab4bc70c4808e323908c20caa90174cd68"
         },
         {
           "relativePath": "dist/agent/runtime/terminal/unified/screenState.d.ts.map",
-          "byteLength": 42191,
-          "digest": "sha256:9b9045f1d6564f40628122d13ac2ed55474b75b8aff36000f24065b5f4212576"
+          "byteLength": 47446,
+          "digest": "sha256:b8abaaa6810da854c7a0fba8b28522f3a1300b1400b6761e00a72154ebd60584"
         },
         {
           "relativePath": "dist/agent/runtime/terminal/unified/screenState.js",
-          "byteLength": 33292,
-          "digest": "sha256:2841d11ebc5836d86e19cc5837718f2c67526fff67807f3d3a75509dd5b58f4a"
+          "byteLength": 37479,
+          "digest": "sha256:6ca322e983949558d2ef6c1e010e53746a65d3f40883c716965c32fb6cfd7707"
         },
         {
           "relativePath": "dist/agent/runtime/terminal/unified/screenState.js.map",
-          "byteLength": 61925,
-          "digest": "sha256:dfb8b43c7b47cbab53a52100662115f30e44126eb45f4913f2ed2b9f0e2409b8"
+          "byteLength": 71445,
+          "digest": "sha256:c245ad363e567cf00c0908a6e7d36082f6ba377245fcf473aa20256f677e07e5"
         },
         {
           "relativePath": "dist/agent/runtime/terminal/unified/selection.d.ts",
@@ -5485,43 +5425,43 @@
         },
         {
           "relativePath": "dist/agent/runtime/terminal/unified/tuiControls/dialogAnswer.d.ts",
-          "byteLength": 2247,
-          "digest": "sha256:86167d7f8df0e76a2a80cbf2c75f233667e79d6bb44818446dda2c6980096229"
+          "byteLength": 1224,
+          "digest": "sha256:f8fa3d6c7ddb8d7baaedf2ce30768589c5e062caceb1b373c3b47dc0e58dfddc"
         },
         {
           "relativePath": "dist/agent/runtime/terminal/unified/tuiControls/dialogAnswer.d.ts.map",
-          "byteLength": 6122,
-          "digest": "sha256:fea2fb37c58214147f77ec427c3f6248d70b69ee828e8805a77afd88d87d9db3"
+          "byteLength": 7636,
+          "digest": "sha256:4e7dacb74fbaaa6c7409a835dc74bcb0c8fe4d1499962bfce6858507f9aa9e15"
         },
         {
           "relativePath": "dist/agent/runtime/terminal/unified/tuiControls/dialogAnswer.js",
-          "byteLength": 2952,
-          "digest": "sha256:238b6bebe984e47f6bdbefaf20e276fbfdbdcb35cb182aafe93622a931210320"
+          "byteLength": 5644,
+          "digest": "sha256:f00d0de2c4cd4013592edb4d19d81da09e08052b226ea0c9642908ee11b6afef"
         },
         {
           "relativePath": "dist/agent/runtime/terminal/unified/tuiControls/dialogAnswer.js.map",
-          "byteLength": 7407,
-          "digest": "sha256:34190337e44743b68abb9db517c1c0d717b7a3c15f345e55d7daee9b5482a0bd"
+          "byteLength": 11994,
+          "digest": "sha256:d01c3084179c74dec86a034a841c4e979d224e583781ba8d8b7b3d64619d1252"
         },
         {
           "relativePath": "dist/agent/runtime/terminal/unified/tuiControls/dialogRegistry.d.ts",
-          "byteLength": 6660,
-          "digest": "sha256:d9721313d0a621cc2474619fd774a88056af8a94016c2a2e221fbecc9bcdb309"
+          "byteLength": 6785,
+          "digest": "sha256:f5a2a86a82fda7768ce2e38710b5fa9297dd4a4167ab9769395dd91b84fb98e4"
         },
         {
           "relativePath": "dist/agent/runtime/terminal/unified/tuiControls/dialogRegistry.d.ts.map",
-          "byteLength": 22850,
-          "digest": "sha256:0f374e18306a7f778a5cb750f8819c9c1ff79b4586f7fc2802fcd261b043a09f"
+          "byteLength": 25263,
+          "digest": "sha256:25689a247be33f4b4aba5886c6c76e1f65bcaf625731825e8b39e9f98291370f"
         },
         {
           "relativePath": "dist/agent/runtime/terminal/unified/tuiControls/dialogRegistry.js",
-          "byteLength": 14257,
-          "digest": "sha256:6cdc04676261f37e9ff3c0c1c6eac34085f72115439ef5bff27a2c52ac3f7b36"
+          "byteLength": 16298,
+          "digest": "sha256:c82ec1cedd025ad62065a1d0afa8d304c4a2210c5888ce488bfb4d66cbdba8f3"
         },
         {
           "relativePath": "dist/agent/runtime/terminal/unified/tuiControls/dialogRegistry.js.map",
-          "byteLength": 28612,
-          "digest": "sha256:104d3c6dd78bb8e35dbe88009500bb7d8715af0b83774a2290f03a1a52a3d2c6"
+          "byteLength": 33009,
+          "digest": "sha256:ab8f2b28577d057931ff662155086e6520fa789e08aae80ebde1e8b420d94cc4"
         },
         {
           "relativePath": "dist/agent/runtime/terminal/unified/tuiControls/fakeControlPort.d.ts",
@@ -5630,18 +5570,18 @@
         },
         {
           "relativePath": "dist/agent/runtime/terminal/unified/tuiControls/slashControls.d.ts.map",
-          "byteLength": 29817,
-          "digest": "sha256:0926f916435b62d00774ffd68fd2ebb6d49300e0a5408443e61c1fff68d94eab"
+          "byteLength": 29992,
+          "digest": "sha256:9d0293e27b6867b072b8d25622f86c7e21eef6008ba1ed44d7537ab8b615ad39"
         },
         {
           "relativePath": "dist/agent/runtime/terminal/unified/tuiControls/slashControls.js",
-          "byteLength": 25650,
-          "digest": "sha256:a5642d359f2531daac80dcfa4b7e09cb7ca08b002078b1ed4060916d4750cf78"
+          "byteLength": 25847,
+          "digest": "sha256:4f09e4723374e87d17cbd4fc3564596b643a160577ee7451e93f6b21f512900f"
         },
         {
           "relativePath": "dist/agent/runtime/terminal/unified/tuiControls/slashControls.js.map",
-          "byteLength": 44569,
-          "digest": "sha256:3d1479a262111b00b33d7076ab89c98ef73797a046aa2ec0b6995f263de02fbb"
+          "byteLength": 44902,
+          "digest": "sha256:243dadf09df9b53c9e0b917566a4a95da1091fd6cd849ba9c795444ed70031cd"
         },
         {
           "relativePath": "dist/agent/runtime/terminal/unified/tuiControls/telemetry.d.ts",
@@ -7104,6 +7044,26 @@
           "digest": "sha256:b5d3414189c5f0b94a0e52ba18b712c9a9bea54c0e2b306ec27af5bacb255b86"
         },
         {
+          "relativePath": "dist/provider/catalog.d.ts",
+          "byteLength": 1776,
+          "digest": "sha256:4ebd579ae2e9a844426e52a5e71858495d8d66b49bf3793f5cecf3a426d4db10"
+        },
+        {
+          "relativePath": "dist/provider/catalog.d.ts.map",
+          "byteLength": 8914,
+          "digest": "sha256:3c229e389e2e05c5511ef86cf550c438ed8695f8300753ccbc34f503040b15b4"
+        },
+        {
+          "relativePath": "dist/provider/catalog.js",
+          "byteLength": 6189,
+          "digest": "sha256:70d2713cbe1debc9670e30547bed1b7237452069c12bd9c74c411deb5e28ba23"
+        },
+        {
+          "relativePath": "dist/provider/catalog.js.map",
+          "byteLength": 12606,
+          "digest": "sha256:de8cc8e369a0e5d212945fbc603ed27f59fd62493ac37dc90e6480fae0c6aea4"
+        },
+        {
           "relativePath": "dist/provider/contribution.d.ts",
           "byteLength": 8321,
           "digest": "sha256:4becd6802584dcac2001f8b61145c7f0d1490130b10db3b97bb3878f0bcf5950"
@@ -7111,17 +7071,17 @@
         {
           "relativePath": "dist/provider/contribution.d.ts.map",
           "byteLength": 1779,
-          "digest": "sha256:1b1746e188cf0ac4860c222c419019cd5d7c84d0538fe892907f73d2ae330c8f"
+          "digest": "sha256:b4f738a1746fa14b635d009957f65d49f58199c37c57c30b30f42d6171b88126"
         },
         {
           "relativePath": "dist/provider/contribution.js",
           "byteLength": 1607,
-          "digest": "sha256:b49a981d255764e25edea88ca62d8e98ffc71b2a06f9530b93c48de064f2812b"
+          "digest": "sha256:e068e535b4af9abf3fb6fd2feae1c7b0aac92b4a190bd7b3a3bca4e33639c072"
         },
         {
           "relativePath": "dist/provider/contribution.js.map",
-          "byteLength": 2553,
-          "digest": "sha256:7ad6a93645c91aef61ee7fd6abd271238fe4d171e5fd926d096454998faf909b"
+          "byteLength": 2551,
+          "digest": "sha256:8f10c36eaa8993d60c0d8ba73ceba835b0abb6ee2d434c814e87e725e4864627"
         },
         {
           "relativePath": "dist/ui/descriptor.d.ts",
@@ -7185,8 +7145,8 @@
         },
         {
           "relativePath": "package.json",
-          "byteLength": 3121,
-          "digest": "sha256:8a1aa01767bea7e5ef0907e0d8c7eee98f778acc0bee42d9e8a140c1418006bd"
+          "byteLength": 3249,
+          "digest": "sha256:ef93ca8d41e0aa97025fc9c605c395a09dc5173316d55427056cd6c39425a49c"
         }
       ]
     },
@@ -7334,19 +7294,19 @@
       "packageName": "@happier-dev/plugins-codex",
       "files": [
         {
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-2DJR4S3H.js",
-          "byteLength": 6616854,
-          "digest": "sha256:4eca895e6a4a90b973fdae3bae8e6f19f6fc8f3b3320c7f37abf9d8c1f57b904"
+          "relativePath": ".happier-plugin/.happier-chunks/chunk-FXAWIL6Z.js",
+          "byteLength": 6629285,
+          "digest": "sha256:8f54d4b00826a2844f5570d063cebd69f07146318513ff210aaad5d684161fd5"
         },
         {
           "relativePath": ".happier-plugin/agent/runtime/engine.js",
           "byteLength": 197,
-          "digest": "sha256:ea7543b28119fdefc528706e022b9f97ac3334f45d3cfc5832bc33bb23d9f5d4"
+          "digest": "sha256:fa60abf2259f7da942f3c1ab620ef70a2f0983a3c9fff807e743482c321f071e"
         },
         {
           "relativePath": ".happier-plugin/daemon.js",
           "byteLength": 163088,
-          "digest": "sha256:4dc110fcac1b6ce3cc4c0a02d639868e1693ec2a412faf5cabcfc851e6f56664"
+          "digest": "sha256:c43107004dce5ba1ce852be9eda22af45975359cc9f9ba07c6be7eff1f0eb7c9"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -10404,19 +10364,19 @@
       "packageName": "@happier-dev/plugins-copilot",
       "files": [
         {
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-CHLPSHZA.js",
-          "byteLength": 854530,
-          "digest": "sha256:d2f0cacfc09ed84e69abbeb851b99dbf4505332953abc0998430aad266cea7ef"
+          "relativePath": ".happier-plugin/.happier-chunks/chunk-2SWUF7XF.js",
+          "byteLength": 854050,
+          "digest": "sha256:5346c8af51c2725c010ab885e8bd011bc031c183303fe463d215539ba9787a68"
         },
         {
           "relativePath": ".happier-plugin/agent/runtime/factory.js",
           "byteLength": 127,
-          "digest": "sha256:0fee753fc4a36991d488167b940096b31c14a78a12c7190d198546c367402293"
+          "digest": "sha256:f18392ace6769e8138677f2647583fc57243cacb825b0ef238461638f2723d3d"
         },
         {
           "relativePath": ".happier-plugin/daemon.js",
           "byteLength": 185260,
-          "digest": "sha256:5b32e02a23ea1b08e8c912ed689d77610d18364d4b423d28beabadb5e425ada1"
+          "digest": "sha256:85fab9e22eaffd6cf7858509cf9700f0cd6e7a1635ab49a1aa661cbac303b537"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -12059,19 +12019,19 @@
       "packageName": "@happier-dev/plugins-gemini",
       "files": [
         {
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-F3DQVFKP.js",
-          "byteLength": 1165939,
-          "digest": "sha256:61a51d7bda70c0be990e3f57af9d87badf46397c129390aad22eebeb3d674d1a"
+          "relativePath": ".happier-plugin/.happier-chunks/chunk-44VDWUVS.js",
+          "byteLength": 1165459,
+          "digest": "sha256:b4603840f8160ceb634f23cbe143559fa810f708a7bf7234f9da0cbe4f0d797f"
         },
         {
           "relativePath": ".happier-plugin/agent/runtime/factory.js",
           "byteLength": 125,
-          "digest": "sha256:c1484a7c07a8449f18f7a92cb370b10050830f2118b96f366f2f1331d23e20f8"
+          "digest": "sha256:c11e8f9dcd8b3fdeb2404487466cde575c67d8ae16d2f359b73bc4c5672cf18a"
         },
         {
           "relativePath": ".happier-plugin/daemon.js",
           "byteLength": 265555,
-          "digest": "sha256:17e475911f23b06c19fd3b77c60c4e164fd707aebfe377cd8138f27352aabbd7"
+          "digest": "sha256:d4e1a3f686404190a463e594599e3925028ceb816dc4d749c17b241c7cac32ec"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -12774,19 +12734,19 @@
       "packageName": "@happier-dev/plugins-grok",
       "files": [
         {
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-GDTUWUX5.js",
-          "byteLength": 1020231,
-          "digest": "sha256:b779072cdd6f874ea8678fb3a6c7c9a9e661d884de914fdead4156c3ae2136dc"
+          "relativePath": ".happier-plugin/.happier-chunks/chunk-A77ID2VO.js",
+          "byteLength": 1019751,
+          "digest": "sha256:f46be92c2450252e8f39d101d9f7bdd038eb8a91df8214bf0e4fb04cb256823e"
         },
         {
           "relativePath": ".happier-plugin/agent/runtime/factory.js",
           "byteLength": 121,
-          "digest": "sha256:378980931f15bc47190d24daa6a07699b633e192d7b903d657346bea09d0f753"
+          "digest": "sha256:00b6daf67cbb1d869a06df8baab87b6529619fba4c2f2c32e6150cca17fcd4d2"
         },
         {
           "relativePath": ".happier-plugin/daemon.js",
           "byteLength": 176646,
-          "digest": "sha256:2e7451fad13e4616ac707ea6523252c576e2dc192473bb1f64ffebfde0e52288"
+          "digest": "sha256:3dcf7c63e84a3a74a3ae052228e9fd816fbef09137d9b8ca14e36e3a222e2050"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -13185,8 +13145,8 @@
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native-web/inspector-app-native/entry.mjs.bundle",
-          "byteLength": 1126212,
-          "digest": "sha256:e93a1b082808638943beb3fc613a26ff50858b82bd9bb540f4761bd4baf654b1"
+          "byteLength": 1126826,
+          "digest": "sha256:1492a89f5fd651d7030bb1df27d88e42b9ec85967b54d4e953a1cb10ebd409fa"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/inspector-app-native/android/android.bundle",
@@ -13210,13 +13170,13 @@
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/inspector-app-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js.chunk.bundle",
-          "byteLength": 4226709,
-          "digest": "sha256:652ef7cd27ad370d58640a90d568912de618cbaa6a1c14412305afefa278c593"
+          "byteLength": 4238405,
+          "digest": "sha256:47143a69c5f454b0c712f01ab7e8d7d6d33d946392314f6cd5fa569352d09812"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/inspector-app-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js.chunk.bundle.map",
-          "byteLength": 797288,
-          "digest": "sha256:aad48a8e4120064d4a7b3e8baccee09132c23be0649f0a749518234352fd9609"
+          "byteLength": 799105,
+          "digest": "sha256:7e2dd85e2f22b2971127a167457375c355f528d9252d5366f6a6eadd3611b892"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/inspector-app-native/ios/ios.bundle",
@@ -13240,18 +13200,18 @@
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/inspector-app-native/ios/vendors-node_modules_happier-dev_plugin-ui_dist_index_js.chunk.bundle",
-          "byteLength": 4226709,
-          "digest": "sha256:652ef7cd27ad370d58640a90d568912de618cbaa6a1c14412305afefa278c593"
+          "byteLength": 4238405,
+          "digest": "sha256:47143a69c5f454b0c712f01ab7e8d7d6d33d946392314f6cd5fa569352d09812"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/inspector-app-native/ios/vendors-node_modules_happier-dev_plugin-ui_dist_index_js.chunk.bundle.map",
-          "byteLength": 797288,
-          "digest": "sha256:aad48a8e4120064d4a7b3e8baccee09132c23be0649f0a749518234352fd9609"
+          "byteLength": 799105,
+          "digest": "sha256:7e2dd85e2f22b2971127a167457375c355f528d9252d5366f6a6eadd3611b892"
         },
         {
           "relativePath": "dist/happier-plugin-ui/ui-artifacts.json",
           "byteLength": 5390,
-          "digest": "sha256:a9fa0d650a784ed0452f092f30c1c1517b5ac4a1f378d5209b195d5f6a44d18d"
+          "digest": "sha256:f1c15a9760607e70ec4fdd03f3c27cfc6913d2cc834687203e1418357042961c"
         },
         {
           "relativePath": "dist/index.d.ts",
@@ -13344,19 +13304,19 @@
       "packageName": "@happier-dev/plugins-kilo",
       "files": [
         {
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-CGYDL44T.js",
-          "byteLength": 858450,
-          "digest": "sha256:aea1da25b7a231c0b6e1d68a03ebe6949b7b0493ffad079e33ab8bf5bf1bfb43"
+          "relativePath": ".happier-plugin/.happier-chunks/chunk-Q7NXPBAZ.js",
+          "byteLength": 857970,
+          "digest": "sha256:e2bf9304f16e431e9944a5b5673f2f05eeb73d04b608632227cacf9a3b75cd64"
         },
         {
           "relativePath": ".happier-plugin/agent/runtime/factory.js",
           "byteLength": 121,
-          "digest": "sha256:4cc109ec07441fb55582c76a7c5eb29ea89ef24e999a3578f9932bf6036054ca"
+          "digest": "sha256:937326f662be3f868b5ed49d384dc1587295b9003aebf5107ffefcb10b0499fa"
         },
         {
           "relativePath": ".happier-plugin/daemon.js",
           "byteLength": 181347,
-          "digest": "sha256:c88486d17acc927715f7aa6fbe20aef55f25d361e0cc5cb170bf9098d55b037c"
+          "digest": "sha256:7c277ecbb7eb526c9ce8beb1553f5e7383ae03c672ed458d3d49423d92af26ca"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -14454,19 +14414,19 @@
       "packageName": "@happier-dev/plugins-ohmypi",
       "files": [
         {
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-ZSXX7JNK.js",
-          "byteLength": 5544150,
-          "digest": "sha256:50e607adaa86a8ef15b3a85a1c3bd524a2b6bc2dbb03b41d5facb32dd799156d"
+          "relativePath": ".happier-plugin/.happier-chunks/chunk-L34MQGT3.js",
+          "byteLength": 5556581,
+          "digest": "sha256:4fff36bc4c16f23cc5cd2f88744fd290cff057507328302a03f85637c98c975b"
         },
         {
           "relativePath": ".happier-plugin/agent/runtime/engine.js",
           "byteLength": 201,
-          "digest": "sha256:ba3c4a1e1b9f623ab19dd3d4c0fc2eee46432a58cca757c630bc2b473bac537b"
+          "digest": "sha256:ae0b27ea4b8023f21c7341d5b039b439d37eb7ce1976456c11caad73e46ada93"
         },
         {
           "relativePath": ".happier-plugin/daemon.js",
           "byteLength": 33671,
-          "digest": "sha256:8646f7ce33913b837b1b8c832b283fb24d0662f64ccd92ef036f6744da3c7bc7"
+          "digest": "sha256:d2133efadc914d6a3b02fbda18d654cc05433c73e2d8ed2c37e9caf16f09bc7e"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -15664,19 +15624,19 @@
       "packageName": "@happier-dev/plugins-opencode",
       "files": [
         {
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-USD6OX4D.js",
-          "byteLength": 5796808,
-          "digest": "sha256:205639a1d0ab01c835970e16611739dfcbf8664a71f9d5d95a4f60c72594c33b"
+          "relativePath": ".happier-plugin/.happier-chunks/chunk-PB6HHGQK.js",
+          "byteLength": 5809239,
+          "digest": "sha256:32b3982bb928733162bee8a2431de4185d1e0f1606c07d0a54136e456fb21c5d"
         },
         {
           "relativePath": ".happier-plugin/agent/runtime/nativeRuntime.js",
           "byteLength": 209,
-          "digest": "sha256:09eb7bafb3a48d001e2b0aa5907b7430f96fa62c2e949c6ff6fcae1d5f1e7b8d"
+          "digest": "sha256:d98d9eb297c079cb730c437032abd7c994e9cf0e32cd48d748f5be8e0f3bccb2"
         },
         {
           "relativePath": ".happier-plugin/daemon.js",
           "byteLength": 67246,
-          "digest": "sha256:96319166b3b84ad9ff8c54167c1b7cd95fd5a4af450ccdfc25bae50a66ed53bf"
+          "digest": "sha256:55682e8ae635339ba79c48bb0c539d5466c6ae5001405c97368228966d1c9d94"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -17989,19 +17949,19 @@
       "packageName": "@happier-dev/plugins-pi",
       "files": [
         {
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-EKEIBN3E.js",
-          "byteLength": 5720860,
-          "digest": "sha256:8cd2479f229174d161639d0f1009d0906e2327d061dab5c24f0556c0b7195998"
+          "relativePath": ".happier-plugin/.happier-chunks/chunk-ZJD4XV3N.js",
+          "byteLength": 5733291,
+          "digest": "sha256:f6719902ea14cd94667aaf4165b8b196158b2becd8140a45ff3f82f214879b2e"
         },
         {
           "relativePath": ".happier-plugin/agent/runtime/engine.js",
           "byteLength": 185,
-          "digest": "sha256:2addb669ef3a4b633343def258be059801b68f0e1106ab3c8d54aa96c15f584d"
+          "digest": "sha256:79fc25e6cf6951f223b985a323d71765d0d549060e2a51ccff6fba003dfe92e0"
         },
         {
           "relativePath": ".happier-plugin/daemon.js",
           "byteLength": 40938,
-          "digest": "sha256:184cb86a5d05bece3f1e27ab9534d2bbd2ce8f42ddbc545da6bd5b065a1b5c94"
+          "digest": "sha256:e14d19076262f0a74e50dda5b9f038c1e04dd413ae316ce3e2b6f9f04a16a990"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -19045,8 +19005,8 @@
       "files": [
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 2471272,
-          "digest": "sha256:c61c03a0d391cf0638f509bb1ee0c976ee8f49e76c3aa057bf305c29dc426f01"
+          "byteLength": 2472771,
+          "digest": "sha256:68b341656569423f204416a76316c5bf1a3e723de0b3d3a64a7e711b01e44c64"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -19375,13 +19335,13 @@
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native-web/posthog-issue-detail-native/entry.mjs.bundle",
-          "byteLength": 2282435,
-          "digest": "sha256:fb982e73e793fdba3b061c04beb34a2020d842f18ff45e951e0b56d7bafca414"
+          "byteLength": 2284249,
+          "digest": "sha256:02ce1d149a60b63b4dd750d14c23fce3bdade03c0c86cc344626956b0459eed3"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native-web/posthog-triage-sources-native/entry.mjs.bundle",
-          "byteLength": 2342459,
-          "digest": "sha256:da50ea9ee4e7d1a0c75d6081aca04e85b016273a500bfc5ae683cb48de2eb758"
+          "byteLength": 2344273,
+          "digest": "sha256:3e2c4e38bb9f72c847ca679d030ba440fcb9f59de0d39faba1cbcd1d4553b238"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/posthog-issue-detail-native/android/android.bundle",
@@ -19404,24 +19364,14 @@
           "digest": "sha256:08a83feccf9ac13c8f5bea7b8692a22feb75b2a15cdeb50d17d6203a220438a6"
         },
         {
-          "relativePath": "dist/happier-plugin-ui/react-native/posthog-issue-detail-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-prot-c26200.chunk.bundle",
-          "byteLength": 5952181,
-          "digest": "sha256:5145ddecebb7b2ca879d19bf5f6ad3c807e1b80e1972dddc55a92aabcc136d5f"
-        },
-        {
-          "relativePath": "dist/happier-plugin-ui/react-native/posthog-issue-detail-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-prot-c26200.chunk.bundle.map",
-          "byteLength": 1175288,
-          "digest": "sha256:4817e4307ea94cc79ed887c52968186e2bfc0107dacf6033a4723ee961ceab9f"
-        },
-        {
           "relativePath": "dist/happier-plugin-ui/react-native/posthog-issue-detail-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-sour-b80085.chunk.bundle",
-          "byteLength": 6067673,
-          "digest": "sha256:5391ab6b40265ffe3a4e6c57850430d70ef26b66effddbfbc2d1732a34b04dcd"
+          "byteLength": 6079922,
+          "digest": "sha256:9cbdbe77fb3966129bcca2d0c986bd88cdab7dbde2e22f0dcd7a6c9467d0b17e"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/posthog-issue-detail-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-sour-b80085.chunk.bundle.map",
-          "byteLength": 1198832,
-          "digest": "sha256:39ed30161bd548f9d15b6cb32e03a07957cf3894a4cba9f0a387cd7ad685e614"
+          "byteLength": 1200714,
+          "digest": "sha256:a2afd3df0ea9880dec11082c2d06db66fa85ffb2cd5bca74604c08b126b1c4d5"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/posthog-issue-detail-native/ios/ios.bundle",
@@ -19444,24 +19394,14 @@
           "digest": "sha256:08a83feccf9ac13c8f5bea7b8692a22feb75b2a15cdeb50d17d6203a220438a6"
         },
         {
-          "relativePath": "dist/happier-plugin-ui/react-native/posthog-issue-detail-native/ios/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-prot-c26200.chunk.bundle",
-          "byteLength": 5952181,
-          "digest": "sha256:5145ddecebb7b2ca879d19bf5f6ad3c807e1b80e1972dddc55a92aabcc136d5f"
-        },
-        {
-          "relativePath": "dist/happier-plugin-ui/react-native/posthog-issue-detail-native/ios/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-prot-c26200.chunk.bundle.map",
-          "byteLength": 1175288,
-          "digest": "sha256:4817e4307ea94cc79ed887c52968186e2bfc0107dacf6033a4723ee961ceab9f"
-        },
-        {
           "relativePath": "dist/happier-plugin-ui/react-native/posthog-issue-detail-native/ios/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-sour-b80085.chunk.bundle",
-          "byteLength": 6067673,
-          "digest": "sha256:5391ab6b40265ffe3a4e6c57850430d70ef26b66effddbfbc2d1732a34b04dcd"
+          "byteLength": 6079922,
+          "digest": "sha256:9cbdbe77fb3966129bcca2d0c986bd88cdab7dbde2e22f0dcd7a6c9467d0b17e"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/posthog-issue-detail-native/ios/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-sour-b80085.chunk.bundle.map",
-          "byteLength": 1198832,
-          "digest": "sha256:39ed30161bd548f9d15b6cb32e03a07957cf3894a4cba9f0a387cd7ad685e614"
+          "byteLength": 1200714,
+          "digest": "sha256:a2afd3df0ea9880dec11082c2d06db66fa85ffb2cd5bca74604c08b126b1c4d5"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/posthog-triage-sources-native/android/android.bundle",
@@ -19485,13 +19425,13 @@
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/posthog-triage-sources-native/android/vendors-node_modules_happier-dev_triage-sources_dist_index_js.chunk.bundle",
-          "byteLength": 6229545,
-          "digest": "sha256:38196dafe949e03490218312cbd523c6de8a8244839e14324e4f4e56f704865e"
+          "byteLength": 6241794,
+          "digest": "sha256:d8c7ff52fa3c12ad325e457af5223f41b35c210c7427479137d1eaf475976a99"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/posthog-triage-sources-native/android/vendors-node_modules_happier-dev_triage-sources_dist_index_js.chunk.bundle.map",
-          "byteLength": 1218728,
-          "digest": "sha256:a406f82596731f90722e686bcb4c95d4bdd97d28451d462644470de0738c1b1d"
+          "byteLength": 1220612,
+          "digest": "sha256:2187259166820004936dd1cb4cbc66d62bd3e7c5dc2a2335385b99e2f7a8bd4e"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/posthog-triage-sources-native/ios/ios.bundle",
@@ -19515,18 +19455,18 @@
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/posthog-triage-sources-native/ios/vendors-node_modules_happier-dev_triage-sources_dist_index_js.chunk.bundle",
-          "byteLength": 6229545,
-          "digest": "sha256:38196dafe949e03490218312cbd523c6de8a8244839e14324e4f4e56f704865e"
+          "byteLength": 6241794,
+          "digest": "sha256:d8c7ff52fa3c12ad325e457af5223f41b35c210c7427479137d1eaf475976a99"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/posthog-triage-sources-native/ios/vendors-node_modules_happier-dev_triage-sources_dist_index_js.chunk.bundle.map",
-          "byteLength": 1218728,
-          "digest": "sha256:a406f82596731f90722e686bcb4c95d4bdd97d28451d462644470de0738c1b1d"
+          "byteLength": 1220612,
+          "digest": "sha256:2187259166820004936dd1cb4cbc66d62bd3e7c5dc2a2335385b99e2f7a8bd4e"
         },
         {
           "relativePath": "dist/happier-plugin-ui/ui-artifacts.json",
           "byteLength": 11356,
-          "digest": "sha256:a99bdbbb60cc6910c576305b4da22a6cdbdc7217f18f0d8fbde4ff389319e48b"
+          "digest": "sha256:9abc2b5f2165347fb2d4828840cc781872b88dc6d4a548b5e3c6fb1cd231c311"
         },
         {
           "relativePath": "dist/index.d.ts",
@@ -20415,8 +20355,8 @@
       "files": [
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 4929559,
-          "digest": "sha256:e8c36318fdb9f23e6894321145621be1908b9480d52fc7128d410e1993ff7e75"
+          "byteLength": 4941962,
+          "digest": "sha256:6990076164f32b5c3b9682969b184db3c6fb3c4d5911d8923e3da42386aa31e7"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -20740,8 +20680,8 @@
       "files": [
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 4921810,
-          "digest": "sha256:dd25fffc636d112a3122e89b95bad353ef6fac3d282a99eab4df3754474a04c3"
+          "byteLength": 4934213,
+          "digest": "sha256:eb723e94a908c2aeb722d4051f7854fb2036e8bc9264f35f257b5c0de7833edf"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -21130,8 +21070,8 @@
       "files": [
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 5551003,
-          "digest": "sha256:e26e50ee5f65d62d6a77595c296331d6b6c03eb50f2ae55e80db369b9ca38667"
+          "byteLength": 5562796,
+          "digest": "sha256:b095edbf66ad038c27ebe4396eb98947f69fb707447910ce02a5c9a87bb5fa4e"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -21260,13 +21200,13 @@
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native-web/azure-devops-detail-native/entry.mjs.bundle",
-          "byteLength": 4853982,
-          "digest": "sha256:338c78fa69658c0c0a84203ea4b54453c734f8f82737664f3cbc65e18cc1026e"
+          "byteLength": 4865775,
+          "digest": "sha256:d50f34654c7fa574c864b51062f71edb743eefd44c6569d29e1503549632a58b"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native-web/azure-devops-triage-sources-native/entry.mjs.bundle",
-          "byteLength": 2319484,
-          "digest": "sha256:80d46b34a2453ab16e7f29e3c14e7caee87f132ad1ecee7f0df11a65bf032a3a"
+          "byteLength": 2321298,
+          "digest": "sha256:d36288fc751eb553c83d3dfeeaead2aa39267c67f9fd04b8dbe736774193c11d"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/azure-devops-detail-native/android/android.bundle",
@@ -21289,24 +21229,14 @@
           "digest": "sha256:96622609c4387cfcda8afda983b5a64298749a9be9ce1816e8365d779bd9306f"
         },
         {
-          "relativePath": "dist/happier-plugin-ui/react-native/azure-devops-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_async_index_js-node_modules_happier-dev_plug-c4525f.chunk.bundle",
-          "byteLength": 10854779,
-          "digest": "sha256:c5233c3773e46287b0e88ae46a1256b2c7687a7641781b0cb645dc0024fdb787"
-        },
-        {
-          "relativePath": "dist/happier-plugin-ui/react-native/azure-devops-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_async_index_js-node_modules_happier-dev_plug-c4525f.chunk.bundle.map",
-          "byteLength": 2074124,
-          "digest": "sha256:ab8b405ed44484e483f0c1234d9aaa0c6a6aae4cac91cce933b321df0dbfa574"
-        },
-        {
           "relativePath": "dist/happier-plugin-ui/react-native/azure-devops-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-8581ab.chunk.bundle",
-          "byteLength": 11040415,
-          "digest": "sha256:a238d629289a5a8a7031d894de125f3fb056880a706ab6d721804c2d3e893ae9"
+          "byteLength": 11076887,
+          "digest": "sha256:59c27cf7397e5c8cf8e235f44bda79865a451bd793bdd4705685ea5251757110"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/azure-devops-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-8581ab.chunk.bundle.map",
-          "byteLength": 2105050,
-          "digest": "sha256:ea5461e8548ad380a1852debcb1203f6da36d779efc6b2a75635b9e66c5234ef"
+          "byteLength": 2111687,
+          "digest": "sha256:8bec48ea5b31a0b841b36fdaa9ffbe153550020fbdfaafe0222d84980ae78ec7"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/azure-devops-detail-native/ios/ios.bundle",
@@ -21329,24 +21259,14 @@
           "digest": "sha256:96622609c4387cfcda8afda983b5a64298749a9be9ce1816e8365d779bd9306f"
         },
         {
-          "relativePath": "dist/happier-plugin-ui/react-native/azure-devops-detail-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_async_index_js-node_modules_happier-dev_plug-c4525f.chunk.bundle",
-          "byteLength": 10854779,
-          "digest": "sha256:c5233c3773e46287b0e88ae46a1256b2c7687a7641781b0cb645dc0024fdb787"
-        },
-        {
-          "relativePath": "dist/happier-plugin-ui/react-native/azure-devops-detail-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_async_index_js-node_modules_happier-dev_plug-c4525f.chunk.bundle.map",
-          "byteLength": 2074124,
-          "digest": "sha256:ab8b405ed44484e483f0c1234d9aaa0c6a6aae4cac91cce933b321df0dbfa574"
-        },
-        {
           "relativePath": "dist/happier-plugin-ui/react-native/azure-devops-detail-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-8581ab.chunk.bundle",
-          "byteLength": 11040415,
-          "digest": "sha256:a238d629289a5a8a7031d894de125f3fb056880a706ab6d721804c2d3e893ae9"
+          "byteLength": 11076887,
+          "digest": "sha256:59c27cf7397e5c8cf8e235f44bda79865a451bd793bdd4705685ea5251757110"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/azure-devops-detail-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-8581ab.chunk.bundle.map",
-          "byteLength": 2105050,
-          "digest": "sha256:ea5461e8548ad380a1852debcb1203f6da36d779efc6b2a75635b9e66c5234ef"
+          "byteLength": 2111687,
+          "digest": "sha256:8bec48ea5b31a0b841b36fdaa9ffbe153550020fbdfaafe0222d84980ae78ec7"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/azure-devops-triage-sources-native/android/android.bundle",
@@ -21370,13 +21290,13 @@
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/azure-devops-triage-sources-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_scm_index_js-node_modules_happier-dev_triage-67e361.chunk.bundle",
-          "byteLength": 6241572,
-          "digest": "sha256:86cd64d7fd6288e79b0ac1caadf09c94015f09b8d9549a5b311507e901a5b942"
+          "byteLength": 6253821,
+          "digest": "sha256:c880574da0c5bbbaf76b900b2c9adc453383f54a9fc9067908770082f772a31c"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/azure-devops-triage-sources-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_scm_index_js-node_modules_happier-dev_triage-67e361.chunk.bundle.map",
-          "byteLength": 1230806,
-          "digest": "sha256:9f2993a5d9c545162101ce4763dba4fe21b8dacb741f15710c2341c986c63490"
+          "byteLength": 1232700,
+          "digest": "sha256:51a5c2383387400dbefbfc0590579bad36f9bbbf25a3fae440dcc5c6eea24565"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/azure-devops-triage-sources-native/ios/ios.bundle",
@@ -21400,18 +21320,18 @@
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/azure-devops-triage-sources-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_scm_index_js-node_modules_happier-dev_triage-67e361.chunk.bundle",
-          "byteLength": 6241572,
-          "digest": "sha256:86cd64d7fd6288e79b0ac1caadf09c94015f09b8d9549a5b311507e901a5b942"
+          "byteLength": 6253821,
+          "digest": "sha256:c880574da0c5bbbaf76b900b2c9adc453383f54a9fc9067908770082f772a31c"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/azure-devops-triage-sources-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_scm_index_js-node_modules_happier-dev_triage-67e361.chunk.bundle.map",
-          "byteLength": 1230806,
-          "digest": "sha256:9f2993a5d9c545162101ce4763dba4fe21b8dacb741f15710c2341c986c63490"
+          "byteLength": 1232700,
+          "digest": "sha256:51a5c2383387400dbefbfc0590579bad36f9bbbf25a3fae440dcc5c6eea24565"
         },
         {
           "relativePath": "dist/happier-plugin-ui/ui-artifacts.json",
           "byteLength": 11678,
-          "digest": "sha256:b4b6c9fc67c7d9dc4bb2eb895c1eb30bd3dbdc5a3648f37228fa491c56ecbeb4"
+          "digest": "sha256:6de59b942b7e1248f1e07d1a22b20a60d8a231116246dbe496291c4a4b297461"
         },
         {
           "relativePath": "dist/index.d.ts",
@@ -22365,8 +22285,8 @@
       "files": [
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 5461739,
-          "digest": "sha256:393403bfbb8c65c00d8be4a0f0076ac82d3635bc2f507407fcf05ed7495cbe4f"
+          "byteLength": 5473532,
+          "digest": "sha256:df12d8cce5527d97341da73aafc14c1a47d04e89efaeadf3f873cf24725c629f"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -22535,13 +22455,13 @@
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native-web/bitbucket-detail-native/entry.mjs.bundle",
-          "byteLength": 4826952,
-          "digest": "sha256:ea280f3e4a97c27fd2785fd52dacfb8330a94c0d8eb76f883522438de9f2ba73"
+          "byteLength": 4838745,
+          "digest": "sha256:64f48bd7994317840aab4cfb5df0b3145f57d832fe91de04d4d1d466583293b0"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native-web/bitbucket-triage-sources-native/entry.mjs.bundle",
-          "byteLength": 2318823,
-          "digest": "sha256:ee405d74a87359140aac6a31f095358d4749fd8f490f1d480b3ed2a6110fd343"
+          "byteLength": 2320637,
+          "digest": "sha256:6285e8559f08203744bc28622c1e93ec6642c176cdd437d548daced1b94028fc"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/bitbucket-detail-native/android/android.bundle",
@@ -22564,24 +22484,14 @@
           "digest": "sha256:82479d3e2a5e8116e87c23111d51bf30665f3ac9cb0c5466f40c78c156b1aa3c"
         },
         {
-          "relativePath": "dist/happier-plugin-ui/react-native/bitbucket-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-a01c0c.chunk.bundle",
-          "byteLength": 10848248,
-          "digest": "sha256:823c7dee300ba11b39a1632c50fbdae46dc14d0166f08aa37c0794d994f1b9c4"
-        },
-        {
-          "relativePath": "dist/happier-plugin-ui/react-native/bitbucket-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-a01c0c.chunk.bundle.map",
-          "byteLength": 2062667,
-          "digest": "sha256:6ccca0b8c19c1e526dedb74cc938233deb14b3d71fdf08999f852d71f49a4826"
-        },
-        {
           "relativePath": "dist/happier-plugin-ui/react-native/bitbucket-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-acaf57.chunk.bundle",
-          "byteLength": 10997295,
-          "digest": "sha256:f9eda99823a0e1de53f67bef93bc590b123716f1b303b3e4ce6069eb59148ceb"
+          "byteLength": 11033767,
+          "digest": "sha256:9d1488f68f8c17c62abaf4456a434ae5b035d9b6231cae596da3eef0b88da43c"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/bitbucket-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-acaf57.chunk.bundle.map",
-          "byteLength": 2085732,
-          "digest": "sha256:1c37447b7b2a40ecb294f9d3bb1b6ff00a115e212e4a14ab3c2fed1d8804d515"
+          "byteLength": 2092339,
+          "digest": "sha256:072289ab24f9ff1ca88d478c933b20287f5f8f738d2970a2bf7aa809fcd06898"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/bitbucket-detail-native/ios/ios.bundle",
@@ -22604,24 +22514,14 @@
           "digest": "sha256:82479d3e2a5e8116e87c23111d51bf30665f3ac9cb0c5466f40c78c156b1aa3c"
         },
         {
-          "relativePath": "dist/happier-plugin-ui/react-native/bitbucket-detail-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-a01c0c.chunk.bundle",
-          "byteLength": 10848248,
-          "digest": "sha256:823c7dee300ba11b39a1632c50fbdae46dc14d0166f08aa37c0794d994f1b9c4"
-        },
-        {
-          "relativePath": "dist/happier-plugin-ui/react-native/bitbucket-detail-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-a01c0c.chunk.bundle.map",
-          "byteLength": 2062667,
-          "digest": "sha256:6ccca0b8c19c1e526dedb74cc938233deb14b3d71fdf08999f852d71f49a4826"
-        },
-        {
           "relativePath": "dist/happier-plugin-ui/react-native/bitbucket-detail-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-acaf57.chunk.bundle",
-          "byteLength": 10997295,
-          "digest": "sha256:f9eda99823a0e1de53f67bef93bc590b123716f1b303b3e4ce6069eb59148ceb"
+          "byteLength": 11033767,
+          "digest": "sha256:9d1488f68f8c17c62abaf4456a434ae5b035d9b6231cae596da3eef0b88da43c"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/bitbucket-detail-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-acaf57.chunk.bundle.map",
-          "byteLength": 2085732,
-          "digest": "sha256:1c37447b7b2a40ecb294f9d3bb1b6ff00a115e212e4a14ab3c2fed1d8804d515"
+          "byteLength": 2092339,
+          "digest": "sha256:072289ab24f9ff1ca88d478c933b20287f5f8f738d2970a2bf7aa809fcd06898"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/bitbucket-triage-sources-native/android/android.bundle",
@@ -22644,24 +22544,14 @@
           "digest": "sha256:f8cf35aeb8b12e7c47c4cfdb7b37aee23c10237eaf5a751489b4d8decb95935a"
         },
         {
-          "relativePath": "dist/happier-plugin-ui/react-native/bitbucket-triage-sources-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_scm_index_js-node_modules_happier-dev_triage-67e361.chunk.bundle",
-          "byteLength": 6088046,
-          "digest": "sha256:5d16c9970f3996a0941148e1de606c874912da65dc7e5fc2f08e8c53c4673da6"
-        },
-        {
-          "relativePath": "dist/happier-plugin-ui/react-native/bitbucket-triage-sources-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_scm_index_js-node_modules_happier-dev_triage-67e361.chunk.bundle.map",
-          "byteLength": 1202907,
-          "digest": "sha256:e7b5201701ab00ba28f18c37dcc58b5120dc20acd271f0a6dc8dd13cc900bafd"
-        },
-        {
           "relativePath": "dist/happier-plugin-ui/react-native/bitbucket-triage-sources-native/android/vendors-node_modules_happier-dev_triage-sources_dist_index_js.chunk.bundle",
-          "byteLength": 6229553,
-          "digest": "sha256:afddb0cd238ccd1e49199860e1e3851b88cb7630b26705413aefe8ecf5834c69"
+          "byteLength": 6241802,
+          "digest": "sha256:df88d6fe308ea5ef246842a3857cb1810527345c0aceab38ba9932efe37c1e97"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/bitbucket-triage-sources-native/android/vendors-node_modules_happier-dev_triage-sources_dist_index_js.chunk.bundle.map",
-          "byteLength": 1222432,
-          "digest": "sha256:808668ca7d9fb14bf88b461147b7444bc58828bc2bf03d936ff0d50c771d0071"
+          "byteLength": 1224320,
+          "digest": "sha256:8f7457bb4035930d3f2ec18e575c0b7c382317d8cea0d006f750f5f63a18f29a"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/bitbucket-triage-sources-native/ios/ios.bundle",
@@ -22684,29 +22574,19 @@
           "digest": "sha256:f8cf35aeb8b12e7c47c4cfdb7b37aee23c10237eaf5a751489b4d8decb95935a"
         },
         {
-          "relativePath": "dist/happier-plugin-ui/react-native/bitbucket-triage-sources-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_scm_index_js-node_modules_happier-dev_triage-67e361.chunk.bundle",
-          "byteLength": 6088046,
-          "digest": "sha256:5d16c9970f3996a0941148e1de606c874912da65dc7e5fc2f08e8c53c4673da6"
-        },
-        {
-          "relativePath": "dist/happier-plugin-ui/react-native/bitbucket-triage-sources-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_scm_index_js-node_modules_happier-dev_triage-67e361.chunk.bundle.map",
-          "byteLength": 1202907,
-          "digest": "sha256:e7b5201701ab00ba28f18c37dcc58b5120dc20acd271f0a6dc8dd13cc900bafd"
-        },
-        {
           "relativePath": "dist/happier-plugin-ui/react-native/bitbucket-triage-sources-native/ios/vendors-node_modules_happier-dev_triage-sources_dist_index_js.chunk.bundle",
-          "byteLength": 6229553,
-          "digest": "sha256:afddb0cd238ccd1e49199860e1e3851b88cb7630b26705413aefe8ecf5834c69"
+          "byteLength": 6241802,
+          "digest": "sha256:df88d6fe308ea5ef246842a3857cb1810527345c0aceab38ba9932efe37c1e97"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/bitbucket-triage-sources-native/ios/vendors-node_modules_happier-dev_triage-sources_dist_index_js.chunk.bundle.map",
-          "byteLength": 1222432,
-          "digest": "sha256:808668ca7d9fb14bf88b461147b7444bc58828bc2bf03d936ff0d50c771d0071"
+          "byteLength": 1224320,
+          "digest": "sha256:8f7457bb4035930d3f2ec18e575c0b7c382317d8cea0d006f750f5f63a18f29a"
         },
         {
           "relativePath": "dist/happier-plugin-ui/ui-artifacts.json",
           "byteLength": 11376,
-          "digest": "sha256:a3001a4364f3fc78ca8e888c22369f40d8d84340d7533814a3eb3298f68f9a00"
+          "digest": "sha256:1fcac7ae8a5f17e650577d2bacbea9497b9b6e282d00d2a54fb235803803dcbb"
         },
         {
           "relativePath": "dist/index.d.ts",
@@ -23880,8 +23760,8 @@
       "files": [
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 1099036,
-          "digest": "sha256:1299f8f26dc9a9f4ee2eb0dabaa2295a869e2547f99226d10c43a436a3473746"
+          "byteLength": 1103372,
+          "digest": "sha256:5ab816dbbac781e054a10de60072502e1947cc540b6585ac6b90856e1e0c19fa"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -23915,18 +23795,18 @@
         },
         {
           "relativePath": "dist/backend.d.ts.map",
-          "byteLength": 12454,
-          "digest": "sha256:c28808d5c7d0dbb745a4af415a8d80d9e8611d2b736bcbca889a0297e8a04d37"
+          "byteLength": 12725,
+          "digest": "sha256:1c83f6dccc9971895e6adefaf6a8457ca00fc2518de80332cf0dda181546a561"
         },
         {
           "relativePath": "dist/backend.js",
-          "byteLength": 11588,
-          "digest": "sha256:833e65e5198a1d75096ba8e9b1131301b38af92aa01ccc69db4ea7170648e65d"
+          "byteLength": 11851,
+          "digest": "sha256:f541ac377725e1d6d9cfc9c09ec2f943bfde6d898f3688ab49ec16e05ba82f54"
         },
         {
           "relativePath": "dist/backend.js.map",
-          "byteLength": 19152,
-          "digest": "sha256:be3842b66098e78d98dcc0c829ed81ea340dfd145a5971259951e35075ab8c47"
+          "byteLength": 19487,
+          "digest": "sha256:9d6ec6092c2e8f7dfcbc280dc411401a7d2c6c9a720a58283044837e5721f8b7"
         },
         {
           "relativePath": "dist/capabilities.d.ts",
@@ -24635,18 +24515,18 @@
         },
         {
           "relativePath": "dist/operations/readOperations.d.ts.map",
-          "byteLength": 11379,
-          "digest": "sha256:6627d40ea8daef44e69931d49ee778429524a1da23ee9b3ac0400feb2a3bde72"
+          "byteLength": 12652,
+          "digest": "sha256:ee4e02cf684fc798cabd26cc9a6e689c7942787b2076cc410a9fb09f269c5abb"
         },
         {
           "relativePath": "dist/operations/readOperations.js",
-          "byteLength": 9306,
-          "digest": "sha256:253bdc4654b69aad630f6f98309fe56a7ef6b66f9f49e41f1ceb071be22eac66"
+          "byteLength": 10445,
+          "digest": "sha256:a4cced53e8fac34d4a848d7cedab57e54d737e3423fdd1e215b23a533afd21fb"
         },
         {
           "relativePath": "dist/operations/readOperations.js.map",
-          "byteLength": 18753,
-          "digest": "sha256:f35ac95556e5ce759fe0047d41544ab3387499976e26eb78b792866cefaa39c8"
+          "byteLength": 20985,
+          "digest": "sha256:c511332dfec1802b11deab0042efb6a8828cbe471824006b084324934618cc4c"
         },
         {
           "relativePath": "dist/operations/reconcileWorkspaceCheckout.d.ts",
@@ -24835,18 +24715,18 @@
         },
         {
           "relativePath": "dist/operations/resolveGitWorkspaceTransferEntries.d.ts.map",
-          "byteLength": 3997,
-          "digest": "sha256:37e64a0328a5ec8dfd9512d3f9ae1eb639e6950c234abb508d6fa4a87ecf7014"
+          "byteLength": 6438,
+          "digest": "sha256:4d304c39acd28a0ff7cd8c5498f7998650008d239dcde91c62316f0c650138fa"
         },
         {
           "relativePath": "dist/operations/resolveGitWorkspaceTransferEntries.js",
-          "byteLength": 3083,
-          "digest": "sha256:abf48b6984c078d932f39a7ac9968f5cc848e05cbb7e8ee0640511d18f230dd3"
+          "byteLength": 5291,
+          "digest": "sha256:28b6f20dcc1a39bc9ef95384b660a6697904614251ee563df601dee9727ee5e7"
         },
         {
           "relativePath": "dist/operations/resolveGitWorkspaceTransferEntries.js.map",
-          "byteLength": 6436,
-          "digest": "sha256:2f6e20ebf9307768b9902b5878b359e261a812e8b72fa4aabd42d96a2a646d5e"
+          "byteLength": 10575,
+          "digest": "sha256:e803608e582ba5093c2b7a64ec3b2a34743399aa58ca1035c06b0dcec9666972"
         },
         {
           "relativePath": "dist/operations/runStackedPullRequestAction.d.ts",
@@ -25175,18 +25055,18 @@
         },
         {
           "relativePath": "dist/workspace/portableGitWorkspaceTransfer.d.ts.map",
-          "byteLength": 7489,
-          "digest": "sha256:064c431d7e180f6998c3677820f23833456542b1815ccc2e22e2e691c2166cda"
+          "byteLength": 8556,
+          "digest": "sha256:1b5e3b3a275288173ee9f2c904ecdf7dbca8d617d06d4b584eb7ab49aaa8f134"
         },
         {
           "relativePath": "dist/workspace/portableGitWorkspaceTransfer.js",
-          "byteLength": 5988,
-          "digest": "sha256:dd213e7d7a14041f6996b59f44426473bea6c122807f9a7035cb8c91629d6882"
+          "byteLength": 6903,
+          "digest": "sha256:aec2c19bab455d340940a83bfd6f22839f887519b0a69817a94622359f99bc39"
         },
         {
           "relativePath": "dist/workspace/portableGitWorkspaceTransfer.js.map",
-          "byteLength": 11659,
-          "digest": "sha256:5367fced5525899a51fe3fa6293819fdbccf07856651b50e808a33f53bf38497"
+          "byteLength": 13403,
+          "digest": "sha256:c8294ac1c105a818378a2e4bc903a4dbd439e36b7596387980710b547be0d0d9"
         },
         {
           "relativePath": "dist/workspace/portableWorkspacePath.d.ts",
@@ -25290,23 +25170,23 @@
         },
         {
           "relativePath": "dist/workspaceIntegration.d.ts",
-          "byteLength": 4211,
-          "digest": "sha256:9a0a42aff3610849463158383b645aef1296dbe86b8110c69ba85acfd5f6b7a1"
+          "byteLength": 4786,
+          "digest": "sha256:f7fbba30811a24e329e188488a1dd2a8b4a0d8d2cf4ecc97f84ca7b1dbbc96ef"
         },
         {
           "relativePath": "dist/workspaceIntegration.d.ts.map",
-          "byteLength": 16357,
-          "digest": "sha256:91cfa196123f0dfe82a405c883ac62890bef243a65a0ed017a04cd6c82b92066"
+          "byteLength": 17646,
+          "digest": "sha256:564955b132c204af6ced3ffe519faa3a80f9c1340f16dfe7773959c4f04cd510"
         },
         {
           "relativePath": "dist/workspaceIntegration.js",
-          "byteLength": 11966,
-          "digest": "sha256:8cd4880d7e902ffe66ea6339e4c300e48f6c0f4666e1508552a6bab52924425b"
+          "byteLength": 12946,
+          "digest": "sha256:0aaffc98daeda6d687e0c3fbf419a894573625232806c73a9dd67c69361dc1f1"
         },
         {
           "relativePath": "dist/workspaceIntegration.js.map",
-          "byteLength": 21898,
-          "digest": "sha256:9e06fda760189195cfce94548bf5b3c396c83f40b6e4643d52eb963e6606f62d"
+          "byteLength": 23497,
+          "digest": "sha256:e12d42c582fb7be486685fbb5f0d7d781da0f407deeb0e326d67dbe5d864382f"
         },
         {
           "relativePath": "dist/workspaceTransferMetadata.d.ts",
@@ -25380,8 +25260,8 @@
       "files": [
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 6084812,
-          "digest": "sha256:96192baec2ffede6ab2906b9967215db1cc2c49606627c4633d6ce0e417d93be"
+          "byteLength": 6096604,
+          "digest": "sha256:4068c60ca170f996a2bf44d05b905f0c90057c75a88d5223b96f09129f57438d"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -25535,13 +25415,13 @@
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native-web/github-detail-native/entry.mjs.bundle",
-          "byteLength": 4929473,
-          "digest": "sha256:b10b3953bb4ed3a70f4b75fc858d0552ce168dbbfd12967c086cde95cd6f14aa"
+          "byteLength": 4941272,
+          "digest": "sha256:6f12d03bec400387060a7da2151f849108dea13193c64300231a86bec1fc5458"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native-web/github-triage-sources-native/entry.mjs.bundle",
-          "byteLength": 2319226,
-          "digest": "sha256:e728b4a77019afc7e5a758c788b27aed257ced32a020c62593722748d3753f1f"
+          "byteLength": 2321040,
+          "digest": "sha256:a9ddf38e56f471b5f07929626333073a7b0050f2de0e29bf5008ec389c33e5b3"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/github-detail-native/android/android.bundle",
@@ -25564,24 +25444,14 @@
           "digest": "sha256:219572d7748bb5a383ca787b1d4bdca72329467d20ef070d81bae5c22536fc57"
         },
         {
-          "relativePath": "dist/happier-plugin-ui/react-native/github-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-909f0a.chunk.bundle",
-          "byteLength": 10855354,
-          "digest": "sha256:2b25e50763ccd89e5e138392e111db085d097bcbfaecb2cd50bf8e0847b291ce"
-        },
-        {
-          "relativePath": "dist/happier-plugin-ui/react-native/github-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-909f0a.chunk.bundle.map",
-          "byteLength": 2053875,
-          "digest": "sha256:fd3f7f1d523559690d8fae5a5415db38a1bc438294367e6caf244a25d90c3b68"
-        },
-        {
           "relativePath": "dist/happier-plugin-ui/react-native/github-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-c41190.chunk.bundle",
-          "byteLength": 11037868,
-          "digest": "sha256:61a9cab6f13f8273104700cb6f7afaf5a959c58d9a3e9f384acb2ade662d574b"
+          "byteLength": 11074340,
+          "digest": "sha256:565eaf48b3fec507029d91b50e196278d0cf6aed62a8f9fbb444dbb76151d8b8"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/github-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-c41190.chunk.bundle.map",
-          "byteLength": 2085584,
-          "digest": "sha256:885aa1507b689dad6551f5624c009ba131bf64e023187f3eefd60d4175f44931"
+          "byteLength": 2092161,
+          "digest": "sha256:9c3dc20686c946ff5193ef2a608a322e6e6c82959fb4a909262c039a40b66fe2"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/github-detail-native/ios/ios.bundle",
@@ -25604,24 +25474,14 @@
           "digest": "sha256:219572d7748bb5a383ca787b1d4bdca72329467d20ef070d81bae5c22536fc57"
         },
         {
-          "relativePath": "dist/happier-plugin-ui/react-native/github-detail-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-909f0a.chunk.bundle",
-          "byteLength": 10855354,
-          "digest": "sha256:2b25e50763ccd89e5e138392e111db085d097bcbfaecb2cd50bf8e0847b291ce"
-        },
-        {
-          "relativePath": "dist/happier-plugin-ui/react-native/github-detail-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-909f0a.chunk.bundle.map",
-          "byteLength": 2053875,
-          "digest": "sha256:fd3f7f1d523559690d8fae5a5415db38a1bc438294367e6caf244a25d90c3b68"
-        },
-        {
           "relativePath": "dist/happier-plugin-ui/react-native/github-detail-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-c41190.chunk.bundle",
-          "byteLength": 11037868,
-          "digest": "sha256:61a9cab6f13f8273104700cb6f7afaf5a959c58d9a3e9f384acb2ade662d574b"
+          "byteLength": 11074340,
+          "digest": "sha256:565eaf48b3fec507029d91b50e196278d0cf6aed62a8f9fbb444dbb76151d8b8"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/github-detail-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-c41190.chunk.bundle.map",
-          "byteLength": 2085584,
-          "digest": "sha256:885aa1507b689dad6551f5624c009ba131bf64e023187f3eefd60d4175f44931"
+          "byteLength": 2092161,
+          "digest": "sha256:9c3dc20686c946ff5193ef2a608a322e6e6c82959fb4a909262c039a40b66fe2"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/github-triage-sources-native/android/android.bundle",
@@ -25645,13 +25505,13 @@
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/github-triage-sources-native/android/vendors-node_modules_happier-dev_triage-sources_dist_index_js.chunk.bundle",
-          "byteLength": 6229541,
-          "digest": "sha256:d995ae1a79b24cb5ae00fe1d0776187ecc5bc6d2b9ff2733e8e87996c24e096b"
+          "byteLength": 6241790,
+          "digest": "sha256:8f15b4cd251fdf057be7a6306e5aed9e7d7b8ee8f41ef11a84fd7a7f10ee09dd"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/github-triage-sources-native/android/vendors-node_modules_happier-dev_triage-sources_dist_index_js.chunk.bundle.map",
-          "byteLength": 1216876,
-          "digest": "sha256:b0884e07a984568c74bb1f0c3636dd7730be7f551bf4437740182bd267606077"
+          "byteLength": 1218758,
+          "digest": "sha256:6848bb898148d690e12e9f46a14d5f99e451a31a75d23c20cbf188264cd5d48b"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/github-triage-sources-native/ios/ios.bundle",
@@ -25675,18 +25535,18 @@
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/github-triage-sources-native/ios/vendors-node_modules_happier-dev_triage-sources_dist_index_js.chunk.bundle",
-          "byteLength": 6229541,
-          "digest": "sha256:d995ae1a79b24cb5ae00fe1d0776187ecc5bc6d2b9ff2733e8e87996c24e096b"
+          "byteLength": 6241790,
+          "digest": "sha256:8f15b4cd251fdf057be7a6306e5aed9e7d7b8ee8f41ef11a84fd7a7f10ee09dd"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/github-triage-sources-native/ios/vendors-node_modules_happier-dev_triage-sources_dist_index_js.chunk.bundle.map",
-          "byteLength": 1216876,
-          "digest": "sha256:b0884e07a984568c74bb1f0c3636dd7730be7f551bf4437740182bd267606077"
+          "byteLength": 1218758,
+          "digest": "sha256:6848bb898148d690e12e9f46a14d5f99e451a31a75d23c20cbf188264cd5d48b"
         },
         {
           "relativePath": "dist/happier-plugin-ui/ui-artifacts.json",
           "byteLength": 11242,
-          "digest": "sha256:e30b9e0e298e6aa1abc5b7683bec468b37e1c0d5e60ecf0506e58610eec173e3"
+          "digest": "sha256:c1873b356f04b42d555bd55c04ba19f6ee10557232df1f1d866de760be79e656"
         },
         {
           "relativePath": "dist/index.d.ts",
@@ -27400,8 +27260,8 @@
       "files": [
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 5587947,
-          "digest": "sha256:80c5a10b3714ad0efabb1452660529435ae497cd9768e844585ba1b39ba9b142"
+          "byteLength": 5599739,
+          "digest": "sha256:e3423ee65e9d652c1e1241c803e9027b9b0815bfa35158d1531b46c8b7dc8766"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -27470,13 +27330,13 @@
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native-web/gitlab-detail-native/entry.mjs.bundle",
-          "byteLength": 4898233,
-          "digest": "sha256:43ab9c6e9cb543ad49259060370d94d614e06722980c7cc03c53779be9820ebc"
+          "byteLength": 4910032,
+          "digest": "sha256:a490e065248b7b2d06aaea71527d4b518dbf489491815c2906035f4dcb42a299"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native-web/gitlab-triage-sources-native/entry.mjs.bundle",
-          "byteLength": 4894381,
-          "digest": "sha256:c4925a0024102b751d5cd06ae02e3ce9284f5fbb9fd6ea663a1d4a116c412308"
+          "byteLength": 4906178,
+          "digest": "sha256:5b84cb4910ee932e65c8af6d48516d9aa9ef7e2d8479b369946501a35fa9d66c"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/gitlab-detail-native/android/android.bundle",
@@ -27499,24 +27359,14 @@
           "digest": "sha256:33a6fc1336bbd0642c76ec4e76a2061036a92efe5b4c5250d7aa416c11edec4c"
         },
         {
-          "relativePath": "dist/happier-plugin-ui/react-native/gitlab-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-91c43c.chunk.bundle",
-          "byteLength": 10843425,
-          "digest": "sha256:63e01423ac044daffb7fccc2eb20c40d639786442967378dfbb1b5cdf54e0a21"
-        },
-        {
-          "relativePath": "dist/happier-plugin-ui/react-native/gitlab-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-91c43c.chunk.bundle.map",
-          "byteLength": 2051176,
-          "digest": "sha256:3924fbe866922ad983565fe529ea65bed51ade03bcc04cf96e356c9b310d7ae2"
-        },
-        {
           "relativePath": "dist/happier-plugin-ui/react-native/gitlab-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-b311d0.chunk.bundle",
-          "byteLength": 11025939,
-          "digest": "sha256:d0e6d89b9853446f04325edd95db1ad26750db46d29b2e27706a600accbd28d1"
+          "byteLength": 11062411,
+          "digest": "sha256:78a035199d55d08bc22bf4538967d1a745813630d828527ad86a0eeff8e78c40"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/gitlab-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-b311d0.chunk.bundle.map",
-          "byteLength": 2082885,
-          "digest": "sha256:e7c95e307591fc463183058b54156248d497ca20a62c73efafa35691e321ca01"
+          "byteLength": 2089462,
+          "digest": "sha256:05de46fb1aecf70d8538eb97456ac846682feaac57e6bc0dcc11821184c5bd18"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/gitlab-detail-native/ios/ios.bundle",
@@ -27539,24 +27389,14 @@
           "digest": "sha256:33a6fc1336bbd0642c76ec4e76a2061036a92efe5b4c5250d7aa416c11edec4c"
         },
         {
-          "relativePath": "dist/happier-plugin-ui/react-native/gitlab-detail-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-91c43c.chunk.bundle",
-          "byteLength": 10843425,
-          "digest": "sha256:63e01423ac044daffb7fccc2eb20c40d639786442967378dfbb1b5cdf54e0a21"
-        },
-        {
-          "relativePath": "dist/happier-plugin-ui/react-native/gitlab-detail-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-91c43c.chunk.bundle.map",
-          "byteLength": 2051176,
-          "digest": "sha256:3924fbe866922ad983565fe529ea65bed51ade03bcc04cf96e356c9b310d7ae2"
-        },
-        {
           "relativePath": "dist/happier-plugin-ui/react-native/gitlab-detail-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-b311d0.chunk.bundle",
-          "byteLength": 11025939,
-          "digest": "sha256:d0e6d89b9853446f04325edd95db1ad26750db46d29b2e27706a600accbd28d1"
+          "byteLength": 11062411,
+          "digest": "sha256:78a035199d55d08bc22bf4538967d1a745813630d828527ad86a0eeff8e78c40"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/gitlab-detail-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-b311d0.chunk.bundle.map",
-          "byteLength": 2082885,
-          "digest": "sha256:e7c95e307591fc463183058b54156248d497ca20a62c73efafa35691e321ca01"
+          "byteLength": 2089462,
+          "digest": "sha256:05de46fb1aecf70d8538eb97456ac846682feaac57e6bc0dcc11821184c5bd18"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/gitlab-triage-sources-native/android/android.bundle",
@@ -27580,13 +27420,13 @@
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/gitlab-triage-sources-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_tr-7658bb.chunk.bundle",
-          "byteLength": 11187901,
-          "digest": "sha256:8de8fb573afa06a38bbee5e17f3dd4b936c505e8af850e2fb8dcb9128f538f40"
+          "byteLength": 11224373,
+          "digest": "sha256:00909dd3beea6d64dbf5a0d323e7820d6cd8c9f4783c12dbf8de8b8ddf42c89e"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/gitlab-triage-sources-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_tr-7658bb.chunk.bundle.map",
-          "byteLength": 2113512,
-          "digest": "sha256:f1997ddc748ae186fac48394f705f858b4ad74fe1f2b09cd18d573261f560f29"
+          "byteLength": 2120129,
+          "digest": "sha256:e52faf2f2be975bd175524f8997ae12f1c1a79c5d4b5d04715d141bc179aad5a"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/gitlab-triage-sources-native/ios/ios.bundle",
@@ -27610,18 +27450,18 @@
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/gitlab-triage-sources-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_tr-7658bb.chunk.bundle",
-          "byteLength": 11187901,
-          "digest": "sha256:8de8fb573afa06a38bbee5e17f3dd4b936c505e8af850e2fb8dcb9128f538f40"
+          "byteLength": 11224373,
+          "digest": "sha256:00909dd3beea6d64dbf5a0d323e7820d6cd8c9f4783c12dbf8de8b8ddf42c89e"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/gitlab-triage-sources-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_tr-7658bb.chunk.bundle.map",
-          "byteLength": 2113512,
-          "digest": "sha256:f1997ddc748ae186fac48394f705f858b4ad74fe1f2b09cd18d573261f560f29"
+          "byteLength": 2120129,
+          "digest": "sha256:e52faf2f2be975bd175524f8997ae12f1c1a79c5d4b5d04715d141bc179aad5a"
         },
         {
           "relativePath": "dist/happier-plugin-ui/ui-artifacts.json",
           "byteLength": 11404,
-          "digest": "sha256:f5add0ee30422868de106bcc265c8c7c2d7baf1d34ba81b10b2b44efe2c59839"
+          "digest": "sha256:cf203c2427fc4613c203fe240589cc475f9071179ce6c917f78012107e604b47"
         },
         {
           "relativePath": "dist/index.d.ts",
@@ -29055,8 +28895,8 @@
       "files": [
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 722408,
-          "digest": "sha256:c646c4fb0c716f9e58d84e3fa6ece0d69b0a5d319b6df9493a6261ccc1d461dc"
+          "byteLength": 722537,
+          "digest": "sha256:3ff7ea7211491dc34c7626fc6a1bb9684db79bfaf9a8c51e0ac4d9d4eefcaa48"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -29230,18 +29070,18 @@
         },
         {
           "relativePath": "dist/operations/readOperations.d.ts.map",
-          "byteLength": 8442,
-          "digest": "sha256:0d7509a339ff47e1d209169d659afae72191fbabdd0cd81c72e8d211bea0b136"
+          "byteLength": 8769,
+          "digest": "sha256:87f2439910d39ceaea8bb764bcd5bd40fe32d45307863ad951c7db357d91bd34"
         },
         {
           "relativePath": "dist/operations/readOperations.js",
-          "byteLength": 6426,
-          "digest": "sha256:b1bd5f6908bc896dace23afe0228f5a2df0e7a004eaba9618fe01495de3460c1"
+          "byteLength": 6749,
+          "digest": "sha256:2d0f409a2a9d91b8e177934302ed8ec9cdda051bf60f70b6ccd417d4d4e6e390"
         },
         {
           "relativePath": "dist/operations/readOperations.js.map",
-          "byteLength": 13824,
-          "digest": "sha256:e75da400c8e90b20a243c0f92eec5acddefc584be7777b2980e58d6ad6dc3319"
+          "byteLength": 14233,
+          "digest": "sha256:e25d392a61d7af3bebead36af6d71f0ed7ed685ad2a42c56c047bf77fa464cfd"
         },
         {
           "relativePath": "dist/operations/remoteOperations.d.ts",
@@ -29435,8 +29275,8 @@
       "files": [
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 2472070,
-          "digest": "sha256:cf1b9ffb834b361570cde1004892bbe6e58f8c2a7f386ee41a9356a06f92f146"
+          "byteLength": 2473569,
+          "digest": "sha256:9f908094942d7418d102b095dd051b1545f4890d633ce98b203e8e7d12d301aa"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -29785,13 +29625,13 @@
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native-web/sentry-detail-native/entry.mjs.bundle",
-          "byteLength": 2295781,
-          "digest": "sha256:5d1a820575124dbe0043aeb90815215128b588eb6adfba5505b5a9272fa8cfce"
+          "byteLength": 2297595,
+          "digest": "sha256:43615afedb0f3a371f7bab24d065ebcde52a9ac898059075450aa52710e50e4c"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native-web/sentry-triage-sources-native/entry.mjs.bundle",
-          "byteLength": 2318114,
-          "digest": "sha256:f0b4f5343c62aef733757766c7c5edff2c3e1f3d88eb4f8c54ef00d3ef6f9ef0"
+          "byteLength": 2319928,
+          "digest": "sha256:f6af2efc3ddb57fa4953c27a8db687feed3b3b6b8d41b7e1f00d915725787c44"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/sentry-detail-native/android/android.bundle",
@@ -29814,24 +29654,14 @@
           "digest": "sha256:9e1a1c6778a282b6b595f24fe3450f2c346a1549c13a370066a22a5c0267df11"
         },
         {
-          "relativePath": "dist/happier-plugin-ui/react-native/sentry-detail-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-prot-3b4254.chunk.bundle",
-          "byteLength": 5977080,
-          "digest": "sha256:796b2ff0987c530e79768ffd7f0da286b018073bdc2d3b0bfaadcd6a38daa213"
-        },
-        {
-          "relativePath": "dist/happier-plugin-ui/react-native/sentry-detail-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-prot-3b4254.chunk.bundle.map",
-          "byteLength": 1173809,
-          "digest": "sha256:bea5d90abe72152947dd58687761bd88f2c4f643576946cea7f943d23ee46c32"
-        },
-        {
           "relativePath": "dist/happier-plugin-ui/react-native/sentry-detail-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-sour-b80085.chunk.bundle",
-          "byteLength": 6067657,
-          "digest": "sha256:c86b34e7524e5421161f50c832aec2fb19ddbb58ffb5ef7740787d54a001b7e9"
+          "byteLength": 6079906,
+          "digest": "sha256:8b89cada7b18a0e7f7bc2bf68645173275d40b057427bb7da51afe70036c868c"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/sentry-detail-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-sour-b80085.chunk.bundle.map",
-          "byteLength": 1191432,
-          "digest": "sha256:bc9acba36ed93862c5ee75437b3c63595def612992485191dc854fd7df1c26f4"
+          "byteLength": 1193306,
+          "digest": "sha256:aabd23de228dd6ac4f2fd02a84d6c0b309df02a86ce92491d96eb04ed2497ff6"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/sentry-detail-native/ios/ios.bundle",
@@ -29854,24 +29684,14 @@
           "digest": "sha256:9e1a1c6778a282b6b595f24fe3450f2c346a1549c13a370066a22a5c0267df11"
         },
         {
-          "relativePath": "dist/happier-plugin-ui/react-native/sentry-detail-native/ios/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-prot-3b4254.chunk.bundle",
-          "byteLength": 5977080,
-          "digest": "sha256:796b2ff0987c530e79768ffd7f0da286b018073bdc2d3b0bfaadcd6a38daa213"
-        },
-        {
-          "relativePath": "dist/happier-plugin-ui/react-native/sentry-detail-native/ios/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-prot-3b4254.chunk.bundle.map",
-          "byteLength": 1173809,
-          "digest": "sha256:bea5d90abe72152947dd58687761bd88f2c4f643576946cea7f943d23ee46c32"
-        },
-        {
           "relativePath": "dist/happier-plugin-ui/react-native/sentry-detail-native/ios/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-sour-b80085.chunk.bundle",
-          "byteLength": 6067657,
-          "digest": "sha256:c86b34e7524e5421161f50c832aec2fb19ddbb58ffb5ef7740787d54a001b7e9"
+          "byteLength": 6079906,
+          "digest": "sha256:8b89cada7b18a0e7f7bc2bf68645173275d40b057427bb7da51afe70036c868c"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/sentry-detail-native/ios/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-sour-b80085.chunk.bundle.map",
-          "byteLength": 1191432,
-          "digest": "sha256:bc9acba36ed93862c5ee75437b3c63595def612992485191dc854fd7df1c26f4"
+          "byteLength": 1193306,
+          "digest": "sha256:aabd23de228dd6ac4f2fd02a84d6c0b309df02a86ce92491d96eb04ed2497ff6"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/sentry-triage-sources-native/android/android.bundle",
@@ -29895,13 +29715,13 @@
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/sentry-triage-sources-native/android/vendors-node_modules_happier-dev_triage-sources_dist_index_js.chunk.bundle",
-          "byteLength": 6229541,
-          "digest": "sha256:d87a1dfe78a189e51a7d5e4d7eec9ffe7cab3dae745a80a5a299555fdcee76c8"
+          "byteLength": 6241790,
+          "digest": "sha256:4de2acca1209ca3f883d89ceb53a15c112ccc6214c65dab04f53a2735beab004"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/sentry-triage-sources-native/android/vendors-node_modules_happier-dev_triage-sources_dist_index_js.chunk.bundle.map",
-          "byteLength": 1216876,
-          "digest": "sha256:dea2bbae777854e9afe57e297c82250c163d50c5b1f93735fec3c9aa75681ab9"
+          "byteLength": 1218758,
+          "digest": "sha256:a6d2c3166ab74d12ea1c2b885334b38e33761ad3488e820b2712afb617cef7e1"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/sentry-triage-sources-native/ios/ios.bundle",
@@ -29925,18 +29745,18 @@
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/sentry-triage-sources-native/ios/vendors-node_modules_happier-dev_triage-sources_dist_index_js.chunk.bundle",
-          "byteLength": 6229541,
-          "digest": "sha256:d87a1dfe78a189e51a7d5e4d7eec9ffe7cab3dae745a80a5a299555fdcee76c8"
+          "byteLength": 6241790,
+          "digest": "sha256:4de2acca1209ca3f883d89ceb53a15c112ccc6214c65dab04f53a2735beab004"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/sentry-triage-sources-native/ios/vendors-node_modules_happier-dev_triage-sources_dist_index_js.chunk.bundle.map",
-          "byteLength": 1216876,
-          "digest": "sha256:dea2bbae777854e9afe57e297c82250c163d50c5b1f93735fec3c9aa75681ab9"
+          "byteLength": 1218758,
+          "digest": "sha256:a6d2c3166ab74d12ea1c2b885334b38e33761ad3488e820b2712afb617cef7e1"
         },
         {
           "relativePath": "dist/happier-plugin-ui/ui-artifacts.json",
           "byteLength": 11238,
-          "digest": "sha256:b53742865283fb5cc5e1386482645d178d091ea1a143a3bb0d9b6b232f6cdc85"
+          "digest": "sha256:dff8ef4220f7b10713ec51d2c15bf60e638ce2eca104898119b5e819dd36c5aa"
         },
         {
           "relativePath": "dist/index.d.ts",
@@ -30450,13 +30270,13 @@
       "files": [
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 5624497,
-          "digest": "sha256:e07f689291e24563a95c3896aceface271d3f894d3fcfe2e1122dbb89542b9b4"
+          "byteLength": 5637125,
+          "digest": "sha256:2726108d7910797c6c02a4836e21d7a117ccc3d0079ca640fa5c9dc541f5f957"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
-          "byteLength": 1170697,
-          "digest": "sha256:5b098b330fd8c5ddc74d877f1467d1813fcfd96cf5c1529fac09abe88b4f4965"
+          "byteLength": 1171575,
+          "digest": "sha256:ff5ceb60fad8146d3b0853883f5de4ca26bfcffc64410e4b4411308e964e25b6"
         },
         {
           "relativePath": "dist/actions/actionsCatalog.d.ts",
@@ -31760,23 +31580,23 @@
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native-web/triage-entries-compact-native/entry.mjs.bundle",
-          "byteLength": 2059363,
-          "digest": "sha256:4144584348528f44d5d7570c7e252942026836a9ef8c9676747c0190ee0858ec"
+          "byteLength": 2060795,
+          "digest": "sha256:b87e07c641f530a33c638ba0e25561d7018dcf462d3625d15144972ee814c87c"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native-web/triage-entry-picker-native/entry.mjs.bundle",
-          "byteLength": 2311297,
-          "digest": "sha256:672b46810117df4a0242bef0a5c631fa22704a6aab554a66caa2c666e07a9b36"
+          "byteLength": 2313111,
+          "digest": "sha256:d8ec8e797973fbd3b449fd313c85bedf3f5326b983de7d476d9ed43ad8d29b6c"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native-web/triage-list-page-native/entry.mjs.bundle",
-          "byteLength": 5767608,
-          "digest": "sha256:41f988a2095eeb77cc7f559d33030120ce72ec836b6ec21ad0549a3528fb7996"
+          "byteLength": 5780384,
+          "digest": "sha256:e803286fe89e954c36cc4a2d5efa68635d671d50b5c702b19c64c67c6191bb62"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native-web/triage-session-entries-native/entry.mjs.bundle",
-          "byteLength": 4766875,
-          "digest": "sha256:61a6ed8215a40fb3153e498936f3893d9e5f155326fd17803d57b8f4d29f6fd1"
+          "byteLength": 4778668,
+          "digest": "sha256:c81229462345b2834d81520f9f0411fa9e43a1dc3e18509618b1f549888e0080"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/triage-entries-compact-native/android/android.bundle",
@@ -31800,13 +31620,13 @@
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/triage-entries-compact-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-prot-1b396a.chunk.bundle",
-          "byteLength": 6034070,
-          "digest": "sha256:2d2507aa5e7bcef7dab32b464684f835a71e33001455b4e3f0f28f58206746ae"
+          "byteLength": 6046319,
+          "digest": "sha256:e5e795937f82306e950a6f7bfc3639bcd1fb6f40d907ec57f336978a0245d31b"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/triage-entries-compact-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-prot-1b396a.chunk.bundle.map",
-          "byteLength": 1191745,
-          "digest": "sha256:40a2592a203642e2ce599fbe9003e12a45498362c009b2e552058ca0e0922576"
+          "byteLength": 1193628,
+          "digest": "sha256:5c19896c2c96853eeaf2b8dab53b8c331c3a6ebc7559f2627c1cfe9e32a02ba3"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/triage-entries-compact-native/ios/ios.bundle",
@@ -31830,13 +31650,13 @@
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/triage-entries-compact-native/ios/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-prot-1b396a.chunk.bundle",
-          "byteLength": 6034070,
-          "digest": "sha256:2d2507aa5e7bcef7dab32b464684f835a71e33001455b4e3f0f28f58206746ae"
+          "byteLength": 6046319,
+          "digest": "sha256:e5e795937f82306e950a6f7bfc3639bcd1fb6f40d907ec57f336978a0245d31b"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/triage-entries-compact-native/ios/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-prot-1b396a.chunk.bundle.map",
-          "byteLength": 1191745,
-          "digest": "sha256:40a2592a203642e2ce599fbe9003e12a45498362c009b2e552058ca0e0922576"
+          "byteLength": 1193628,
+          "digest": "sha256:5c19896c2c96853eeaf2b8dab53b8c331c3a6ebc7559f2627c1cfe9e32a02ba3"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/triage-entry-picker-native/android/android.bundle",
@@ -31859,24 +31679,14 @@
           "digest": "sha256:63e5e51f16a179dda4f903d102ddcddb12e7d520336fb10b0616473da546a9d4"
         },
         {
-          "relativePath": "dist/happier-plugin-ui/react-native/triage-entry-picker-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_async_index_js-node_modules_happier-dev_plug-f58295.chunk.bundle",
-          "byteLength": 5956310,
-          "digest": "sha256:b78ede2a369c88700731cc89981a478aea99f68ab571791a1899888ee36c673f"
-        },
-        {
-          "relativePath": "dist/happier-plugin-ui/react-native/triage-entry-picker-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_async_index_js-node_modules_happier-dev_plug-f58295.chunk.bundle.map",
-          "byteLength": 1174728,
-          "digest": "sha256:d759004c03d570236312711f645cceecee2dc20a2e138bc8cf584c814723ef50"
-        },
-        {
           "relativePath": "dist/happier-plugin-ui/react-native/triage-entry-picker-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-prot-1b396a.chunk.bundle",
-          "byteLength": 6034064,
-          "digest": "sha256:9686c7c1ab2dfff1297302479e93ee21f60466219a10ab821d97a9c9de173358"
+          "byteLength": 6046313,
+          "digest": "sha256:8a4b938f3c4f63824f046bf823878b1b4fb2051fc9a456268b595313810f17ed"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/triage-entry-picker-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-prot-1b396a.chunk.bundle.map",
-          "byteLength": 1189012,
-          "digest": "sha256:cedb387d17502711df35aacdaac48879bb8db8490a24a2667013d81bc9a65e85"
+          "byteLength": 1190892,
+          "digest": "sha256:093c6ac6e11f7d3224c1d6ff6b825fbf3d4e0853ae3906692f104e77281e8fd2"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/triage-entry-picker-native/ios/ios.bundle",
@@ -31899,24 +31709,14 @@
           "digest": "sha256:63e5e51f16a179dda4f903d102ddcddb12e7d520336fb10b0616473da546a9d4"
         },
         {
-          "relativePath": "dist/happier-plugin-ui/react-native/triage-entry-picker-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_async_index_js-node_modules_happier-dev_plug-f58295.chunk.bundle",
-          "byteLength": 5956310,
-          "digest": "sha256:b78ede2a369c88700731cc89981a478aea99f68ab571791a1899888ee36c673f"
-        },
-        {
-          "relativePath": "dist/happier-plugin-ui/react-native/triage-entry-picker-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_async_index_js-node_modules_happier-dev_plug-f58295.chunk.bundle.map",
-          "byteLength": 1174728,
-          "digest": "sha256:d759004c03d570236312711f645cceecee2dc20a2e138bc8cf584c814723ef50"
-        },
-        {
           "relativePath": "dist/happier-plugin-ui/react-native/triage-entry-picker-native/ios/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-prot-1b396a.chunk.bundle",
-          "byteLength": 6034064,
-          "digest": "sha256:9686c7c1ab2dfff1297302479e93ee21f60466219a10ab821d97a9c9de173358"
+          "byteLength": 6046313,
+          "digest": "sha256:8a4b938f3c4f63824f046bf823878b1b4fb2051fc9a456268b595313810f17ed"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/triage-entry-picker-native/ios/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-prot-1b396a.chunk.bundle.map",
-          "byteLength": 1189012,
-          "digest": "sha256:cedb387d17502711df35aacdaac48879bb8db8490a24a2667013d81bc9a65e85"
+          "byteLength": 1190892,
+          "digest": "sha256:093c6ac6e11f7d3224c1d6ff6b825fbf3d4e0853ae3906692f104e77281e8fd2"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/triage-list-page-native/android/android.bundle",
@@ -31930,33 +31730,23 @@
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/triage-list-page-native/android/src_ui_surface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle",
-          "byteLength": 1567282,
-          "digest": "sha256:0d44e59419e4aa529cc56235b4aba4c2afd3a9e727570fef559c3fd8528dbf5a"
+          "byteLength": 1568299,
+          "digest": "sha256:c6866caecb5873ff7b56cfea46137ce67e3da2fd1a9a28b398f0282b123d6d5c"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/triage-list-page-native/android/src_ui_surface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map",
-          "byteLength": 532769,
-          "digest": "sha256:5334bac4e38ed157a2eb018c5d3c04ca107d9283aa27778412bdd67bf25d14f5"
-        },
-        {
-          "relativePath": "dist/happier-plugin-ui/react-native/triage-list-page-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_async_index_js-node_modules_happier-dev_plug-74aec3.chunk.bundle",
-          "byteLength": 10849821,
-          "digest": "sha256:b7e7d23719c9a2477f29813113cfd31e4a194fe825c1d6ac291f775214f6b34e"
-        },
-        {
-          "relativePath": "dist/happier-plugin-ui/react-native/triage-list-page-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_async_index_js-node_modules_happier-dev_plug-74aec3.chunk.bundle.map",
-          "byteLength": 2059858,
-          "digest": "sha256:3ecbe9d033bac717b8856a8d9503f6c86c5ead375c09742c1ecd4284ba13e08f"
+          "byteLength": 532994,
+          "digest": "sha256:cb7f427b6213a11d8a103f50c03ea252907af9bba87c313d1aa1ab6c9e29d4f0"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/triage-list-page-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_collections_index_js-node_modules_happier-de-fed23e.chunk.bundle",
-          "byteLength": 11032751,
-          "digest": "sha256:f294a12de876b23d6975215e65b81905004f28d0728f96bc6c88161305a5ddd4"
+          "byteLength": 11069223,
+          "digest": "sha256:6aee02c305674ce79e3327be854b0697c59e56a46725b47bd3e3fccd6484b233"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/triage-list-page-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_collections_index_js-node_modules_happier-de-fed23e.chunk.bundle.map",
-          "byteLength": 2090305,
-          "digest": "sha256:73244de2a285ce2c80b8181301ead79c276285e6a89d91764beee1d185d9dd95"
+          "byteLength": 2096897,
+          "digest": "sha256:b1f47065e230c55f6b7f9a0cde548cb7be863615cf852ef5bc7a7f414495665b"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/triage-list-page-native/ios/ios.bundle",
@@ -31970,33 +31760,23 @@
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/triage-list-page-native/ios/src_ui_surface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle",
-          "byteLength": 1567282,
-          "digest": "sha256:0d44e59419e4aa529cc56235b4aba4c2afd3a9e727570fef559c3fd8528dbf5a"
+          "byteLength": 1568299,
+          "digest": "sha256:c6866caecb5873ff7b56cfea46137ce67e3da2fd1a9a28b398f0282b123d6d5c"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/triage-list-page-native/ios/src_ui_surface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map",
-          "byteLength": 532769,
-          "digest": "sha256:5334bac4e38ed157a2eb018c5d3c04ca107d9283aa27778412bdd67bf25d14f5"
-        },
-        {
-          "relativePath": "dist/happier-plugin-ui/react-native/triage-list-page-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_async_index_js-node_modules_happier-dev_plug-74aec3.chunk.bundle",
-          "byteLength": 10849821,
-          "digest": "sha256:b7e7d23719c9a2477f29813113cfd31e4a194fe825c1d6ac291f775214f6b34e"
-        },
-        {
-          "relativePath": "dist/happier-plugin-ui/react-native/triage-list-page-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_async_index_js-node_modules_happier-dev_plug-74aec3.chunk.bundle.map",
-          "byteLength": 2059858,
-          "digest": "sha256:3ecbe9d033bac717b8856a8d9503f6c86c5ead375c09742c1ecd4284ba13e08f"
+          "byteLength": 532994,
+          "digest": "sha256:cb7f427b6213a11d8a103f50c03ea252907af9bba87c313d1aa1ab6c9e29d4f0"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/triage-list-page-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_collections_index_js-node_modules_happier-de-fed23e.chunk.bundle",
-          "byteLength": 11032751,
-          "digest": "sha256:f294a12de876b23d6975215e65b81905004f28d0728f96bc6c88161305a5ddd4"
+          "byteLength": 11069223,
+          "digest": "sha256:6aee02c305674ce79e3327be854b0697c59e56a46725b47bd3e3fccd6484b233"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/triage-list-page-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_collections_index_js-node_modules_happier-de-fed23e.chunk.bundle.map",
-          "byteLength": 2090305,
-          "digest": "sha256:73244de2a285ce2c80b8181301ead79c276285e6a89d91764beee1d185d9dd95"
+          "byteLength": 2096897,
+          "digest": "sha256:b1f47065e230c55f6b7f9a0cde548cb7be863615cf852ef5bc7a7f414495665b"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/triage-session-entries-native/android/android.bundle",
@@ -32020,13 +31800,13 @@
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/triage-session-entries-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_collections_index_js-node_modules_happier-de-233e65.chunk.bundle",
-          "byteLength": 10922923,
-          "digest": "sha256:ad1e10e8a7e60defebd9cca5fdf24ee440c13a92190040d225b559d5b7dbd6a9"
+          "byteLength": 10959395,
+          "digest": "sha256:9137d4240d3b5df1c07f7c2b245f162da751d3d4c8ade6b13949d2da1e3c573c"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/triage-session-entries-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_collections_index_js-node_modules_happier-de-233e65.chunk.bundle.map",
-          "byteLength": 2076610,
-          "digest": "sha256:539050e026ef10c876cf03f622b254ead9a6c04dfb129cb0d5182c8a31b02565"
+          "byteLength": 2083232,
+          "digest": "sha256:e7b801c22270d009d9f37a90172c51de7bc268dfff6345ab7dbdf0ca79d8f8a8"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/triage-session-entries-native/ios/ios.bundle",
@@ -32050,18 +31830,18 @@
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/triage-session-entries-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_collections_index_js-node_modules_happier-de-233e65.chunk.bundle",
-          "byteLength": 10922923,
-          "digest": "sha256:ad1e10e8a7e60defebd9cca5fdf24ee440c13a92190040d225b559d5b7dbd6a9"
+          "byteLength": 10959395,
+          "digest": "sha256:9137d4240d3b5df1c07f7c2b245f162da751d3d4c8ade6b13949d2da1e3c573c"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/triage-session-entries-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_collections_index_js-node_modules_happier-de-233e65.chunk.bundle.map",
-          "byteLength": 2076610,
-          "digest": "sha256:539050e026ef10c876cf03f622b254ead9a6c04dfb129cb0d5182c8a31b02565"
+          "byteLength": 2083232,
+          "digest": "sha256:e7b801c22270d009d9f37a90172c51de7bc268dfff6345ab7dbdf0ca79d8f8a8"
         },
         {
           "relativePath": "dist/happier-plugin-ui/ui-artifacts.json",
           "byteLength": 22861,
-          "digest": "sha256:696f5f487f7c99c7f6c3551be5459098086f4ef85745c22b51ea9c53ba0f5def"
+          "digest": "sha256:6886a3da29a5797cc803c901262b2618886995c9ca3f0f4d9a03cf3143444c4f"
         },
         {
           "relativePath": "dist/hostCancellation.d.ts",
@@ -33025,23 +32805,23 @@
         },
         {
           "relativePath": "dist/ui/currentContext.d.ts",
-          "byteLength": 894,
-          "digest": "sha256:16ec6d5e857cf861b395c9de89450a35a4b103cfa063f9a13dd9562de44b4426"
+          "byteLength": 947,
+          "digest": "sha256:a9ecd33e2782bfb7a6936a39662362660ec6fbee8226483e78731b3b9d40c8ba"
         },
         {
           "relativePath": "dist/ui/currentContext.d.ts.map",
-          "byteLength": 7084,
-          "digest": "sha256:17650503f6e9ead93a4fe5c0ffc0545e18e228ccd9978dcec114d7034b871916"
+          "byteLength": 7207,
+          "digest": "sha256:f3e98011695f8833b0a61891c655b0356fb98ccc2accd8b8c2a717056b0304c5"
         },
         {
           "relativePath": "dist/ui/currentContext.js",
-          "byteLength": 5453,
-          "digest": "sha256:35bd23b2e1ef2c87d42a64bd4353acb4c94b82594e19027571498027909dc684"
+          "byteLength": 5471,
+          "digest": "sha256:5c6f4209d7c3c247f5e61005e02866465f3d588269157acbd111e2961c644046"
         },
         {
           "relativePath": "dist/ui/currentContext.js.map",
-          "byteLength": 11374,
-          "digest": "sha256:50edd146d0ecaea6271b601a53fc95cec3ec1ed85f5592402a5b08399c6872b9"
+          "byteLength": 11461,
+          "digest": "sha256:5ced62a895f3dca11ad4feffbe6df35be349457a3f0c7a0b7a6122748e65aaf1"
         },
         {
           "relativePath": "dist/ui/detail/header.d.ts",
@@ -33850,18 +33630,18 @@
         },
         {
           "relativePath": "dist/ui/shell/root.d.ts.map",
-          "byteLength": 110518,
-          "digest": "sha256:06cad59fc2b6ab96be07a4acbaaf26958ac07bff2228d88d2f39a412a43ff44d"
+          "byteLength": 110697,
+          "digest": "sha256:41e6020bac6bdd2155c53879f9392775a4398cef3625539aa544002419d876c6"
         },
         {
           "relativePath": "dist/ui/shell/root.js",
-          "byteLength": 100411,
-          "digest": "sha256:10d97b7357fae3036508dc214401953b1e2021a4cd85bab1570b1248058340b1"
+          "byteLength": 100555,
+          "digest": "sha256:c139479f2d00ef2cb0fca8ff2c713a8c9928f0dced8204136c8fd334d749cb9c"
         },
         {
           "relativePath": "dist/ui/shell/root.js.map",
-          "byteLength": 162248,
-          "digest": "sha256:335b603e1364453f58c7dfa9de38429f5aa5b2e6fdb9e2df81c3461c558e8ece"
+          "byteLength": 162534,
+          "digest": "sha256:7944ee39a9df10e5c521d8f8f8ee295c6ce21494f8fd0a6c549b2a35d78ef190"
         },
         {
           "relativePath": "dist/ui/shell/windowState.d.ts",
@@ -33965,23 +33745,23 @@
         },
         {
           "relativePath": "dist/ui/translations.d.ts",
-          "byteLength": 854273,
-          "digest": "sha256:a23fa97f93a0612e89c64109be92c263915458697b158cfe4d7c6d3f5304e6e6"
+          "byteLength": 855933,
+          "digest": "sha256:787a00a2d6cbae951d0b12622baabf62ffb81818a7595fb68847b8d5767f122a"
         },
         {
           "relativePath": "dist/ui/translations.d.ts.map",
-          "byteLength": 279995,
-          "digest": "sha256:ce34da4233cd3bf375b3fe038d4ef3ec031017ae005e677ccfa2a4b6696e1182"
+          "byteLength": 280861,
+          "digest": "sha256:c5e988cce8022471bc475d957d3e3e0de22046f4362bdcfdd458510582bf8cbc"
         },
         {
           "relativePath": "dist/ui/translations.js",
-          "byteLength": 269427,
-          "digest": "sha256:f562e6fff98e033f45e5c595c77915a7af5c7c3b36f46603af4990966c8b7d30"
+          "byteLength": 270257,
+          "digest": "sha256:d6433aa7854c3758d9d37a145f6d2c7819861cc49173de179c201d799532c9f5"
         },
         {
           "relativePath": "dist/ui/translations.js.map",
-          "byteLength": 331185,
-          "digest": "sha256:a068c95cb0a346f3a19fdfd24df8e0a65541c5cae808f97408d5122eba5843d1"
+          "byteLength": 332311,
+          "digest": "sha256:15639ab7fe3394a19344ccf30abb53f70cd16a0db2126a7ed0b547aee0128f4e"
         },
         {
           "relativePath": "dist/ui/views/control.d.ts",

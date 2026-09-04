@@ -265,7 +265,6 @@ type AccountSettingsMutationCallback = (
 
 export type UpdateAccountSettingsV2WithRetryParams = UpdateAccountSettingsV2WithRetryCommonParams & Readonly<{
   mutation: AccountSettingMutationV1;
-  maxAttempts?: number;
   mutate?: never;
 }>;
 
@@ -651,12 +650,7 @@ export async function updateAccountSettingsV2WithRetry(
   if (!maySubmitAccountSettingsMutation(params)) return cancelledBeforeSubmission();
   if (params.shouldCommit?.() === false) return cancelledBeforeSubmission();
   const application = { kind: 'immutable' as const, mutation: params.mutation };
-  const requestedMaxAttempts = params.maxAttempts;
-  const maxAttempts = typeof requestedMaxAttempts === 'number'
-    && Number.isFinite(requestedMaxAttempts)
-    && requestedMaxAttempts > 0
-    ? Math.floor(requestedMaxAttempts)
-    : 3;
+  const maxAttempts = 3;
   const deps = resolveAccountSettingsV2UpdateDeps(params);
   let fetched: Awaited<ReturnType<typeof deps.fetchSettings>>;
   try {
