@@ -220,8 +220,9 @@ producing it, rather than depending on what a build image happens to contain.
   texts each package actually distributes — not only names and SPDX expressions
   — and states how many packages distribute no text at all. The native CLI and
   server carriers stage it into their packaged Iroh root; the browser carrier
-  stages the same bytes into `vendor/iroh/`, where the asset manifest records
-  and verifies it, so a web output cannot be published without it.
+  stages the same bytes into `vendor/iroh/`, where the existing exact-set asset
+  verifier checks the staged files and records per-file digests, so a web output
+  cannot be published without it.
 
 ### Local execution and phase recovery
 
