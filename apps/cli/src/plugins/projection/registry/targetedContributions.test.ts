@@ -31,14 +31,31 @@ import type {
 const {
     preparePluginJsonSchema,
     compilePluginJsonSchema,
+    emittedSchemaValidationInputs,
 } = vi.hoisted(() => ({
     preparePluginJsonSchema: vi.fn(),
     compilePluginJsonSchema: vi.fn(),
+    /**
+     * Every value the retained emitted-schema validators observe, in order.
+     * The executable parser owns descriptor/surface semantics, so this records
+     * which value reaches the projection-parity check rather than asserting a
+     * compiler call count.
+     */
+    emittedSchemaValidationInputs: [] as unknown[],
 }));
 
 vi.mock('@happier-dev/protocol', async (importOriginal) => {
     const actual = await importOriginal<typeof import('@happier-dev/protocol')>();
-    preparePluginJsonSchema.mockImplementation(actual.preparePluginJsonSchema);
+    preparePluginJsonSchema.mockImplementation((schema: object) => {
+        const prepared = actual.preparePluginJsonSchema(schema);
+        return Object.freeze({
+            jsonSchema: prepared.jsonSchema,
+            validate: (value: unknown) => {
+                emittedSchemaValidationInputs.push(value);
+                return prepared.validate(value);
+            },
+        });
+    });
     compilePluginJsonSchema.mockImplementation(actual.compilePluginJsonSchema);
     return {
         ...actual,
@@ -117,6 +134,49 @@ function canonicalTargetPoint(params: Readonly<{
     }
     return {
         definition,
+    };
+}
+
+/**
+ * A canonical Protocol-emitted target point whose descriptor schema normalizes:
+ * `additive-open/drop` makes the parser's output differ from the raw contributor
+ * value, so admission ordering is observable from this boundary.
+ */
+function descriptorTargetPoint(): PluginContributionPointV1 {
+    const target = definePlugin({
+        id: targetPluginId,
+        version: '0.1.0',
+        contributionPoints: {
+            [pointId]: defineContributionProtocol({
+                id: protocol.id,
+                version: protocol.version,
+                descriptor: defineProtocolObject({
+                    providerId: defineProtocolString({ minLength: 1 }),
+                }, { policy: 'additive-open/drop' }),
+                operations: {
+                    refresh: {
+                        required: false,
+                        input: { kind: 'contributorDefined' },
+                        resultSchema: defineProtocolObject({}, { policy: 'closed' }),
+                        action: { surfaces: ['plugin'], dangerLevel: 'safe' },
+                    },
+                },
+            }).point(),
+        },
+    });
+    const definition = readCanonicalPluginManifest(target.manifest)
+        ?.contributes.pluginContributionPoints?.find((candidate) => candidate.id === pointId);
+    if (!definition) throw new Error('Expected one canonical descriptor target point');
+    return definition;
+}
+
+function descriptorContribution(descriptor: PluginTargetedContributionV1['descriptor']): PluginTargetedContributionV1 {
+    return {
+        id: 'provider-a',
+        target: { pluginId: targetPluginId, pointId },
+        protocol,
+        descriptor,
+        operations: {},
     };
 }
 
@@ -293,6 +353,7 @@ describe('targeted contribution cold admission', () => {
     beforeEach(() => {
         preparePluginJsonSchema.mockClear();
         compilePluginJsonSchema.mockClear();
+        emittedSchemaValidationInputs.length = 0;
     });
 
     it('retains the exact admitted Action selection shape instead of trusting a later UI carrier field path', () => {
@@ -392,6 +453,38 @@ describe('targeted contribution cold admission', () => {
             futureSurfaceField: 'ignored',
         })).toEqual({ success: true, data: { providerId: 'github' } });
         expect(activate).not.toHaveBeenCalled();
+    });
+
+    it('validates only the parser-normalized descriptor against the retained emitted schema', () => {
+        const catalog = registry({
+            points: [{ pluginId: targetPluginId, definition: descriptorTargetPoint() }],
+            contributions: [{
+                pluginId: contributorPluginId,
+                definition: descriptorContribution({ providerId: 'github', futureDescriptorField: 'ignored' }),
+            }],
+            actions: [],
+        });
+
+        expect(catalog.readAdmittedTargetedContributions?.({ targetPluginId, pointId, protocol })
+            ?.contributions[0]?.descriptor).toEqual({ providerId: 'github' });
+        // The emitted schema is a projection-parity invariant over the parser's
+        // normalized output, not a pre-parser gate over the raw contributor value.
+        expect(emittedSchemaValidationInputs).toEqual([{ providerId: 'github' }]);
+    });
+
+    it('attributes an unparsable descriptor to the target parser rather than a pre-parser schema gate', () => {
+        const catalog = registry({
+            points: [{ pluginId: targetPluginId, definition: descriptorTargetPoint() }],
+            contributions: [{
+                pluginId: contributorPluginId,
+                definition: descriptorContribution({ providerId: '', futureDescriptorField: 'ignored' }),
+            }],
+            actions: [],
+        });
+
+        expect(catalog.readAdmittedTargetedContributions?.({ targetPluginId, pointId, protocol })?.contributions)
+            .toEqual([]);
+        expect(targetedDiagnosticCodes(catalog)).toEqual(['descriptor_semantic_invalid']);
     });
 
     it('retains a null descriptor rehydrated from the target-owned Protocol schema', () => {
@@ -1079,9 +1172,10 @@ describe('targeted contribution cold admission', () => {
                 localId: 'provider-a',
             },
             details: {
-                targetPluginId,
-                pointId,
+                target: { pluginId: targetPluginId, pointId },
+                contributor: { pluginId: contributorPluginId, contributionId: 'provider-a' },
                 protocol,
+                reason: 'point_absent',
             },
         }]);
         expect('targetedContributionDiagnostics' in admitted).toBe(false);

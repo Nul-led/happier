@@ -155,12 +155,17 @@ describe('plugin webhook endpoint lifecycle wire contracts', () => {
     const move = {
       webhookEndpointId: endpointId,
       endpointRevision: 2,
-      previousTargetMaterialization: targetMaterialization,
       targetMaterialization: { ...targetMaterialization, materializationId: 'materialization-2' },
       pageSize: 500,
     } as const;
     expect(PluginWebhookDeliveryMovePendingInputV1Schema.safeParse(move).success).toBe(true);
     expect(PluginWebhookDeliveryMovePendingInputV1Schema.safeParse({ ...move, pageSize: 501 }).success).toBe(false);
+    // Movement is scoped by difference from the current target, so naming a
+    // predecessor is not an accepted input the wire owner may silently ignore.
+    expect(PluginWebhookDeliveryMovePendingInputV1Schema.safeParse({
+      ...move,
+      previousTargetMaterialization: targetMaterialization,
+    }).success).toBe(false);
   });
 
   it('keeps secret material out of read and bounded lifecycle operations exact', () => {
