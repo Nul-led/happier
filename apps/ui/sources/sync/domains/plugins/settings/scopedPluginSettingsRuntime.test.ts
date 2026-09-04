@@ -96,8 +96,8 @@ function deferred<T>() {
     return { promise, resolve };
 }
 
-function jsonResponse(body: () => Promise<unknown>) {
-    return Object.freeze({ ok: true, json: body });
+function jsonResponse(body: () => Promise<unknown>, status = 200) {
+    return Object.freeze({ ok: status >= 200 && status < 300, status, json: body });
 }
 
 beforeEach(() => {
@@ -232,5 +232,38 @@ describe('scopedPluginSettingsAdapter Account currentness', () => {
         delayedMutation.resolve({ status: 'updated', revision: 1 });
 
         await expect(write).resolves.toEqual({ status: 'unavailable', reason: 'transport' });
+    });
+
+    it('does not accept a success-shaped mutation body from a non-success HTTP response', async () => {
+        runtime.serverFetch.mockImplementation(async (path: string, init?: RequestInit) => {
+            if (path === '/v1/account/encryption') {
+                return jsonResponse(async () => ({ mode: 'plain', updatedAt: 1 }));
+            }
+            if (path === '/v1/account/plugin-settings/acme.settings' && init?.method === 'GET') {
+                return jsonResponse(async () => ({ status: 'absent' }));
+            }
+            if (path === '/v1/account/plugin-settings/acme.settings' && init?.method === 'POST') {
+                return jsonResponse(async () => ({ status: 'updated', revision: 1 }), 409);
+            }
+            throw new Error(`Unexpected Account Settings request: ${path}`);
+        });
+
+        await expect(scopedPluginSettingsAdapter.write({
+            pluginId: 'acme.settings',
+            scope: { kind: 'account' },
+            target: ACCOUNT_TARGET,
+            fields: ACCOUNT_FIELDS,
+            fieldId: 'endpoint',
+            mutation: { kind: 'set', value: 'account-a-value' },
+            expectedRevision: { kind: 'account', value: 'absent' },
+        })).resolves.toEqual({
+            status: 'outcomeUnknown',
+            snapshot: {
+                scope: { kind: 'account' },
+                target: ACCOUNT_TARGET,
+                revision: { kind: 'account', value: 'absent' },
+                values: {},
+            },
+        });
     });
 });

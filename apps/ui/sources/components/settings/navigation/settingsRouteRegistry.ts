@@ -68,6 +68,7 @@ const SETTINGS_ROUTE_CHROME_DEFINITIONS: readonly SettingsRouteChromeDefinition[
     { name: 'plugins/[pluginId]', titleKey: 'settingsPlugins.detailTitle' },
     { name: 'plugins/[pluginId]/[pageId]', titleKey: 'settingsPlugins.detailTitle' },
     { name: 'plugins/panels', titleKey: 'settingsPlugins.appPanelsTitle' },
+    { name: 'plugins/sources', titleKey: 'settingsPlugins.sourceAdministration.title' },
     { name: 'profiles', titleKey: 'settingsFeatures.profiles' },
     { name: 'prompts/index', titleKey: 'settings.prompts' },
     { name: 'prompts/assets', titleKey: 'promptLibrary.externalAssets' },

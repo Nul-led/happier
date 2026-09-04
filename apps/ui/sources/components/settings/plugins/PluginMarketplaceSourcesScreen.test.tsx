@@ -307,6 +307,27 @@ describe('PluginMarketplaceSourcesScreen', () => {
         expect(mocks.alertAsync).not.toHaveBeenCalled();
     });
 
+    it('labels each source toggle truthfully for its enabled or disabled state', async () => {
+        mocks.registry = {
+            ...createRegistry(),
+            sources: createRegistry().sources.map((source) => (
+                source.id === 'marketplace:user' ? { ...source, enabled: false } : source
+            )),
+        };
+
+        const screen = await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));
+
+        const enabledSwitch = screen.findRow('settings.plugins.sources.source.marketplace:curated')?.props.rightElement;
+        expect(enabledSwitch?.props.accessibilityLabel)
+            .toBe(`Curated: ${t('settingsPlugins.sourceAdministration.enabled')}`);
+        expect(enabledSwitch?.props.accessibilityState).toEqual({ checked: true, disabled: false });
+
+        const disabledSwitch = screen.findRow('settings.plugins.sources.source.marketplace:user')?.props.rightElement;
+        expect(disabledSwitch?.props.accessibilityLabel)
+            .toBe(`My source: ${t('settingsPlugins.sourceAdministration.disabled')}`);
+        expect(disabledSwitch?.props.accessibilityState).toEqual({ checked: false, disabled: false });
+    });
+
     it('confirms before removing, skips the removal on cancel, and presents an error when the removal fails', async () => {
         mocks.confirm.mockResolvedValueOnce(false);
         const screen = await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));

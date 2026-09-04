@@ -230,7 +230,7 @@ export const PluginMarketplaceSourcesScreen = React.memo(function PluginMarketpl
                                 rightElement={(
                                     <Switch
                                         testID={`settings.plugins.sources.enabled.${source.id}`}
-                                        accessibilityLabel={`${source.title}: ${t('settingsPlugins.sourceAdministration.enabled')}`}
+                                        accessibilityLabel={`${source.title}: ${t(source.enabled ? 'settingsPlugins.sourceAdministration.enabled' : 'settingsPlugins.sourceAdministration.disabled')}`}
                                         accessibilityState={{ checked: source.enabled, disabled: mutationsDisabled }}
                                         value={source.enabled}
                                         disabled={mutationsDisabled}

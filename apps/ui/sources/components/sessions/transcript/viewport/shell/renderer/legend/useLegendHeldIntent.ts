@@ -1240,18 +1240,14 @@ export function useLegendHeldIntent<TItem>(params: Readonly<{
         tryAcknowledgeInitialPresentationSettlement,
     ]);
 
-    const latchObservedEndIntent = React.useCallback(() => {
-        setHeldScrollIntent({ kind: 'end' });
-    }, [setHeldScrollIntent]);
-
     const latchHeldEndIntent = React.useCallback(() => {
-        latchObservedEndIntent();
+        setHeldScrollIntent({ kind: 'end' });
         heldIntentSettleUntilRef.current = Date.now() + LEGEND_HELD_INTENT_SETTLE_MS;
         lastHeldIntentCorrectionRef.current = null;
         pendingLargeResidualConfirmationRef.current = null;
         cancelScheduledHeldIntentSettle();
         requestHeldIntentSettle();
-    }, [cancelScheduledHeldIntentSettle, latchObservedEndIntent, requestHeldIntentSettle]);
+    }, [cancelScheduledHeldIntentSettle, requestHeldIntentSettle, setHeldScrollIntent]);
 
     const hasLiveWebHold = React.useCallback((target: TranscriptRendererWebHoldTarget): boolean => {
         const held = heldScrollIntentRef.current;
@@ -1402,7 +1398,6 @@ export function useLegendHeldIntent<TItem>(params: Readonly<{
         holdIndexTarget,
         holdWebEntryAnchor,
         latchHeldEndIntent,
-        latchObservedEndIntent,
         observeInitialPresentationSettlement,
         releaseHeldScrollIntent,
         requestHeldIntentSettle,

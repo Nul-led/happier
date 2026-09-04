@@ -2060,9 +2060,6 @@ export const ChatListInternal = React.memo((props: ChatListInternalProps) => {
         adoptNativeFollowingForTrustedBottomArrivalRef,
         scrollObservationHost.adoptNativeFollowingForTrustedBottomArrival,
     );
-    const webViewInteractionProps = Platform.OS === 'web'
-        ? scrollObservationHost.platformInteractionProps as Partial<React.ComponentProps<typeof View>>
-        : undefined;
     return (
         <SessionTranscriptAgentAttributionProvider value={agentAttributionIndex}>
         <TranscriptMotionProvider sessionKey={props.sessionId} config={motionConfig}>
@@ -2070,7 +2067,6 @@ export const ChatListInternal = React.memo((props: ChatListInternalProps) => {
               <View
                 ref={transcriptViewportFocusRef}
                 style={{ flex: 1 }}
-                {...webViewInteractionProps}
               >
                 <TranscriptListShell<ChatTranscriptListItem>
                     ref={commitListRef}

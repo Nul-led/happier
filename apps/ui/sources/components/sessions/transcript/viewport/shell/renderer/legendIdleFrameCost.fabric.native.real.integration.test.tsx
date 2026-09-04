@@ -29,20 +29,19 @@ import type { TranscriptListShellRef } from './types';
  *   - at true rest, with no commit, the mounted transcript schedules ZERO animation frames. The
  *     list's own tickers (`ensureBootstrapInitialScrollFrameTicker`, the imperative-scroll
  *     readiness poll, `queuedMVCPRecalculate`) are all mount- or command-scoped and do not idle.
- *   - ONE content-free React commit costs 94 `requestAnimationFrame` calls - a whole settle window.
+ *   - Before the regression fix, ONE content-free React commit cost 94 `requestAnimationFrame`
+ *     calls - a whole settle window. The contract below prevents that cost from returning.
  *
- * So idle animation-frame cost in this app is a function of transcript COMMIT rate, not of any
- * resting loop: ~94 frames per commit, capped at the frame rate once commits are closer together
- * than the settle window.
+ * So idle animation-frame cost in this app must not be a function of transcript COMMIT rate. A
+ * content-free commit is not geometry evidence and must not reopen the settle transaction; only
+ * a real data/measurement/layout signal may do that.
  *
- * `LayoutCommitObserver`'s `onCommitLayoutEffect` is a `useLayoutEffect` with no dependency array
- * (`@shopify/flash-list/dist/recyclerview/LayoutCommitObserver.js`), so it fires on EVERY commit of
- * the renderer subtree and unconditionally requests a settle. Gating that on real content-height
- * news was tried and reverted: `handleLegendScroll` reads an open settle window
- * (`heldIntentSettleInFlight`) to distinguish a renderer/layout offset rollback from a reader
- * detach, so closing those windows made a bare touch plus content growth drop the tail hold. The
- * ceiling below is therefore what this lane enforces - one commit may never cost MORE than one
- * settle window - rather than a floor that would forbid a future cheaper design.
+ * `TranscriptLayoutCommitObserver`'s `onCommitLayoutEffect` is a no-dependency useLayoutEffect,
+ * so it fires on EVERY commit of the renderer subtree. The renderer must use that callback only
+ * for the shell's committed-layout observation and synthesized content-size publication; settle
+ * requests belong to the existing data/measurement/viewport signals, which already preserve the
+ * classifier's programmatic-write evidence without turning unrelated Markdown/UI commits into
+ * polling windows.
  *
  * The second test pins the caller-identity class that DID get fixed: a caller rendering an inline
  * `keyExtractor` used to churn `resolveHeldIntentIndex` -> `readHeldIntentLanding` ->
@@ -237,7 +236,7 @@ describe('Legend transcript renderer idle frame cost', () => {
         return { controller, screen: mounted };
     }
 
-    it('schedules no animation frames at rest and at most one settle window per commit', async () => {
+    it('schedules no animation frames at rest or for a content-free commit', async () => {
         const { controller } = await mountIdleTranscript();
 
         rafCallCount = 0;
@@ -253,10 +252,7 @@ describe('Legend transcript renderer idle frame cost', () => {
         const framesAfterContentFreeCommit = rafCallCount;
 
         expect(framesWhileUntouched).toBe(0);
-        // Observed: 94 - exactly one LEGEND_HELD_INTENT_SETTLE_MS window at the harness frame
-        // interval. A one-sided ceiling: stacking windows or a poll that outlives its deadline
-        // fails here, a cheaper design does not.
-        expect(framesAfterContentFreeCommit).toBeLessThanOrEqual(100);
+        expect(framesAfterContentFreeCommit).toBe(0);
     });
 
     it('does not advance a movement epoch on a content-free commit, whatever identity the caller gives keyExtractor', async () => {

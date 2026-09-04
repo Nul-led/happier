@@ -481,7 +481,6 @@ function LegendListTranscriptRendererInner<TItem>(
         holdIndexTarget,
         holdWebEntryAnchor,
         latchHeldEndIntent,
-        latchObservedEndIntent,
         observeInitialPresentationSettlement,
         releaseHeldScrollIntent,
         requestHeldIntentSettle,
@@ -606,7 +605,7 @@ function LegendListTranscriptRendererInner<TItem>(
             && !isUserScrollInputLive()
         ) {
             if (!hasLiveKeyedHeldIntent() && heldScrollIntentRef.current?.kind !== 'end') {
-                latchObservedEndIntent();
+                latchHeldEndIntent();
             }
         }
         // A keyed anchor/index hold remains the semantic viewport truth until the
@@ -663,7 +662,7 @@ function LegendListTranscriptRendererInner<TItem>(
         lastPublishedAtEndStateRef.current = state;
         lastPublishedAtEndCauseRef.current = cause;
         emit(state, { cause });
-    }, [hasLiveKeyedHeldIntent, heldScrollIntentRef, isWebFrame, latchObservedEndIntent, props.onRendererAtEndChange, readRendererAtEndObservation]);
+    }, [hasLiveKeyedHeldIntent, heldScrollIntentRef, isWebFrame, latchHeldEndIntent, props.onRendererAtEndChange, readRendererAtEndObservation]);
 
     const revalidateViewportAfterReveal = useLegendRevealRevalidation({
         isWebFrame,
@@ -1506,13 +1505,14 @@ function LegendListTranscriptRendererInner<TItem>(
             style={LEGEND_IDENTITY_HOST_STYLE}
         >
             {/* Layout-commit signalling for the viewport ownership stack. The same commit signal
-                drives synthesized content size, held-intent settlement, and finally the shell
-                callback, after the child layout effects for this commit have run. */}
+                drives synthesized content size and finally the shell callback, after the child
+                layout effects for this commit have run. Held-intent settlement is requested only
+                by the renderer's data/measurement/viewport signals, never by a content-free
+                React commit. */}
             <TranscriptLayoutCommitObserver
                 onCommitLayoutEffect={() => {
                     invalidateNativePhysicalViewportCapture();
                     emitSynthesizedContentSize();
-                    requestHeldIntentSettle();
                     props.onCommitLayoutEffect?.();
                 }}
             >

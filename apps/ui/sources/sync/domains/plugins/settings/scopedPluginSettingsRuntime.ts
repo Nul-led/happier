@@ -440,18 +440,21 @@ async function writeAccountRecord(input: Readonly<{
             },
         );
         if (!isCurrent(context)) return { status: 'unavailable' };
+        if (response.status < 200 || response.status >= 300) {
+            if (response.status !== 503) return { status: 'outcomeUnknown' };
+            const unavailableBody = await response.json().catch(() => null);
+            if (!isCurrent(context)) return { status: 'unavailable' };
+            if (PluginAccountSettingsStorageUnavailableV1Schema.safeParse(unavailableBody).success) {
+                // The route's typed storage-unavailable response proves no record
+                // mutation was produced, unlike a lost/malformed acknowledgement.
+                return { status: 'unavailable' };
+            }
+            return { status: 'outcomeUnknown' };
+        }
         const body = await response.json().catch(() => null);
         if (!isCurrent(context)) return { status: 'unavailable' };
         const parsed = PluginAccountSettingsMutationResponseV1Schema.safeParse(body);
         if (parsed.success) return parsed.data;
-        if (
-            response.status === 503
-            && PluginAccountSettingsStorageUnavailableV1Schema.safeParse(body).success
-        ) {
-            // The route's typed storage-unavailable response proves no record
-            // mutation was produced, unlike a lost/malformed acknowledgement.
-            return { status: 'unavailable' };
-        }
         return { status: 'outcomeUnknown' };
     } catch {
         return issued && isCurrent(context)

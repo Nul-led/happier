@@ -35,6 +35,14 @@ describe('settingsRouteRegistry', () => {
         expect(names).toContain('plugins/[pluginId]/[pageId]');
     });
 
+    it('registers the marketplace sources route with its section chrome title', () => {
+        const sourcesRoute = getSettingsStackScreenDefinitions(translate as never)
+            .find((definition) => definition.name === 'plugins/sources');
+
+        expect(sourcesRoute).toBeDefined();
+        expect(sourcesRoute?.options.headerTitle).toBe('settingsPlugins.sourceAdministration.title');
+    });
+
     it('registers each Voice intent as a nested settings destination', () => {
         const names = getSettingsStackScreenDefinitions(translate as never).map((definition) => definition.name);
 
