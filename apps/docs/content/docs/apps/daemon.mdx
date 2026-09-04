@@ -169,13 +169,13 @@ This prints an authorization URL and waits until you approve it in your browser 
 
 ### Recommended: remote pairing over SSH
 
-If you have SSH access and want a fully automated experience (request + approval + credential write), run this from a machine where you're already authenticated:
+If you have SSH access, run this from a machine already authenticated to the Home you want the remote machine to join:
 
 ```bash
 happier auth pair-remote --ssh user@host --json
 ```
 
-This is especially useful for provisioning headless servers because you can approve the connection from your already-signed-in machine and avoid copy/pasting URLs.
+This carries the selected Home's strict target through remote request, local approval, and credential write without copy/pasting URLs. To target another saved Home without changing the default, use `happier --server <saved-home> auth pair-remote --ssh user@host --json`. URL-only flags remain advanced HTTPS compatibility aliases.
 
 ## Troubleshooting
 

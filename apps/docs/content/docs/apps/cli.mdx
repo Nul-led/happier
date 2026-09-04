@@ -330,42 +330,74 @@ SESSION_ID="$(hdev spawn "Fix the failing tests" --json | jq -er '.data.session.
 DAEMON_PORT="$(happier daemon status --json | jq -er '.daemon.httpPort')"
 ```
 
-## Bootstrap & setup (one-command)
+## Connect this computer to a Home
 
-`happier setup` guides initial setup from the terminal. It settles the Relay first, signs in if needed, configures the service, and optionally sets up Agents using the existing Relay, auth, service, Agent, and Relay-access commands.
+> **Availability:** Home-aware setup and Personal Home commands are available in the 0.3 development/preview line. Stable 0.2 continues to use the Relay-oriented setup documented with that release.
+
+`happier setup` connects this computer to an existing Home. A Home is where an Account, credentials, sessions, settings, and data live; it is not the server process or an Iroh relay. Setup selects the Home, authenticates once, registers the machine, reconciles the background service once, and optionally sets up Agents.
 
 Use it when you want Happier to do the work instead of only previewing a plan:
 
 ```bash
-happier setup --relay-url https://YOUR_RELAY_URL
+happier setup
 ```
 
-Run without a Relay flag and setup asks where your Relay lives — Happier Cloud, a Relay you already run, or one on this computer — before it signs you in. Your account is stored per Relay, so signing in first and pointing at your own Relay afterwards creates a second account instead of moving the first one. Setup asks only when this computer has no account on its current Relay yet; passing `--relay-url` (or `--server`) answers the question up front.
+With no usable active Home, setup uses the selected sign-in service—Happier Cloud by default—to show its available sign-in methods and find linked Homes. It adopts the discovered Home descriptors without changing focus, enrolls only the preferred Home automatically, then opens that Home and finishes machine setup. The Account Service is optional discovery and sign-in authority; Home traffic continues directly to the Home.
 
-Choosing **On this computer** runs `happier relay host install`. If the installed Relay ends up reachable from this computer only, setup then offers the [Relay access](/apps/relay-access) methods — the same ones `happier relay access` configures — so your phone can reach it.
+Connect directly when you already have a saved Home, HTTPS address, or strict descriptor:
+
+```bash
+happier setup --home personal
+happier setup --home-url https://home.example.test
+happier setup --home-descriptor-file ./home.json
+```
+
+A strict descriptor can select an Iroh-only Home without inventing a public HTTPS endpoint. Manual HTTPS and the older URL/server flags remain compatibility inputs.
 
 Useful flags:
 
 - `--skip-daemon` (historical flag name; skips background-service install/enable)
 - `--skip-providers` (don’t run provider setup)
 - `--provider <id>` (preselect providers to set up)
-- `--yes` (with an explicitly named Relay, perform deterministic work and stop before the human-approved sign-in)
+- `--yes` (with an explicitly named Home, save deterministic target metadata and stop incomplete before interactive approval)
 - `--non-interactive` (change nothing)
 
-`--yes` without a Relay choice refuses to guess, because that could create an account on the wrong Relay. `--yes` and `--non-interactive` have opposite contracts and cannot be combined.
+`--yes` is not an unattended setup mode. With an explicit target it prints the interactive continuation and exits nonzero; without a target it writes nothing. `--non-interactive`, `HAPPIER_NONINTERACTIVE=1`, and a no-TTY invocation also write nothing. Run the printed continuation in a terminal to finish approval, registration, and service setup.
 
 Dry-run the plan only if you want to inspect the steps before running them:
 
 ```bash
-happier setup plan --relay-url https://YOUR_RELAY_URL
+happier setup plan --home-url https://home.example.test
 ```
 
 `happier setup plan` previews the work. `happier setup` applies it.
-Note: `--json` output is currently supported for `happier setup plan` only.
+When an authenticated Home is temporarily unavailable, setup keeps the selected Home and its stored credential, reports the outage, and offers retry, another Home, or exit. It does not call the state authenticated or use an outage as evidence that a new account is needed.
+
+### Create a Personal Home
+
+`setup` connects; it does not host a Home. Create a local or SSH-hosted Personal Home explicitly:
+
+```bash
+happier home create
+happier home create --ssh user@host
+```
+
+Both forms use the same managed Happier server runtime and atomic Personal Home bootstrap. The fixed preset creates or verifies the initial account, keeps its credential in the host's secure store, closes anonymous signup, verifies the result, waits for the server-published stable Home identity and descriptor, then adopts that identity. An SSH Home remains loopback-bound and can be reached over Iroh, so public ingress is optional. Personal Home data is plaintext at rest on its host; use a computer or provider you trust.
+
+Creation is interactive unless you explicitly pass `--yes`. That `home create --yes` consent is separate from `setup --yes`: a successful creation can complete deterministically, while setup still needs human enrollment approval.
+
+After creation, re-enter the device and discovery flows with:
+
+```bash
+happier home pair-device [--home PROFILE] [--copy-link]
+happier home link-account [--home PROFILE] [--relink]
+```
+
+`pair-device` requires the Home's current `bound-qr-v2` capability and starts a new short-lived QR/link session; expired or cancelled sessions are not resumable. `link-account` publishes the Home to the signed-in Account Service for later discovery. Linking is optional and never puts the Account Service in the Home traffic path.
 
 ### Repair an existing setup
 
-Use setup for first-time configuration of this computer. Use doctor repair when an existing install has drifted or broken state: wrong automatic startup lane, stopped background service, stale service definition, missing auth, or mismatched Relay state.
+Use setup for first-time connection of this computer. Use doctor repair when an existing install has drifted or broken state: wrong automatic startup lane, stopped background service, stale service definition, missing auth, or mismatched Home state.
 
 ```bash
 happier doctor repair
@@ -392,15 +424,17 @@ happier machine setup --ssh user@host
 Common flags:
 
 - `--ssh-user <user>` / `--ssh-host <host>` / `--ssh-port <port>` (split SSH form)
-- `--install-relay-runtime` (also install the managed Relay runtime on that host)
 - `--service-mode user|none` (background-service mode)
 - `--relay-runtime-mode user|system` (relay runtime install mode)
 - `--ssh-auth agent|keyfile|password` (select auth mode)
+
+For advanced operator workflows, `--install-relay-runtime` installs the generic managed relay runtime on the remote host. It does not create or convert a Personal Home.
 - `--identity-file <path>` (for `keyfile` mode)
 - `--ssh-config-file <path>` (use an explicit SSH config)
 - `--known-hosts-path <path>` (override host-key storage)
 - `--trusted-host-key <line>` (pin a host key)
-- `--server-url <url>` / `--local-server-url <url>` / `--webapp-url <url>` (target a specific Relay profile)
+- the global `--server <saved-home>` prefix (target one saved Home)
+- `--server-url <url>` / `--local-server-url <url>` / `--webapp-url <url>` (advanced compatibility/manual URL targeting)
 - `--require-local-approval` (fail closed when the current machine cannot approve the pairing request)
 - `--yes` (auto-accept prompts for non-interactive runs)
 - `--json` (stream protocol JSON events/results)
@@ -413,7 +447,9 @@ SSH auth modes:
 
 Tip: if you want to save the host for later reuse in the app, use the desktop Remote Hosts screen instead of a one-off inline SSH bootstrap. The inline SSH bootstrap is intentionally one-off; reusable SSH profiles live in the app.
 
-Self-hosted Relay runtime (managed service):
+### Generic/operator server runtime
+
+`relay host` remains available for operators who need to deploy or update the generic Happier server runtime. It does not create an account, close signup, enroll a client, or convert the runtime into a Personal Home.
 
 ```bash
 happier relay host install
@@ -486,13 +522,16 @@ All subcommands require the installed managed runtime to be a Personal Home. The
 happier home status
 happier home backup [--output PATH]
 happier home verify-backup PATH
+happier home status --ssh user@host
+happier home backup --ssh user@host [--output PATH]
+happier home verify-backup --ssh user@host PATH
 ```
 
 `status` shows where the Home keeps its data — the data directory, database, public and private file stores, and backups directory — plus whether the Home is running, the database size, how many backup archives are present, and the exact data paths erase would remove with their estimated size. Add `--json` for the full machine-readable inspection, including the Home identity and master-secret fingerprint (never the secret itself). Use `verify-backup` when you need to establish that an archive is valid.
 
 `backup` creates a verified archive of the complete Personal Home: the SQLite database, public and private files, the master secret, and a small, fixed allowlist of Home configuration — the Home's identity, its canonical server URL, and its plain-at-rest policy settings, taken from the runtime's own managed configuration. Credentials, ports, and transport keys are never copied; restore re-applies exactly this allowlist before the Home starts again. If the Home is running, it is stopped first, the database is checkpointed and integrity-checked before any bytes are copied, and the Home is started again afterwards. The archive is created with restrictive permissions (0600 on POSIX), hash-verified by reading it back, and only then reported as usable. Without `--output PATH` the archive is written into the Home's backups directory with a timestamped name. Happier does not automatically delete older user-created backups.
 
-`verify-backup` re-checks an archive's integrity and manifest and reports the backup's Home identity, creation time, and schema version, along with whether that identity matches, mismatches, or cannot be compared against the current Home.
+`verify-backup` re-checks an archive's integrity and manifest and reports the backup's Home identity, creation time, and schema version, along with whether that identity matches, mismatches, or cannot be compared against the current Home. Add `--ssh user@host` to run any of these operations against the managed Personal Home on a trusted remote host.
 
 A backup is plaintext by design. It contains readable conversations, Home data, the Home master secret, and trusted-device state. Anyone who can restore the complete archive can operate a clone of this Home, so save backups somewhere you trust.
 
@@ -501,18 +540,21 @@ A backup is plaintext by design. It contains readable conversations, Home data, 
 ```bash
 happier home restore PATH [--yes]
 happier home recover-restore [--yes]
+happier home restore --ssh user@host PATH [--yes]
+happier home recover-restore --ssh user@host [--yes]
 ```
 
 Restore verifies the archive and inspects the destination before touching anything. A backup whose Home identity mismatches the current Home is refused, as is an archive whose schema is newer than the installed runtime can handle. Restoring over a Home that already contains data requires an explicit confirmation — the interactive prompt, or `--yes` in non-interactive runs.
 
 The restore itself is staged: the new data is extracted and validated beside the Home, migrated forward using only the migrations shipped with the installed runtime (never a downgrade), then swapped in and health-checked with its Home identity verified before success is reported. If a step after the swap fails, Happier attempts to restore the previous data; if rollback itself cannot finish, the Home stays stopped with recovery material retained instead of silently running mixed data.
 
-`recover-restore` inspects the canonical restore journal and, when a rollback is available, requires explicit confirmation before restoring the retained previous destination. It is a no-op when no interrupted restore exists. Ambiguous recovery state fails closed and leaves the Home stopped for manual repair instead of guessing which bytes are authoritative.
+`recover-restore` inspects the canonical restore journal and, when a rollback is available, requires explicit confirmation before restoring the retained previous destination. It is a no-op when no interrupted restore exists. Ambiguous recovery state fails closed and leaves the Home stopped for manual repair instead of guessing which bytes are authoritative. The SSH forms run the same owner-controlled workflow remotely; destructive approval is bound to the reported SSH host, Home identity, paths, and estimated size.
 
 ### Erase
 
 ```bash
 happier home erase [--yes]
+happier home erase --ssh user@host [--yes]
 ```
 
 `erase` permanently deletes the Personal Home's data — the database, public and private files, master secret, configuration, and local backups. It is explicit and destructive, runs under the same operation lock as backup and restore, and is never triggered by uninstall, logout, or restore. The single confirmation names the affected Home and shows the exact owner-resolved paths and estimated byte count it intends to delete. Non-interactive runs require `--yes`. If you want a recovery copy, create and verify an external backup separately before erasing; erase never creates one implicitly.
@@ -557,28 +599,13 @@ happier auth pair-remote --ssh user@host --json
 
 Notes:
 
-- This orchestrates a claim-gated pairing flow over SSH (remote request → local approve → remote wait).
-- Add `--server ...` or `--server-url/--webapp-url` if you're targeting a self-hosted server.
+- This opens one authenticated SSH session and performs one short-lived streaming enrollment. The local CLI verifies the selected Home identity before approving the remote request; the remote CLI writes its profile and credentials only after enrollment completes.
+- The current selected Home is the default. Use the global saved-Home form `happier --server <saved-home> auth pair-remote --ssh user@host --json` when you need another saved Home.
+- `--server-url-for-remote <https-url>` (and its released URL aliases) remains an advanced HTTPS compatibility form. Strict descriptor/Iroh targets are carried from the selected Home without inventing a public URL.
 
-### Pairing (JSON, manual / scripting)
+### Pairing protocol primitives (advanced tooling)
 
-Split the flow when you want full control (automation, custom SSH, etc):
-
-```bash
-# On the remote host (creates private pending state and prints the request envelope)
-happier auth request --json > remote-auth-request.json
-
-# Transfer that short-lived file privately to an already authenticated machine,
-# then approve the matching public key with the complete request context.
-happier auth approve --public-key <publicKey> --request-json-file ./remote-auth-request.json --json
-
-# Back on the remote host (waits, claims, and writes credentials)
-happier auth wait --public-key <publicKey> --json
-```
-
-The request JSON contains short-lived secret pairing and claim context. Treat it as sensitive,
-transfer it only between the two trusted machines, and delete the copied file after the request
-finishes or expires. `auth pair-remote` carries the same context automatically over its SSH flow.
+`auth request`, `auth approve`, and `auth wait` remain JSON protocol primitives for operator tooling and released compatibility. They are not the routine onboarding recipe: use `happier setup` for this computer and `happier auth pair-remote --ssh user@host` for a remote machine. If you build custom transport around the primitives, treat the complete request envelope as a short-lived secret and keep every step bound to the same selected Home.
 
 Current approvals produce one authenticated terminal-v3 result. Plain Homes persist a token-only
 credential without synthesizing a secret; E2EE data-key Homes persist their data-key fields without
@@ -847,7 +874,9 @@ happier mcp serve
 ```
 
 For compatibility, `happier mcp start` also works. Use `happier mcp serve` in
-new commands and automation.
+new commands and automation. Prefix the command with `--server <saved-home>` to
+pin one explicit Home. The process keeps that Home identity and credential set
+for its lifetime; it does not switch dynamically or fan out across Homes.
 
 Guide: [Happier MCP (external)](/extending/happier-as-mcp-server)
 

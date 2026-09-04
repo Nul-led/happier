@@ -63,9 +63,10 @@ Notes:
 
 - Ensure `happier` is on `PATH` (or use an absolute path to the binary).
 - The MCP host must run on a machine that is already authenticated to Happier, or the server will fail with `not_authenticated`.
-- For security, `happier mcp serve` does **not** honor server-selection *environment variables* (like `HAPPIER_SERVER_URL`). To target a non-default server, pass the CLI server flags in `args` (see below) or switch the active server profile in the CLI home directory.
+- For security, `happier mcp serve` does **not** honor server-selection *environment variables* such as `HAPPIER_SERVER_URL`. To target a non-default Home, pass a trusted CLI selection prefix in `args` (see below) or select that Home before starting MCP.
+- One MCP process pins one Home identity and credential set at startup. It does not follow later profile changes, switch Homes dynamically, or fan out across several Homes.
 
-### Target a specific server
+### Target a specific Home
 
 If your MCP host supports it, include the normal CLI server selection flags in the configured `args`:
 
@@ -80,7 +81,7 @@ If your MCP host supports it, include the normal CLI server selection flags in t
 }
 ```
 
-Or use ad-hoc URLs:
+Saved Home selection is the normal form. Ad-hoc URL flags remain available for advanced compatibility/manual targeting:
 
 ```json
 {

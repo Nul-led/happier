@@ -13,6 +13,11 @@ gives it a remote control.
 
 ## What you need
 
+<Callout type="info">
+  Home-aware setup is available in the 0.3 development/preview line. Stable 0.2
+  still uses the Relay-oriented setup and URL flags shipped with that release.
+</Callout>
+
 Four things. Three are quick; the first is the one people miss.
 
 1. **A computer that stays awake.** Happier connects you *to* your machine — it
@@ -23,10 +28,10 @@ Four things. Three are quick; the first is the one people miss.
    ships none of them and detects what is already there. If `claude` (or
    `codex`, or `opencode`) does not run in your terminal today, it will not run
    through Happier either.
-3. **A Happier account**, created in the app or the web client — not from the
-   terminal. The CLI's login is an *approval* step against a client you are
-   already signed in to.
-4. **About ten minutes**, and a phone or second browser tab to approve from.
+3. **A Home you can join**, found through your selected sign-in service or
+   supplied as a saved Home, HTTPS address, or strict descriptor. You can also
+   create a Personal Home explicitly after installing the CLI.
+4. **About ten minutes**, and a phone or second browser tab when approval is required.
 
 You do **not** need a server of your own, Node.js or npm, or a custom app build.
 
@@ -73,36 +78,42 @@ next step.
 happier setup
 ```
 
-Setup asks the one question the installer cannot answer for itself — where your
-relay lives — then points this computer at it and signs you in. Your account
-lives on the relay you choose, so that gets settled before sign-in rather than
-after. It then installs the background service and checks your agent CLIs.
+Setup connects this computer to an existing Home. With no usable active Home it
+uses the selected sign-in service—Happier Cloud by default—to show the available
+sign-in methods and find your linked Homes. It enrolls the preferred Home, then
+registers this machine, installs the background service, and checks your Agent CLIs.
 
 If you already know the answer, skip the question:
 
 ```bash
-happier setup --relay-url https://relay.example.test
+happier setup --home-url https://home.example.test
+happier setup --home-descriptor-file ./home.json
 ```
 
 To see exactly what it would do before it does anything:
 
 ```bash
-happier setup plan --relay-url https://relay.example.test
+happier setup plan --home-url https://home.example.test
 ```
 
 `plan` prints the steps and runs none of them; add `--json` if you are scripting
 around it. The full flag set is
-`[--relay-url <url>] [--provider <id> …] [--skip-daemon] [--skip-providers] [--yes|--non-interactive]`.
+`[--home <saved>] [--home-url <https-url>] [--home-descriptor-file <path|->] [--provider <id> …] [--skip-daemon] [--skip-providers] [--yes|--non-interactive]`.
 
 <Callout>
   `--yes` is not "do everything without asking". It performs the deterministic
-  work for a relay you named explicitly and then **stops before sign-in**, because
-  sign-in needs a human on another device. `--non-interactive` changes nothing
-  about that.
+  target metadata for a Home you named explicitly, prints the interactive
+  continuation, and exits nonzero as incomplete. It does not finish sign-in,
+  registration, or service setup. Without an explicit target, `--yes` writes
+  nothing; `--non-interactive` and no-TTY setup always write nothing.
 </Callout>
 
-Signing in prints a URL and a QR code. Scan it with the app, or open the URL in
-a browser where you are already signed in, and approve.
+An Iroh-only Home does not need a public address. Use its strict descriptor so
+setup can reach the exact Home and verify its stable identity before storing a credential.
+
+To create a Home instead of connecting to one, use `happier home create` locally
+or `happier home create --ssh user@host` on a trusted remote computer. That is a
+0.3 development/preview feature; it uses the managed runtime and Personal Home bootstrap.
 
 ## 4. Start your first session
 
@@ -120,7 +131,7 @@ in your client within a second or two, and you can drive it from there.
 happier status
 ```
 
-This reads your account, relay registration, automatic startup and CLI channel,
+This reads your account, Home registration, automatic startup and CLI channel,
 and changes nothing. It is the first thing to run whenever something looks
 wrong later — see [Check your setup](/getting-started/check-your-setup).
 
@@ -132,4 +143,4 @@ wrong later — see [Check your setup](/getting-started/check-your-setup).
 - [Agent capabilities](/agents/capabilities) — what varies between them.
 - [Working in a session](/sessions) — permissions, queueing and steering.
 - [Local development](/getting-started/local-development) — running the server and UI yourself while iterating.
-- [Run your own relay](/self-hosting) — if you would rather not use the hosted one.
+- [Run your own Home or server runtime](/self-hosting) — Personal Home and advanced operator paths.

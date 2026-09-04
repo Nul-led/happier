@@ -5,6 +5,8 @@ description: Save SSH host profiles and reuse them across setup flows.
 
 Remote hosts let you save SSH connection details for machines you manage (VPS, home server, dev box) and reuse them across setup and repair flows.
 
+> **Availability:** SSH Personal Home creation is available in the 0.3 development/preview line. Stable 0.2 retains its released Relay-host management commands.
+
 Remote hosts are synced to your account so you can reuse them across devices (when allowed by your server/build policy).
 That makes them the right place to keep reusable SSH targets for both the wizard and the desktop settings screen.
 
@@ -69,11 +71,27 @@ If you only need a one-off SSH bootstrap, leave **Save this host** off and the a
 
 Remote hosts are primarily a UI affordance, but you can always run the underlying SSH bootstraps from the CLI:
 
+Create a Personal Home on a trusted remote host, installing or reusing the same managed runtime and running the atomic Home bootstrap:
+
+```bash
+happier home create --ssh user@host
+```
+
+This is different from machine setup: `home create --ssh` makes that host the Home authority, while `machine setup --ssh` connects a session-running machine to the selected Home.
+
 Bootstrap a remote machine:
 
 ```bash
 happier machine setup --ssh user@host
 ```
+
+Machine setup uses the current selected Home. To target another saved Home without changing the default, put the global selector before the command:
+
+```bash
+happier --server <saved-home> machine setup --ssh user@host
+```
+
+The released `--server-url` / `--webapp-url` forms remain advanced HTTPS compatibility aliases. Routine setup should use a saved Home or the strict Home target already selected by `happier setup`.
 
 Bootstrap a remote machine using password auth:
 
@@ -87,7 +105,7 @@ Bootstrap a remote machine using a key file:
 happier machine setup --ssh-user user --ssh-host host --ssh-port 22 --ssh-auth keyfile --identity-file /path/to/key
 ```
 
-Install the managed Relay runtime on a remote host:
+Install only the generic managed Relay runtime on a remote host (advanced/operator compatibility):
 
 ```bash
 happier relay host install --ssh user@host --mode system
@@ -106,4 +124,4 @@ See: [Server → Setup & bootstrap policy](/self-hosting/setup-and-bootstrap-pol
   settings. On an E2EE account it is encrypted on your device before it is sent; on a plaintext
   account it is stored in a form the Happier server can read. See [Encryption](/security/encryption).
 - If you don’t want a host saved long-term, keep “Save this host” disabled and use one-time SSH inputs.
-- Remote hosts are separate from Relay URLs: they describe how to reach a machine over SSH, not which Relay your account uses.
+- Remote hosts are separate from Homes: they describe how to reach a machine over SSH, not which stable Home identity the CLI targets.

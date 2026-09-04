@@ -5,6 +5,8 @@ description: Configure a reachable Relay URL for other devices (Tailscale, Cloud
 
 Relay access is the “share/public URL strategy” for a self-hosted or local Relay.
 
+This is an advanced/operator feature. A 0.3 Personal Home created with `happier home create` publishes Iroh reachability and does not require public ingress. Stable 0.2 retains the released URL-oriented Relay access workflow.
+
 It answers the question:
 
 > What Relay URL should other devices (phones, browsers, other computers) use to reach this Relay?
@@ -66,7 +68,7 @@ Configure a provider (example: Tailscale Serve from a loopback upstream):
 happier relay access configure --provider tailscaleServe --upstream-url http://127.0.0.1:53288
 ```
 
-When a local provider returns a share URL, Happier makes that URL the active Relay address while retaining the local upstream for connections from this computer. Future sign-in links and QR codes therefore use the address your other devices can reach. Disabling that provider switches the same profile back to its local upstream, unless you changed the profile independently in the meantime. Configuring access with `--ssh` changes the remote host only; it does not switch the Relay profile on the computer running the command.
+When a local provider returns a share URL, Happier reconciles that route through the canonical descriptor owner and retains the local upstream for connections from this computer. The route does not replace the Home's stable identity or independently choose its authentication audience. Disabling the provider removes that optional ingress route. Configuring access with `--ssh` changes the remote host only; it does not switch the Home profile on the computer running the command.
 
 Disable relay access (remove the persisted configuration):
 
@@ -101,7 +103,7 @@ happier relay access status --ssh user@host --known-hosts-path /tmp/happier_know
 
 ## Setup wizard integration
 
-The Setup wizard can guide relay-access configuration after you install or select a local/self-hosted Relay.
+The Setup wizard can guide relay-access configuration for an operator-managed server when optional HTTPS/public ingress is wanted. This is not a prerequisite for an Iroh-reachable Personal Home.
 
 User guide: [Setup wizard](/apps/setup-wizard).
 

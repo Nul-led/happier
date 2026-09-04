@@ -21,8 +21,9 @@ There is one Search and several ways in, all reaching the same surface:
 
 - **Shortcut** — <kbd>Alt</kbd>+<kbd>K</kbd> on web, or
   <kbd>Mod</kbd>+<kbd>K</kbd> elsewhere, opens Search almost anywhere. The
-  command is called **Open Search** and can be rebound or disabled under
-  [Keyboard shortcuts](/apps/keyboard-shortcuts).
+  command is called **Open Search** and its shortcut can be rebound or disabled
+  under [Keyboard shortcuts](/apps/keyboard-shortcuts). Disabling the shortcut
+  does not disable the sidebar, native action, deep link, or session-list entry.
 - **Sidebar** — the **Search** row in the session list's sidebar, directly
   above **Browse Existing Sessions**.
 - **Native** — the Search action in the phone and tablet apps opens Search as a
@@ -41,7 +42,11 @@ local groups are instant while remote ones fill in as they arrive:
 
 - **Commands** — built-in commands and Actions contributed by trusted plugins.
 - **Sessions** — your sessions, including archived or not-currently-loaded ones
-  when their owning source permits.
+  when their owning source permits. Session IDs, visible titles, workspace or
+  project names, paths, tags, and machine details match immediately. Transcript
+  bodies are searched only by the message source below. If a Session has no
+  explicit title and Happier has already made its first user message the visible
+  Session title, that bounded title remains searchable like any other title.
 - **Projects** — projects and workspaces from your account's synced
   projections.
 - **Messages** — matches inside session transcripts, from the transcript
@@ -158,16 +163,19 @@ truncated it says so instead of posing as the complete list.
 
 ## Settings configures, Search searches
 
-Settings pages are a search *result*, not a search *entry*: you configure
-transcript search where its sources live — **Settings → Local Memory Search**
-for a machine's index, **Settings → Features** for availability — and then
-search from Search, the sidebar, or the session list like everywhere else.
+Settings pages are a search *result*, not a search *entry*. Configure a
+machine's local index under **Settings → Local Memory Search**; its experimental
+`memory.search` switch lives under **Settings → Features**. Personal Home
+search is separate: the Home operator controls its availability, and there is
+no app setting that turns it on for an individual machine. Then search from
+Search, the sidebar, or the session list like everywhere else.
 
 ## When it goes wrong
 
 - **The shortcut does nothing** — check that **Open Search** is enabled and
-  bound under [Keyboard shortcuts](/apps/keyboard-shortcuts); both the shortcut
-  registry and Search itself can be turned off there.
+  bound under [Keyboard shortcuts](/apps/keyboard-shortcuts). Disabling that
+  command disables only the keyboard shortcut; Search remains available from
+  the sidebar, native action, deep link, and session-list entry.
 - **No message results anywhere** — see
   [Where message results come from](#where-message-results-come-from): enable
   local memory search on a machine, or check with your server operator that

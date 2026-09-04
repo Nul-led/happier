@@ -69,14 +69,21 @@ calling the endpoint yourself.
 
 Webhook ingress is the host-owned verified delivery boundary, not an Automation
 Event durability boundary by itself. Durable push is a Developer Preview
-transport with a best-effort window. After the host durably commits a verified
-delivery, queueing, deduplication, retry, and Automation occurrence
-idempotency are durable. Before that commit — a rejected delivery, a daemon
-failure mid-handling — Happier holds no custody of it and nothing retries
-automatically. Design the provider side so the same upstream occurrence can be
-recovered through an independently requested provider redelivery or the next
-checkpointed pull, and keep checkpointed pull as the authoritative transport
-whenever completeness matters.
+transport with a best-effort window. The provider receives `202 Accepted` only
+after the server durably commits the verified delivery. From that point,
+queueing, deduplication, retry, and Automation occurrence idempotency are
+durable; a daemon outage or handling failure is retried and can eventually move
+the delivery to the dead-letter queue. Before that commit — for example, when
+verification, admission, or the durable commit fails — Happier holds no custody
+of the delivery. Design the provider side so such an attempt can be recovered
+through an independently requested provider redelivery or the next checkpointed
+pull, and keep checkpointed pull as the authoritative transport whenever
+completeness matters.
+
+The Happier server reads each bounded raw webhook body in process memory before
+it can verify the provider signature and seal the admitted content. This is also
+true for E2EE Accounts: E2EE protects the durable payload after sealing, not the
+provider-to-server request in transit. Unverified bodies are not persisted.
 
 For GitHub, redelivery is never automatic: it happens only when you or a
 provider operator requests one, and only to the unchanged endpoint URL. A

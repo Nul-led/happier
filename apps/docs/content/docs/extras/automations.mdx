@@ -189,7 +189,18 @@ failing.
 From a terminal:
 
 ```bash
+happier automation list [--cursor <opaque>] [--json]
 happier automation run <automation-id> [--idempotency-key <key>] [--json]
+```
+
+Use `automation list` to find the stable Automation ID accepted by `run`.
+Human output includes each ID, name, and active or paused state. `--json`
+returns the structured definition-list page, including its continuation cursor
+when more Automations are available. To continue, pass that cursor back without
+changing it:
+
+```bash
+happier automation list --cursor <opaque>
 ```
 
 Pass `--idempotency-key` when the caller might retry — a repeated key will not

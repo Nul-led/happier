@@ -5,6 +5,8 @@ description: How to sign in on a new phone or computer, when to use each QR flow
 
 Happier now has a few different QR-based flows. They look similar, but they solve different problems.
 
+> **Availability:** Direct Home pairing and the `happier home pair-device` / `happier home link-account` commands are available in the 0.3 development/preview line. Stable 0.2 keeps its released device-linking flows.
+
 This page explains which one to use, what each button means, and what to do when QR scanning or server reachability gets in the way.
 
 ## The three things users commonly want
@@ -104,6 +106,8 @@ request, wait, and completion call goes to that Home; Happier does not temporari
 reuse whichever Home happens to be focused. The new credential is saved under the invited Home, and
 adding it leaves your current Home, sidebar groups, and other saved credentials unchanged.
 
+From the Home host, `happier home pair-device` starts the same kind of new short-lived, Home-bound pairing session. Each retry creates fresh invitation material; do not reuse an expired or exposed QR/link. `happier home link-account` separately links the Home to your selected Account Service for discovery without transferring Home authority to that service.
+
 ### Restore a new browser or desktop
 
 1. On the new browser/computer, open **Restore account**
@@ -166,7 +170,7 @@ Direct Home QR linking continues to work without an Account Service. If you disc
 an Account Service instead, that service supplies only a short-lived assertion; the selected Home
 still owns redemption, any required existing-device approval, and the final Home credential.
 
-## Self-hosted servers and localhost
+## Personal Homes, Iroh, and localhost
 
 This is the main source of confusion in local development and some self-hosted setups.
 
@@ -175,21 +179,22 @@ If your server is configured as `localhost`, `127.0.0.1`, `::1`, or another loop
 - desktop/web can still talk to it locally
 - a phone cannot reach that same address, because `localhost` on the phone means the phone itself
 
-Current Home-device QR invites are strict and explicitly name the target Home, its canonical URL,
-and a reachable connection endpoint. Happier does not remove that target and fall back to the
-currently active Home. If it cannot construct a reachable descriptor—for example, because the only
-known endpoint is loopback-only—it will not produce a usable cross-device invite.
+Current Home-device QR invites are strict and explicitly name the target Home and its reachable
+connection descriptor. Happier does not remove that target and fall back to the currently active
+Home. A Personal Home can publish an Iroh-only descriptor even while its HTTP listener remains on
+loopback, so a public HTTPS URL is not required for device pairing.
 
-In that situation, configure the Home with a URL the phone can actually reach, refresh its server
-profile, and create a new QR invite.
+If the Home has neither a reachable Iroh endpoint nor a reachable HTTPS endpoint, repair its
+published descriptor and create a new QR invite. Retry stays bound to the same stable Home identity.
 
-Typical working choices:
+Working choices include:
 
-- a LAN URL such as `http://192.168.x.x:53288`
+- the Personal Home's published Iroh endpoint
+- a LAN URL such as `http://192.168.x.x:53288` (native clients; browsers generally need HTTPS)
 - a Tailscale HTTPS URL such as `https://machine.tailnet.ts.net`
 - your own public/reverse-proxied domain
 
-If you operate the server yourself, set `HAPPIER_PUBLIC_SERVER_URL` to the ingress the new device can reach so Happier can embed the right endpoint in QR/deep links. `HAPPIER_CANONICAL_SERVER_URL` remains the stable Home identity and may be different.
+For advanced/operator HTTPS ingress, set `HAPPIER_PUBLIC_SERVER_URL` to an endpoint the new device can reach. `HAPPIER_CANONICAL_SERVER_URL` is compatibility identity metadata and may be different; current strict Home identity comes from the Home descriptor rather than whichever route happens to work.
 
 ## Which flow should I pick?
 

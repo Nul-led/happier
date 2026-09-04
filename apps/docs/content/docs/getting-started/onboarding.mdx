@@ -1,31 +1,33 @@
 ---
 title: Onboarding
-description: Pick hosted vs self-hosted, choose your Relay, then use the app to get your machines ready.
+description: Connect your devices and machines to a Home, or create a Personal Home of your own.
 ---
 
-Happier always follows the same high-level flow:
+> **Availability:** Home-aware setup and Personal Home creation are available in the 0.3 development/preview line. Stable 0.2 keeps its released Relay-oriented onboarding.
 
-1. **Choose a Relay** (Happier Cloud by default; self-hosting is optional).
-2. **Sign in / create an account** on that Relay.
+Happier follows this high-level flow:
+
+1. **Choose a Home** where your Account, credentials, sessions, settings, and data live.
+2. **Sign in directly or use an Account Service**—Happier Cloud by default—to discover linked Homes.
 3. **Use the desktop app as your control panel** (recommended; the web UI is best for status/management).
 4. **Get a machine ready**:
    - **This computer**: configure the local background service from the app.
    - **Remote machine**: bootstrap it over SSH from the app, and optionally save the SSH target as a reusable Remote host.
-5. **Optionally enable private access** (for example Tailscale) for self-hosted/local Relay access from other devices.
+5. **Optionally configure public ingress** for an operator-managed server. Personal Homes can use Iroh without a public address.
 
 User guide: [Relay access](/apps/relay-access).
 
 ## Choose your setup
 
 ### Option A — Hosted (recommended to start)
-You use Happier Cloud as your Relay.
+You use Happier Cloud as the selected sign-in and Home-discovery service.
 
 1. Open the desktop app (recommended) or the web app.
-2. Choose **Happier Cloud** when the app asks you which Relay to use.
-3. Sign in.
+2. Choose **Happier Cloud** when the app asks how to find your Homes.
+3. Sign in using one of the methods the service advertises.
 4. Open the **Setup wizard** and choose **Set up this computer**.
-   - This configures the local background service against the Relay you just selected.
-   - If the app detects Relay drift later, it shows a repair action instead of silently leaving the background service on another Relay.
+   - This configures the local background service against the preferred Home you just entered.
+   - If the app detects Home drift later, it shows a repair action instead of silently leaving the background service on another Home.
    - If you are restoring an already-signed-in device, use **Login with secret key instead** on the mobile login screen.
 
 Optional CLI path:
@@ -37,34 +39,36 @@ curl -fsSL https://happier.dev/install | bash
 happier setup
 ```
 
-The app-first setup is the recommended control-panel flow. The CLI is a great fallback when you want one-command setup from a terminal. Both settle the Relay before sign-in; the CLI delegates each step to the existing Relay, auth, service, Agent, and Relay-access commands. `happier setup plan` only previews the steps.
+The app-first setup is the recommended control-panel flow. The CLI is the terminal equivalent: it connects to one existing Home, performs any required interactive approval, registers the machine, and reconciles the service. `happier setup plan` only previews the steps.
 
 Notes:
 - The desktop app and the installer-installed CLI are self-contained; you do not need system Node/Yarn installed.
 - If you prefer an npm workflow, see [CLI install](/apps/cli) (requires Node).
 
-### Option B — Self-host Relay only (background service on your laptop)
-You run your own Relay (remote machine, LAN box, or even your own computer), but keep the background service on another machine.
+### Option B — Personal Home on your own computer or VPS
 
-1. Install your Relay (examples):
-   - Proxmox: see [Proxmox deployment](/self-hosting/proxmox).
-   - Any machine (managed service): install the CLI, then run `happier relay host install` (or remote: `happier relay host install --ssh user@host`). To install as a system-wide service, use `--mode system` (requires root/sudo). For a local Relay, use `--lan`, `--expose`, or `--host <ip>` when it should listen beyond loopback.
-   - Docker: see [Deployment → Docker](/self-hosting/docker).
+Create a Personal Home locally or over SSH, while keeping agent machines separate if you prefer:
 
-2. Open the desktop app (recommended) or web UI (status/management only) and choose that Relay.
-   - Some installers print one-click links/QRs that prefill the Relay URL.
-   - Otherwise, open the app and add/select it in **Relay settings**.
+1. Install the CLI, then create the Home:
 
-3. Create an account / sign in on that Relay.
+   ```bash
+   happier home create
+   # or
+   happier home create --ssh user@host
+   ```
+
+2. Follow the printed pairing guidance. Use `happier home pair-device` later to start a new short-lived QR/link session.
+
+3. Optionally run `happier home link-account` so your selected Account Service can discover the Home later. The Account Service never carries normal Home traffic.
 
 4. In the desktop app, decide which machine should run the background service:
    - **This computer**: use the **Setup wizard** → **Set up this computer**.
    - **Another machine**: use **Add machine over SSH** from the Machines settings screen or save a reusable Remote host first.
 
-If you need a CLI fallback for the background-service host:
+If you need a CLI fallback for a background-service host, connect it to the existing Home:
 
 ```bash
-happier setup --relay-url https://YOUR_SERVER_URL --skip-providers
+happier setup --home <saved-home> --skip-providers
 ```
 
 This is the terminal guided executor for the same outcome as the app wizard.
@@ -75,27 +79,33 @@ If you want to bootstrap a *remote machine* over SSH instead, use:
 ```bash
 happier machine setup --ssh user@host
 ```
-If you want to save a reusable Relay profile for future CLI commands, see [CLI → Server profiles](/apps/cli#server-profiles).
+If you want to use a strict Iroh-only descriptor on a fresh machine, pass `--home-descriptor-file <path|->`. Manual HTTPS remains available through `--home-url`.
 
-### Option C — Devbox (Relay + background service on the same machine)
-You install both the Relay and the background service on one box.
+### Option C — Generic/operator server runtime
 
-1. Install the stack (for example via `hstack setup-from-source --profile=selfhost` or the Proxmox “devbox” option).
-2. Open the desktop app (recommended) or web UI (status/management only) and choose that Relay (use the printed configure-server link/QR if available).
-3. Sign in / create an account.
-4. In the app, use the **Setup wizard** → **Set up this computer** if you are on that machine, or set up the box over SSH if you are operating it remotely.
-5. If the Relay is local/self-hosted, optionally enable private access so phones and other devices can reach it without exposing it publicly.
+Operators can still deploy the generic server runtime with `happier relay host install`, Docker, or the runner. This is an advanced hosting path: it does not create an account, close signup, enroll a device, or convert the runtime into a Personal Home. Optional LAN, Tailscale, Cloudflare, and public HTTPS ingress remain documented under [Relay access](/apps/relay-access).
+
+### One box that hosts a Home and runs Agents
+
+Compose the two canonical commands rather than asking machine setup to create a Home:
+
+```bash
+happier home create --ssh user@host
+happier --server <saved-home> machine setup --ssh user@host
+```
+
+The older `--install-relay-runtime` machine option remains an advanced compatibility path for generic runtime installation. It does not bootstrap a Personal Home.
 
 Recommended for first setup:
 
-- Use the same Relay on every device before linking more machines.
-- Use the desktop app as the main control panel for background-service setup, Relay runtime control, and repair actions.
+- Check the Home identity before approving a new machine or device.
+- Use the desktop app as the main control panel for background-service setup and repair actions.
 
-## Multiple Relays (personal + company)
+## Multiple Homes (personal + company)
 
-- The app and CLI support **multiple saved Relay profiles**.
-- Credentials/state are **scoped per Relay**, so switching does not overwrite other accounts.
-- Accounts are per Relay. Using the same login provider on two Relays still creates two independent server-side account contexts.
+- The app and CLI support **multiple saved Home profiles**.
+- Credentials/state are **scoped per Home**, so switching does not overwrite other accounts.
+- Stable Home identity, not a mutable URL, keeps routing changes attached to the same saved Home.
 - Web: you can switch the Relay **for this tab** or **make it the device default**.
 
 ### CLI: target a server per invocation
@@ -105,7 +115,7 @@ happier --server company auth login
 happier --server company service start
 ```
 
-### CLI: run multiple background services on one machine (one per Relay)
+### CLI: run multiple background services on one machine (one per Home)
 
 ```bash
 happier --server personal service install

@@ -3,7 +3,20 @@ title: Self-host runtime (installer vs runner)
 description: Understand the supported ways to run a self-hosted Happier Server, and what each option installs/manages.
 ---
 
-Happier currently supports three **different** self-host “shapes”:
+> **Availability:** `happier home create` is available in the 0.3 development/preview line. Stable 0.2 supports the generic Relay runtime paths below, but not Personal Home creation.
+
+For a personal deployment, start with the explicit Home command:
+
+```bash
+happier home create
+happier home create --ssh user@host
+```
+
+Both forms install or reuse the same managed Happier server runtime, then run the atomic Personal Home bootstrap. The local form keeps the Home on this computer; the SSH form creates it on the trusted remote host. Its HTTP listener can remain loopback-only because the server publishes an Iroh descriptor for Home reachability. Public ingress is optional.
+
+Personal Home data is plaintext at rest on its host. Use a computer or hosting provider you trust. When creation finishes, use `happier home pair-device` to start a new device-link session or `happier home link-account` to make the Home discoverable through your signed-in Account Service.
+
+Happier also supports three **operator/runtime** self-host shapes:
 
 1) a **managed install** (service + config) driven by `happier relay host …`
 2) a **Docker image** that bakes verified server-runtime + UI-web artifacts into the image
@@ -13,12 +26,14 @@ They are complementary, but they are not the same thing.
 
 For a complete “what updates automatically vs manually” matrix across all shipped assets (desktop/mobile/web, CLI installers, Docker images, and runners), see: [Updates](/releases/updates).
 
-## Option A: Managed self-host install (recommended when you want a service)
+## Option A: Managed generic/operator install
 
 Use `happier relay host install` when you want:
 
 - the server installed as a **managed service** (user/system mode)
 - a repeatable **install-or-update** command for your selected channel
+
+This command manages the generic server runtime. It does not create an account, change signup policy, enroll a device, or convert an existing runtime into a Personal Home.
 
 First, install the Happier CLI: see [CLI install](/apps/cli).
 
@@ -67,7 +82,7 @@ When the managed runtime on this computer runs your Personal Home, its lifecycle
 
 Deleting that data is a separate, explicit step: `happier home erase`. It stops the Home, shows the affected Home plus the exact owner-resolved paths and estimated size it intends to delete, and requires one explicit confirmation (`--yes` in non-interactive runs). If you want a recovery copy, create and verify an external backup separately first; erase never creates one implicitly. It never runs as a side effect of uninstall, logout, or profile removal.
 
-The CLI also owns complete-Home backups: `happier home backup` creates and verifies a plaintext archive of the database, files, master secret, and Home configuration, `happier home verify-backup` re-checks any archive, and `happier home restore PATH` restores a verified archive with validation, forward-only migrations, and automatic rollback on failure. See [Personal Home data operations](/apps/cli) for the full command reference. A backup is plaintext and contains readable conversations, the Home master secret, and trusted-device state — store it somewhere you trust.
+The CLI also owns complete-Home backups: `happier home backup` creates and verifies a plaintext archive of the database, files, master secret, and Home configuration, `happier home verify-backup` re-checks any archive, and `happier home restore PATH` restores a verified archive with validation, forward-only migrations, and automatic rollback on failure. Each operation also accepts `--ssh user@host` to target the managed Personal Home on a trusted remote host; destructive approval remains bound to that host and Home's current facts. See [Personal Home data operations](/apps/cli) for the full command reference. A backup is plaintext and contains readable conversations, the Home master secret, and trusted-device state — store it somewhere you trust.
 
 Two boundaries keep this distinct from the rest of Happier: standard relay and Happier Cloud behavior is unchanged, and end-to-end-encrypted Homes are never searched server-side. The Personal Home's transcript search is a local, rebuildable plaintext index (FTS5) served by this runtime. When that Home index is still indexing or unavailable, Search can use an otherwise eligible, explicitly selected daemon-memory source; if none is eligible, it reports the Home state instead of pretending there were no matches. E2EE and non-Personal-Home paths continue to use their existing eligible search source.
 

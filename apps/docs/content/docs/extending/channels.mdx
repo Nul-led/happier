@@ -60,12 +60,16 @@ rather than at the first silent failure:
   permissions at the exact destination, names any missing permission, and its
   guidance links an invite carrying exactly those permissions.
 - **Telegram** reads the bot identity from the token. A shared conversation is
-  a group or supergroup, and you point setup at it by its public @username —
-  broadcast channels are not supported. A bot in a shared group also needs
-  BotFather **Group Privacy** disabled — setup observes whether the bot may
-  read all group messages, and every later connection test restates the
-  *current* capability, so flipping privacy back on after setup surfaces on
-  the next test instead of silently narrowing what the channel receives.
+  a group or supergroup: use its numeric chat ID, or the public `@username` of
+  a supergroup. Telegram broadcast channels are not supported, even though the
+  Bot API can deliver channel posts. With BotFather **Group Privacy** enabled,
+  Telegram still delivers commands addressed to this bot, mentions, and
+  replies to the bot; disable it only when the binding must receive ordinary
+  group messages too. Telegram requires removing and re-adding the bot in each
+  group before a privacy-mode change takes effect. Setup records the Bot API's
+  `can_read_all_group_messages` fact, and every later connection test restates
+  its current value so a narrower capability becomes visible instead of
+  silently promising messages Telegram will withhold.
 - **GitHub** verifies the selected repository against the credential and then
   exercises the exact issue-comment collection the channel polls, so a token
   with repository access but without the **Issues** permission is refused at
@@ -80,6 +84,24 @@ is answered there once the request has been recorded. That keeps the token out
 of a group everyone can read while still connecting the group you picked.
 Pairing exists so that connecting a conversation is something somebody has to
 agree to, rather than something you can do to a channel from the outside.
+
+### Telegram polling conflicts
+
+Telegram permits one update receiver for a bot. Happier distinguishes the two
+provider states that block polling:
+
+- An active webhook is reported before polling starts. Happier does not remove
+  it automatically; use the confirmed removal action, remove it in the other
+  tool, or use another bot.
+- A Bot API `409` from `getUpdates` means another long-polling process is using
+  the bot. Stop that process or give Happier a separate bot. Happier may retry
+  a short restart overlap using its local backoff policy, but it does not
+  present that local delay as a retry instruction from Telegram.
+
+Telegram retains pending updates for no longer than 24 hours. If Happier can no
+longer prove continuity from its committed checkpoint, it pauses for an
+authenticated history-baseline reset instead of treating the missing interval
+as complete.
 
 ### GitHub repositories
 

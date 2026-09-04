@@ -1,15 +1,17 @@
 ---
-title: Multi-server
-description: Use multiple Happier servers from the same app and CLI.
+title: Multiple Homes
+description: Use multiple Happier Homes from the same app and CLI.
 ---
 
-Happier supports using multiple servers at once (for example Happier Cloud + personal self-host + company self-host).
+Happier supports using multiple Homes at once (for example a Home discovered through Happier's Account Service, a Personal Home, and a company Home).
+
+> **Availability:** Home terminology and Account Service discovery describe the 0.3 development/preview line. Stable 0.2 uses the released server/Relay profile UI and commands.
 
 ## Core model
 
-- A **server profile** is a saved API/webapp target.
-- Auth is **scoped per server**. Signing into `server A` does not sign you into `server B`.
-- Daemon/runtime state is also scoped per server, so one machine can run multiple daemon instances safely.
+- A **Home profile** is a saved stable Home identity plus its current connection descriptor. A URL is a route or compatibility alias, not the identity itself.
+- Auth is **scoped per Home**. Signing into Home A does not sign you into Home B.
+- Daemon/runtime state is also scoped per Home, so one machine can run multiple daemon instances safely.
 
 If you use the same identity provider (for example GitHub) on two servers, they are still separate server accounts.
 
@@ -41,11 +43,13 @@ Installers and setup commands can print one-click links:
 
 These prefill server settings so users do not have to paste URLs manually.
 
-## CLI server profiles
+## CLI Home targeting
+
+For routine setup, use `happier setup`. It discovers a Home through the selected Account Service by default, or accepts `--home <saved-home>`, `--home-url https://...`, or `--home-descriptor-file <path|->`. If the selected Home is unavailable, Retry checks that same Home; setup does not silently substitute another identity.
 
 ### Persisted profiles
 
-Use server profile commands:
+The released `server` profile commands remain URL-oriented compatibility aliases for saved targets:
 
 ```bash
 happier server list
@@ -70,6 +74,8 @@ You can also pass explicit URLs for a single invocation:
 ```bash
 happier --server-url https://api.company.example --webapp-url https://app.company.example auth login
 ```
+
+Prefer the saved Home form for routine use. URL flags remain useful for HTTPS compatibility and advanced/operator workflows; a strict Home descriptor may instead be Iroh-only.
 
 ## Multiple daemons on one machine
 

@@ -18,15 +18,20 @@ it by immutable digest.
 Native Iroh connectivity exists in the current development source, and so does
 browser Home connectivity: in this development source a browser carries Home
 HTTP and Socket.IO over Iroh when the Home publishes an exact endpoint and at
-least one configured relay. Browser Machine transfers are not activated. This
-is development-source behavior; it is not claimed for a stable or preview
-release. The browser form is relay-only and shows **Secure relay**, never
-**Direct**. A browser is never a Home, and this adds no gateway, local-loopback
-emulation, JavaScript relay, or browser Mutagen workspace-sync engine.
+least one configured relay. Browser Machine transport is also wired through the
+canonical finite file and attachment transfer owners in the development source,
+including encrypted chunks, destination finalization, cancellation, and the
+terminal no-fallback result. Its complete Chromium development journey has
+passed, but this does not claim stable or preview availability, multi-browser
+support, target certification, or Lane 09 certification. The browser form is
+relay-only and shows **Secure relay**, never **Direct**. A browser is never a
+Home, and this adds no gateway, local-loopback emulation, JavaScript relay, or
+browser Mutagen workspace-sync engine.
 
 The managed profile runs stock `iroh-relay` 1.1.0 with forwarding and QUIC
-address discovery (QAD) enabled. A forwarding-disabled, QAD-only profile is
-useful for operator tests, but it is not the managed product path.
+address discovery (QAD) enabled. Happier uses the forwarding-disabled QAD-only
+upstream topology only for development tests and diagnostics; it is not a
+supported production deployment or managed-product profile.
 
 ## What you need first
 
@@ -66,6 +71,12 @@ the capacity of the deployed link and instance; they are not Happier account
 quotas. All three variables must be non-empty or Compose stops before it starts
 the container, and the relay exits during startup if either receive value is
 not a positive integer.
+
+Pinned `iroh-relay` 1.1.0 declares `accept_conn_limit` and
+`accept_conn_burst`, but upstream documents them as unimplemented and
+no-effect. Do not treat them as concurrent-endpoint or global-capacity controls.
+This deployment does not add a Happier endpoint registry or custom limiter to
+simulate them.
 
 Compose only checks that the image variable is set. It does not look inside the
 reference, so pinning the digest is your responsibility: a mutable tag would
@@ -114,7 +125,9 @@ HAPPIER_IROH_RELAY_PRIVATE_ALLOWLIST_COMPLETE=true
 
 The callback receives the authenticated identity in the `X-Iroh-NodeId`
 header. This exact header applies to the pinned 1.1.0 relay and should be
-re-checked before upgrading Iroh. Do not build this callback from a partial
+re-checked before upgrading Iroh. The callback allows the endpoint only by
+returning HTTP 200 with a body of exactly `true`; any other status or body
+denies it. Do not build this callback from a partial
 Home-only or Machine-only registry: the relay cannot infer application roles,
 and an incomplete list denies legitimate endpoints. A public-client shared
 token is not supported.

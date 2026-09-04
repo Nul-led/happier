@@ -18,8 +18,8 @@ clear answer about whether a feature is available, it treats it as unavailable.
 That is why a feature can seem to vanish when a server is unreachable, and why
 a misconfigured self-hosted server hides features rather than half-enabling them.
 
-There are 130 features in the catalog. 23 of them have a switch you can
-reach; the other 107 are decided before you get there.
+There are 131 features in the catalog. 23 of them have a switch you can
+reach; the other 108 are decided before you get there.
 
 ## Features you can turn on yourself
 
@@ -85,6 +85,7 @@ behaviour but still needs the server to advertise the capability.
 | `app.ui.storeReviewPrompts` | In-app store review prompts (native App Store / Play Store review sheet). | client | — | — |
 | `auth.login.keyChallenge` | Key-challenge login route availability (POST /v1/auth). | server | — | — |
 | `auth.mtls` | mTLS client certificate authentication support. | server | — | `HAPPIER_FEATURE_AUTH_MTLS__ENABLED` |
+| `auth.pairing.boundQrV2` | Direction- and Home-bound QR pairing v2 wire semantics. | server | `auth.pairing.desktopQrMobileScan` | — |
 | `auth.pairing.desktopQrMobileScan` | Pairing session support for desktop/web QR → logged-out mobile scan sign-in. | server | — | — |
 | `auth.recovery.providerReset` | Auth provider reset support during recovery flows. | server | — | — |
 | `auth.ui.recoveryKeyReminder` | Recovery key reminder UI behavior. | server | — | — |
@@ -146,7 +147,7 @@ behaviour but still needs the server to advertise the capability.
 | `providers.localModelManagement` | Explicit, bounded local model-management actions for trusted provider contributions. | server | `providers` | `HAPPIER_FEATURE_PROVIDERS_LOCAL_MODEL_MANAGEMENT__ENABLED` |
 | `remoteHosts.management` | Remote SSH host profile persistence and management surfaces. | server | — | — |
 | `remoteHosts.secretMaterial` | Remote host secret material persistence (passwords/private keys) for saved SSH profiles. | server | `remoteHosts.management` | — |
-| `search` | Server-owned search providers and authenticated search routes. | server | — | `HAPPIER_FEATURE_SEARCH__ENABLED` |
+| `search` | Personal Home plaintext transcript search indexing and authenticated query route. | server | — | `HAPPIER_FEATURE_SEARCH__ENABLED` |
 | `sessions` | Session-level product surfaces and control-plane capabilities. | client | — | — |
 | `sessions.agentSwitching` | Continue one Session in place with another coding Agent, and create configurable Sessions from a typed source-context recipe. | server | `sessions` | `HAPPIER_FEATURE_SESSIONS_AGENT_SWITCHING__ENABLED` |
 | `sessions.drafts` | Cross-device composer and new-session draft synchronization. | server | `sessions` | `HAPPIER_FEATURE_SESSIONS_DRAFTS__ENABLED` |

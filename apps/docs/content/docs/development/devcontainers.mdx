@@ -60,11 +60,11 @@ happier auth pair-remote --ssh user@host --json
 
 What this does:
 
-1. Runs `happier auth request --json` on the remote host.
-2. Approves the request locally using your existing token (the local token is **not** sent to the remote host).
-3. Runs `happier auth wait --public-key ... --json` on the remote host to claim the request and write credentials.
+1. Opens one authenticated SSH session to the remote host and transfers the selected Home target over that session.
+2. Runs one short-lived streaming enrollment: the local CLI verifies the selected Home identity before approving the remote request (the local token is **not** sent to the remote host).
+3. The remote CLI writes its Home profile and credentials only after enrollment completes, then the local CLI performs its post-check.
 
-### Manual (scriptable) alternative
+### Manual compatibility primitives (advanced)
 
 If you want to integrate with custom orchestration:
 

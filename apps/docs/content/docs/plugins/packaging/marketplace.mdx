@@ -61,6 +61,21 @@ digest. A package is listed only when those published projections agree, and
 the install path rechecks the selected SRI and manifest digest against the
 staged archive before anything runs.
 
+Start with a Community npm listing, then pass both identities from that
+listing when you install it:
+
+```bash
+hdev plugins marketplace list community-npm
+hdev plugins marketplace install community-npm <pluginId> --package <npmPackage>
+```
+
+The npm package name and the plugin ID are separate values and do not have to
+match. `--package` is therefore required for Community npm installs. Curated
+and added marketplace sources already bind the package coordinate to their
+listing, so their install command only needs the plugin ID. `community-npm` is
+a CLI shorthand for the built-in source; it does not create or save another
+marketplace source.
+
 ## Every first install is reviewed
 
 Community npm listings and the marketplace sources you add are unreviewed,
