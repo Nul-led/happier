@@ -115,8 +115,13 @@ describe("plugin data and message-admission persistence contract", () => {
             );
         }
 
-        // PEP1 is not approved: payload transition staging must not gain a second owner here.
-        expect(schema).not.toMatch(/Plugin(?:Collection|AccountKv).*Stage/);
+        // Candidate preparation is the one approved plugin-data stage. Keep the
+        // policy closed so similarly named Collection or Account-KV staging
+        // models cannot silently become another persistence owner.
+        expect(Array.from(
+            schema.matchAll(/^model\s+(Plugin(?:Collection|AccountKv)\S*Stage\S*)\s+\{/gm),
+            ([, name]) => name,
+        )).toEqual(["PluginCollectionCandidatePreparationStage"]);
         // Materialization rows reconstruct a machine snapshot; no fifth snapshot record exists.
         expect(schema).not.toContain("PluginMachineMaterializationSnapshot");
     });

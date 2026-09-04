@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
@@ -12,7 +13,43 @@ const serverRoot = join(import.meta.dirname, "..", "..");
 const sqliteMigrationsRoot = join(serverRoot, "prisma", "sqlite", "migrations");
 const quotaDropId = "20260630223000_drop_service_account_quota_snapshots";
 const releasedPredecessorLastId = "20260326130000_add_pending_queue_seq";
-const currentPredecessorLastId = "20260723220000_add_connected_service_auth_group_runtime_state_revision";
+// Immutable release basis: server-v0.2.1 at 4913c1e533c872a0712ba1c25b3104fd470aacc2.
+// Current predecessor basis: ../0.2 at a7305433ac9e3dffdba4d24e82e2bea068c623b3,
+// including its dirty replacement bytes for 20260902120000. The aggregate hashes below pin
+// every migration ID and SQL byte so this fixture cannot silently borrow changed 0.3 history.
+const currentPredecessorLaterIds = [
+    "20260504110500_add_account_pet_library",
+    "20260506193000_add_session_runtime_issue_projection",
+    "20260512130000_add_machine_installation_identity",
+    "20260513143000_add_session_folder_assignment",
+    "20260514100000_add_session_message_role_metadata",
+    "20260517150000_add_session_meaningful_activity_at",
+    "20260517173000_add_connected_service_auth_groups",
+    "20260517190000_add_session_turns",
+    "20260517200000_add_connected_service_auth_group_member_credential_fk",
+    "20260519183000_add_session_system_records",
+    "20260520110000_add_session_attention_projection_facts",
+    "20260523154000_add_account_settings_snapshots",
+    "20260624123000_add_pending_delivery_state",
+    "20260630162000_add_provider_account_usage_records",
+    "20260630170000_add_session_organization_models",
+    quotaDropId,
+    "20260701123000_add_session_runtime_activity_projection",
+    "20260723210000_drop_public_share_blocked_users",
+    "20260723220000_add_connected_service_auth_group_runtime_state_revision",
+    "20260803201500_add_session_publisher_generation",
+    "20260807120000_add_session_unread_since",
+    "20260808120000_add_session_needs_attention",
+    "20260810190000_add_session_message_row_revision",
+    "20260810200000_expand_session_turn_anchor_projection",
+    "20260816230000_add_manual_automation_triggers",
+    "20260819120000_add_session_attention_standing",
+    "20260902120000_add_pending_activation_authorization",
+] as const;
+const predecessorSqlDigests = {
+    "released-v0.2.1": "e8727e472791d7de236f2cfa1ef7e8da7c179cbc97c3e137df2eb00b3b9873e5",
+    "current-0.2": "22a64155dbbc987ebb8bb1fbfbcf1f82fad8065bb37c935fd5c03e953f458227",
+} as const;
 type PredecessorFrontier = "released-v0.2.1" | "current-0.2";
 
 async function copyMigration(sourceId: string, targetRoot: string): Promise<void> {
@@ -36,15 +73,16 @@ async function preparePredecessorLedger(
     migrationsDir: string,
     frontier: PredecessorFrontier,
 ): Promise<string[]> {
-    const lastMigrationId = frontier === "released-v0.2.1"
-        ? releasedPredecessorLastId
-        : currentPredecessorLastId;
     const predecessorMigrationIds = (await listCurrentMigrationIds())
-        .filter((id) => id <= lastMigrationId);
+        .filter((id) => id <= releasedPredecessorLastId);
     for (const id of predecessorMigrationIds) {
         await copyMigration(id, migrationsDir);
     }
     if (frontier === "released-v0.2.1") return predecessorMigrationIds;
+
+    for (const id of currentPredecessorLaterIds) {
+        if (id !== quotaDropId) await copyMigration(id, migrationsDir);
+    }
 
     const quotaDropDir = join(migrationsDir, quotaDropId);
     await mkdir(quotaDropDir, { recursive: true });
@@ -53,7 +91,18 @@ async function preparePredecessorLedger(
         'DROP TABLE IF EXISTS "ServiceAccountQuotaSnapshot";\n',
         "utf8",
     );
-    return [...predecessorMigrationIds, quotaDropId].sort((left, right) => left.localeCompare(right));
+    return [...predecessorMigrationIds, ...currentPredecessorLaterIds].sort((left, right) => left.localeCompare(right));
+}
+
+async function digestMigrationSql(migrationsDir: string, ids: readonly string[]): Promise<string> {
+    const hash = createHash("sha256");
+    for (const id of ids) {
+        hash.update(id);
+        hash.update("\0");
+        hash.update(await readFile(join(migrationsDir, id, "migration.sql")));
+        hash.update("\0");
+    }
+    return hash.digest("hex");
 }
 
 async function appendCurrentMigrations(
@@ -65,10 +114,14 @@ async function appendCurrentMigrations(
     for (const id of currentMigrationIds) {
         await copyMigration(id, migrationsDir);
     }
-    const lastMigrationId = frontier === "released-v0.2.1"
-        ? releasedPredecessorLastId
-        : currentPredecessorLastId;
-    return currentMigrationIds.filter((id) => id > lastMigrationId);
+    const predecessorIds = frontier === "released-v0.2.1"
+        ? currentMigrationIds.filter((id) => id <= releasedPredecessorLastId)
+        : [
+            ...currentMigrationIds.filter((id) => id <= releasedPredecessorLastId),
+            ...currentPredecessorLaterIds,
+        ];
+    const predecessorIdSet = new Set(predecessorIds);
+    return currentMigrationIds.filter((id) => !predecessorIdSet.has(id));
 }
 
 async function seedReleasedQuotaRow(databasePath: string): Promise<void> {
@@ -113,6 +166,7 @@ describe("SQLite 0.2 migration lineage before Account Directory", () => {
         const databasePath = join(dataDir, "lineage.sqlite");
 
         const predecessorMigrationIds = await preparePredecessorLedger(migrationsDir, frontier);
+        expect(await digestMigrationSql(migrationsDir, predecessorMigrationIds)).toBe(predecessorSqlDigests[frontier]);
         const predecessorResult = await applySqliteMigrations({ databasePath, migrationsDir });
         expect(predecessorResult.applied).toEqual(predecessorMigrationIds);
 

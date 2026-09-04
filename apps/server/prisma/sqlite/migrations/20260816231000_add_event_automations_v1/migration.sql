@@ -202,7 +202,6 @@ CREATE TABLE "new_AutomationRun" (
     "replyHandoffState" TEXT NOT NULL DEFAULT 'none',
     "replyHandoffAttempt" INTEGER NOT NULL DEFAULT 0,
     "replyHandoffDueAt" DATETIME,
-    "replyHandoffReceiptEnvelope" TEXT,
     "scheduledAt" DATETIME NOT NULL,
     "dueAt" DATETIME NOT NULL,
     "claimedAt" DATETIME,
@@ -288,7 +287,7 @@ CREATE TABLE "new_AutomationRun" (
     ),
     CONSTRAINT "AutomationRun_reply_handoff_arm_check" CHECK (
         ("causeKind" = 'conversation' AND "replyContextEnvelope" IS NOT NULL AND "replyHandoffActionPluginId" IS NOT NULL AND "replyHandoffActionLocalId" IS NOT NULL AND "replyHandoffTargetMachineId" IS NOT NULL AND "replyHandoffTargetMachineInstallationId" IS NOT NULL AND "replyHandoffTargetMaterializationId" IS NOT NULL AND "replyHandoffId" IS NOT NULL AND "replyHandoffState" <> 'none')
-        OR ("causeKind" IN ('trigger', 'manual', 'conversation') AND "replyContextEnvelope" IS NULL AND "replyHandoffActionPluginId" IS NULL AND "replyHandoffActionLocalId" IS NULL AND "replyHandoffTargetMachineId" IS NULL AND "replyHandoffTargetMachineInstallationId" IS NULL AND "replyHandoffTargetMaterializationId" IS NULL AND "replyHandoffId" IS NULL AND "replyHandoffState" = 'none' AND "replyHandoffAttempt" = 0 AND "replyHandoffDueAt" IS NULL AND "replyHandoffReceiptEnvelope" IS NULL)
+        OR ("causeKind" IN ('trigger', 'manual', 'conversation') AND "replyContextEnvelope" IS NULL AND "replyHandoffActionPluginId" IS NULL AND "replyHandoffActionLocalId" IS NULL AND "replyHandoffTargetMachineId" IS NULL AND "replyHandoffTargetMachineInstallationId" IS NULL AND "replyHandoffTargetMaterializationId" IS NULL AND "replyHandoffId" IS NULL AND "replyHandoffState" = 'none' AND "replyHandoffAttempt" = 0 AND "replyHandoffDueAt" IS NULL)
     )
 );
 

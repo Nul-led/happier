@@ -1411,7 +1411,6 @@ model AutomationRun {
     replyHandoffState  AutomationRunReplyHandoffState @default(none)
     replyHandoffAttempt Int @default(0)
     replyHandoffDueAt  DateTime?
-    replyHandoffReceiptEnvelope String?
     scheduledAt        DateTime
     dueAt              DateTime
     claimedAt          DateTime?

@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto";
-import { cp, copyFile, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { cp, copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -14,9 +14,11 @@ type PredecessorFrontier = "released-v0.2.1" | "current-0.2";
 
 const serverRoot = join(import.meta.dirname, "..", "..");
 const quotaDropId = "20260630223000_drop_service_account_quota_snapshots";
-// Immutable `server-v0.2.1` (4913c1e5) ends at this migration for both
+// Immutable `server-v0.2.1` (4913c1e533c872a0712ba1c25b3104fd470aacc2) ends at this migration for both
 // providers. Its migration IDs and SQL are byte-identical to these retained
-// 0.3 assets. The later list is the observed current `../0.2` frontier; its
+// 0.3 assets. The later list is the observed current `../0.2` frontier at
+// a7305433ac9e3dffdba4d24e82e2bea068c623b3 plus its dirty replacement bytes
+// for 20260902120000; its
 // shared SQL is likewise byte-identical, while the quota DROP is intentionally
 // absent from 0.3 and is reconstructed explicitly below.
 const earlyPredecessorLastId = "20260326130000_add_pending_queue_seq";
@@ -50,7 +52,19 @@ const laterPredecessorIds = [
     "20260810200000_expand_session_turn_anchor_projection",
     "20260816230000_add_manual_automation_triggers",
     "20260819120000_add_session_attention_standing",
+    "20260902120000_add_pending_activation_authorization",
 ] as const;
+
+const predecessorSqlDigests = {
+    postgres: {
+        "released-v0.2.1": "0a31526e800c3834ed539725130d7f15e71585045599ce59d019f7bef1594851",
+        "current-0.2": "900f876103c9a3bac7163a9a7cfbd7e4533083bd23838a6e860fb2904b6a61d7",
+    },
+    mysql: {
+        "released-v0.2.1": "f9c377792f5a8c3770ed9ab6ef24451a577c1b85454945de7ae1dd88a6ad36f5",
+        "current-0.2": "3d462a0f149abdc8d521f9f21d318b5e8d553ed7b1c425aff34c3af05110e2f0",
+    },
+} as const;
 
 function migrationsRoot(provider: Provider): string {
     return provider === "postgres"
@@ -97,6 +111,17 @@ async function copyMigration(provider: Provider, id: string, targetRoot: string)
     await cp(join(migrationsRoot(provider), id), join(targetRoot, id), { recursive: true });
 }
 
+async function digestMigrationSql(migrationsDir: string, ids: readonly string[]): Promise<string> {
+    const hash = createHash("sha256");
+    for (const id of ids) {
+        hash.update(id);
+        hash.update("\0");
+        hash.update(await readFile(join(migrationsDir, id, "migration.sql")));
+        hash.update("\0");
+    }
+    return hash.digest("hex");
+}
+
 async function createStagedPredecessor(
     provider: Provider,
     frontier: PredecessorFrontier,
@@ -112,9 +137,11 @@ async function createStagedPredecessor(
         join(migrationsRoot(provider), "migration_lock.toml"),
         join(stagedMigrationsDir, "migration_lock.toml"),
     );
-    for (const id of await predecessorMigrationIds(provider, frontier)) {
+    const migrationIds = await predecessorMigrationIds(provider, frontier);
+    for (const id of migrationIds) {
         await copyMigration(provider, id, stagedMigrationsDir);
     }
+    expect(await digestMigrationSql(stagedMigrationsDir, migrationIds)).toBe(predecessorSqlDigests[provider][frontier]);
     return { stageDir, stagedMigrationsDir };
 }
 

@@ -72,7 +72,6 @@ ALTER TABLE "AutomationRun"
     ADD COLUMN "replyHandoffState" "AutomationRunReplyHandoffState" NOT NULL DEFAULT 'none',
     ADD COLUMN "replyHandoffAttempt" INTEGER NOT NULL DEFAULT 0,
     ADD COLUMN "replyHandoffDueAt" TIMESTAMP(3),
-    ADD COLUMN "replyHandoffReceiptEnvelope" TEXT,
     ADD COLUMN "revision" INTEGER NOT NULL DEFAULT 0;
 
 CREATE TABLE "AutomationTrigger" (
@@ -325,7 +324,7 @@ ALTER TABLE "AutomationRun"
             AND "replyHandoffTargetMachineId" IS NULL AND "replyHandoffTargetMachineInstallationId" IS NULL
             AND "replyHandoffTargetMaterializationId" IS NULL AND "replyHandoffId" IS NULL
             AND "replyHandoffState" = 'none' AND "replyHandoffAttempt" = 0
-            AND "replyHandoffDueAt" IS NULL AND "replyHandoffReceiptEnvelope" IS NULL)
+            AND "replyHandoffDueAt" IS NULL)
     );
 
 CREATE TABLE "AutomationEventCatalogState" (
