@@ -27,6 +27,7 @@ import {
 } from '@/agent/runtime/createRuntimeOverrideSynchronizers';
 import { registerRunnerTerminationHandlers } from '@/agent/runtime/lifecycle/runnerTerminationHandlers';
 import { classifyPrimarySessionRuntimeIssue } from '@/agent/runtime/session/errors/classifyPrimarySessionRuntimeIssue';
+import { surfacePrimarySessionRuntimeIssue } from '@/agent/runtime/session/errors/surfacePrimarySessionRuntimeIssue';
 import {
   runPermissionModePromptLoop,
   type PromptLoopPermissionHandler,
@@ -1280,7 +1281,22 @@ export async function runSessionLoopLifecycle(params: SessionLoopLifecycleParams
         params.permissionModeState.releaseRejectedBeforeProviderPromptIdentity(session, message),
       initialResumeId: initialResumeId || undefined,
       strictInitialResume: initialResumeId.length > 0,
-      onStrictInitialResumeFailure: params.onStrictInitialResumeFailure,
+      onStrictInitialResumeFailure: async (failure) => {
+        try {
+          await params.onStrictInitialResumeFailure?.(failure);
+        } finally {
+          await surfacePrimarySessionRuntimeIssue({
+            provider: params.policyAgentId,
+            cause: 'status_error',
+            error: failure.error,
+            session: {
+              sessionId: params.session.sessionId,
+              sessionTurnLifecycle,
+            },
+            allocateTurnWhenIdle: true,
+          });
+        }
+      },
       startRuntimeBeforeFirstPrompt: params.config.startRuntimeBeforeFirstPrompt === true,
       pendingQueueDrainMaxPopPerWake: resolveSessionPendingQueueMaxPopPerWake(params.opts.accountSettingsContext?.settings ?? null),
       pendingQueueDeliveryTiming: resolveSessionPendingQueueDeliveryTiming(params.opts.accountSettingsContext?.settings ?? null),

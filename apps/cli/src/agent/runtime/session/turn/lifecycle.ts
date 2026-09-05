@@ -1,8 +1,9 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import {
     AgentSessionRuntimeEventSchema,
     type AgentSessionRuntimeEvent,
+    type SessionRuntimeIssueV1,
 } from '@happier-dev/protocol';
 import { classifyPrimarySessionRuntimeIssue } from '@/agent/runtime/session/errors/classifyPrimarySessionRuntimeIssue';
 
@@ -30,6 +31,11 @@ type SessionTurnLifecycleParams = Readonly<{
 
 export type SessionTurnLifecycle = Readonly<{
     observeRuntimeEvent(event: AgentSessionRuntimeEvent): void;
+    failTurn(input: Readonly<{
+        issue: SessionRuntimeIssueV1;
+        occurredAt?: number;
+        allocateWhenIdle?: boolean;
+    }>): Promise<boolean>;
     hasActiveTurn(): boolean;
     retireAcceptedLifecyclePublication(): void;
     drainAcceptedLifecycle(): Promise<void>;
@@ -165,7 +171,7 @@ export function createSessionTurnLifecycle(params: SessionTurnLifecycleParams): 
         });
     }
 
-    return {
+    const lifecycle: SessionTurnLifecycle = {
         retireAcceptedLifecyclePublication() {
             acceptedLifecyclePublicationRetired = true;
         },
@@ -176,6 +182,46 @@ export function createSessionTurnLifecycle(params: SessionTurnLifecycleParams): 
 
         hasActiveTurn() {
             return activeTurnId !== null;
+        },
+
+        async failTurn(input) {
+            if (activeTurnId === null && input.allocateWhenIdle !== true) return false;
+            const turnId = activeTurnId ?? `session-turn:${randomUUID()}`;
+            const emittedAtMs = typeof input.occurredAt === 'number' && Number.isSafeInteger(input.occurredAt)
+                ? input.occurredAt
+                : Date.now();
+            if (activeTurnId === null) {
+                lifecycle.observeRuntimeEvent({
+                    sequence: 0,
+                    sessionId: params.session.sessionId,
+                    emittedAtMs,
+                    kind: 'turn-start',
+                    turnId,
+                    startedBy: 'host',
+                });
+            }
+            lifecycle.observeRuntimeEvent({
+                sequence: 1,
+                sessionId: params.session.sessionId,
+                emittedAtMs,
+                kind: 'turn-failed',
+                turnId,
+                ...(input.issue.agentTurnId ? { agentTurnId: input.issue.agentTurnId } : {}),
+                diagnostic: {
+                    code: input.issue.code,
+                    severity: 'error',
+                    ...(input.issue.sanitizedPreview ? { message: input.issue.sanitizedPreview } : {}),
+                    details: {
+                        v: 1,
+                        source: input.issue.source,
+                        occurredAt: input.issue.occurredAt,
+                        ...(input.issue.agentId ? { agentId: input.issue.agentId } : {}),
+                        ...(input.issue.agentTurnId ? { agentTurnId: input.issue.agentTurnId } : {}),
+                    },
+                },
+            });
+            await lifecycle.drainAcceptedLifecycle();
+            return true;
         },
 
         observeRuntimeEvent(event) {
@@ -294,6 +340,7 @@ export function createSessionTurnLifecycle(params: SessionTurnLifecycleParams): 
             }
         },
     };
+    return lifecycle;
 }
 
 export function observeRuntimeMessageForSessionTurnLifecycle(params: Readonly<{

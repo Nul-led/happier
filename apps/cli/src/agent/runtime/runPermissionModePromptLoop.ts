@@ -914,6 +914,13 @@ export async function runPermissionModePromptLoop(opts: {
           strictInitialResumePending = false;
           throw new StrictInitialResumeError('Strict initial resume failed', error);
         }
+        if (strictInitialResumePending && !isAbortLikeError(error)) {
+          strictInitialResumePending = false;
+          await opts.onStrictInitialResumeFailure?.({
+            resumeId: normalizedResumeId,
+            error,
+          });
+        }
         throw error;
       }
       if (eagerStart.exitRequested) return;

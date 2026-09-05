@@ -1832,6 +1832,52 @@ describe('runPermissionModePromptLoop', () => {
     expect(readySpy).not.toHaveBeenCalled();
   });
 
+  it('reports a generic strict initial-resume failure from eager startup before rethrowing it', async () => {
+    const session = createPromptLoopSession();
+    const queue = createModeQueue();
+    const runtime = createRuntime();
+    const messageBuffer = new MessageBuffer();
+    const permissionHandler = {
+      setPermissionMode: vi.fn(),
+      reset: vi.fn(),
+    } as any;
+    const resumeFailure = new Error('resume transport unavailable');
+    const onStrictInitialResumeFailure = vi.fn(async () => undefined);
+
+    await expect(runPermissionModePromptLoop({
+      providerName: 'Test Provider',
+      agentMessageType: 'qwen',
+      explicitPermissionMode: undefined,
+      session,
+      messageQueue: queue,
+      permissionHandler,
+      runtime: runtime as unknown as Parameters<typeof runPermissionModePromptLoop>[0]['runtime'],
+      createOverrideSynchronizer: () => ({ syncFromMetadata: () => {}, flushPendingAfterStart: async () => {} }),
+      messageBuffer,
+      shouldExit: () => false,
+      getAbortSignal: () => new AbortController().signal,
+      keepAlive: () => {},
+      setThinking: () => {},
+      sendReady: () => {},
+      currentPermissionModeUpdatedAt: 0,
+      setCurrentPermissionMode: () => {},
+      setCurrentPermissionModeUpdatedAt: () => {},
+      initialResumeId: 'resume-123',
+      strictInitialResume: true,
+      onStrictInitialResumeFailure,
+      onAfterStart: async () => {
+        throw resumeFailure;
+      },
+      formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+    })).rejects.toBe(resumeFailure);
+
+    expect(onStrictInitialResumeFailure).toHaveBeenCalledOnce();
+    expect(onStrictInitialResumeFailure).toHaveBeenCalledWith({
+      resumeId: 'resume-123',
+      error: resumeFailure,
+    });
+  });
+
   it('preserves the fresh-session system prompt when eager startup happens before the first prompt', async () => {
     const session = createPromptLoopSession();
     const queue = createModeQueue();

@@ -12,6 +12,7 @@ import {
   classifyPrimarySessionRuntimeIssue,
   type ClassifyPrimarySessionRuntimeIssueInput,
 } from './classifyPrimarySessionRuntimeIssue';
+import type { SessionTurnLifecycle } from '@/agent/runtime/session/turn/lifecycle';
 
 type PrimarySessionRuntimeIssueRecord = Readonly<{
   latestTurnStatus: PrimaryTurnStatusV1;
@@ -29,12 +30,14 @@ type RuntimeIssueTurnEventDraft = RuntimeIssueTurnEvent extends infer Event
 
 type RuntimeIssueSession = Readonly<{
   sessionId?: string;
+  sessionTurnLifecycle?: Pick<SessionTurnLifecycle, 'failTurn'>;
 }>;
 
 export type SurfacePrimarySessionRuntimeIssueInput = Omit<ClassifyPrimarySessionRuntimeIssueInput, 'cause'> & Readonly<{
   cause?: ClassifyPrimarySessionRuntimeIssueInput['cause'] | 'cancelled' | null;
   session?: RuntimeIssueSession | null;
   sessionTurnId?: string | null;
+  allocateTurnWhenIdle?: boolean;
   publishTranscriptAgentMessageCommitted?: AcpSendFn;
   publishRuntimeEvent?: (event: RuntimeIssueTurnEventDraft) => void | Promise<void>;
   recordIssue?: (record: PrimarySessionRuntimeIssueRecord) => void | Promise<void>;
@@ -141,6 +144,17 @@ export async function surfacePrimarySessionRuntimeIssue(
     latestTurnStatus: 'failed',
     lastRuntimeIssue: issue,
   } satisfies PrimarySessionRuntimeIssueRecord;
+  if (input.session?.sessionTurnLifecycle) {
+    const failed = await input.session.sessionTurnLifecycle.failTurn({
+      issue,
+      occurredAt: issue.occurredAt,
+      allocateWhenIdle: input.allocateTurnWhenIdle === true,
+    });
+    if (failed) {
+      await input.recordIssue?.(record);
+      return issue;
+    }
+  }
   const runtimeEventBase = buildRuntimeEventBase(input);
   await publishRuntimeTurnEventBestEffort(input, runtimeEventBase
     ? {

@@ -242,6 +242,41 @@ function loggerReceivedIdentity(value: unknown): boolean {
 }
 
 describe('runSessionLoopLifecycle checkpoint controls', () => {
+  it('materializes a strict initial-resume startup failure as an idle failed session turn', async () => {
+    const resumeFailure = new Error('resume transport unavailable');
+    const baseParams = createLifecycleParams({
+      runPermissionModePromptLoopFn: vi.fn(async (loopParams) => {
+        await loopParams.onStrictInitialResumeFailure?.({
+          resumeId: 'resume-123',
+          error: resumeFailure,
+        });
+        throw resumeFailure;
+      }),
+    });
+    const session = baseParams.session as unknown as {
+      enqueueSessionTurnMutation: ReturnType<typeof vi.fn>;
+    };
+
+    await expect(runSessionLoopLifecycle({
+      ...baseParams,
+      initialResumeId: 'resume-123',
+    })).rejects.toBe(resumeFailure);
+
+    expect(session.enqueueSessionTurnMutation).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'begin',
+      agentId: 'codex',
+    }));
+    expect(session.enqueueSessionTurnMutation).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'fail',
+      agentId: 'codex',
+      issue: expect.objectContaining({
+        scope: 'primary_session',
+        status: 'failed',
+        source: 'agent_status_error',
+      }),
+    }));
+  });
+
   it('awaits startup authority preparation before entering the prompt loop', async () => {
     const order: string[] = [];
     let releaseStartup!: () => void;

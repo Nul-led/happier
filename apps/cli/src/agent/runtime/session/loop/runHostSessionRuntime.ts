@@ -2721,8 +2721,10 @@ export async function runHostSessionRuntime(
         }),
       },
       initialResumeId,
-      onStrictInitialResumeFailure: async ({ resumeId }) => {
-        await invalidateTrackedNativeReturnIdentity(resumeId);
+      onStrictInitialResumeFailure: async ({ resumeId, error }) => {
+        if (isAgentNativeResumeIdentityMismatchError(error)) {
+          await invalidateTrackedNativeReturnIdentity(resumeId);
+        }
       },
     });
   } finally {
