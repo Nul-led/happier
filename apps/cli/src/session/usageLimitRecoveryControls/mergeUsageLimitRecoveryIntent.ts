@@ -43,6 +43,11 @@ export function mergeUsageLimitRecoveryIntent(
     const selected = compareUsageLimitRecoveryIntents(left, right) >= 0 ? left : right;
     return {
         ...selected,
+        // Scheduler presentation does not own observed reset credits. Preserve
+        // them within this exact runtime-auth attempt when its update omits them.
+        ...(left.runtimeAuthRecoveryAttemptId && !selected.recoveryCredits && left.recoveryCredits
+            ? { recoveryCredits: left.recoveryCredits }
+            : {}),
         attemptCount: Math.max(left.attemptCount, right.attemptCount),
         maxAttempts: mergeUsageLimitRecoveryMaxAttempts(left.maxAttempts, right.maxAttempts),
     };

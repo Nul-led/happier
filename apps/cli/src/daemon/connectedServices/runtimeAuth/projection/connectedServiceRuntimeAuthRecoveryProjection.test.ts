@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from 'vitest';
-import { SESSION_USAGE_LIMIT_RECOVERY_METADATA_KEY } from '@happier-dev/protocol';
 
 import {
   buildRuntimeAuthRecoveryAttemptTransitionLocalId,
@@ -52,7 +51,7 @@ describe('connected service runtime auth recovery projection', () => {
     expect(result.transcriptEvent).toEqual(expect.objectContaining({
       type: 'connected-service-runtime-auth-recovery',
       status: 'retry_scheduled',
-      serviceId: 'openai-codex',
+      serviceId: 'happier.agent.codex/openai-codex',
       profileId: 'primary',
       groupId: 'team-pool',
       attempt: 2,
@@ -250,106 +249,4 @@ describe('connected service runtime auth recovery projection', () => {
     expect(sendGenericStatusMessage).toHaveBeenCalledWith('retry scheduled');
   });
 
-  it('commits exhausted usage-limit recovery metadata when a group fallback reports no eligible member', () => {
-    let nextMetadata: Record<string, unknown> | null = null;
-    const report = {
-      handled: true,
-      report: {
-        ok: true,
-        result: {
-          status: 'switch_attempted',
-          result: {
-            status: 'no_eligible_member',
-          },
-        },
-      },
-      statusCode: 'switch_attempted_no_eligible_member',
-      statusMessage: 'Connected-service account group has no eligible fallback account; waiting for group recovery.',
-      projection: {
-        handled: true,
-        statusCode: 'switch_attempted_no_eligible_member',
-        statusMessage: 'Connected-service account group has no eligible fallback account; waiting for group recovery.',
-        terminal: true,
-      },
-    } as const;
-
-    const result = projectConnectedServiceRuntimeAuthRecoveryReport({
-      report: report as never,
-      classification: {
-        kind: 'usage_limit',
-        serviceId: 'openai-codex',
-        profileId: 'primary',
-        groupId: 'codex-main',
-        resetsAtMs: 1_700_000_060_000,
-        retryAfterMs: null,
-        planType: null,
-        rateLimits: null,
-        source: 'structured_provider_error',
-      },
-      commitUsageLimitRecoveryMetadata: ((updater: (metadata: Record<string, unknown>) => Record<string, unknown>) => {
-        nextMetadata = updater({});
-        return true;
-      }) as never,
-    } as never);
-
-    expect(nextMetadata).toMatchObject({
-      [SESSION_USAGE_LIMIT_RECOVERY_METADATA_KEY]: {
-        status: 'exhausted',
-        resetAtMs: 1_700_000_060_000,
-        lastProbeError: 'no_eligible_member',
-        selectedAuth: {
-          kind: 'group',
-          serviceId: 'openai-codex',
-          groupId: 'codex-main',
-          profileId: 'primary',
-        },
-      },
-    });
-    expect(result).toMatchObject({
-      usageLimitMetadataCommitted: true,
-      emitted: true,
-    });
-  });
-
-  it('does not let a provider become a second metadata writer after the daemon handled recovery', () => {
-    const commitUsageLimitRecoveryMetadata = vi.fn();
-    const report = {
-      handled: true,
-      report: {
-        ok: true,
-        result: {
-          status: 'switch_attempted',
-          result: { status: 'no_eligible_member' },
-        },
-      },
-      statusCode: 'switch_attempted_no_eligible_member',
-      statusMessage: 'waiting for group recovery',
-      projection: {
-        handled: true,
-        statusCode: 'switch_attempted_no_eligible_member',
-        statusMessage: 'waiting for group recovery',
-        terminal: true,
-        transcriptEvent: {},
-      },
-    } as const;
-
-    const result = projectConnectedServiceRuntimeAuthRecoveryReport({
-      report: report as never,
-      classification: {
-        kind: 'usage_limit',
-        serviceId: 'openai-codex',
-        profileId: 'primary',
-        groupId: 'codex-main',
-        resetsAtMs: 1_700_000_060_000,
-        retryAfterMs: null,
-        planType: null,
-        rateLimits: null,
-        source: 'structured_provider_error',
-      },
-      commitUsageLimitRecoveryMetadata,
-    } as never);
-
-    expect(commitUsageLimitRecoveryMetadata).not.toHaveBeenCalled();
-    expect(result.usageLimitMetadataCommitted).toBe(false);
-  });
 });

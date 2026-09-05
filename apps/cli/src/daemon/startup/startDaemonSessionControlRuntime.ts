@@ -14,6 +14,7 @@ import {
     resolveActiveAccountSettingsSnapshotRevision,
 } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 import { logger } from '@/ui/logger';
+import { buildRuntimeAuthUsageLimitRecoveryProjection } from '@/daemon/connectedServices/runtimeAuth/projection/connectedServiceRuntimeAuthRecoveryUsageLimitMetadata';
 import {
     resolveConnectedServiceCredentialResolutions,
 } from '@/cloud/connectedServices/resolveConnectedServiceCredentials';
@@ -8690,10 +8691,12 @@ export async function startDaemonSessionControlRuntime(
     const deliverRuntimeAuthRecoveryVisibleEvent = async (
         delivery: RuntimeAuthRecoveryVisibleEventDelivery,
     ): Promise<void> => {
+        const usageLimitRecovery = buildRuntimeAuthUsageLimitRecoveryProjection(delivery.recoveryIntent);
         await params.daemonSessionMutationCustody.stageTranscriptEvent({
             sessionId: delivery.sessionId,
             eventId: buildRuntimeAuthRecoveryAttemptTransitionLocalId(delivery),
             data: { ...delivery.transcriptEvent },
+            ...(usageLimitRecovery ? { usageLimitRecovery } : {}),
         });
     };
     const runtimeAuthRecoveryScheduler = createRuntimeAuthRecoverySchedulerForDaemon({

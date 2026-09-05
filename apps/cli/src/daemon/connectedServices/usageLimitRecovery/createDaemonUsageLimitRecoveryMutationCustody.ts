@@ -8,6 +8,7 @@ import { commitSessionStoredMessage } from '@/session/transport/http/sessionsHtt
 import { resolveSessionTransportContext } from '@/session/services/resolveSessionTransportContext';
 import { encryptSessionPayload } from '@/session/transport/encryption/sessionEncryptionContext';
 import { updateSessionMetadataWithRetry } from '@/session/metadata/updateSessionMetadataWithRetry';
+import { persistUsageLimitRecoveryFieldDurably } from '@/session/usageLimitRecoveryControls/persistUsageLimitRecoveryFieldDurably';
 import {
   createTranscriptMessageAppendMutation,
   type DaemonUsageLimitRecoveryFieldMutation,
@@ -15,6 +16,8 @@ import {
 import { AccountEncryptionMaterialUnavailableError } from '@/api/client/encryptionKey';
 import {
   SessionStoredMessageContentSchema,
+  SESSION_USAGE_LIMIT_RECOVERY_METADATA_KEY,
+  type SessionUsageLimitRecoveryV1,
   type SessionStoredMessageContent,
 } from '@happier-dev/protocol';
 
@@ -36,6 +39,7 @@ export type DaemonSessionMutationCustody = Readonly<{
     sessionId: string;
     eventId: string;
     data: Readonly<Record<string, unknown>>;
+    usageLimitRecovery?: SessionUsageLimitRecoveryV1;
     observedAt?: number;
   }>): Promise<Readonly<{ persisted: true; delivered: boolean }>>;
   bindRecoveredJournals(sessionIds: readonly string[]): Promise<Readonly<{
@@ -113,7 +117,7 @@ export function createDaemonSessionMutationCustody(params: Readonly<{
       retainedSessionIds.delete(sessionId);
       await resolveSessionCustody(sessionId, rawSession).outbox.enqueueUsageLimitRecovery(mutation);
     },
-    async stageTranscriptEvent({ sessionId: rawSessionId, eventId: rawEventId, data, observedAt }) {
+    async stageTranscriptEvent({ sessionId: rawSessionId, eventId: rawEventId, data, observedAt, usageLimitRecovery }) {
       if (closed) throw new Error('daemon_session_mutation_custody_closed');
       const sessionId = rawSessionId.trim();
       const eventId = rawEventId.trim();
@@ -151,7 +155,18 @@ export function createDaemonSessionMutationCustody(params: Readonly<{
             }),
           };
       retainedSessionIds.delete(sessionId);
-      const result = await resolveSessionCustody(sessionId, resolved.rawSession).outbox.enqueueTranscriptMessage(
+      const custody = resolveSessionCustody(sessionId, resolved.rawSession);
+      if (usageLimitRecovery) {
+        // The existing field journal owns replay and arrival-time merging. Only the
+        // presentation value enters custody, never the daemon's recovery intent.
+        await persistUsageLimitRecoveryFieldDurably({
+          sessionId,
+          currentMetadata: {},
+          nextMetadata: { [SESSION_USAGE_LIMIT_RECOVERY_METADATA_KEY]: usageLimitRecovery },
+          stageUsageLimitRecoveryMutation: (mutation) => custody.outbox.enqueueUsageLimitRecovery(mutation),
+        });
+      }
+      const result = await custody.outbox.enqueueTranscriptMessage(
         createTranscriptMessageAppendMutation({
           sessionId,
           localId: eventId,

@@ -689,6 +689,12 @@ export class DurableBackoffRecoveryScheduler<TIntent> {
       lastError: sanitizeLastError(recovery.lastError),
     });
     if (!await this.#replaceIfCurrent(input.sessionId, checking, waiting, effectClaimToken)) return { status: 'inactive' };
+    this.#onDelayed?.({
+      sessionId: input.sessionId,
+      intent: waiting,
+      retryAtMs,
+      reason: recovery.lastError ?? 'recovery_waiting',
+    });
     return recovery.wakeResult ?? { status: 'waiting' };
   }
 
