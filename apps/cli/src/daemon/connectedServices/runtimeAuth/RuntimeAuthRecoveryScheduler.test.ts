@@ -1851,6 +1851,56 @@ describe('RuntimeAuthRecoveryScheduler', () => {
     }
   });
 
+  it('keeps a credential-refresh continuation targeted and bounded while provider proof is absent', async () => {
+    const { RuntimeAuthRecoveryScheduler } = await loadModule();
+    let nowMs = 1_000;
+    const targetRevision = 'csr_bcdefghijklmnopqrstuvw';
+    const scheduler = new RuntimeAuthRecoveryScheduler({
+      nowMs: () => nowMs,
+      baseBackoffMs: 100,
+      maxBackoffMs: 1_000,
+      jitterMs: () => 0,
+      maxAttempts: 2,
+      providerOutcomePendingWaitMs: 250,
+      recover: async () => ({
+        status: 'credential_refreshed',
+        restartRequested: false,
+        pendingProviderOutcome: true,
+        activeProfileId: 'primary',
+        generation: 2,
+        credentialRevision: targetRevision,
+      }),
+    });
+
+    await scheduler.enqueueHandlerFailure({
+      sessionId: 'session-1',
+      switchesThisTurn: 1,
+      classification: usageLimitClassification(),
+      error: new Error('timeout of 5000ms exceeded'),
+    });
+
+    await expect(scheduler.wake({ sessionId: 'session-1', reason: 'manual' }))
+      .resolves.toEqual({ status: 'waiting' });
+    expect(scheduler.read('session-1')).toMatchObject({
+      status: 'resumed_awaiting_proof',
+      attemptCount: 1,
+      pendingTargetProfileId: 'primary',
+      pendingTargetGeneration: 2,
+      pendingTargetCredentialRevision: targetRevision,
+    });
+
+    nowMs += 250;
+    await expect(scheduler.wake({ sessionId: 'session-1', reason: 'manual' }))
+      .resolves.toEqual({ status: 'exhausted' });
+    expect(scheduler.read('session-1')).toMatchObject({
+      status: 'exhausted',
+      attemptCount: 2,
+      pendingTargetProfileId: 'primary',
+      pendingTargetGeneration: 2,
+      pendingTargetCredentialRevision: targetRevision,
+    });
+  });
+
 	  it('keeps a bare ok:true switch recovery waiting (no provider-outcome proof)', async () => {
     const { RuntimeAuthRecoveryScheduler } = await loadModule();
     const diagnostics: unknown[] = [];

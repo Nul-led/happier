@@ -679,6 +679,70 @@ describe('handleConnectedServiceRuntimeAuthFailureForSession', () => {
         });
     });
 
+    it('continues a scheduled recovery on the refreshed revision of the same profile without attributing the old failure to it', async () => {
+        const tracked = {
+            startedBy: 'daemon' as const,
+            pid: 111,
+            happySessionId: 'sess_scheduled_same_profile_refresh',
+            spawnOptions: { directory: '/tmp/project', environmentVariables: {} },
+        };
+        const switchAfterClassifiedFailure = vi.fn();
+        const continueAfterRuntimeAuthSwitch = vi.fn(async () => {});
+
+        await expect(handleConnectedServiceRuntimeAuthFailureForSession({
+            getChildren: () => [tracked],
+            sessionId: tracked.happySessionId,
+            switchesThisTurn: 0,
+            recoveryInvocationSource: 'scheduler_retry',
+            classification: {
+                kind: 'usage_limit',
+                serviceId: 'openai-codex',
+                profileId: 'primary',
+                groupId: 'main',
+                groupGeneration: 6,
+                expectedCredentialRevision: 'csr_abcdefghijklmnopqrstuv',
+                resetsAtMs: null,
+                planType: null,
+                rateLimits: null,
+                source: 'structured_provider_error',
+                recoveryAction: { kind: 'quota_recovery_required' },
+            },
+            resolveRegisteredRuntimeAuthFailureSource: async () => ({
+                serviceId: 'openai-codex',
+                groupId: 'main',
+                profileId: 'primary',
+                generation: 7,
+                credentialRevision: 'csr_bcdefghijklmnopqrstuvw',
+            }),
+            switchCoordinator: { switchAfterClassifiedFailure },
+            continueAfterRuntimeAuthSwitch,
+        })).resolves.toMatchObject({
+            status: 'credential_refreshed',
+            restartRequested: false,
+            pendingProviderOutcome: true,
+            activeProfileId: 'primary',
+            generation: 7,
+            credentialRevision: 'csr_bcdefghijklmnopqrstuvw',
+        });
+
+        expect(switchAfterClassifiedFailure).not.toHaveBeenCalled();
+        expect(continueAfterRuntimeAuthSwitch).toHaveBeenCalledOnce();
+        expect(continueAfterRuntimeAuthSwitch).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: tracked.happySessionId,
+            action: 'hot_applied',
+            normalizedBindings: {
+                v: 1,
+                bindingsByServiceId: {
+                    'openai-codex': {
+                        source: 'connected',
+                        selection: 'group',
+                        groupId: 'main',
+                    },
+                },
+            },
+        }));
+    });
+
     it.each([
         ['missing revision', { expectedCredentialRevision: undefined }],
         ['revision mismatch', { expectedCredentialRevision: 'csr_bcdefghijklmnopqrstuvw' }],

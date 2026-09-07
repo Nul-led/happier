@@ -137,6 +137,12 @@ export type RuntimeAuthFailureSourceAuthorization =
       /** Exact live binding, when source authorization had to re-read the runtime. */
       sourceBinding?: RuntimeAuthFailureSourceBinding;
     }>
+  | Readonly<{
+      status: 'current_credential_revision';
+      tracked: TrackedSession;
+      inactive: null;
+      sourceBinding: RuntimeAuthFailureSourceBinding;
+    }>
   | RuntimeAuthRecoverySuperseded
   | Readonly<{ status: 'session_not_found' }>;
 
@@ -163,6 +169,7 @@ export async function authorizeConnectedServiceRuntimeAuthFailureSource(input: R
   resolveRegisteredRuntimeAuthFailureSource?: RegisteredRuntimeAuthFailureSourceBindingResolver | null;
   resolveCurrentRuntimeAuthFailureSource?: RuntimeAuthFailureSourceBindingResolver | null;
   resolveProviderQualifiedRuntimeAuthFailureSource?: ProviderQualifiedRuntimeAuthFailureSourceResolver | null;
+  recoveryInvocationSource?: RuntimeAuthRecoveryInvocationSource;
   sessionId: string;
   classification: ConnectedServiceRuntimeFailureClassification | null;
 }>): Promise<RuntimeAuthFailureSourceAuthorization> {
@@ -287,6 +294,29 @@ export async function authorizeConnectedServiceRuntimeAuthFailureSource(input: R
       : { status: 'recovery_superseded', reason: 'source_tuple_mismatch', serviceId: classification.serviceId, groupId: classification.groupId, profileId: classification.profileId };
   }
 
+  const scheduledRecoveryTargetsCurrentCredential =
+    input.recoveryInvocationSource === 'scheduler_retry'
+    && registeredBinding.serviceId === classification.serviceId
+    && registeredBinding.groupId === classification.groupId
+    && registeredBinding.profileId === classification.profileId
+    && registeredBinding.credentialRevision !== classification.expectedCredentialRevision
+    && registeredBinding.generation !== null
+    && classification.groupGeneration !== null
+    && classification.groupGeneration !== undefined
+    && registeredBinding.generation >= classification.groupGeneration;
+  if (reportCarriesRevision && scheduledRecoveryTargetsCurrentCredential) {
+    // A persisted retry describes the failure that armed it, not a fresh failure from the
+    // credential now installed on the same runtime target. Continue on that exact current
+    // target and wait for provider proof; never re-attribute the old failure to the new
+    // revision or select another account. Fresh daemon reports remain exact and fail closed.
+    return {
+      status: 'current_credential_revision',
+      tracked,
+      inactive: null,
+      sourceBinding: registeredBinding,
+    };
+  }
+
   const reportClaimsUnsettledNewerGroupGeneration =
     registeredBinding.serviceId === classification.serviceId
     && registeredBinding.groupId === classification.groupId
@@ -342,14 +372,26 @@ type RuntimeRecoveryActionRequired = Readonly<{
     reason: ConnectedServiceRuntimeFailureClassification['kind'];
   }>;
 }>;
-type RuntimeCredentialRefreshed = Readonly<{
-  status: 'credential_refreshed';
-  serviceId: ConnectedAccountServiceKey;
-  profileId: string;
-  groupId: string | null;
-  refresh: ConnectedServiceCredentialRefreshResult;
-  restartRequested: boolean;
-}>;
+type RuntimeCredentialRefreshed =
+  | Readonly<{
+      status: 'credential_refreshed';
+      serviceId: ConnectedAccountServiceKey;
+      profileId: string;
+      groupId: string | null;
+      refresh: ConnectedServiceCredentialRefreshResult;
+      restartRequested: boolean;
+    }>
+  | Readonly<{
+      status: 'credential_refreshed';
+      serviceId: ConnectedAccountServiceKey;
+      profileId: string;
+      groupId: string;
+      restartRequested: false;
+      pendingProviderOutcome: true;
+      activeProfileId: string;
+      generation: number;
+      credentialRevision: string;
+    }>;
 
 const unavailableSwitchCoordinator: SwitchCoordinatorLike = {
   switchAfterClassifiedFailure: async () => ({
@@ -622,6 +664,41 @@ export async function handleConnectedServiceRuntimeAuthFailureForSession(input: 
   const sourceAuthorization = input.sourceAuthorization ?? await authorizeConnectedServiceRuntimeAuthFailureSource({
     ...input,
   });
+  if (sourceAuthorization.status === 'current_credential_revision') {
+    const sourceBinding = sourceAuthorization.sourceBinding;
+    if (
+      sourceBinding.groupId === null
+      || sourceBinding.generation === null
+      || sourceBinding.credentialRevision === null
+    ) {
+      return {
+        status: 'recovery_superseded',
+        reason: 'source_tuple_unavailable',
+        serviceId: sourceBinding.serviceId,
+        groupId: sourceBinding.groupId,
+        profileId: sourceBinding.profileId,
+      };
+    }
+    await continueAfterRuntimeCredentialRefresh({
+      tracked: sourceAuthorization.tracked,
+      sessionId: input.sessionId,
+      serviceId: sourceBinding.serviceId,
+      groupId: sourceBinding.groupId,
+      profileId: sourceBinding.profileId,
+      continueAfterRuntimeAuthSwitch: input.continueAfterRuntimeAuthSwitch ?? null,
+    });
+    return {
+      status: 'credential_refreshed',
+      serviceId: sourceBinding.serviceId,
+      profileId: sourceBinding.profileId,
+      groupId: sourceBinding.groupId,
+      restartRequested: false,
+      pendingProviderOutcome: true,
+      activeProfileId: sourceBinding.profileId,
+      generation: sourceBinding.generation,
+      credentialRevision: sourceBinding.credentialRevision,
+    };
+  }
   if (sourceAuthorization.status !== 'authorized') {
     if (sourceAuthorization.status === 'session_not_found') {
       input.switchAttemptTracker?.clearSession(input.sessionId);
