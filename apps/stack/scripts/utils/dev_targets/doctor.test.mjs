@@ -92,6 +92,27 @@ test('dev-target doctor retries one transient SSH connect timeout before accepti
   });
 });
 
+test('dev-target doctor retries a refused multiplex session through a fresh connection', async () => {
+  const sshCalls = [];
+  const result = await runDevTargetsDoctor(
+    { targets: [targets[0]], env: {} },
+    {
+      async runProcess(input) {
+        if (input.command === 'mutagen') return { code: 0 };
+        sshCalls.push(input);
+        return sshCalls.length === 1
+          ? { code: 255, stderr: 'mux_client_request_session: session request failed: Session open refused by peer' }
+          : { code: 0 };
+      },
+    },
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(sshCalls.length, 2);
+  assert.equal(sshCalls[0].args.includes('ControlPath=none'), false);
+  assert.equal(sshCalls[1].args.includes('ControlPath=none'), true);
+});
+
 test('dev-target doctor retains a typed reason after bounded transient SSH retries are exhausted', async () => {
   let sshAttempts = 0;
   const result = await runDevTargetsDoctor(

@@ -9,21 +9,18 @@ import { runNodeCapture } from './testkit/stack_script_command_testkit.mjs';
 import { killDetachedProcessGroup } from './testkit/core/spawn_daemon_like_process.mjs';
 import { createStackHappierCliCommandFixture } from './testkit/stack_happier_cli_command_testkit.mjs';
 import { createRuntimeSnapshotFixture } from './testkit/runtime_snapshot_testkit.mjs';
+import { buildStubHappierServerSetSource } from './testkit/core/stub_happier_cli_server_set.mjs';
 import { buildStackStableScopeId } from './utils/auth/stable_scope_id.mjs';
 
 const scriptsDir = dirname(fileURLToPath(import.meta.url));
 const rootDir = dirname(scriptsDir);
 
+const SERVER_SET_CALL_LOG_FILE_NAME = '.hstack-test-server-set-calls.ndjson';
+
 function buildStubHappyCliScript({ message }) {
   return [
-      `import { appendFileSync } from 'node:fs';`,
-      `import { join } from 'node:path';`,
       `const args = process.argv.slice(2);`,
-      `const serverSetCapturePath = process.env.HAPPIER_STACK_TEST_SERVER_SET_CAPTURE_PATH || (process.env.HAPPIER_HOME_DIR ? join(process.env.HAPPIER_HOME_DIR, '.hstack-test-server-set-calls.ndjson') : null);`,
-      `if (serverSetCapturePath && args[0] === 'server' && args[1] === 'set') {`,
-      `  appendFileSync(serverSetCapturePath, JSON.stringify({ args }) + '\\n');`,
-      `  process.exit(0);`,
-      `}`,
+      buildStubHappierServerSetSource({ callLogFileName: SERVER_SET_CALL_LOG_FILE_NAME }),
       `console.log(JSON.stringify({`,
       `  message: ${JSON.stringify(message)},`,
       `  args,`,
@@ -254,7 +251,7 @@ test('hstack stack happier <name> refreshes its named server profile through the
     },
   });
 
-  const serverSetCapturePath = join(fixture.storageDir, fixture.stackName, 'cli', '.hstack-test-server-set-calls.ndjson');
+  const serverSetCallsPath = join(fixture.storageDir, fixture.stackName, 'cli', SERVER_SET_CALL_LOG_FILE_NAME);
 
   const res = await runNodeCapture([join(rootDir, 'bin', 'hstack.mjs'), 'stack', 'happier', fixture.stackName], {
     cwd: rootDir,
@@ -266,20 +263,22 @@ test('hstack stack happier <name> refreshes its named server profile through the
   assert.equal(out.message, 'seed-settings');
   assert.ok(out.activeServerId, 'expected wrapper to export HAPPIER_ACTIVE_SERVER_ID');
 
-  const captured = JSON.parse(await readFile(serverSetCapturePath, 'utf-8'));
-  assert.deepEqual(captured.args, [
+  const serverSetCalls = (await readFile(serverSetCallsPath, 'utf-8')).trim().split('\n').map((line) => JSON.parse(line));
+  assert.deepEqual(serverSetCalls, [[
     'server',
     'set',
     '--server-id',
     out.activeServerId,
+    // The profile's canonical `serverUrl` is what pairing links advertise, so it carries the
+    // stack's public address while the loopback address stays on `--local-server-url`.
     '--server-url',
-    'http://127.0.0.1:45123',
+    'http://localhost:45123',
     '--local-server-url',
     'http://127.0.0.1:45123',
     '--webapp-url',
     'http://localhost:45123',
     '--json',
-  ]);
+  ]]);
 });
 
 test('hstack stack happier <name> migrates an equivalent loopback profile into the stable stack scope', async (t) => {

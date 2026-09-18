@@ -30,6 +30,8 @@ on:
         value: ${{ jobs.resolve.outputs.stack_version }}
       server_version:
         value: ${{ jobs.resolve.outputs.server_version }}
+      runner_version:
+        value: ${{ jobs.resolve.outputs.runner_version }}
       ui_web_version:
         value: ${{ jobs.resolve.outputs.ui_web_version }}
       cli_requested:
@@ -38,6 +40,8 @@ on:
         value: ${{ jobs.resolve.outputs.stack_requested }}
       server_requested:
         value: ${{ jobs.resolve.outputs.server_requested }}
+      runner_requested:
+        value: ${{ jobs.resolve.outputs.runner_requested }}
       ui_web_requested:
         value: ${{ jobs.resolve.outputs.ui_web_requested }}
 
@@ -57,10 +61,12 @@ jobs:
       cli_version: ${{ steps.resume.outputs.cli_version || steps.empty.outputs.cli_version }}
       stack_version: ${{ steps.resume.outputs.stack_version || steps.empty.outputs.stack_version }}
       server_version: ${{ steps.resume.outputs.server_version || steps.empty.outputs.server_version }}
+      runner_version: ${{ steps.resume.outputs.runner_version || steps.empty.outputs.runner_version }}
       ui_web_version: ${{ steps.resume.outputs.ui_web_version || steps.empty.outputs.ui_web_version }}
       cli_requested: ${{ steps.resume.outputs.cli_requested || steps.empty.outputs.cli_requested }}
       stack_requested: ${{ steps.resume.outputs.stack_requested || steps.empty.outputs.stack_requested }}
       server_requested: ${{ steps.resume.outputs.server_requested || steps.empty.outputs.server_requested }}
+      runner_requested: ${{ steps.resume.outputs.runner_requested || steps.empty.outputs.runner_requested }}
       ui_web_requested: ${{ steps.resume.outputs.ui_web_requested || steps.empty.outputs.ui_web_requested }}
     steps:
       - name: Checkout trusted resume control bytes
@@ -85,10 +91,12 @@ jobs:
             echo 'cli_version='
             echo 'stack_version='
             echo 'server_version='
+            echo 'runner_version='
             echo 'ui_web_version='
             echo 'cli_requested=false'
             echo 'stack_requested=false'
             echo 'server_requested=false'
+            echo 'runner_requested=false'
             echo 'ui_web_requested=false'
           } >> "$GITHUB_OUTPUT"
 

@@ -29,7 +29,8 @@ function stepNamed(job, name) {
   return step;
 }
 
-const GATED_ON_SELECTION = "github.event_name == 'workflow_call' || steps.changes.outputs.workspace_sync_real == 'true'";
+const GATED_ON_SELECTION = "github.event_name == 'workflow_call' || steps.changes.outputs.workspace_sync_real == 'true' || inputs.run_workspace_sync_performance";
+const GATED_ON_NON_SELECTION = "github.event_name != 'workflow_call' && steps.changes.outputs.workspace_sync_real != 'true' && !inputs.run_workspace_sync_performance";
 
 test('the real workspace-sync lane invokes the canonical runner exactly once', () => {
   const job = workspaceSyncRealJob();
@@ -122,33 +123,55 @@ test('the required lane also proves the production signed release-acquisition pa
   assert.match(liveLauncher, /process\.kill\(process\.pid, signal\)/u);
 });
 
+test('the real workspace-sync lane checks the generated public Action contract', () => {
+  const job = workspaceSyncRealJob();
+  const actionContract = stepNamed(job, 'Check generated public Action contract');
+
+  assert.equal(
+    actionContract.run.trim(),
+    'yarn workspace @happier-dev/plugin-sdk check:action-type-map',
+    'the lane must reuse the public SDK generator/check owner instead of duplicating its projection logic',
+  );
+  assert.equal(actionContract.if, GATED_ON_SELECTION);
+});
+
 test('the real workspace-sync lane supplies every executable input the canonical runner requires', () => {
   const job = workspaceSyncRealJob();
-  const build = stepNamed(job, 'Build source workspace-sync prerequisites');
+  const buildMutagen = stepNamed(job, 'Build source Mutagen prerequisites');
+  const testMutagen = stepNamed(job, 'Run pinned Mutagen fork tests');
+  const setupCustodyGo = stepNamed(job, 'Setup process-custody Go toolchain');
+  const buildCustody = stepNamed(job, 'Build process-custody helper');
 
   assert.equal(requiredWorkspaceSyncRealBinaryEnvironment.length, 4);
-  for (const name of requiredWorkspaceSyncRealBinaryEnvironment) {
+  for (const name of requiredWorkspaceSyncRealBinaryEnvironment.filter((name) => name !== 'HAPPIER_PROCESS_CUSTODY_LIVE_BIN')) {
     assert.match(
-      build.run,
+      buildMutagen.run,
       new RegExp(`echo "${name}=\\$\\{[a-z_]+_bin\\}"`, 'u'),
       `the lane must export ${name} for the canonical runner`,
     );
   }
+  assert.match(buildCustody.run, /echo "HAPPIER_PROCESS_CUSTODY_LIVE_BIN=\$\{custody_bin\}"/u);
 
   // Each executable comes from a source build; the lane must not pin or download a release asset.
-  assert.match(build.run, /go build -trimpath -tags "\$\{MUTAGEN_MANAGER_TAGS\}" -o "\$\{manager_bin\}" \.\/cmd\/mutagen-sidecar/u);
-  assert.match(build.run, /go build -trimpath -tags "\$\{MUTAGEN_AGENT_TAGS\}" -o "\$\{agent_bin\}" \.\/cmd\/mutagen-agent/u);
-  assert.match(build.run, /go build -trimpath -tags integration -o "\$\{broker_bin\}" \.\/pkg\/externalbroker\/integrationclient/u);
-  assert.match(build.run, /cd apps\/cli\/native\/processcustody/u);
-  assert.doesNotMatch(build.run, /gh release download|releases\/download/u);
+  assert.match(buildMutagen.run, /go build -trimpath -tags "\$\{MUTAGEN_MANAGER_TAGS\}" -o "\$\{manager_bin\}" \.\/cmd\/mutagen-sidecar/u);
+  assert.match(buildMutagen.run, /go build -trimpath -tags "\$\{MUTAGEN_AGENT_TAGS\}" -o "\$\{agent_bin\}" \.\/cmd\/mutagen-agent/u);
+  assert.match(buildMutagen.run, /go build -trimpath -tags integration -o "\$\{broker_bin\}" \.\/pkg\/externalbroker\/integrationclient/u);
+  assert.match(buildMutagen.run, /echo "HAPPIER_MUTAGEN_SOURCE_DIR=\$\{mutagen_source\}"/u);
+  assert.doesNotMatch(buildMutagen.run, /apps\/cli\/native\/processcustody/u);
+  assert.match(buildCustody.run, /cd apps\/cli\/native\/processcustody/u);
+  assert.match(buildCustody.run, /go test \.\/\.\.\./u);
+  assert.match(buildCustody.run, /go build -trimpath -o "\$\{custody_bin\}" \./u);
+  assert.match(buildCustody.run, /go env GOVERSION/u);
+  assert.doesNotMatch(`${buildMutagen.run}\n${buildCustody.run}`, /gh release download|releases\/download/u);
 
   const policy = stepNamed(job, 'Resolve Mutagen source policy');
   assert.equal(policy.id, 'mutagen_policy');
   assert.match(policy.run, /packages\/cli-common\/mutagen-engine\.json/u);
-  assert.equal(build.env.MUTAGEN_REMOTE, '${{ steps.mutagen_policy.outputs.remote }}');
-  assert.equal(build.env.MUTAGEN_COMMIT, '${{ steps.mutagen_policy.outputs.commit }}');
-  assert.equal(build.env.MUTAGEN_MANAGER_TAGS, '${{ steps.mutagen_policy.outputs.manager_tags }}');
-  assert.equal(build.env.MUTAGEN_AGENT_TAGS, '${{ steps.mutagen_policy.outputs.agent_tags }}');
+  assert.equal(buildMutagen.env.MUTAGEN_REMOTE, '${{ steps.mutagen_policy.outputs.remote }}');
+  assert.equal(buildMutagen.env.MUTAGEN_COMMIT, '${{ steps.mutagen_policy.outputs.commit }}');
+  assert.equal(buildMutagen.env.MUTAGEN_MANAGER_TAGS, '${{ steps.mutagen_policy.outputs.manager_tags }}');
+  assert.equal(buildMutagen.env.MUTAGEN_AGENT_TAGS, '${{ steps.mutagen_policy.outputs.agent_tags }}');
+  assert.equal(buildMutagen.env.MUTAGEN_GO_VERSION, '${{ steps.mutagen_policy.outputs.go_version }}');
 
   const installGo = stepNamed(job, 'Install checksum-pinned Go toolchain');
   assert.equal(installGo.env.GO_VERSION, '${{ steps.mutagen_policy.outputs.go_version }}');
@@ -157,11 +180,36 @@ test('the real workspace-sync lane supplies every executable input the canonical
   assert.match(installGo.run, /go\$\{GO_VERSION\}\.linux-amd64\.tar\.gz/u);
   assert.match(installGo.run, /sha256sum --check --strict/u);
   assert.match(installGo.run, /GITHUB_PATH/u);
-  assert.match(installGo.run, /GOROOT/u);
-  assert.equal(
-    job.steps.some((step) => String(step.uses ?? '').startsWith('actions/setup-go@')),
-    false,
-    'the source build must not bypass the policy digest through setup-go',
+  assert.doesNotMatch(installGo.run, /GITHUB_ENV|GOROOT/u, 'the fork toolchain must not leak into the separately owned process-custody build');
+  assert.match(buildMutagen.run, /test "\$\(go env GOVERSION\)" = "go\$\{MUTAGEN_GO_VERSION\}"/u);
+
+  assert.ok(job.steps.indexOf(testMutagen) > job.steps.indexOf(buildMutagen));
+  assert.ok(job.steps.indexOf(testMutagen) < job.steps.indexOf(stepNamed(job, 'Run real workspace sync over Mutagen and Iroh')));
+  assert.equal(testMutagen.env.MUTAGEN_COMMIT, '${{ steps.mutagen_policy.outputs.commit }}');
+  assert.equal(testMutagen.env.MUTAGEN_MANAGER_TAGS, '${{ steps.mutagen_policy.outputs.manager_tags }}');
+  assert.equal(testMutagen.env.MUTAGEN_AGENT_TAGS, '${{ steps.mutagen_policy.outputs.agent_tags }}');
+  assert.match(testMutagen.run, /cd "\$\{HAPPIER_MUTAGEN_SOURCE_DIR\}"/u);
+  assert.match(testMutagen.run, /test "\$\(git rev-parse HEAD\)" = "\$\{MUTAGEN_COMMIT\}"/u);
+  // `pkg/agent` extracts the platform agent from `<source>/build/mutagen-agents.tar.gz`,
+  // so the fork's own `scripts/ci/test.sh` performs a local build before the broad
+  // `./pkg/...` run. Without it the pinned suite fails on a missing bundle rather than
+  // on engine behavior, which would make this gate red for an environment reason.
+  assert.match(testMutagen.run, /go run scripts\/build\.go --mode=local --sspl/u);
+  assert.ok(
+    testMutagen.run.indexOf('go run scripts/build.go --mode=local --sspl')
+      < testMutagen.run.indexOf('go test -tags mutagensspl -p 1 ./pkg/...'),
+    'the agent bundle must exist before the broad pinned-fork package run',
+  );
+  assert.match(testMutagen.run, /go test -tags mutagensspl -p 1 \.\/pkg\/\.\.\./u);
+  assert.match(testMutagen.run, /go test -tags "\$\{MUTAGEN_MANAGER_TAGS\}" -p 1 \.\/cmd\/mutagen-sidecar/u);
+  assert.match(testMutagen.run, /go test -tags "\$\{MUTAGEN_AGENT_TAGS\}" -p 1 \.\/cmd\/mutagen-agent/u);
+
+  assert.equal(setupCustodyGo.uses, 'actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16');
+  assert.equal(setupCustodyGo.with['go-version-file'], 'apps/cli/native/processcustody/go.mod');
+  assert.equal(setupCustodyGo.with['cache-dependency-path'], 'apps/cli/native/processcustody/go.sum');
+  assert.ok(
+    job.steps.indexOf(setupCustodyGo) > job.steps.indexOf(buildMutagen),
+    'the process-custody toolchain must not replace the checksum-pinned Mutagen toolchain before the fork build',
   );
 
   assert.match(policy.run, /policy\.toolchain\.distributionSha256\?\.\['linux-amd64'\]/u);
@@ -179,9 +227,20 @@ test('only the real workspace-sync lane builds the Mutagen fork from source', ()
   assert.deepEqual(builders.map(([id]) => id), ['workspace-sync-real'], 'a second Mutagen builder must not exist');
 });
 
+test('workspace-sync performance is an explicit manual/release mode on the existing real lane', () => {
+  const tests = loadWorkflow('tests.yml');
+  const job = workspaceSyncRealJob();
+  assert.equal(tests.on.workflow_call.inputs.run_workspace_sync_performance.default, false);
+  assert.match(job.if, /inputs\.run_workspace_sync_performance/u);
+  assert.equal(job.outputs.command_executed, `\${{ ${GATED_ON_SELECTION} }}`);
+  const run = stepNamed(job, 'Run real workspace sync over Mutagen and Iroh');
+  assert.equal(run.env.HAPPIER_RUN_WORKSPACE_SYNC_PERFORMANCE, "${{ inputs.run_workspace_sync_performance && '1' || '0' }}");
+  assert.equal(run.env.HAPPIER_WORKSPACE_SYNC_PERFORMANCE_FILE_BYTES, '1073741824');
+});
+
 test('the real workspace-sync lane selects itself from Lane 08 change surfaces', () => {
   const job = workspaceSyncRealJob();
-  assert.equal(job.if, '${{ !inputs.select_jobs_explicitly || inputs.run_workspace_sync_real }}');
+  assert.equal(job.if, '${{ !inputs.select_jobs_explicitly || inputs.run_workspace_sync_real || inputs.run_workspace_sync_performance }}');
 
   const changes = stepNamed(job, 'Detect workspace sync-relevant changes');
   assert.equal(changes.id, 'changes');
@@ -194,9 +253,36 @@ test('the real workspace-sync lane selects itself from Lane 08 change surfaces',
   for (const path of [
     // Subjects of the three real specs the canonical runner executes.
     'apps/cli/src/workspaces/**',
+    // The real runtime is composed by startDaemon, passed into ApiMachine, and
+    // exposed through the bounded workspace-sync RPC service. A change at any
+    // one of those production roots can disconnect otherwise-green owners.
+    'apps/cli/src/daemon/startDaemon.ts',
+    'apps/cli/src/daemon/startDaemon.handoff.integration.test.ts',
     'apps/cli/src/daemon/startup/**',
     'apps/cli/src/daemon/peer/**',
+    // Direct root-ownership dependencies of the composed daemon workspace-sync
+    // runtime: createProductionDaemonWorkspaceSyncRuntime resolves the sync-root
+    // ownership directory itself, and workspaceSyncRootOwnership real-path
+    // resolves and takes its owner lock through these owners.
+    'apps/cli/src/configuration/resolveWorkspaceSyncRootOwnershipDirectory.ts',
+    'apps/cli/src/configuration/resolveWorkspaceSyncRootOwnershipDirectory.test.ts',
+    'apps/cli/src/utils/fs/jsonOwnerFileLock.ts',
+    'apps/cli/src/utils/fs/jsonOwnerFileLock.test.ts',
+    'apps/cli/src/utils/fs/writeJsonAtomic.ts',
+    'apps/cli/src/utils/fs/writeJsonAtomic.test.ts',
+    'apps/cli/src/utils/path/physicalAncestorPath.ts',
+    'apps/cli/src/daemon/processIdentity.ts',
+    'apps/cli/src/daemon/processIdentity.test.ts',
+    'apps/cli/src/api/apiMachine.ts',
+    'apps/cli/src/api/machine/rpcHandlers.ts',
+    'apps/cli/src/api/machine/rpcHandlers.workspaceSync*',
+    'apps/cli/src/api/machine/sessionHandoff/**',
     'apps/cli/src/session/handoff/**',
+    // The loaded-daemon proof enters through the production external Action
+    // boundary. Keep these exact so unrelated external Actions do not force a
+    // source-built Mutagen/Iroh lane.
+    'apps/cli/src/daemon/externalActions/executeExternalAction.ts',
+    'apps/cli/src/daemon/externalActions/executeExternalAction.test.ts',
     // The carrier spec drives createTrackedSessionHandoffCoordinator directly.
     // Bounded to the session-handoff files; actionOperations at large is not Lane 08.
     'apps/cli/src/daemon/actionOperations/sessionHandoff*',
@@ -205,11 +291,37 @@ test('the real workspace-sync lane selects itself from Lane 08 change surfaces',
     // implements it. scm-git is reached through the SCM registry at runtime, so
     // no static import from the CLI ever names it.
     'apps/cli/src/scm/workspace/**',
+    'apps/cli/src/scm/registry.ts',
     'apps/cli/src/scm/runtime.ts',
     'apps/cli/src/scm/runtime*.test.ts',
     'packages/plugins/scm-git/src/workspace/**',
+    'packages/plugins/scm-git/src/workspaceIntegration.ts',
+    'packages/plugins/scm-git/src/workspaceTransferMetadata.ts',
+    'packages/plugins/scm-git/src/types.ts',
+    'packages/plugins/scm-git/src/runtime.ts',
+    'packages/plugins/scm-git/src/checkoutIdentity.ts',
+    'packages/plugins/scm-git/src/worktreeListParser.ts',
+    'packages/plugins/scm-git/src/providers/shared/nonInteractiveEnv.ts',
+    'packages/plugins/scm-git/src/operations/materializeGitWorkspaceCheckout*',
+    'packages/plugins/scm-git/src/operations/reconcileWorkspaceCheckout*',
+    'packages/plugins/scm-git/src/operations/resolveGitWorkspaceTransferEntries*',
+    'packages/plugins/scm-git/src/operations/repairGitWorktreeAdminReference*',
+    'packages/plugins/scm-git/src/operations/worktreeName*',
+    'packages/plugins/scm-git/src/backend.ts',
+    'packages/plugins/scm-git/.happier-plugin/**',
+    // Relationship materialization and mutation use these existing settings
+    // owners rather than a Lane-08-local store.
+    'apps/cli/src/settings/accountSettings/activeAccountSettingsSnapshot.ts',
+    'apps/cli/src/settings/accountSettings/refreshAccountSettingsForMinimumVersion.ts',
+    'apps/cli/src/settings/accountSettings/updateAccountSettingsV2WithRetry.ts',
+    'apps/cli/src/settings/accountSettings/workspaceRefsV1.ts',
+    // Finite bootstrap deliberately stays on the native Machine transfer
+    // owner; changes there must re-run the composed seed corridor.
+    'apps/cli/src/machines/transfer/**',
     'apps/cli/native/processcustody/**',
     'apps/cli/scripts/runWorkspaceSyncRealIntegration.mjs',
+    'apps/cli/scripts/runWorkspaceSyncRealIntegration.test.mjs',
+    'scripts/workspaces/execYarnCommand.mjs',
     'apps/cli/vitest.integration.config.ts',
     // Owns test:workspace-sync:real:local, the only definition of what the lane runs.
     'apps/cli/package.json',
@@ -224,6 +336,11 @@ test('the real workspace-sync lane selects itself from Lane 08 change surfaces',
     'packages/release-runtime/**',
     'packages/iroh-native/**',
     'packages/protocol/src/sessions/control/handoff/**',
+    // The destructive handoff leaf start.ts classifies transcript storage
+    // through this exact canonical owner before mutation. Keep the leaf and
+    // its test selected without broadening to sessions/external/**.
+    'packages/protocol/src/sessions/external/linkedSessionMetadata.ts',
+    'packages/protocol/src/sessions/external/linkedSessionMetadata.test.ts',
     // Account Settings owns rehydration of workspaceRefsV1 and
     // workspaceSyncRelationshipsV1; both real specs parse and round-trip them.
     'packages/protocol/src/account/settings/accountSettings.ts',
@@ -233,8 +350,55 @@ test('the real workspace-sync lane selects itself from Lane 08 change surfaces',
     // exact files. Bounded to the handoff-carrying owners, not Actions at large.
     'apps/cli/src/session/actions/createCliActionDeps.ts',
     'packages/protocol/src/actions/actionExecutor.ts',
+    'packages/protocol/src/actions/actionExecutor.sessionHandoff.test.ts',
+    'packages/protocol/src/actions/actionExecutor.workspaceSyncConflict.test.ts',
+    'packages/protocol/src/actions/actionApprovalMetadata.ts',
+    'packages/protocol/src/actions/actionApprovalPolicy.ts',
+    'packages/protocol/src/actions/actionIds.ts',
+    'packages/protocol/src/actions/actionIds.test.ts',
     'packages/protocol/src/actions/actionSpecs.ts',
     'packages/protocol/src/actions/executor/**',
+    'apps/cli/src/session/actions/approvals/artifactStore.ts',
+    // Public UI callers must continue entering the same Action owners. These
+    // exact source/tests select the composed lane without broadening it to all
+    // UI sync changes.
+    'apps/ui/sources/sync/domains/sessionHandoff/executeSessionHandoffAction.ts',
+    'apps/ui/sources/sync/domains/sessionHandoff/executeSessionHandoffAction.test.ts',
+    'apps/ui/sources/sync/domains/sessionHandoff/runSessionHandoffPickerFlow.ts',
+    'apps/ui/sources/sync/domains/sessionHandoff/runSessionHandoffPickerFlow.test.ts',
+    'apps/ui/sources/sync/domains/sessionHandoff/sessionHandoffDefaults.ts',
+    // UI handoff availability/reachability resolution is part of the composed
+    // entry: the public callers above import these owners, so a change to
+    // them must select the lane too.
+    'apps/ui/sources/sync/domains/sessionHandoff/resolveSessionHandoffSourceMachineId.ts',
+    'apps/ui/sources/sync/domains/sessionHandoff/resolveSessionHandoffSourceMachineId.test.ts',
+    'apps/ui/sources/sync/domains/sessionHandoff/resolveSessionHandoffUiAvailability.ts',
+    'apps/ui/sources/sync/domains/sessionHandoff/resolveSessionHandoffUiAvailability.test.ts',
+    'apps/ui/sources/sync/domains/sessionHandoff/useSessionHandoffSourceReachability.ts',
+    'apps/ui/sources/sync/domains/sessionHandoff/useSessionHandoffSourceReachability.test.ts',
+    'apps/ui/sources/sync/ops/actions/defaultActionExecutor.ts',
+    'apps/ui/sources/sync/ops/actions/defaultActionExecutor.sessionFork.test.ts',
+    // The tracked UI handoff operation client is a direct subject of the
+    // thin-client suite; the rest of ops is not on this corridor.
+    'apps/ui/sources/sync/ops/sessionHandoffs.ts',
+    'apps/ui/sources/sync/ops/sessionHandoffs.thinClient.test.ts',
+    'apps/ui/sources/sync/ops/workspaceSync.ts',
+    'apps/ui/sources/sync/ops/workspaceSync.test.ts',
+    'apps/ui/sources/app/(app)/session/[id]/info.tsx',
+    'apps/ui/sources/__tests__/routes/(app)/session/[id]/info.test.tsx',
+    'apps/ui/sources/components/sessions/handoff/SessionHandoffPickerModal.tsx',
+    'apps/ui/sources/components/sessions/handoff/SessionHandoffPickerModal.test.tsx',
+    'apps/ui/sources/components/sessions/actions/SessionHeaderActionMenu.tsx',
+    'apps/ui/sources/components/sessions/actions/SessionHeaderActionMenu.sessionHandoff.test.tsx',
+    'apps/ui/sources/components/settings/session/SessionHandoffSettingsView.tsx',
+    'apps/ui/sources/components/settings/session/SessionHandoffSettingsView.test.tsx',
+    'apps/ui/sources/components/workspaces/sync/WorkspaceSyncConflictDetailsView.tsx',
+    'apps/ui/sources/components/workspaces/sync/WorkspaceSyncConflictDetailsView.test.tsx',
+    // The workflow checks this generated public projection. Changes to the
+    // projection or its single generator must therefore select the check too.
+    'packages/plugin-sdk/src/actions/actionTypeMap.generated.ts',
+    'packages/plugin-sdk/scripts/generateActionTypeMap.mjs',
+    'packages/plugin-sdk/package.json',
     '.github/workflows/tests.yml',
     // Owns the manual selection this lane is reachable by.
     '.github/workflows/tests-dispatch.yml',
@@ -265,7 +429,7 @@ test('the real workspace-sync lane selects itself from Lane 08 change surfaces',
   for (const step of job.steps) {
     if (step.name === 'Checkout' || step.name === 'Detect workspace sync-relevant changes') continue;
     if (step.name === 'Skip workspace sync (no relevant changes)') {
-      assert.equal(step.if, "github.event_name != 'workflow_call' && steps.changes.outputs.workspace_sync_real != 'true'");
+      assert.equal(step.if, GATED_ON_NON_SELECTION);
       continue;
     }
     assert.equal(step.if, GATED_ON_SELECTION, `step "${step.name}" must obey the workspace-sync change selection`);
@@ -281,8 +445,9 @@ test('manual dispatch can select the real workspace-sync lane by name', () => {
   );
   assert.equal(
     dispatch.jobs.tests.with.run_workspace_sync_real,
-    "${{ needs.resolve.outputs.run_workspace_sync_real == 'true' }}",
+    "${{ needs.resolve.outputs.run_workspace_sync_real == 'true' || inputs.workspace_sync_performance }}",
   );
+  assert.equal(dispatch.jobs.tests.with.run_workspace_sync_performance, '${{ inputs.workspace_sync_performance }}');
 
   const raw = readWorkflowText('tests-dispatch.yml');
   assert.match(raw, /if has workspace_sync_real; then run_workspace_sync_real=true; fi/u);

@@ -71,6 +71,7 @@ function transitivelyNeeds(jobs, jobName, dependency, seen = new Set()) {
 const signedPublishers = [
   ['publish-cli-binaries.yml', 'publish-cli-binaries'],
   ['publish-hstack-binaries.yml', 'publish-hstack-binaries'],
+  ['publish-runner-binaries.yml', 'publish-runner-binaries'],
   ['publish-server-runtime.yml', 'publish-server-runtime'],
   ['publish-ui-web.yml', 'publish-ui-web'],
 ];
@@ -121,6 +122,12 @@ test('signed publishers bind trusted control checkouts to the called workflow re
       release_actor_guard: 'Checkout',
       prepare: 'Checkout trusted workflow control bytes',
       finalize_darwin: 'Checkout trusted workflow control bytes',
+      finalize_publish: 'Checkout trusted workflow control bytes',
+      promote_existing: 'Checkout trusted workflow control bytes',
+    },
+    'publish-runner-binaries.yml': {
+      release_actor_guard: 'Checkout trusted workflow control bytes',
+      prepare: 'Checkout trusted workflow control bytes',
       finalize_publish: 'Checkout trusted workflow control bytes',
       promote_existing: 'Checkout trusted workflow control bytes',
     },
@@ -181,6 +188,9 @@ test('signed publishers keep authorized product source checkouts distinct from c
     'publish-hstack-binaries.yml': {
       prepare: 'Checkout exact source as inert data',
     },
+    'publish-runner-binaries.yml': {
+      prepare: 'Checkout exact source as inert data',
+    },
     'publish-ui-web.yml': {
       prepare: 'Checkout exact source as inert data',
     },
@@ -205,9 +215,10 @@ test('signed publishers keep authorized product source checkouts distinct from c
   }
 });
 
-test('HStack and server candidate builders consume inert source artifacts without repository authority', () => {
+test('HStack, Runner, and server candidate builders consume inert source artifacts without repository authority', () => {
   for (const [name, sourceArtifactPrefix] of [
     ['publish-hstack-binaries.yml', 'hstack-source-'],
+    ['publish-runner-binaries.yml', 'runner-source-'],
     ['publish-server-runtime.yml', 'server-runtime-source-'],
   ]) {
     const jobs = workflow(name).jobs;
@@ -231,7 +242,7 @@ test('HStack and server candidate builders consume inert source artifacts withou
     } else {
       assert.match(
         buildSource,
-        /verify-artifacts\.mjs[\s\S]*?--require-all-archives-checksummed[\s\S]*?find dist\/release-assets\/[^ ]+ -type f ! -name '\*\.tar\.gz' -delete/,
+        /verify-artifacts\.mjs[\s\S]*?--require-all-archives-checksummed[\s\S]*?find dist\/release-assets\/[^ ]+ -type f ! -name '\*\.(?:tar\.gz|zip)' -delete/,
         `${name} must retain archive admission and compatible-platform smoke before its unsigned handoff`,
       );
     }
@@ -253,7 +264,7 @@ test('HStack and server candidate builders consume inert source artifacts withou
   }
 });
 
-test('HStack and server allocate from exact canonical candidate base versions using trusted control bytes', async () => {
+test('HStack, Runner, and server allocate from exact canonical candidate base versions using trusted control bytes', async () => {
   const { normalizeRollingBaseVersion } = await import(
     '../pipeline/release/lib/rolling-version-allocation.mjs'
   );
@@ -266,6 +277,7 @@ test('HStack and server allocate from exact canonical candidate base versions us
 
   for (const [name, packagePath] of [
     ['publish-hstack-binaries.yml', '.candidate-source/apps/stack/package.json'],
+    ['publish-runner-binaries.yml', '.candidate-source/apps/cli/package.json'],
     ['publish-server-runtime.yml', '.candidate-source/apps/server/package.json'],
   ]) {
     const prepare = workflow(name).jobs.prepare;
@@ -320,6 +332,7 @@ test('standalone publisher credential-bearing shells receive untrusted values on
   for (const name of [
     'publish-cli-binaries.yml',
     'publish-hstack-binaries.yml',
+    'publish-runner-binaries.yml',
     'publish-server-runtime.yml',
   ]) {
     const jobs = workflow(name).jobs;
@@ -364,6 +377,7 @@ test('standalone publisher shell bodies contain no GitHub expression interpolati
   for (const name of [
     'publish-cli-binaries.yml',
     'publish-hstack-binaries.yml',
+    'publish-runner-binaries.yml',
     'publish-server-runtime.yml',
   ]) {
     for (const [jobName, job] of Object.entries(workflow(name).jobs)) {
@@ -398,6 +412,35 @@ test('signed publishers expose hosted same-version rolling recovery', () => {
     assert.match(serialized, /authorized-sha/);
     assert.match(serialized, /retry_version/);
   }
+});
+
+test('Runner publisher admits only the proven Linux x64 product through the canonical release owner', () => {
+  const jobs = workflow('publish-runner-binaries.yml').jobs;
+  for (const [jobName, job] of Object.entries(jobs)) {
+    for (const step of job.steps ?? []) {
+      if (!step.run) continue;
+      assert.doesNotMatch(
+        String(step.run),
+        /\$\{\{/,
+        `publish-runner-binaries.yml/${jobName}/${step.name} must receive dynamic values through env`,
+      );
+    }
+  }
+  assert.deepEqual(jobs.build_candidate.permissions, {});
+  const build = jobs.build_candidate.steps.find((step) => step.name === 'Build unsigned Runner archives');
+  assert.ok(build);
+  assert.match(build.run, /build-runner-binaries\.mjs[\s\S]*--targets linux-x64/);
+  assert.match(build.run, /verify-artifacts\.mjs[\s\S]*--require-all-archives-checksummed/);
+  assert.match(build.run, /find dist\/release-assets\/runner -type f ! -name '\*\.zip' -delete/);
+  assert.equal(jobs.finalize_darwin, undefined, 'unproven Darwin artifacts must not be built or advertised');
+  const finalize = jobs.finalize_publish.steps.find((step) => String(step.run ?? '').includes('publish-runner-binaries.mjs'));
+  assert.ok(finalize);
+  assert.match(finalize.run, /--prepared-artifacts/);
+  assert.match(finalize.run, /--skip-smoke/);
+  assert.equal(finalize.env.MINISIGN_SECRET_KEY, '${{ secrets.MINISIGN_SECRET_KEY }}');
+  assert.equal(jobs.finalize_publish.permissions.contents, 'write');
+  assert.equal(jobs.build_candidate.environment, undefined);
+  assert.doesNotMatch(JSON.stringify(jobs.build_candidate), /secrets\.|GH_TOKEN|GITHUB_TOKEN/);
 });
 
 test('every App token in signed publishers scopes owner, repositories, and contents permission', () => {

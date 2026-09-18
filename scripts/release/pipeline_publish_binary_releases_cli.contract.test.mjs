@@ -11,6 +11,7 @@ const repoRoot = resolve(here, '..', '..');
 for (const { subcommand, scriptName } of [
   { subcommand: 'publish-cli-binaries', scriptName: 'publish-cli-binaries.mjs' },
   { subcommand: 'publish-hstack-binaries', scriptName: 'publish-hstack-binaries.mjs' },
+  { subcommand: 'publish-runner-binaries', scriptName: 'publish-runner-binaries.mjs' },
 ]) {
   for (const channel of ['preview', 'dev']) {
     test(`pipeline CLI can run ${subcommand} dry-run for ${channel} using env-file mode`, async () => {
@@ -21,6 +22,8 @@ for (const { subcommand, scriptName } of [
           subcommand,
           '--channel',
           channel,
+          '--version',
+          `0.2.10-${channel}.1`,
           '--dry-run',
           '--secrets-source',
           'env',
@@ -29,6 +32,7 @@ for (const { subcommand, scriptName } of [
           cwd: repoRoot,
           env: {
             ...process.env,
+            GH_REPO: 'happier-dev/happier',
             MINISIGN_SECRET_KEY: 'untrusted comment: minisign encrypted secret key\nRWQpH1vH1vH1vH1vH1vH1vH1vH1vH1vH1vH1vH1vH1vH1vH1vH1vH1vH1vH1vH1vH1vH1vH1vH1vH1vH1vH1vH1vH1',
             MINISIGN_PASSPHRASE: 'x',
           },

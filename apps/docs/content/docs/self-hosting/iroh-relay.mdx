@@ -29,9 +29,9 @@ Home, and this adds no gateway, local-loopback emulation, JavaScript relay, or
 browser Mutagen workspace-sync engine.
 
 The managed profile runs stock `iroh-relay` 1.1.0 with forwarding and QUIC
-address discovery (QAD) enabled. Happier uses the forwarding-disabled QAD-only
-upstream topology only for development tests and diagnostics; it is not a
-supported production deployment or managed-product profile.
+address discovery (QAD) enabled. A forwarding-disabled QAD-only run remains a
+planned development diagnostic; it has not been run as release evidence and is
+not a supported production deployment or managed-product profile.
 
 ## What you need first
 
@@ -40,7 +40,10 @@ supported production deployment or managed-product profile.
   `registry/repository@sha256:digest` form.
 - A TLS certificate chain and private key for the relay, stored as
   `certs/default.crt` and `certs/default.key` beside the deployment Compose
-  file.
+  file. The relay runs as numeric UID/GID `65532:65532`, so the mounted
+  directory must be traversable and both files readable by that identity
+  inside the container. Keep host permissions as restrictive as the platform
+  permits while satisfying that access.
 - Public TCP ports 80 and 443, and UDP port 7842.
 - Measured link and instance capacity from which to choose the relay's receive
   token-bucket settings.
@@ -66,11 +69,16 @@ Then start the deployment from a checkout:
 docker compose -f deploy/iroh-relay/compose.yaml up -d
 ```
 
+The versioned image owns the matching relay configuration template; Compose
+mounts only the operator-managed TLS directory. The entrypoint writes the
+effective configuration into the container's memory-only `/tmp` mount.
+
 The two receive settings are upstream token-bucket controls. Derive them from
 the capacity of the deployed link and instance; they are not Happier account
-quotas. All three variables must be non-empty or Compose stops before it starts
-the container, and the relay exits during startup if either receive value is
-not a positive integer.
+quotas. Each receive value must be a decimal integer from `1` through
+`4294967295`, matching the relay's `NonZeroU32` input. All three variables must
+be non-empty or Compose stops before it starts the container; the relay
+entrypoint rejects receive values outside that range.
 
 Pinned `iroh-relay` 1.1.0 declares `accept_conn_limit` and
 `accept_conn_burst`, but upstream documents them as unimplemented and
@@ -81,12 +89,44 @@ simulate them.
 Compose only checks that the image variable is set. It does not look inside the
 reference, so pinning the digest is your responsibility: a mutable tag would
 start without complaint. The trustworthy image is the one the repository
-publisher pushed with its SBOM and provenance attestations; take the digest
-from that publication rather than from a tag that can move underneath you.
+publisher pushed with BuildKit SBOM and provenance attestations. The publisher
+captures the pushed digest and inspects that exact multi-platform index for the
+Linux AMD64 and ARM64 images and their attestation manifests. Take the reported
+digest from that publication rather than from a tag that can move underneath
+you.
 
 The process exposes aggregate upstream metrics on container port 9090. The
 provided Compose profile deliberately does not publish that port. Attach a
 private metrics network or collector if you scrape it.
+
+The runtime image includes the selected upstream MIT license and the
+BSD-3-Clause notice required for the Tailscale-derived relay portions.
+
+## Point your Home server at the relay
+
+The relay process does not register itself anywhere. A Home server uses your relay only when its
+environment selects it:
+
+```bash
+HAPPIER_IROH_RELAY_POLICY=automatic
+HAPPIER_IROH_RELAY_URLS=https://relay.example.com
+```
+
+- `HAPPIER_IROH_RELAY_URLS` lists the relay URL you deployed — for this profile, the HTTPS origin
+  serving TCP 443. Entries must be unique absolute HTTP(S) URLs without credentials, query
+  material, or fragments.
+- `HAPPIER_IROH_RELAY_POLICY` accepts `automatic` (the default) or `disabled` (direct-only,
+  contacts no relay, cannot be combined with relay URLs). An `automatic` policy with no relay
+  URLs stays direct-only: there is no ambient or default relay set.
+- The Home advertises exactly these URLs in its connection descriptor, so clients and machines
+  can reach it through your relay when no direct path works. The relay-only browser form requires
+  at least one configured relay.
+- An invalid explicit value fails the server's Iroh endpoint composition closed and keeps the
+  ordinary HTTPS Home running. The machine daemon reads the same two variables where it runs.
+
+These variables configure the Happier side, not the relay image above. The server's Iroh endpoint
+additionally requires a stable `HAPPIER_CANONICAL_SERVER_URL` — see
+[Environment variables](/self-hosting/env).
 
 ## Trust and path selection
 
@@ -149,11 +189,16 @@ token is not supported.
 - **The diagnostics show a relayed path.** This is not an authentication or
   application-policy failure by itself. Check endpoint authentication or
   signed Machine-grant errors separately.
+- **The relay runs, but clients never use it.** The server's `HAPPIER_IROH_RELAY_URLS` is unset
+  or does not match the deployed relay origin; with no relay URLs an `automatic` policy stays
+  direct-only.
 
 ## Related
 
 - [How Happier fits together](/self-hosting/how-it-works) — the application
   relay, clients, and machine daemon.
+- [Environment variables](/self-hosting/env) — the server-side relay and
+  canonical-URL settings.
 - [Security](/security) — what the application relay can and cannot read.
 - [Observability](/self-hosting/observability) — monitoring the Happier Server
   deployment.

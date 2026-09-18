@@ -20,7 +20,6 @@ services:
       - "443:443/tcp"
       - "7842:7842/udp"
     volumes:
-      - ./relay.toml:/etc/iroh/relay.toml:ro
       - ./certs:/etc/iroh/certs:ro
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=16m

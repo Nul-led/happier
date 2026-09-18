@@ -1,0 +1,59 @@
+---
+title: Factory Droid (experimental)
+description: Install Factory Droid and use its ACP sessions, models, autonomy, reasoning, MCP tools, resume, execution runs, and terminal in Happier.
+---
+
+Happier runs the locally installed Droid CLI in ACP mode for managed sessions
+and execution runs. The current vendor command is
+`droid exec --output-format acp`.
+
+## Requirements and authentication
+
+On macOS or Linux, install Droid with the vendor installer and make sure
+`droid` is on `PATH`:
+
+```bash
+curl -fsSL https://app.factory.ai/cli | sh
+droid
+```
+
+On Windows, use Factory's PowerShell installer instead:
+
+```powershell
+Invoke-RestMethod https://app.factory.ai/cli/windows | Invoke-Expression
+```
+
+Complete the browser login from the interactive CLI, or provide
+`FACTORY_API_KEY` in the environment that launches Happier. The terminal login
+action opens Droid and submits `/login`; account and key management remain in
+Factory.
+
+## Sessions and controls
+
+Start a session with `happier droid`. Happier uses the shared ACP lifecycle for
+new sessions, resume, cancellation, follow-up prompts, and execution runs.
+Models, reasoning choices, and autonomy modes are projected from Droid's ACP
+configuration options, so the labels and choices follow the installed Droid
+version and your organization policy.
+
+Droid receives selected Happier tools as per-session ACP MCP descriptors.
+Existing Droid user and project MCP configuration remains under Droid's normal
+configuration rules.
+
+## Interactive terminal
+
+The terminal action launches ordinary `droid` through Happier's existing
+terminal host. It is separate from the ACP-controlled session and does not imply
+live takeover, transcript following, or shared session identity.
+
+## Troubleshooting
+
+- Run `droid --version` on the Agent machine if Droid is not detected.
+- Open `droid` and run `/login` if authentication is unavailable.
+- If a model, reasoning level, or autonomy mode is absent, check the account and
+  organization policy shown by the installed Droid CLI.
+
+## Related
+
+- [Agent authentication](/agents/provider-authentication)
+- [MCP servers](/extending/mcp-servers)

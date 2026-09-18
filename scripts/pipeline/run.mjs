@@ -379,6 +379,11 @@ function repoRootFromHere() {
   return path.resolve(here, '..', '..');
 }
 
+function resolvePipelineRepoRoot() {
+  const requestedRoot = String(process.env.HAPPIER_PIPELINE_REPO_ROOT ?? '').trim();
+  return requestedRoot ? path.resolve(requestedRoot) : repoRootFromHere();
+}
+
 /**
  * @param {{ repoRoot: string; env: Record<string, string>; args: string[]; dryRun: boolean }} opts
  */
@@ -489,6 +494,18 @@ function runPublishHstackBinaries({ repoRoot, env, args, dryRun }) {
     env,
     stdio: 'inherit',
   });
+}
+
+/**
+ * @param {{ repoRoot: string; env: Record<string, string>; args: string[]; dryRun: boolean }} opts
+ */
+function runPublishRunnerBinaries({ repoRoot, env, args, dryRun }) {
+  const scriptPath = path.join(repoRoot, 'scripts', 'pipeline', 'release', 'publish-runner-binaries.mjs');
+  const fullArgs = [scriptPath, ...args];
+  if (dryRun) {
+    console.log(`[pipeline] exec: node ${fullArgs.map((a) => JSON.stringify(a)).join(' ')}`);
+  }
+  execFileSync(process.execPath, fullArgs, { cwd: repoRoot, env, stdio: 'inherit' });
 }
 
 /**
@@ -1000,7 +1017,7 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
 }
 
   async function main() {
-  const repoRoot = repoRootFromHere();
+  const repoRoot = resolvePipelineRepoRoot();
 
   const { argv, style } = parseGlobalCliFlags(process.argv.slice(2));
   const [subcommandRaw, ...rest] = argv;
@@ -1040,6 +1057,7 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
           subcommand !== 'publish-ui-web' &&
           subcommand !== 'publish-cli-binaries' &&
           subcommand !== 'publish-hstack-binaries' &&
+          subcommand !== 'publish-runner-binaries' &&
             subcommand !== 'publish-server-runtime' &&
           subcommand !== 'checks-plan' &&
           subcommand !== 'checks' &&
@@ -1842,7 +1860,7 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
       return;
     }
 
-      if (subcommand === 'publish-hstack-binaries') {
+      if (subcommand === 'publish-hstack-binaries' || subcommand === 'publish-runner-binaries') {
         const { values } = parseArgs({
           args: rest,
           options: {
@@ -1903,7 +1921,10 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
         const dryRun = values['dry-run'] === true;
         if (!dryRun) assertCleanWorktree({ cwd: repoRoot, allowDirty });
 
-        runPublishHstackBinaries({
+        const publishBinaries = subcommand === 'publish-runner-binaries'
+          ? runPublishRunnerBinaries
+          : runPublishHstackBinaries;
+        publishBinaries({
           repoRoot,
           env: mergedEnv,
         dryRun,
@@ -2928,6 +2949,7 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
         'eas-cli-version': { type: 'string', default: '' },
         'dump-view': { type: 'string', default: 'true' },
         'fingerprint-mode': { type: 'string', default: 'always' },
+        'testflight-distribution-mode': { type: 'string', default: 'inline' },
         'preflight-only': { type: 'boolean', default: false },
         'release-message': { type: 'string', default: '' },
         'runtime-version': { type: 'string', default: '' },
@@ -2992,6 +3014,12 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
     }
     /** @type {'always' | 'if-changed'} */
     const fingerprintMode = fingerprintModeRaw;
+    const testflightDistributionModeRaw = String(values['testflight-distribution-mode'] ?? '').trim().toLowerCase() || 'inline';
+    if (testflightDistributionModeRaw !== 'inline' && testflightDistributionModeRaw !== 'deferred') {
+      fail(`--testflight-distribution-mode must be 'inline' or 'deferred' (got: ${values['testflight-distribution-mode']})`);
+    }
+    /** @type {'inline' | 'deferred'} */
+    const testflightDistributionMode = testflightDistributionModeRaw;
     const releaseMessage = String(values['release-message'] ?? '').trim();
     const runtimeVersion = String(values['runtime-version'] ?? '').trim();
 
@@ -3441,6 +3469,8 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
         const testflightDistributionConfig = resolveTestflightDistributionConfig({ environment, env: mergedEnv });
         if (!testflightDistributionConfig.enabled) {
           console.log('[pipeline] ui-mobile release: skipping TestFlight distribution (no external groups configured).');
+        } else if (testflightDistributionMode === 'deferred') {
+          console.log('[pipeline] ui-mobile release: TestFlight external distribution deferred to the recovery workflow.');
         } else if (!dryRun && nativeBuildMode === 'cloud' && !cloudBuildPresence.ios) {
           console.log('[pipeline] ui-mobile release: skipping TestFlight distribution (no iOS build was scheduled).');
         } else {

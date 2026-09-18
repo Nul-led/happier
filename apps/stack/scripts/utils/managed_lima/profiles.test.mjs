@@ -57,6 +57,18 @@ test('managed Lima worker profile can render a native x86_64 guest without chang
   );
 });
 
+test('managed Lima per-target resources override CPU and RAM without changing profile-owned disk policy', () => {
+  const profile = resolveManagedLimaProfile('worker-balanced', {
+    architecture: 'aarch64',
+    resources: { cpus: 12, memoryGiB: 32 },
+  });
+
+  assert.equal(profile.cpus, 12);
+  assert.equal(profile.memoryGiB, 32);
+  assert.equal(profile.diskGiB, 160);
+  assert.match(profile.name, /worker-balanced/);
+});
+
 test('managed Lima profile renders an explicitly selected ASIF disk without changing the legacy RAW default', () => {
   const profile = resolveManagedLimaProfile('heavy', { diskImageFormat: 'asif' });
 
@@ -108,5 +120,11 @@ test('managed Lima profile rejects unknown profiles and unsafe instance names', 
   assert.throws(
     () => buildManagedLimaCreateArgs({ instance: '../escape', profile: resolveManagedLimaProfile('small') }),
     /invalid managed Lima instance name/,
+  );
+  assert.throws(
+    () => resolveManagedLimaProfile('worker-balanced', {
+      resources: { cpus: 0, memoryGiB: 24 },
+    }),
+    /cpus must be a positive integer/,
   );
 });

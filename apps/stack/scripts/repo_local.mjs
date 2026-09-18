@@ -1,4 +1,3 @@
-import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -9,6 +8,7 @@ import { applyStackActiveServerScopeEnv } from './utils/auth/stable_scope_id.mjs
 import { readExecutionHostProfile } from './utils/execution_host/config.mjs';
 import { resolveHostWorkspaceMapping } from './utils/execution_host/delegation.mjs';
 import { ensureDepsInstalled } from './utils/proc/pm.mjs';
+import { runForegroundChild } from './utils/execution_host/foreground_child.mjs';
 import { ensureEnvFileMutated } from './utils/env/env_file.mjs';
 import { parseEnvToObject } from './utils/env/dotenv.mjs';
 import { selectLocalServerPortCandidateForStack } from './utils/server/resolve_stack_server_port.mjs';
@@ -593,8 +593,23 @@ async function main() {
     process.exit(0);
   }
 
-  const res = spawnSync(cmd, args, { cwd, env: effectiveEnv, stdio: 'inherit' });
-  process.exit(res.status ?? 1);
+  const res = await runForegroundChild({
+    command: cmd,
+    args,
+    options: {
+      cwd,
+      env: effectiveEnv,
+      stdio: 'inherit',
+      // Keep terminal signals owned by this wrapper so the nested hstack
+      // process can finish its VM/remote cleanup before this process exits.
+      detached: process.platform !== 'win32',
+    },
+  });
+  if (res.signal) {
+    process.kill(process.pid, res.signal);
+    return;
+  }
+  process.exit(res.exitCode ?? 1);
 }
 
 main().catch((e) => {

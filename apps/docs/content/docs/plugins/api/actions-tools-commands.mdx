@@ -249,8 +249,13 @@ it names the artifact consumed by the client Action declaration. See
 platform outputs and identity rules.
 
 Client handlers receive a client-safe context, including cancellation,
-invocation surface, plugin identity, current-UI context when available, and
-host-owned navigation. They do not acquire daemon services. Existing schema
+invocation surface, plugin identity, current-UI context when available, and a
+bounded `ui` capability for opening a surface or invoking another eligible
+Action. The nullable `ephemeralSharedScope` can lease plugin-local in-process
+state shared with mounted UI in the same Account and immutable plugin
+generation. Use a versioned local key, handle a refused acquisition, and always
+release the lease; do not replace a refusal with a global cache. Client handlers
+do not acquire daemon services. Existing schema
 validation, availability, generation currentness, cancellation, danger
 classification, confirmation, effect custody, result validation/redaction,
 and no-blind-retry rules remain canonical for every surface and target.
@@ -289,6 +294,57 @@ The same call reaches another plugin's Action by its exact
 `retryable`, and published payload — see
 [Diagnostics and errors](/plugins/testing/diagnostics#errors-across-a-plugin-to-plugin-action-call)
 for what does and does not cross.
+
+For Session input, prefer the typed Session service when you need the trusted
+plugin authoring shape. Resolve the handle with
+`await context.services.sessions.get(sessionId)`, then call `session.send(...)`.
+It accepts the same optional Execution Run recipient as `session.message.send`,
+plus manifest-declared Composer attachments and host-stamped source metadata.
+The host qualifies the plugin identity and runs the ordinary attachment
+preparation and dispatch lifecycle; plugin code does not manufacture those
+trusted stamps. The public API Token/SDK Action keeps its intentionally smaller
+strict input and rejects host-only `source`, attachment, or structured-launch
+fields instead of accepting them as untyped JSON. That difference is an
+authority boundary, not a smaller capability set for externally installed
+plugins.
+
+Omit the recipient to send to the main Session. A recipient of
+`{ kind: 'execution_run', runId }` uses the Session's Pending queue and exact
+Run admission. The separate `execution.run.send` host Action is only for a
+detached Run with `sessionId: null`; it must not be used as a shortcut around
+Session permissions, encryption, or target recovery.
+
+### Authority comes from the invocation, not from Session content
+
+Your plugin's authority is the principal the host admitted for this invocation.
+It does not change with the conversation. If two collaborators take turns sending
+input to the same Session, the runtime keeps the same stamped principal
+throughout: the latest message author is correlation for the turn you are
+serving, not a credential, and no `requestedBy`-style field, quoted selection, or
+source identifier delegates that person's Account or lends you their private
+settings. Every operation is still checked against the Action's declared surface,
+its required caller authority, and current resource access at the moment it runs.
+
+Host operations that write into a Session record the actual admitted execution
+Account together with Agent producer provenance, so an Agent-made post reads as
+Agent-produced rather than as a message from the person who asked for it. Public
+Account HTTP cannot forge that provenance. Idempotency, creator-only affordances,
+and erasure all follow the stored identity, and asking an Agent to post creates no
+personal involvement or subscription for the requester.
+
+Two boundaries this does not move. Confirmation and authorization stay separate —
+an approval or an explicit user waiver satisfies a confirmation requirement and
+never supplies missing Session access, surface enablement, or endpoint consent.
+And conversation attribution is not a filesystem boundary: a Session's
+attribution, selected folder, or discussion scope does not contain broad shell
+access. The OS and Agent sandbox configuration the user already runs is the actual
+containment, and a plugin cannot widen it.
+
+Reach all of this through the public SDK seam — `context.services.*` and the
+`activate(api)` ABI. Do not import host internals to make a first-party example
+work; an installed external plugin has the same trusted surface, so anything that
+needs a host-internal import is a missing SDK contract to raise, not a shortcut
+to take.
 
 When `session.spawn_new` should create or reuse a Git worktree, pass the public
 `checkoutCreationDraft` projection with the rest of the authored Session input:
@@ -403,6 +459,24 @@ The mounted publication contract is documented under
 ## Approvals
 
 Dangerous actions should declare danger level and confirmation metadata in the manifest. Runtime approvals should use the host action approval service instead of prompting through agent-specific side channels.
+
+Approval is one policy decision, not authority. The host still checks the
+Action's declared surface, required caller authority, current resource access,
+endpoint consent, and the Account's Action setting. A waiver can skip the
+confirmation step where policy permits; it cannot grant missing Session access
+or turn an automation caller into a present user.
+
+For a deferred approval, the host records the immutable admitted execution
+origin before it asks. Applying the decision later revalidates current policy
+and resource access and replays with that original Action, caller authority,
+Home, and target. The person who approves does not replace the original caller
+or retarget the operation. Historical approval records that lack sufficient
+origin evidence remain readable but are not executable.
+
+These shared rules apply equally to host Actions called by built-in and
+externally installed trusted plugins. Trust admits the plugin to the same public
+host Action service; it does not bypass per-Action settings, approval, or domain
+authorization.
 
 ## Design rules
 

@@ -60,12 +60,233 @@ Default-on and `fail_closed` are orthogonal and both correct: a server that answ
 `true`, while a missing or malformed bit resolves to the client's disabled default. `sessions.folders`
 is the same combination and is the shape to copy.
 
+### Workflows feature id
+
+`workflows` is the single availability decision for structured Workflow authoring, execution,
+inspection, storage, and Action/MCP surfaces. It is server-represented, fail-closed, and depends
+on `automations` in the Protocol catalog. The dependency resolver, not callers, disables Workflow
+when Automations is unavailable.
+
+`resolveWorkflowsFeature`, registered in the one `serverFeatureRegistry`, reads
+`HAPPIER_FEATURE_WORKFLOWS__ENABLED` and defaults on after the approved integrated activation.
+This default means a current Home explicitly advertises support; it does not make absence truthy.
+Current clients and daemons treat a missing or malformed `features.workflows.enabled` bit as
+disabled, so they safely degrade against an older Home. Older clients drop the additive unknown
+field and retain their representable one-shot Automation behavior.
+
+Workflow-owned server routes use `createServerFeatureGatedRouteApp` with `workflows`. Runtime
+registration, UI routes, and Action/MCP availability consume the same catalog decision through
+their existing feature-policy owners. The incumbent `automations` bit is not a proxy for Workflow,
+and capabilities, Action presence, route probing, or local environment checks must not replace the
+canonical decision. The gate controls availability only; existing authorization, Account mode,
+machine assignment, definition validation, runtime currentness, and permission checks still apply.
+The shared V3 Automation API remains available for one-shot recipes; its canonical Run admission
+and claim owners reject/filter Workflow-v2 recipes when `workflows` is disabled, including Run Now,
+without hiding or poisoning claim pagination for ordinary Automation work.
+
+### Connected Services pool quota-limit selection
+
+`connectedServices.poolQuotaLimitSelection` gates authoring and projection of the optional
+`quotaLimitSelection` pool policy. It depends on both `connectedServices.accountFallback` and
+`connectedServices.quotas`. Servers preserve a stored selection while the feature is disabled,
+but omit it from group responses and reject attempts to author it; clients therefore cannot
+mistake a strict older reader for support. Absence and `{ mode: 'all', providerLimitIds: [] }`
+both keep the predecessor behavior of using every provider-reported allowance.
+
+Provider plugins remain the sole owners of allowance identity and model applicability. The pool
+stores only stable `providerLimitId` values already present in quota snapshots. A selected id that
+is temporarily unreported remains selected and produces unknown quota evidence rather than
+silently falling back to all limits.
+
 The gate is **enforced at the server boundary**, not only in the UI. The cutover route
 (`registerSessionAgentTransitionRoute`) carries
 `createServerFeatureGatePreHandler('sessions.agentSwitching')`, so a server with the opt-out set
 answers `404 { error: 'not_found' }` and the lifecycle mutation never runs — a hidden surface is not
 a gate. That route is the only place the switch becomes durable, so one gate at that choke point
 refuses the operation for every caller, UI or not.
+
+### Teams feature id
+
+The development-only Teams implementation uses the single server-represented `teams`
+feature id. `resolveTeamsFeature`, registered in `serverFeatureRegistry.ts`, enables it by
+default; operators can opt out with `HAPPIER_FEATURE_TEAMS__ENABLED=0`, and the existing
+build policy can deny it. An absent payload field defaults to disabled, so older Homes do
+not advertise Teams support.
+
+Team domain routes must use `createServerFeatureGatedRouteApp`. The bit controls availability;
+current Home and Team capabilities still authorize each operation. Home Account lifecycle,
+Home roles, owner protection, and Home Administration remain core behavior and do not use
+a separate `home.governance` gate.
+
+The in-progress credential-sharing implementation uses the child gate
+`teams.credentialResources`, which depends on `teams` in the canonical catalog.
+Its server resolver defaults to disabled and requires the operator opt-in
+`HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES__ENABLED=1`. Missing child bits default
+to disabled on every Home. This development gate does not establish resource
+entitlement, source readiness, or completion of the administration and broker flows.
+
+External API access uses the narrower
+`teams.credentialResources.externalApi` gate and depends on
+`teams.credentialResources`. It also defaults off and requires
+`HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES_EXTERNAL_API__ENABLED=1`. The dependency
+resolver keeps it disabled unless the parent credential-resource vertical is enabled.
+This bit controls route availability only; current resource, membership, key, policy,
+limit, and broker admission remain mandatory for every request.
+
+### Session collaboration feature ids
+
+`sessions.collaboration` is the one current-component boundary for Account,
+Team, and Group Session grants, responsibility, primary-Team context, and atomic
+initial access. It depends on `sessions` and the released `sharing.session`
+capability. `resolveSessionCollaborationFeature` is its only server producer and
+defaults it off while the complete current-component vertical remains under
+loaded and compatibility validation. Operators may explicitly enable it with
+`HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED=1`; the dependency resolver
+still forces it off when normal Session sharing is unavailable.
+
+The current grant and responsibility routes are mounted through
+`createServerFeatureGatedRouteApp`, and UI hosts consume the exact Home's same
+published decision through `useSessionCollaborationAvailability`. No route or
+client reconstructs a Team/Group dependency locally. The older
+`sharing.session` decision remains the independent released Account-direct
+sharing boundary: when collaboration is absent, the current Access editor uses
+the released direct-only adapter rather than hiding direct sharing or probing a
+new route by failure.
+
+Human Session presence is not governed by `sessions.collaboration`. It is an
+independently negotiated socket protocol over an already readable Session, so a
+Home that supports released direct sharing can expose presence without claiming
+Team/Group grants or responsibility. Session-to-Session Follow remains under
+the separate `sessions.following` owner and runtime capability; neither feature
+bit is a substitute for current access admission.
+
+Default-off preserves the full collaboration feature while its mounted vertical
+is completed. It is not permission to delete Account/Team/Group access,
+responsibility, presence, public links, or the Access editor, and it must not be
+split into mechanism-level feature bits.
+
+### Session Conversations feature id
+
+`sessions.conversations` gates the Session-owned human Conversation routes and mounted
+Collaboration surface. It is server-represented, fail-closed, and depends exactly on
+`sessions.collaboration`; the dependency is declared in the Protocol catalog and applied by
+`applyFeatureDependencies(...)`.
+
+Its server value is produced by `resolveSessionConversationsFeature`, registered in the one
+`serverFeatureRegistry`, from
+`HAPPIER_FEATURE_SESSIONS_CONVERSATIONS__ENABLED`. The resolver defaults off while the complete
+Plain/E2EE create, post, read, realtime, draft, and attention journey remains under integration.
+Explicit enablement still resolves false when Session collaboration is absent, disabled, or
+malformed. The nested Discussion routes use `createServerFeatureGatedRouteApp`, while the UI
+consumes the same published decision through `useFeatureEnabled`; neither side reconstructs the
+dependency locally.
+
+Default-off preserves the full feature while its mounted vertical is completed. It is an
+activation boundary, not permission to delete Conversation functionality or split it into
+smaller feature bits. Change the default only after the canonical plan's composed activation
+evidence is complete.
+
+### Session Board feature id
+
+`sessions.board` is the single development-only availability decision for the shared Session
+Board, its exact `surface` System Record reads, the atomic Board mutation route, Board Actions,
+and every client entry point. It is server-represented, `defaultFailMode: 'fail_closed'`, and
+depends only on `sessions` in the Protocol catalog.
+
+`resolveSessionBoardFeature`, registered in the one `serverFeatureRegistry`, reads
+`HAPPIER_FEATURE_SESSIONS_BOARD__ENABLED` and also consumes the existing Session System Records
+v1 activation fact. The environment value defaults off; missing and malformed values remain
+off. Explicit enablement therefore publishes `true` only after the current Home's System Records
+contract is active. A missing or malformed payload bit is also disabled on clients. Keep this
+default off until the approved Lane 08 native Board activation and loaded compatibility evidence
+is complete; default-off preserves the implementation and stored records rather than removing
+Board features.
+
+The Board aggregate route and exact host `surface` reads enforce this decision before mutation or
+disclosure. Generic System Record writes cannot mutate the typed-only Board kinds. UI, CLI, and
+Agent/native-tool consumers resolve the same decision for the exact Session Home; they do not use
+the selected Home, capabilities, plugin presence, renderer availability, or route probing as a
+substitute. The bit controls availability only. Current `readTranscript` and
+`editSessionRecords` capabilities, storage mode, Action policy, installed-plugin currentness, and
+renderer admission remain separate decisions at their existing owners.
+
+Hosted HTML and installed `sessionWidget` content do not add feature bits. They are source/runtime
+availability within an enabled Board. Unsupported renderers and unavailable plugins preserve the
+shared item and show a recoverable unavailable state.
+
+### Temporary computer feature id
+
+`sessions.ephemeralRunner` is the single development-only gate for the Temporary computer
+creator flow and the Happier Runner activation route family. It is server-represented,
+fail-closed, and depends on `sessions`, `machines`, and `sessions.drafts` in the Protocol
+catalog. The dependency resolver therefore keeps it unavailable when ordinary Sessions,
+Machine identity, or the synchronized waiting-draft owner is unavailable; routes and clients
+must not reconstruct that dependency locally.
+
+`resolveSessionEphemeralRunnerFeature`, registered in the one `serverFeatureRegistry`, reads
+`HAPPIER_FEATURE_SESSIONS_EPHEMERAL_RUNNER__ENABLED`. The resolver defaults off. Missing or
+malformed payload bits are also disabled, so a current client hides Temporary computer against
+an older Home and ordinary Session creation remains usable.
+
+The bit gates route availability only. It does not prove that a signed Runner artifact exists,
+that the selected Agent and trusted external plugin generation can run on the target, that an
+exact broker Machine is ready, or that the creator and restricted runtime are authorized.
+Those decisions remain with their existing publication, Agent/plugin, broker, authentication,
+and Session-access owners. Keep the default off until one complete creator → endpoint →
+materialized ordinary Session → real turn → ordinary-feature parity → Stop journey passes for
+a supported target. This activation boundary preserves the full feature; it is not permission
+to remove unfinished Runner capabilities or split them into mechanism-level flags.
+
+### Machine Pools feature id
+
+The 0.3 development implementation uses the single server-represented
+`machines.pools` feature id for personal Pool administration and resolution. It is
+`defaultFailMode: 'fail_closed'`, enabled by default, with
+`HAPPIER_FEATURE_MACHINES_POOLS__ENABLED` as the operator opt-out. Its only declared
+dependency is `machines`, the Machine control-plane parent; there is no Teams
+dependency, and dependency evaluation stays with the shared catalog owner rather
+than a Pool-local check. Missing or malformed payload bits are disabled, so clients
+do not expose or call Pool operations against an older Home.
+
+The server gate covers all six `/v1/machines/pools/*` routes through the shared
+`createServerFeatureGatePreHandler` owner, ahead of the route body and before any
+Pool data is read. A disabled feature answers `404 { "error": "not_found" }`, the
+default refusal envelope, rather than a Pool-specific disabled code. Current Account
+and Machine ownership checks remain separate authorization decisions; the feature bit
+never grants access. Exact Machine selection, existing session creation, picker
+consolidation, and socket identity extraction are existing behavior and stay ungated.
+Once a Pool resolves, the normal exact-target path is used without consulting this
+feature again.
+
+`resolveMachinePoolsFeature` is the only server producer, and it publishes a feature
+bit only. The family adds no `capabilities` leaf, and consistent with the general
+rule above, nothing in `capabilities` may be read as a Pool gate: only
+`readServerEnabledBit(payload, 'machines.pools') === true` enables the family.
+
+The decision is Home-specific. In a multi-Home client, one Home may expose Pool
+administration and selection while another does not. Definitions never migrate or
+merge across Homes, and an unsupported Home still contributes its ordinary exact
+Machines. A missing bit, failed feature read, or signed-out Home must not be treated
+as an empty-but-current Pool list or a zero-connected observation; clients may keep
+cached rows only as unavailable context until the canonical projection refreshes.
+
+This gate enables personal Pool administration and the Pool choices in New Session
+and credential-resource editing. The credential-resource routes remain independently
+gated by `teams.credentialResources`; neither bit grants Team, resource, source, or
+Machine authority.
+
+Current development source supports Pool-backed broker placement. The source-owning
+daemon answers a current-only, content-free eligibility request for each generically
+available candidate, the Home applies the one Pool selector, and the existing broker
+path receives one exact Machine. That Machine stays pinned for the broker lifetime;
+reconnect and signed-authority renewal revalidate the resource, source, request
+policy, Machine, endpoint and usage admission without reranking the Pool. Resource
+readers who are not the source owner never receive the personal Pool identity or
+roster. Exact-Machine brokerage is unchanged and does not depend on this feature.
+
+Advanced capacity admission, sharing, automatic failover, and Team-owned Pools remain
+deferred product extensions, not additional hidden feature bits and not removed
+requirements.
 
 ### Search feature id
 

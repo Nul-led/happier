@@ -5,6 +5,16 @@ description: Understand unread session attention, Mark as unread, Mark as read, 
 
 Happier tracks which sessions still need your attention.
 
+<Callout type="info" title="Per-Account read state is in development">
+The current 0.3 development path keeps read state separate for each Account:
+reading a shared Session changes your progress without clearing another
+person's unread state. Session owners are tracked automatically; other readers
+become tracked through an active Follow. A tracked view-only reader can mark
+their own Session read or unread. This path still needs its upgrade, loaded
+web/native, and multi-device validation, so it is not a released availability
+claim.
+</Callout>
+
 For normal Happier sessions, unread state means:
 
 - the session has committed transcript activity after your last viewed position
@@ -79,6 +89,33 @@ The attention area itself comes from **Settings → Session → Sessions needing
 
 A per-session choice always wins over the default, in both directions: a session you removed stays out of the attention area even when the default is on.
 
+## Reminding yourself later
+
+Use **Remind me** when you have read a session but want it to return to **Needs attention** at a
+specific time. Choose one of the suggested times, pick **Choose date and time…**, or select a saved
+preset. The session row shows a small clock, and reopening **Remind me** shows the scheduled time and
+the currently selected choice.
+
+Setting a reminder marks the session's current content read. With no stronger attention reason, a
+future reminder temporarily moves the session out of **Needs attention**. When the time arrives, the
+session returns there without becoming unread, even when no new message has arrived. Opening the
+session does not clear a due reminder; use **Remove reminder** or choose another time.
+
+A reminder and **Keep in Needs attention** are separate choices. If you set a reminder on a kept
+session, the future reminder temporarily hides it from **Needs attention** without forgetting the
+Keep choice. Removing the reminder restores that choice. Choosing **Keep in Needs attention** or
+**Remove from Needs attention** while a reminder is set clears the reminder and makes that attention
+choice the new lasting state.
+
+When choosing a custom date and time, **Add to presets** saves a reusable calendar rule rather than
+one fixed date. For example, a preset shown as `Friday · 2:00 PM` continues to mean the next Friday at
+2:00 PM. Use **Manage presets** to rename, reorder, or remove saved choices. Presets and scheduled
+reminders sync through the Relay for the same Account.
+
+Session reminders currently affect Happier's in-app attention state. They do not schedule a push or
+device-local notification. An open client wakes at the next reminder time; a client that was closed
+or disconnected shows the due reminder when it reconnects or returns to the foreground.
+
 ## When the session is already open
 
 Opening a session normally marks it read because viewing the transcript is treated as read intent.
@@ -126,11 +163,22 @@ If you mark a session unread on one device, other connected views receive that u
 
 In multi-Relay setups, read state is scoped to the Relay/account that owns the session. Changing read state on one Relay does not affect an unrelated account on another Relay.
 
-## Shared sessions and access
+## Shared sessions, access, and personal attention
 
-Shared sessions still have read/unread state.
+Shared sessions can be visible to a broad Team or Group audience without
+creating personal attention. Access answers whether your Account may read or
+act on the Session; Follow, assignment, and read state answer whether it belongs
+in your personal work flow.
 
-Changing read state requires edit-style access to the session. View-only shared access can read the transcript but cannot update the session's read cursor on the Relay.
+In the current development path, merely receiving Team/Group access does not
+create a read-state row or produce unread, Activity, Inbox, badge, local
+notification, or push pressure. Open the Session and follow it when you want
+future activity to become part of your personal attention flow.
+
+Changing read state requires `readTranscript` access and personal tracking.
+View-only shared access can read the transcript and, once tracked, update that
+Account's own read cursor. No read-state mutation updates another Account's
+cursor.
 
 If a shared session cannot be changed because of access, Happier shows the failure instead of silently changing local state.
 

@@ -54,15 +54,19 @@ Static registration returns `void`; a code-defined `setup` callback may return
 one cleanup function.
 
 Client-target Action activation is part of a Developer Preview contract whose
-implementation and packaged web/iOS/Android certification remain in progress.
+packaged web/iOS/Android certification remains in progress.
 The public package surface has not yet been released for supported use, and no
 released build currently provides this capability.
 
 Activation does not receive invocation services. Daemon Action and hook
 handlers receive a bounded `PluginInvocationContext`; client Action handlers
 receive only their client-safe identity, cancellation, invocation-surface,
-current-UI, and host-navigation context. Agent session factories receive their
-own runtime context.
+current-UI, and bounded UI context. That UI context can open a surface or
+invoke another eligible Action through the host's existing dispatcher. A
+nullable, host-owned ephemeral scope can also share one plugin-local value
+with mounted UI from the same Account and immutable plugin generation; authors
+lease values with a versioned local key and release the lease when the
+operation ends. Agent session factories receive their own runtime context.
 
 ## Invocation context
 

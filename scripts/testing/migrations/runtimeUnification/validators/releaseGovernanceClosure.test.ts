@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
 
 import {
@@ -69,7 +72,9 @@ test('release governance closure rejects soft-skip dynamic imports in release-re
   assert.match(result.violations.map((violation) => violation.message).join('\n'), /RP-TEST-2/);
 });
 
-test('release governance closure rejects soft-skip dynamic imports across all release-critical test roots', () => {
+test('release governance closure discovers and rejects soft-skip imports across release-critical roots', (t) => {
+  const rootDir = mkdtempSync(join(tmpdir(), 'release-governance-discovery-'));
+  t.after(() => rmSync(rootDir, { recursive: true, force: true }));
   const releaseCriticalSoftSkipFiles = [
     'apps/cli/src/daemon/browser/sidecar/context/capture.test.ts',
     'apps/cli/src/daemon/browser/actions/runtimeActionExecutor.test.ts',
@@ -77,21 +82,20 @@ test('release governance closure rejects soft-skip dynamic imports across all re
     'packages/protocol/src/features/payload/capabilities/browserCapabilities.test.ts',
   ];
 
-  const result = run(
-    releaseCriticalSoftSkipFiles.map((filePath) => ({
-      filePath,
-      content: [
-        'async function loadModule() {',
-        '  return import("./owner.js").catch(() => null);',
-        '}',
-        'test("vacuous", async () => {',
-        '  const mod = await loadModule();',
-        '  if (!mod) return;',
-        '});',
-      ].join('\n'),
-    })),
-    ['release-test-honesty'],
-  );
+  for (const filePath of releaseCriticalSoftSkipFiles) {
+    const absolutePath = join(rootDir, filePath);
+    mkdirSync(dirname(absolutePath), { recursive: true });
+    writeFileSync(absolutePath, [
+      'async function loadModule() {',
+      '  return import("./owner.js").catch(() => null);',
+      '}',
+      'test("vacuous", async () => {',
+      '  const mod = await loadModule();',
+      '  if (!mod) return;',
+      '});',
+    ].join('\n'));
+  }
+  const result = validateReleaseGovernanceClosure({ rootDir, enabledChecks: ['release-test-honesty'] });
 
   assert.equal(result.ok, false);
   assert.deepEqual(
@@ -118,12 +122,13 @@ test('release governance closure does not reject non-module catch-null assertion
   assert.equal(result.ok, true, result.violations.map((violation) => violation.message).join('\n'));
 });
 
-test('release governance closure requires surface-context placement to derive from the registry', () => {
+test('release governance closure rejects prefix classification in the destination-slot registry', () => {
   const result = run(
     [{
-      filePath: 'packages/protocol/src/plugins/ui/surfaceContext.ts',
+      filePath: 'packages/protocol/src/plugins/contributions/ui/surfaceRegistry.ts',
       content: [
-        'export function resolvePluginUiSurfaceContextPlacement(surfaceId: string) {',
+        'export const PLUGIN_UI_DESTINATION_BINDING_SLOTS_V1 = [];',
+        'export function resolvePluginUiDestinationBindingSlotV1(surfaceId: string) {',
         '  if (surfaceId.startsWith("session.")) return "sessionPane";',
         '  return "unknown";',
         '}',
@@ -134,6 +139,8 @@ test('release governance closure requires surface-context placement to derive fr
 
   assert.equal(result.ok, false);
   assert.match(result.violations.map((violation) => violation.message).join('\n'), /RP-ARCH-3/);
+  assert.equal(result.violations.length, 1);
+  assert.equal(result.violations[0]?.line, 3);
 });
 
 test('release governance closure rejects an unconsumed daemon PMS observability socket route', () => {

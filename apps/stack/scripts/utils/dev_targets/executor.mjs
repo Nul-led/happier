@@ -16,6 +16,7 @@ import {
 } from './mutagen_runtime.mjs';
 import { resolveMutagenSessionName } from './mutagen_project.mjs';
 import { appendExecutionProvenance } from './execution_provenance.mjs';
+import { buildDevTargetControlLaunch } from './sync_project.mjs';
 
 async function defaultRunCaptureResult({ command, args, env, streamLabel = '', timeoutMs }) {
   return await runCaptureResult(command, args, {
@@ -73,9 +74,13 @@ export async function inspectDevTargetSync(
 ) {
   const runtime = resolveDevTargetMutagenRuntime({ stackBaseDir, env });
   const sessionName = resolveMutagenSessionName(target.name);
-  const result = await runCaptureResultImpl({
+  const launch = buildDevTargetControlLaunch({
     command: 'mutagen',
     args: ['sync', 'list', sessionName, '--template', MUTAGEN_SYNC_LIST_JSON_TEMPLATE],
+  });
+  const result = await runCaptureResultImpl({
+    command: launch.command,
+    args: launch.args,
     env: runtime.env,
     ...(Number.isFinite(timeoutMs) ? { timeoutMs } : {}),
   });
@@ -108,10 +113,18 @@ async function flushDevTarget(
 ) {
   const runtime = resolveDevTargetMutagenRuntime({ stackBaseDir, env });
   const sessionName = resolveMutagenSessionName(target.name);
-  const result = await runCaptureResultImpl({
+  const launch = buildDevTargetControlLaunch({
     command: 'mutagen',
     args: ['sync', 'flush', sessionName],
-    env: runtime.env,
+    syncFlushSession: sessionName,
+  });
+  const result = await runCaptureResultImpl({
+    command: launch.command,
+    args: launch.args,
+    env: {
+      ...runtime.env,
+      HAPPIER_DEV_TARGET_CONTROL_STATE_DIR: `${stackBaseDir}/dev-target-command-load-native/sync-control`,
+    },
     streamLabel: `sync:${target.name}`,
     ...(Number.isFinite(timeoutMs) ? { timeoutMs } : {}),
   });

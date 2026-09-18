@@ -641,6 +641,9 @@ export async function writeChecksumsFile({ product, version, artifacts, outDir }
   for (const artifact of artifacts) {
     const hash = await fileSha256(artifact.path);
     lines.push(`${hash}  ${artifact.name}`);
+    if (artifact.archiveMetadata) {
+      lines.push(`# happier-artifact-v1 ${JSON.stringify({ name: artifact.name, ...artifact.archiveMetadata })}`);
+    }
   }
   await writeFile(checksumsPath, `${lines.join('\n')}\n`, 'utf-8');
   return checksumsPath;

@@ -36,18 +36,29 @@ test('npm candidate packing is permission-minimized and secret-free', async () =
   );
 
   const checkouts = checkoutSteps(candidate);
-  assert.equal(checkouts.length, 2);
+  assert.equal(checkouts.length, 3);
   assert.equal(checkouts[0].with?.repository, '${{ job.workflow_repository }}');
   assert.equal(checkouts[0].with?.ref, '${{ job.workflow_sha }}');
   assert.equal(checkouts[0].with?.['persist-credentials'], false);
   assert.equal(checkouts[1].with?.repository, undefined);
   assert.equal(checkouts[1].with?.ref, '${{ steps.release_inputs.outputs.authorized_sha }}');
   assert.equal(checkouts[1].with?.['persist-credentials'], false);
+  assert.equal(checkouts[2].name, 'Checkout trusted npm release control');
+  assert.equal(checkouts[2].with?.repository, '${{ job.workflow_repository }}');
+  assert.equal(checkouts[2].with?.ref, '${{ job.workflow_sha }}');
+  assert.equal(checkouts[2].with?.path, 'trusted-control');
+  assert.equal(checkouts[2].with?.['persist-credentials'], false);
   const trustedCheckoutIndex = candidate.steps.findIndex((step) => step.name === 'Checkout trusted workflow control bytes');
   const resolveInputsIndex = candidate.steps.findIndex((step) => step.name === 'Resolve release inputs');
   const sourceCheckoutIndex = candidate.steps.findIndex((step) => step.name === 'Checkout source ref');
   assert.ok(trustedCheckoutIndex >= 0 && trustedCheckoutIndex < resolveInputsIndex);
   assert.ok(resolveInputsIndex < sourceCheckoutIndex);
+  const metadataIndex = candidate.steps.findIndex((step) => step.name === 'Resolve release metadata');
+  const recoveryControlIndex = candidate.steps.findIndex((step) => step.name === 'Checkout trusted npm release control');
+  assert.ok(recoveryControlIndex > sourceCheckoutIndex && recoveryControlIndex < metadataIndex);
+  const metadataRun = String(candidate.steps[metadataIndex]?.run ?? '');
+  assert.match(metadataRun, /trusted-control\/scripts\/pipeline\/npm\/resolve-release-metadata\.mjs/);
+  assert.match(metadataRun, /--repo-root "\$GITHUB_WORKSPACE"/);
   assert.match(JSON.stringify(candidate), /node scripts\/pipeline\/run\.mjs npm-release/);
 });
 

@@ -105,6 +105,13 @@ if [[ "\${1:-}" = "auth" && "\${2:-}" = "status" ]]; then
   exit 0
 fi
 if [[ "\${1:-}" = "setup" ]]; then
+  printf 'welcome_shown=%s\\n' "\${HAPPIER_INSTALLER_WELCOME_SHOWN:-unset}" >> "\${HAPPIER_TEST_CLI_LOG}"
+  if [[ -t 2 ]]; then
+    printf 'stderr_tty=yes\\n' >> "\${HAPPIER_TEST_CLI_LOG}"
+  else
+    printf 'stderr_tty=no\\n' >> "\${HAPPIER_TEST_CLI_LOG}"
+  fi
+  printf 'setup diagnostic remains visible\\n' >&2
   # The CLI's own prompts read stdin; record whether the installer handed us a
   # terminal to read from.
   if [[ -t 0 ]]; then
@@ -247,6 +254,36 @@ test('install.sh hands a fresh interactive install off to `happier setup`', asyn
     invocations.includes('setup'),
     `expected the installer to run \`happier setup\` after a fresh interactive install; status=${res.status}; CLI invocations were ${JSON.stringify(invocations)}\n--- output ---\n${output}\n--- stderr ---\n${stderr}`,
   );
+  assert.ok(invocations.includes('welcome_shown=1'), 'guided setup should know the installer already showed its welcome');
+  assert.ok(invocations.includes('stderr_tty=yes'), 'terminal detection must preserve the child stderr terminal for diagnostics and animation');
+  assert.match(output, /setup diagnostic remains visible/, 'guided setup diagnostics must reach the terminal');
+  assert.ok(
+    output.indexOf('fake setup ran') < output.indexOf('source "'),
+    `expected PATH reload guidance after guided setup completes:\n--- output ---\n${output}`,
+  );
+
+  await rm(fixture.root, { recursive: true, force: true });
+});
+
+test('install.sh keeps static art but emits no animation controls when motion is disabled on a tty', async () => {
+  assert.ok(existsSync('/usr/bin/script'), 'expected script(1) for a real pty');
+  const fixture = await prepareInstallFixture('happier-installer-static-welcome-');
+
+  const res = runInstallerOnPty(fixture.installerPath, ['--without-daemon', '--yes'], {
+    ...fixture.env,
+    HAPPIER_NO_ANIMATION: '1',
+    NO_COLOR: '1',
+    TERM: 'xterm-256color',
+    COLUMNS: '80',
+  });
+  const output = String(res.stdout ?? '').replaceAll('\r\n', '\n');
+  assert.equal(res.status, 0, `installer failed:\n${output}\n${String(res.stderr ?? '')}`);
+  const artLines = output.split('\n').filter((line) => /^\s*\d{4,}/.test(line));
+  const titleRow = artLines.findIndex((line) => /Happier/.test(line));
+  assert.ok(artLines.length >= 9, 'expected a complete numeric globe');
+  assert.equal(titleRow, Math.floor((artLines.length - 1) / 2) - 1, 'title is centered beside the globe');
+  assert.ok(artLines.every((line) => line.length <= 80), 'header must fit without terminal wrapping');
+  assert.doesNotMatch(output, /\r(?!\n)|\x1b/);
 
   await rm(fixture.root, { recursive: true, force: true });
 });

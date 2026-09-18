@@ -164,12 +164,12 @@ export async function startManagedLimaInstance({ executor, instance: rawInstance
   return { changed: true, status: 'Running' };
 }
 
-export async function stopManagedLimaInstance({ executor, instance: rawInstance }) {
+export async function stopManagedLimaInstance({ executor, instance: rawInstance, force = false }) {
   const instance = validateManagedLimaInstanceName(rawInstance);
   const current = await getManagedLimaStatus({ executor, instance });
   if (!current.exists) throw absentInstanceError(instance);
   if (current.status.toLowerCase() !== 'running') return { changed: false, status: current.status };
-  await executor.run('limactl', ['stop', instance]);
+  await executor.run('limactl', ['stop', ...(force ? ['--force'] : []), instance]);
   return { changed: true, status: 'Stopped' };
 }
 

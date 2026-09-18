@@ -218,7 +218,7 @@ test('watch startup materializes and verifies a required workspace runtime closu
         buildCalls += 1;
         return { built: false, current: true, reason: 'up_to_date' };
       },
-      readCliWorkspaceRuntimeIdentityImpl: () => {
+      readCliWorkspaceRuntimeIdentityImpl: async () => {
         if (buildCalls === 0) {
           throw new Error('workspace runtime has not been materialized');
         }
@@ -316,7 +316,7 @@ test('watch startup rejects a prior CLI publication whose required workspace run
         buildCalls += 1;
         return { built: false, current: true, reason: 'up_to_date' };
       },
-      readCliWorkspaceRuntimeIdentityImpl: () => {
+      readCliWorkspaceRuntimeIdentityImpl: async () => {
         throw new Error('workspace runtime has not been materialized');
       },
     },
@@ -748,7 +748,9 @@ assert.deepEqual(remainingLifecycleLocks, [], 'typed admission failure must rele
 
   const result = spawnSync(process.execPath, ['--input-type=module', '--eval', script], {
     encoding: 'utf-8',
-    timeout: 15_000,
+    // Match the neighboring source-workspace admission child: importing the real
+    // Stack/CLI boundary can exceed 15 seconds on a busy development machine.
+    timeout: 30_000,
   });
   assert.equal(result.status, 0, result.stderr || result.stdout);
 });
@@ -2140,6 +2142,7 @@ test('source daemon cold-start executes a ready immutable runner while retaining
   const stagingEntrypoint = join(stagingSnapshotRoot, 'package-dist', 'index.mjs');
   await mkdir(stagingSnapshotRoot, { recursive: true });
   await cp(join(cliDir, 'dist'), join(stagingSnapshotRoot, 'package-dist'), { recursive: true });
+  await cp(join(cliDir, 'package.json'), join(stagingSnapshotRoot, 'package.json'));
   for (const sidecar of CLI_RUNTIME_SIDECAR_ENTRIES) {
     const sidecarPath = join(stagingSnapshotRoot, 'scripts', ...sidecar);
     if (sidecar.length === 1 && (sidecar[0] === 'runtime' || sidecar[0] === 'shims')) {
@@ -4023,6 +4026,9 @@ test('failed Stack restart preserves a concurrently published successor lock and
     })}\n`;
     await writeFile(commandPath, `#!/bin/sh
 case "$1:$2" in
+  server:set)
+    exit 0
+    ;;
   daemon:stop)
     mkdir -p "$(dirname "$HAPPIER_TEST_SUCCESSOR_STATE_PATH")"
     printf '%s' "$HAPPIER_TEST_SUCCESSOR_STATE_RAW" > "$HAPPIER_TEST_SUCCESSOR_STATE_PATH"

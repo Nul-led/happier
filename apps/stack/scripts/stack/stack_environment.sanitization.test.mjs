@@ -321,10 +321,12 @@ test('withStackEnv preserves explicit local stack runtime override env vars from
     const previousCliBuild = process.env.HAPPIER_STACK_CLI_BUILD;
     const previousSkipRefreshDeps = process.env.HAPPIER_STACK_SKIP_REFRESH_DEPS;
     const previousSyncBundledWorkspaces = process.env.HAPPIER_STACK_SYNC_BUNDLED_WORKSPACES;
+    const previousExpoExportMaxWorkers = process.env.HAPPIER_STACK_EXPO_EXPORT_MAX_WORKERS;
 
     process.env.HAPPIER_STACK_CLI_BUILD = '0';
     process.env.HAPPIER_STACK_SKIP_REFRESH_DEPS = '1';
     process.env.HAPPIER_STACK_SYNC_BUNDLED_WORKSPACES = '0';
+    process.env.HAPPIER_STACK_EXPO_EXPORT_MAX_WORKERS = '2';
 
     try {
       await withStackEnv({
@@ -333,6 +335,7 @@ test('withStackEnv preserves explicit local stack runtime override env vars from
           assert.equal(env.HAPPIER_STACK_CLI_BUILD, '0');
           assert.equal(env.HAPPIER_STACK_SKIP_REFRESH_DEPS, '1');
           assert.equal(env.HAPPIER_STACK_SYNC_BUNDLED_WORKSPACES, '0');
+          assert.equal(env.HAPPIER_STACK_EXPO_EXPORT_MAX_WORKERS, '2');
         },
       });
     } finally {
@@ -342,6 +345,8 @@ test('withStackEnv preserves explicit local stack runtime override env vars from
       else process.env.HAPPIER_STACK_SKIP_REFRESH_DEPS = previousSkipRefreshDeps;
       if (typeof previousSyncBundledWorkspaces === 'undefined') delete process.env.HAPPIER_STACK_SYNC_BUNDLED_WORKSPACES;
       else process.env.HAPPIER_STACK_SYNC_BUNDLED_WORKSPACES = previousSyncBundledWorkspaces;
+      if (typeof previousExpoExportMaxWorkers === 'undefined') delete process.env.HAPPIER_STACK_EXPO_EXPORT_MAX_WORKERS;
+      else process.env.HAPPIER_STACK_EXPO_EXPORT_MAX_WORKERS = previousExpoExportMaxWorkers;
     }
   });
 });

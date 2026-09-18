@@ -73,6 +73,15 @@ Install an archive emitted by `hdev plugins pack`:
 hdev plugins install ./my-plugin-0.1.0.tgz --kind archive
 ```
 
+In the current Developer Preview source, archive URLs keep all query parameters
+for later updates. Happier saves the full URL in the selected machine's local
+plugin state, including any credentials or signed access parameters it contains.
+The install review warns about this retention. Use a URL you are comfortable
+storing there; an expired or revoked URL can make a later update fail.
+Parameters removed by an earlier build cannot be recovered from the saved
+record. Reinstall with the original full URL and review it again to restore
+that update source.
+
 Install an exact npm version:
 
 ```bash
@@ -120,11 +129,12 @@ hdev plugins pack . --out ../my-plugin-0.2.0.tgz
 hdev plugins install ../my-plugin-0.2.0.tgz --kind archive
 ```
 
-A new archive is a one-off source and requires review, and so is an exact npm
-version you select yourself. Update requests carry no source of their own:
+A newly supplied archive requires review, as does an exact npm version you
+select yourself. Update requests carry no source of their own:
 `plugins update` rebuilds the artifact request from the plugin's trust record
-— the same registry origin, package, and registry profile it was trusted from
-— so it cannot be pointed at a different source. Widened executable realms,
+— the same saved archive path or URL, or the same npm registry origin, package,
+and registry profile it was trusted from — so it cannot be pointed at a different
+source. Widened executable realms,
 widened required host access, or any other review-sensitive change reopens
 the full review.
 

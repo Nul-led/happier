@@ -23,6 +23,7 @@ import {
   writeStubCliDistBuildManifest,
   writeStubHappierCliFiles,
 } from './testkit/core/stub_happier_cli_files.mjs';
+import { buildStubHappierServerSetSource } from './testkit/core/stub_happier_cli_server_set.mjs';
 import { resolveStackCredentialPaths } from './utils/auth/credentials_paths.mjs';
 import { inspectDependencyRefresh } from './utils/proc/dependency_refresh.mjs';
 
@@ -301,29 +302,7 @@ const args = process.argv.slice(2);
 const home = process.env.HAPPIER_HOME_DIR || process.env.HAPPIER_STACK_CLI_HOME_DIR;
 if (!home) process.exit(2);
 
-if (args[0] === 'server' && args[1] === 'set') {
-  const value = (name) => {
-    const index = args.indexOf(name);
-    return index >= 0 ? String(args[index + 1] || '') : '';
-  };
-  const settingsPath = join(home, 'settings.json');
-  const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-  const serverId = value('--server-id');
-  const current = settings.servers?.[serverId] ?? {};
-  settings.activeServerId = serverId;
-  settings.servers = {
-    ...(settings.servers ?? {}),
-    [serverId]: {
-      ...current,
-      id: serverId,
-      serverUrl: value('--server-url'),
-      localServerUrl: value('--local-server-url'),
-      webappUrl: value('--webapp-url'),
-    },
-  };
-  writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\\n', 'utf-8');
-  process.exit(0);
-}
+${buildStubHappierServerSetSource()}
 
 if (args[0] !== 'daemon') process.exit(0);
 const sub = args[1] || '';
@@ -542,14 +521,14 @@ test('startLocalDaemonWithAuth reconciles a stale active stack profile before sp
 
     const profileAtDaemonStart = JSON.parse(await readFile(capturePath, 'utf-8'));
     assert.equal(profileAtDaemonStart.activeServerId, activeServerId);
-    assert.equal(profileAtDaemonStart.profile?.serverUrl, internalServerUrl);
+    assert.equal(profileAtDaemonStart.profile?.serverUrl, publicServerUrl);
     assert.equal(profileAtDaemonStart.profile?.localServerUrl, internalServerUrl);
     assert.equal(profileAtDaemonStart.profile?.webappUrl, publicServerUrl);
     assert.equal(profileAtDaemonStart.profile?.preservedProfileField, 'keep-me');
 
     const persistedSettings = JSON.parse(await readFile(join(cliHomeDir, 'settings.json'), 'utf-8'));
     assert.equal(persistedSettings.activeServerId, activeServerId);
-    assert.equal(persistedSettings.servers[activeServerId].serverUrl, internalServerUrl);
+    assert.equal(persistedSettings.servers[activeServerId].serverUrl, publicServerUrl);
     assert.equal(persistedSettings.servers[activeServerId].localServerUrl, internalServerUrl);
     assert.equal(persistedSettings.servers[activeServerId].webappUrl, publicServerUrl);
     assert.equal(persistedSettings.servers[activeServerId].preservedProfileField, 'keep-me');

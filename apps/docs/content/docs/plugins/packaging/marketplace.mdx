@@ -46,6 +46,12 @@ Marketplace entries should provide enough metadata for Happier to show:
 - contribution previews
 - install/trust prompts
 
+In the current Developer Preview source, catalog readers ignore unknown fields
+inside `display`, `summary`, and `links`, then cache only the known fields.
+Known values still have to validate. Plugin and source identity, npm
+coordinates, integrity, compatibility, and review facts remain strict; an
+unknown field in one of those envelopes rejects the source.
+
 ## Community npm discovery
 
 Community discovery searches npm's `happier-plugin` keyword for candidate
@@ -103,7 +109,9 @@ substitutes for that decision.
 
 ## Compatibility
 
-Use the manifest schema version and `engines.happier` to communicate
-compatibility. The pack owner emits the resulting generated compatibility
+Use the manifest schema version and optional `engines.happier` to communicate
+compatibility. Omitting the engine range does not add a host floor or exclude a
+valid packed plugin from Community npm discovery in the current Developer
+Preview source. The pack owner emits the resulting generated compatibility
 projection; it is not author-maintained marketplace metadata. See [Versioning
 and compatibility](/plugins/packaging/versioning-compat).

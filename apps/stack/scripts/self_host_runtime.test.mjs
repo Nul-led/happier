@@ -1494,7 +1494,7 @@ test('renderServerEnvFile emits sqlite/local defaults for self-host mode', () =>
   assert.match(envText, /PORT=3005/);
   assert.match(envText, /METRICS_ENABLED=false/);
   assert.match(envText, /HAPPIER_DB_PROVIDER=sqlite/);
-  assert.match(envText, /DATABASE_URL=file:\/\/\/var\/lib\/happier\/happier-server-light\.sqlite/);
+  assert.match(envText, /DATABASE_URL=file:\/var\/lib\/happier\/happier-server-light\.sqlite/);
   assert.match(envText, /HAPPIER_FILES_BACKEND=local/);
   assert.match(envText, /HAPPIER_SQLITE_AUTO_MIGRATE=1/);
   assert.match(envText, /HAPPIER_SQLITE_MIGRATIONS_DIR=\/var\/lib\/happier\/migrations\/sqlite/);
@@ -1557,7 +1557,7 @@ test('renderServerEnvFile includes PRISMA_QUERY_ENGINE_LIBRARY for packaged post
   assert.match(envText, new RegExp(`NODE_PATH=${join(serverBinDir, 'node_modules').replaceAll('\\\\', '\\\\\\\\')}`));
 });
 
-test('renderServerEnvFile uses file URL semantics on Windows', () => {
+test('renderServerEnvFile preserves the native SQLite path on Windows', () => {
   const envText = renderServerEnvFile({
     port: 3005,
     host: '127.0.0.1',
@@ -1566,7 +1566,7 @@ test('renderServerEnvFile uses file URL semantics on Windows', () => {
     filesDir: 'C:\\\\Users\\\\me\\\\.happier\\\\self-host\\\\data\\\\files',
     dbDir: 'C:\\\\Users\\\\me\\\\.happier\\\\self-host\\\\data\\\\pglite',
   });
-  assert.match(envText, /DATABASE_URL=file:C:\/Users\/me\/\.happier\/self-host\/data\/happier-server-light\.sqlite/);
+  assert.ok(envText.includes('DATABASE_URL=file:C:\\Users\\me\\.happier\\self-host\\data\\happier-server-light.sqlite'));
 });
 
 test('resolveSelfHostHealthTimeoutMs defaults to a safe health timeout', () => {

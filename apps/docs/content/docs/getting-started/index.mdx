@@ -14,8 +14,9 @@ gives it a remote control.
 ## What you need
 
 <Callout type="info">
-  Home-aware setup is available in the 0.3 development/preview line. Stable 0.2
-  still uses the Relay-oriented setup and URL flags shipped with that release.
+  This Home-aware setup journey is in the current unreleased 0.3 checkout.
+  Stable 0.2 still uses the Relay-oriented setup and URL flags shipped with
+  that release.
 </Callout>
 
 Four things. Three are quick; the first is the one people miss.
@@ -24,29 +25,32 @@ Four things. Three are quick; the first is the one people miss.
    does not run your agent in the cloud. A laptop that sleeps stops the session.
    If you want work to survive the lid closing, use a desktop, a VPS, or a box
    that stays plugged in.
-2. **A coding agent CLI, installed and signed in on that computer.** Happier
-   ships none of them and detects what is already there. If `claude` (or
-   `codex`, or `opencode`) does not run in your terminal today, it will not run
-   through Happier either.
+2. **A coding agent CLI on that computer.** During setup, the current unreleased
+   0.3 CLI can install one or more supported agents for you, or you can skip
+   that step and install one later. Installation does not sign the agent in:
+   its own authentication must also be ready before it can code.
 3. **A Home you can join**, found through your selected sign-in service or
-   supplied as a saved Home, HTTPS address, or strict descriptor. You can also
-   create a Personal Home explicitly after installing the CLI.
+   supplied as a saved Home, HTTPS address, or strict descriptor. If discovery
+   finds none, first setup can create a local Personal Home for you.
 4. **About ten minutes**, and a phone or second browser tab when approval is required.
 
 You do **not** need a server of your own, Node.js or npm, or a custom app build.
 
 ## 1. Get a client
 
-Install the app, or just open the web client — it needs no install. Create your
-account there.
+Install the app, or just open the web client — it needs no install. If you are
+joining an existing Home, you can sign in there first. If setup creates a local
+Personal Home, follow the pairing guidance it prints instead.
 
 See [Get the apps](/getting-started/get-the-apps) for iPhone, Android, desktop
 and browser.
 
 <Callout type="warn">
-  Your account is a key held on your device, not a password on our server. Back
-  it up from **Settings → Account** once you are signed in. If you lose every
-  signed-in device without a backup, the account cannot be recovered.
+  On a Home that uses device-key Accounts, your Account is a key held on your
+  device, not a password on the server. Back it up from
+  **Settings → Account** once you are signed in. If you lose every signed-in
+  device without a backup, the Account cannot be recovered. Personal Homes use
+  their documented plain-at-rest Account and device-pairing flow instead.
 </Callout>
 
 ## 2. Install the CLI on the machine that will do the work
@@ -78,10 +82,18 @@ next step.
 happier setup
 ```
 
-Setup connects this computer to an existing Home. With no usable active Home it
-uses the selected sign-in service—Happier Cloud by default—to show the available
-sign-in methods and find your linked Homes. It enrolls the preferred Home, then
-registers this machine, installs the background service, and checks your Agent CLIs.
+With no usable active Home, setup offers four clear paths: find linked Homes
+through your selected sign-in service (recommended, with Happier Cloud as the
+default service), connect to an existing saved, HTTPS, or descriptor Home,
+create a Personal Home on this computer, or exit. An explicit Home flag skips
+those menus. Once a Home is selected, setup registers this machine, installs the
+background service, and checks your Agent CLIs.
+
+The Home hosts your Account and synchronizes conversation and session state.
+It does not run the coding agent: that process stays on this computer, beside
+your repository, even when Happier Cloud helped you sign in. Switching Homes
+later selects another Home and its Account; it does not migrate the Account or
+its data.
 
 If you already know the answer, skip the question:
 
@@ -111,11 +123,19 @@ around it. The full flag set is
 An Iroh-only Home does not need a public address. Use its strict descriptor so
 setup can reach the exact Home and verify its stable identity before storing a credential.
 
-To create a Home instead of connecting to one, use `happier home create` locally
-or `happier home create --ssh user@host` on a trusted remote computer. That is a
-0.3 development/preview feature; it uses the managed runtime and Personal Home bootstrap.
+When first setup offers **Create a Personal Home on this computer**, it delegates to the
+same canonical flow as `happier home create`. You can also invoke that command
+directly, or use `happier home create --ssh user@host` on a trusted remote
+computer. These commands are in the current unreleased 0.3 checkout.
 
 ## 4. Start your first session
+
+In the app, choose **New session**, select the connected computer and project,
+then choose an agent and start the session. The background service on that
+computer must still be running and reachable; the app controls the session, but
+the agent process runs beside your repository on the selected computer.
+
+Or start from a terminal in the project:
 
 ```bash
 happier
@@ -124,6 +144,10 @@ happier
 That starts a session with Claude Code, the default agent. To use another, name
 it: `happier codex`, `happier opencode`, `happier cursor`. The session appears
 in your client within a second or two, and you can drive it from there.
+
+If you skipped agent setup, the computer is connected but is not yet ready to
+run coding sessions. Run `happier agents setup`, then complete the selected
+agent's own sign-in before starting a session.
 
 ## 5. Confirm it all worked
 

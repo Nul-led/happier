@@ -4,7 +4,7 @@ One Happier Session keeps its identity and transcript while the Agent running it
 product name is **Continue with another Agent**; the machine RPC is `session.agentTransition`.
 
 > **Release status.** Unreleased. This exists in the current development source of `dev` and
-> `remote-dev` and has **not** passed an integrated live gate. Do not describe it as available in a
+> `../0.2` and has **not** passed an integrated live gate. Do not describe it as available in a
 > stable or preview build. Execution ledger and gate standing:
 > `.project/plans/2026-08-15-same-session-cross-agent-continuation/PLAN.md` §12.4/§12.5; QA state:
 > the sibling `QA-MATRIX.md`.
@@ -178,7 +178,7 @@ no-divider index is a shared frozen empty object so an unswitched transcript nev
 `dev` persists `turn.agentId` server-side but has no hydrated client read (no `sessionTurns` field on
 `Session`; the live-socket and warm-cache paths carry only `rollbackEligibleTurnStarts`), so a
 turn-based resolver would attribute correctly after a cold fetch and then silently degrade to neutral
-after any live update. `remote-dev`'s `SessionTurnV1` has no `agentId` field at all.
+after any live update. `../0.2`'s `SessionTurnV1` has no `agentId` field at all.
 
 **The one documented bound:** divider-boundary attribution is exact for every row written in the
 ordinary flow, but a source row the canonical writers accept *after* the divider sequence — the
@@ -269,7 +269,7 @@ receipt to post-cutover enqueue.
 
 Admission goes through the ordinary owner in both trees — `sendSessionMessage` with
 `resumeInactiveSession: false`, so custody lands before the runtime starts. The trees differ in
-shape, not behaviour: `remote-dev` extracted `apps/cli/src/session/services/admitSessionUserMessage.ts`,
+shape, not behaviour: `../0.2` extracted `apps/cli/src/session/services/admitSessionUserMessage.ts`,
 while `dev` calls the same owner through the coordinator-local `admitExactInput`. Neither is a second
 admission decision-maker, and neither tree should grow one.
 
@@ -291,7 +291,7 @@ Two dispositions are easy to get wrong and are worth naming:
 - **Work state is captured before it is cleared.** `sessionWorkStateV1` has two clauses in §8, and
   they belong to different owners. The coordinator's brief builder is the last reader of the source
   view before the cutover, so it reads the snapshot through `readSessionWorkStateV1FromMetadata`
-  (`readDisplayableSessionWorkStateV1` in `remote-dev`) and hands it to the replay owner as
+  (`readDisplayableSessionWorkStateV1` in `../0.2`) and hands it to the replay owner as
   `workState`; the projector then drops the field. The items are a structured projection rather than
   transcript prose, so without the capture the in-flight plan is deleted at the cutover and the
   target continues the same Session unaware of it. This was half implemented — clear only — until
@@ -539,7 +539,7 @@ of Account settings; whether this machine may resume it is decided on the way ba
 capture wrote `identity: null` for an Agent the user had temporarily disabled — deleting the only
 copy of that continuity, which re-enabling the Agent could not recover.
 
-`remote-dev` carries the same record and the same delta boundary, written byte-identically so one
+`../0.2` carries the same record and the same delta boundary, written byte-identically so one
 machine's `~/.happier` round-trips between the two CLIs.
 
 ### The machine-local record
@@ -586,7 +586,7 @@ The divider's `sourceCutoffSeqInclusive` is therefore required rather than optio
 "this divider recorded no bound" reader state. Do not reintroduce one.
 
 **`sourceContext` uses the existing release-floor path, not a new negotiation surface** (`AM-22`).
-`remote-dev` declares it at its machine-RPC creation ingress and resolves the recipe before any child
+`../0.2` declares it at its machine-RPC creation ingress and resolves the recipe before any child
 exists. `dev` deliberately does **not** carry it on the private
 `SpawnDaemonSessionRequestCompatSchema`: that schema is strict, while the Action-receiving daemon
 accepts the strict `SessionSpawnNewInputV2` and resolves the recipe before canonical creation.
@@ -596,12 +596,12 @@ Action/release-floor behavior therefore rejects or reports the operation unavail
 draft/chip, and never retries as an ordinary unseeded child. No second capability negotiation or
 private-carrier extension is justified.
 
-**`remote-dev` → `dev` frontier.** The predecessor ships the same product, not a reduced one: same
+**`../0.2` → `dev` frontier.** The predecessor ships the same product, not a reduced one: same
 Session, bounded context, shared Agent picker, unified fork flow, and the same device-local native
 return. Its protocol lives in
 flat files (`packages/protocol/src/sessionAgentTransition*.ts`) against `dev`'s
 `sessions/agentTransition*`; the transition modules differ only in import paths, and the G0 ledger
-records the shared wire vectors as byte-identical. A `dev` reader must accept a `remote-dev`-written
+records the shared wire vectors as byte-identical. A `dev` reader must accept a `../0.2`-written
 Session: one flat resume key. The native record and its delta boundary are now present in both trees
 and written byte-identically, so the same `~/.happier` round-trips between the two CLIs. Neither
 direction has a live mixed-version gate.

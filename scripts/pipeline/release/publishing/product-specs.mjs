@@ -1,8 +1,9 @@
 // @ts-check
+import { getReleaseProductPublication } from '@happier-dev/release-runtime/releaseProducts';
 
 /**
  * @typedef {{
- *   id: 'cli' | 'hstack' | 'server';
+ *   id: 'cli' | 'hstack' | 'server' | 'runner';
  *   pipelineLabel: string;
  *   publishSurfaceLabel: string;
  *   minisignRequirementLabel: string;
@@ -10,7 +11,7 @@
  *   patchPackageVersionOnRolling: boolean;
  *   buildScriptPath: string;
  *   artifactsDir: string;
- *   manifestProduct: 'happier' | 'hstack' | 'happier-server';
+ *   manifestProduct: 'happier' | 'hstack' | 'happier-server' | 'happier-runner';
  *   manifestOutDir: string;
  *   checksumProductStem: string;
  *   rollingTagPrefix: string;
@@ -18,12 +19,12 @@
  *   releaseTitleBase: string;
  *   rollingNotesSubject: string;
  *   versionNotesSubject: string;
- *   notarizationEvidenceSuffix: 'cli' | 'hstack' | 'server';
+ *   notarizationEvidenceSuffix: 'cli' | 'hstack' | 'server' | 'runner';
  * }} BinaryPublishProductSpec
  */
 
 /** @type {ReadonlyArray<BinaryPublishProductSpec['id']>} */
-export const BINARY_PUBLISH_PRODUCT_IDS = Object.freeze(['cli', 'hstack', 'server']);
+export const BINARY_PUBLISH_PRODUCT_IDS = Object.freeze(['cli', 'hstack', 'server', 'runner']);
 
 /** @type {Readonly<Record<BinaryPublishProductSpec['id'], Readonly<BinaryPublishProductSpec>>>} */
 const PRODUCT_SPECS = Object.freeze({
@@ -39,8 +40,7 @@ const PRODUCT_SPECS = Object.freeze({
     manifestProduct: 'happier',
     manifestOutDir: 'dist/release-assets/cli/manifests',
     checksumProductStem: 'happier',
-    rollingTagPrefix: 'cli',
-    versionTagPrefix: 'cli-v',
+    ...getReleaseProductPublication('happier'),
     releaseTitleBase: 'Happier CLI',
     rollingNotesSubject: 'CLI binaries',
     versionNotesSubject: 'CLI',
@@ -58,8 +58,7 @@ const PRODUCT_SPECS = Object.freeze({
     manifestProduct: 'hstack',
     manifestOutDir: 'dist/release-assets/stack/manifests',
     checksumProductStem: 'hstack',
-    rollingTagPrefix: 'stack',
-    versionTagPrefix: 'stack-v',
+    ...getReleaseProductPublication('hstack'),
     releaseTitleBase: 'Happier Stack',
     rollingNotesSubject: 'hstack binaries',
     versionNotesSubject: 'hstack',
@@ -77,12 +76,29 @@ const PRODUCT_SPECS = Object.freeze({
     manifestProduct: 'happier-server',
     manifestOutDir: 'dist/release-assets/server/manifests',
     checksumProductStem: 'happier-server',
-    rollingTagPrefix: 'server',
-    versionTagPrefix: 'server-v',
+    ...getReleaseProductPublication('happier-server'),
     releaseTitleBase: 'Happier Server',
     rollingNotesSubject: 'server runtime release',
     versionNotesSubject: 'Server runtime',
     notarizationEvidenceSuffix: 'server',
+  }),
+  runner: Object.freeze({
+    id: 'runner',
+    pipelineLabel: 'runner-binaries',
+    publishSurfaceLabel: 'Runner binary publishing',
+    minisignRequirementLabel: 'Runner release artifacts',
+    packageJsonPath: 'apps/cli/package.json',
+    patchPackageVersionOnRolling: false,
+    buildScriptPath: 'scripts/pipeline/release/build-runner-binaries.mjs',
+    artifactsDir: 'dist/release-assets/runner',
+    manifestProduct: 'happier-runner',
+    manifestOutDir: 'dist/release-assets/runner/manifests',
+    checksumProductStem: 'happier-runner',
+    ...getReleaseProductPublication('happier-runner'),
+    releaseTitleBase: 'Happier Runner',
+    rollingNotesSubject: 'Runner binaries',
+    versionNotesSubject: 'Runner',
+    notarizationEvidenceSuffix: 'runner',
   }),
 });
 

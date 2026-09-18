@@ -110,12 +110,11 @@ test('a declared entry for a deleted test file is reported as stale', () => {
   assert.match(issues[0]!.message, /no longer exists/);
 });
 
-test('does not retain a stale exception for the deleted connected-service auth-groups test', () => {
-  assert.equal(
-    Object.hasOwn(
-      DECLARED_UNRESOLVED_MOCK_SPECIFIERS,
-      'apps/cli/src/api/api.connectedServiceAuthGroupsV3.test.ts',
-    ),
-    false,
-  );
+test('does not retain resolved or deleted mock exceptions', () => {
+  for (const filePath of [
+    'apps/cli/src/api/api.connectedServiceAuthGroupsV3.test.ts',
+    'apps/ui/sources/hooks/session/useSessionExecutionRunLaunchability.test.tsx',
+  ]) {
+    assert.equal(Object.hasOwn(DECLARED_UNRESOLVED_MOCK_SPECIFIERS, filePath), false);
+  }
 });

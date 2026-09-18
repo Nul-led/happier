@@ -28,12 +28,13 @@ test('source-dev shared dependency publication runs outside the Stack owner proc
   let invocation = null;
   const result = await syncSharedDepsForSourceDev(root, {
     cliDir,
+    platform: 'linux',
     env: { ...process.env },
     quiet: true,
     workspaceNames: ['protocol', '@happier-dev/agents'],
     includeRuntimeDependencies: false,
     spawnProcImpl: (label, command, args, env, options) => {
-      invocation = { command, args, options };
+      invocation = { command, args, env, options };
       options.lineFilter({
         stream: 'stdout',
         line: '__HAPPIER_SOURCE_DEV_SYNC_RESULT__={"synced":true,"reason":"completed"}',
@@ -43,14 +44,21 @@ test('source-dev shared dependency publication runs outside the Stack owner proc
   });
 
   assert.deepEqual(result, { synced: true, reason: 'completed' });
-  assert.equal(invocation?.command, process.execPath);
+  assert.equal(
+    invocation?.command,
+    fileURLToPath(new URL('../bin/hstack-exec', import.meta.url)),
+  );
   assert.deepEqual(invocation?.args, [
+    '--local',
+    '--',
+    process.execPath,
     join(scriptsDir, 'syncSharedDepsForDev.mjs'),
     '--json',
     '--no-runtime-dependencies',
     'protocol',
     'agents',
   ]);
+  assert.equal(invocation?.env.HAPPIER_HSTACK_DISPATCH_CONTROL, '1');
   assert.equal(invocation?.options.cwd, root);
 });
 
@@ -316,7 +324,7 @@ test('remote server placement does not wait for the local daemon before starting
   );
 });
 
-test('remote Expo or daemon placement scopes generated plugin preparation to dependent targets', async () => {
+test('remote daemon placement scopes generated plugin preparation to dependent targets', async () => {
   const source = await readFile(join(scriptsDir, 'dev.mjs'), 'utf-8');
 
   assert.match(source, /createHappyCliWorkspacePreparationExecutor/u);
@@ -335,7 +343,7 @@ test('remote Expo or daemon placement scopes generated plugin preparation to dep
   const devTargetsStartIndex = source.indexOf(
     'devTargetsController = startStackDevTargetsInBackground(',
   );
-  assert.notEqual(initialPreparationIndex, -1, 'expected one shared local generated-input preparation promise');
+  assert.notEqual(initialPreparationIndex, -1, 'expected one shared local generated-input preparation factory');
   assert.ok(
     initialPreparationIndex < devTargetsStartIndex,
     'the supervisor must receive the shared preparation promise when it starts',
@@ -348,7 +356,12 @@ test('remote Expo or daemon placement scopes generated plugin preparation to dep
   assert.doesNotMatch(
     source,
     /await remoteWorkspacePreparationExecutor\.build\(\)/u,
-    'an unrelated server-only target must not wait for remote Expo or daemon preparation',
+    'an unrelated server or Expo target must not wait for remote daemon preparation',
+  );
+  assert.match(
+    source,
+    /\? \(\) => remoteWorkspacePreparationExecutor\.build\(\)/u,
+    'a failed preparation must be recreated on retry instead of re-awaiting one rejected promise',
   );
 });
 

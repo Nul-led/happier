@@ -4,7 +4,7 @@ import { coerceHappyMonorepoRootFromPath, getStacksStorageRoot } from './utils/p
 import { readLastLines } from './utils/fs/tail.mjs';
 import { ensureCliBuilt, isCliDistBuildLockActive } from './utils/proc/pm.mjs';
 import { resolveJavaScriptRuntimeCommand } from '@happier-dev/cli-common/agents/managedJavaScriptRuntime';
-import { readCliNodeWorkspaceRuntimeIdentity } from '@happier-dev/cli-common/componentArtifacts/copyCliNodeRuntimePayload';
+import { readCliNodeWorkspaceRuntimeIdentityAsync } from '@happier-dev/cli-common/componentArtifacts/copyCliNodeRuntimePayload';
 import { resolveNewestReadyPinnedRunnerSnapshot } from './utils/cli/pinnedRunnerSnapshotLoader.mjs';
 import {
   findAnyCredentialPathInCliHome,
@@ -34,7 +34,10 @@ import {
   resolveCliDistEntrypointFromBin,
 } from './utils/cli/cliDistIntegrity.mjs';
 import { withStackDaemonLifecycleLock } from './utils/stack/daemon_lifecycle_lock.mjs';
-import { buildStackServerProfileSetArgs } from './utils/stack/server_profile_reconciliation.mjs';
+import {
+  assertStackServerProfileReconciled,
+  buildStackServerProfileSetArgs,
+} from './utils/stack/server_profile_reconciliation.mjs';
 import {
   resolveCliDistBuildLockPath,
   withCliDistBuildLock,
@@ -79,10 +82,10 @@ function resolveEnvFromOptions(options) {
   return process.env;
 }
 
-function readSourceCliWorkspaceRuntimeReadiness({
+async function readSourceCliWorkspaceRuntimeReadiness({
   distEntrypoint,
   repoRoot,
-  readCliWorkspaceRuntimeIdentityImpl = readCliNodeWorkspaceRuntimeIdentity,
+  readCliWorkspaceRuntimeIdentityImpl = readCliNodeWorkspaceRuntimeIdentityAsync,
 }) {
   if (!repoRoot) return {
     current: true,
@@ -110,7 +113,7 @@ function readSourceCliWorkspaceRuntimeReadiness({
   }
   try {
     const actualFingerprint = String(
-      readCliWorkspaceRuntimeIdentityImpl({ repoRoot })?.fingerprint ?? '',
+      (await readCliWorkspaceRuntimeIdentityImpl({ repoRoot }))?.fingerprint ?? '',
     ).trim().toLowerCase();
     if (!/^[a-f0-9]{64}$/.test(actualFingerprint)) {
       return {
@@ -138,12 +141,12 @@ function readSourceCliWorkspaceRuntimeReadiness({
   }
 }
 
-function assertSourceCliWorkspaceRuntimeStillCurrent({
+async function assertSourceCliWorkspaceRuntimeStillCurrent({
   cliBin,
   distEntrypoint,
   admittedWorkspaceRuntimeIdentity = null,
 }) {
-  const workspaceRuntimeReadiness = readSourceCliWorkspaceRuntimeReadiness({
+  const workspaceRuntimeReadiness = await readSourceCliWorkspaceRuntimeReadiness({
     distEntrypoint,
     repoRoot: coerceHappyMonorepoRootFromPath(
       resolveCliDistOwnerDirForDaemonLaunch({ cliBin, distEntrypoint }),
@@ -863,7 +866,7 @@ export async function ensureHappierCliDistExists(
     ensureCliBuiltImpl = ensureCliBuilt,
     probeCliDistRuntimeImportImpl = probeCliDistRuntimeImport,
     sleepImpl = sleepMs,
-    readCliWorkspaceRuntimeIdentityImpl = readCliNodeWorkspaceRuntimeIdentity,
+    readCliWorkspaceRuntimeIdentityImpl = readCliNodeWorkspaceRuntimeIdentityAsync,
     resolveNewestReadyPinnedSnapshotLocationImpl = resolveNewestReadyPinnedRunnerSnapshot,
   } = {},
 ) {
@@ -939,7 +942,7 @@ export async function ensureHappierCliDistExists(
     const priorFallbackIntegrity = priorIntegrity.ok
       ? priorIntegrity
       : priorReleaseBackupIntegrity;
-    const priorWorkspaceRuntimeReadiness = readWorkspaceRuntimeReadiness();
+    const priorWorkspaceRuntimeReadiness = await readWorkspaceRuntimeReadiness();
     const admitPinnedRunnerForWatchStartup = async () => {
       const pinnedRunner = resolveNewestReadyPinnedSnapshotLocationImpl(distEntrypoint);
       if (!pinnedRunner?.snapshotEntrypoint || !pinnedRunner?.fingerprint) return null;
@@ -985,7 +988,7 @@ export async function ensureHappierCliDistExists(
           env,
           timeoutMs: resolveStackDaemonStartVerifyTimeoutMs(env),
         });
-        const verifiedWorkspaceRuntimeReadiness = readWorkspaceRuntimeReadiness();
+        const verifiedWorkspaceRuntimeReadiness = await readWorkspaceRuntimeReadiness();
         if (
           verifiedWorkspaceRuntimeReadiness.available
           && verifiedWorkspaceRuntimeReadiness.actualFingerprint
@@ -1031,7 +1034,7 @@ export async function ensureHappierCliDistExists(
       }
       integrity = readIntegrity();
     }
-    const workspaceRuntimeReadiness = readWorkspaceRuntimeReadiness();
+    const workspaceRuntimeReadiness = await readWorkspaceRuntimeReadiness();
     const workspaceRuntimeCurrent = workspaceRuntimeReadiness.current === true;
     const current = buildResult?.current === true && workspaceRuntimeCurrent;
     const reason = buildError
@@ -2125,10 +2128,10 @@ export async function startLocalDaemonWithAuth({
   const sourceCliDir = resolveCliDistOwnerDirForDaemonLaunch({ cliBin, distEntrypoint });
   const sourceRepoRoot = coerceHappyMonorepoRootFromPath(sourceCliDir);
   const admittedSourceWorkspaceRuntimeIdentity = guardSourceCliDistRestart
-    ? readSourceCliWorkspaceRuntimeReadiness({
+    ? (await readSourceCliWorkspaceRuntimeReadiness({
         distEntrypoint,
         repoRoot: sourceRepoRoot,
-      }).actualFingerprint
+      })).actualFingerprint
     : null;
   const sourcePublicationLockPath = sourceRepoRoot
     ? resolveCliDistBuildLockPath(sourceRepoRoot)
@@ -2240,6 +2243,12 @@ export async function startLocalDaemonWithAuth({
           captureFailureDiagnostic: { env: daemonEnv },
         },
       );
+      assertStackServerProfileReconciled({
+        homeDir: cliHomeDir,
+        serverId,
+        internalServerUrl,
+        publicServerUrl,
+      });
     }
   }
 
@@ -2462,7 +2471,7 @@ export async function startLocalDaemonWithAuth({
           admittedDistClosureFingerprint,
           finalFingerprint: guardedDistIntegrity.fingerprint,
         });
-        assertSourceCliWorkspaceRuntimeStillCurrent({
+        await assertSourceCliWorkspaceRuntimeStillCurrent({
           cliBin,
           distEntrypoint,
           admittedWorkspaceRuntimeIdentity: admittedSourceWorkspaceRuntimeIdentity,
@@ -2594,7 +2603,7 @@ export async function startLocalDaemonWithAuth({
         admittedDistClosureFingerprint,
         finalFingerprint: guardedDistIntegrity.fingerprint,
       });
-      assertSourceCliWorkspaceRuntimeStillCurrent({
+      await assertSourceCliWorkspaceRuntimeStillCurrent({
         cliBin,
         distEntrypoint,
         admittedWorkspaceRuntimeIdentity: admittedSourceWorkspaceRuntimeIdentity,

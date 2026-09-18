@@ -150,7 +150,7 @@ jobs:
             printf '%s\n' "$object_sha"
           }
 
-          for tag in server-dev stack-dev cli-dev ui-web-dev; do
+          for tag in server-dev stack-dev cli-dev runner-dev ui-web-dev; do
             if ! tag_sha="$(resolve_tag_commit "$tag")"; then
               exit 0
             fi
@@ -239,6 +239,21 @@ jobs:
       allow_stable: false
       release_message: ${{ needs.prepare_release_candidate.outputs.release_message }}
 
+  runner:
+    name: Runner binaries (dev)
+    needs: [resolve_resume, prepare_release_candidate, verify_source_ci]
+    if: ${{ needs.prepare_release_candidate.outputs.release_needed == 'true' }}
+    uses: ./.github/workflows/publish-runner-binaries.yml
+    secrets: inherit
+    with:
+      channel: dev
+      source_ref: ${{ needs.prepare_release_candidate.outputs.source_sha }}
+      authorized_sha: ${{ needs.prepare_release_candidate.outputs.source_sha }}
+      resume_version: ${{ needs.resolve_resume.outputs.runner_version }}
+      publish_rolling: false
+      allow_stable: false
+      release_message: ${{ needs.prepare_release_candidate.outputs.release_message }}
+
   server_runtime:
     name: Server runtime (dev)
     needs: [resolve_resume, prepare_release_candidate, verify_source_ci]
@@ -323,7 +338,7 @@ jobs:
 
   release_verify:
     name: Verify exact immutable nightly candidates
-    needs: [prepare_release_candidate, cli, hstack, server_runtime, ui_web, resolve_validation_risk]
+    needs: [prepare_release_candidate, cli, hstack, runner, server_runtime, ui_web, resolve_validation_risk]
     uses: ./.github/workflows/release-verify.yml
     secrets: inherit
     with:
@@ -334,10 +349,12 @@ jobs:
       candidate_cli_version: ${{ needs.cli.outputs.version }}
       candidate_stack_version: ${{ needs.hstack.outputs.version }}
       candidate_server_version: ${{ needs.server_runtime.outputs.version }}
+      candidate_runner_version: ${{ needs.runner.outputs.version }}
       candidate_ui_web_version: ${{ needs.ui_web.outputs.version }}
       verify_cli_release: ${{ needs.resolve_resume.outputs.cli_version == '' }}
       verify_stack_release: ${{ needs.resolve_resume.outputs.stack_version == '' }}
       verify_server_release: ${{ needs.resolve_resume.outputs.server_version == '' }}
+      verify_runner_release: ${{ needs.resolve_resume.outputs.runner_version == '' }}
       verify_ui_web_release: ${{ needs.resolve_resume.outputs.ui_web_version == '' }}
       validation_profile: integrated
       risk_cli_upgrade: ${{ needs.resolve_validation_risk.outputs.risk_cli_upgrade == 'true' }}
@@ -347,7 +364,7 @@ jobs:
   verify_resume_candidates:
     name: Verify successful immutable siblings for resume
     if: ${{ always() && needs.prepare_release_candidate.outputs.release_needed == 'true' && needs.prepare_release_candidate.result == 'success' && needs.release_verify.result != 'success' }}
-    needs: [prepare_release_candidate, cli, hstack, server_runtime, ui_web, release_verify]
+    needs: [prepare_release_candidate, cli, hstack, runner, server_runtime, ui_web, release_verify]
     uses: ./.github/workflows/verify-release-resume-candidates.yml
     with:
       channel: dev
@@ -355,6 +372,7 @@ jobs:
       candidate_cli_version: ${{ needs.cli.result == 'success' && needs.cli.outputs.version || '' }}
       candidate_stack_version: ${{ needs.hstack.result == 'success' && needs.hstack.outputs.version || '' }}
       candidate_server_version: ${{ needs.server_runtime.result == 'success' && needs.server_runtime.outputs.version || '' }}
+      candidate_runner_version: ${{ needs.runner.result == 'success' && needs.runner.outputs.version || '' }}
       candidate_ui_web_version: ${{ needs.ui_web.result == 'success' && needs.ui_web.outputs.version || '' }}
 
   promote_server:
@@ -390,6 +408,17 @@ jobs:
       allow_stable: false
       release_message: ${{ needs.prepare_release_candidate.outputs.release_message }}
 
+  promote_runner:
+    name: Promote verified Runner candidate
+    needs: [prepare_release_candidate, runner, release_verify]
+    uses: ./.github/workflows/publish-runner-binaries.yml
+    secrets: inherit
+    with:
+      channel: dev
+      retry_version: ${{ needs.runner.outputs.version }}
+      allow_stable: false
+      release_message: ${{ needs.prepare_release_candidate.outputs.release_message }}
+
   promote_ui_web:
     name: Promote verified UI web candidate
     needs: [prepare_release_candidate, ui_web, promote_cli]
@@ -404,6 +433,9 @@ jobs:
   ui_mobile:
     name: UI mobile (dev)
     needs: [prepare_release_candidate, release_verify]
+    permissions:
+      actions: write
+      contents: write
     uses: ./.github/workflows/publish-ui-mobile-dev.yml
     secrets: inherit
     with:
@@ -446,7 +478,7 @@ jobs:
 
   verify_promoted:
     name: Verify promoted nightly references
-    needs: [prepare_release_candidate, ui_mobile, ui_desktop, docker]
+    needs: [prepare_release_candidate, promote_runner, ui_mobile, ui_desktop, docker]
     uses: ./.github/workflows/release-verify.yml
     secrets: inherit
     with:
@@ -458,6 +490,7 @@ jobs:
       verify_cli_release: true
       verify_stack_release: true
       verify_server_release: true
+      verify_runner_release: true
       verify_ui_web_release: true
 
   advance_source_issues_to_dev:
@@ -495,7 +528,7 @@ jobs:
   release_status:
     name: Project terminal nightly release status
     if: ${{ always() && needs.prepare_release_candidate.outputs.release_needed != 'false' }}
-    needs: [prepare_release_candidate, cli, hstack, server_runtime, ui_web, release_verify, verify_resume_candidates, promote_server, promote_hstack, promote_cli, promote_ui_web, ui_mobile, ui_desktop, docker, verify_promoted, advance_source_issues_to_dev]
+    needs: [prepare_release_candidate, cli, hstack, runner, server_runtime, ui_web, release_verify, verify_resume_candidates, promote_server, promote_hstack, promote_cli, promote_runner, promote_ui_web, ui_mobile, ui_desktop, docker, verify_promoted, advance_source_issues_to_dev]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -525,18 +558,22 @@ jobs:
           CLI_CANDIDATE_VERSION: ${{ needs.cli.outputs.version }}
           STACK_CANDIDATE_VERSION: ${{ needs.hstack.outputs.version }}
           SERVER_CANDIDATE_VERSION: ${{ needs.server_runtime.outputs.version }}
+          RUNNER_CANDIDATE_VERSION: ${{ needs.runner.outputs.version }}
           UI_WEB_CANDIDATE_VERSION: ${{ needs.ui_web.outputs.version }}
           CLI_CANDIDATE_RESULT: ${{ needs.cli.result }}
           STACK_CANDIDATE_RESULT: ${{ needs.hstack.result }}
           SERVER_CANDIDATE_RESULT: ${{ needs.server_runtime.result }}
+          RUNNER_CANDIDATE_RESULT: ${{ needs.runner.result }}
           UI_WEB_CANDIDATE_RESULT: ${{ needs.ui_web.result }}
           CLI_RESUME_VERIFIED: ${{ needs.verify_resume_candidates.outputs.cli_verified }}
           HSTACK_RESUME_VERIFIED: ${{ needs.verify_resume_candidates.outputs.stack_verified }}
           SERVER_RESUME_VERIFIED: ${{ needs.verify_resume_candidates.outputs.server_verified }}
+          RUNNER_RESUME_VERIFIED: ${{ needs.verify_resume_candidates.outputs.runner_verified }}
           UI_WEB_RESUME_VERIFIED: ${{ needs.verify_resume_candidates.outputs.ui_web_verified }}
           CLI_RESULT: ${{ needs.promote_cli.result }}
           STACK_RESULT: ${{ needs.promote_hstack.result }}
           SERVER_RESULT: ${{ needs.promote_server.result }}
+          RUNNER_RESULT: ${{ needs.promote_runner.result }}
           UI_WEB_RESULT: ${{ needs.promote_ui_web.result }}
           MOBILE_RESULT: ${{ needs.ui_mobile.result }}
           DESKTOP_RESULT: ${{ needs.ui_desktop.result }}

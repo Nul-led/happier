@@ -25,5 +25,8 @@ export function resolveTransientRepoOverrides({ rootDir, kv }) {
   if (!monoRoot) {
     throw new Error(`[stack] --repo is not a Happier monorepo root: ${resolved}`);
   }
-  return { HAPPIER_STACK_REPO_DIR: monoRoot };
+  return {
+    HAPPIER_STACK_REPO_DIR: monoRoot,
+    HAPPIER_STACK_TRANSIENT_REPO_DIR: monoRoot,
+  };
 }

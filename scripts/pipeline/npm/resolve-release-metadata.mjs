@@ -23,6 +23,7 @@ const RELEASE_PACKAGE_FIELDS = Object.freeze({
 });
 
 const REUSABLE_CANDIDATE_FIELDS = Object.freeze(['cli', 'stack', 'server']);
+const CONTROL_REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 /** @param {unknown} value @param {string} name */
 function parseBoolean(value, name) {
@@ -137,8 +138,10 @@ function readProductionVersions(repoRoot, requested, serverRunnerDir) {
 /** @param {string} repoRoot @param {Record<string, boolean>} requested @param {string} serverRunnerDir */
 function readPreviewVersions(repoRoot, requested, serverRunnerDir) {
   const args = [
-    path.join(repoRoot, 'scripts/pipeline/run.mjs'),
+    path.join(CONTROL_REPO_ROOT, 'scripts/pipeline/run.mjs'),
     'npm-set-preview-versions',
+    '--repo-root',
+    repoRoot,
     '--publish-cli',
     String(requested.cli),
     '--publish-stack',
@@ -188,6 +191,7 @@ function main() {
       'sdk-version': { type: 'string', default: '' },
       'server-runner-dir': { type: 'string', default: 'packages/relay-server' },
       'github-output': { type: 'string', default: '' },
+      'repo-root': { type: 'string', default: '' },
     },
     allowPositionals: false,
   });
@@ -204,7 +208,7 @@ function main() {
     sdk: parseBoolean(values['publish-sdk'], '--publish-sdk'),
     channelsProtocol: parseBoolean(values['publish-channels-protocol'], '--publish-channels-protocol'),
   };
-  const repoRoot = process.cwd();
+  const repoRoot = path.resolve(String(values['repo-root'] ?? '').trim() || process.cwd());
   const serverRunnerDir = String(values['server-runner-dir'] ?? '').trim() || 'packages/relay-server';
   const { allocationRequested, reusedVersions } = resolveNpmVersionSources({
     requested,

@@ -145,4 +145,9 @@ test('manual test dispatch can opt approved non-secret Linux lanes into Blacksmi
   const providerTestIndex = serverDbSteps.findIndex((step) => step.name === 'Run db contract suite (Postgres)');
   assert.ok(schemaSyncIndex >= 0 && schemaSyncIndex < providerTestIndex);
   assert.equal(serverDbSteps[schemaSyncIndex].run, 'yarn --cwd apps/server schema:sync:check');
+  assert.equal(
+    serverDbSteps[providerTestIndex].env.HAPPIER_TEST_POSTGRES_DATABASE_URL,
+    serverDbSteps[providerTestIndex].env.DATABASE_URL,
+    'the Postgres contract job must explicitly identify its disposable provider-test database',
+  );
 });

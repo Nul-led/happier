@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readlinkSync, readdirSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -65,6 +65,16 @@ async function waitForCondition(predicate, label, timeoutMs = 10_000) {
   }
 }
 
+function expireWorkspaceLockOwner(path, ageMs = 120_000) {
+  const owner = JSON.parse(readFileSync(path, 'utf8'));
+  const expiredAtMs = Date.now() - ageMs;
+  writeFileSync(path, JSON.stringify({
+    ...owner,
+    createdAtMs: expiredAtMs,
+    updatedAtMs: expiredAtMs,
+  }), 'utf8');
+}
+
 function runWorkspaceQuarantineReadFailureCase(mode) {
   const tempRoot = mkdtempSync(join(tmpdir(), `happier-workspace-bundle-lock-reclaim-read-${mode}-`));
   try {
@@ -78,8 +88,8 @@ import { syncBuiltinESMExports } from 'node:module';
 const lockPath = ${JSON.stringify(lockPath)};
 const staleOwner = {
   pid: 999999,
-  createdAtMs: Date.now(),
-  updatedAtMs: Date.now(),
+  createdAtMs: Date.now() - 120_000,
+  updatedAtMs: Date.now() - 120_000,
   token: 'stale-owner',
   processInstanceFingerprint: 'stale-incarnation',
 };
@@ -848,6 +858,7 @@ await withWorkspaceBundleLock(
     );
     child.kill('SIGKILL');
     await new Promise((resolve) => child.once('exit', resolve));
+    expireWorkspaceLockOwner(claimPath);
     releaseOwner();
     await owner;
 
@@ -908,6 +919,7 @@ await withWorkspaceBundleLock(
 
     child.kill('SIGKILL');
     await new Promise((resolve) => child.once('exit', resolve));
+    expireWorkspaceLockOwner(lockPath);
 
     const result = await withWorkspaceBundleLock(
       async () => 'successor',
@@ -930,8 +942,8 @@ test('workspace bundle lock priority claims recover paired dead claim and lock s
     const claimPath = `${lockPath}.priority-claim`;
     const deadOwner = {
       pid: 999_999,
-      createdAtMs: Date.now(),
-      updatedAtMs: Date.now(),
+      createdAtMs: Date.now() - 120_000,
+      updatedAtMs: Date.now() - 120_000,
       token: 'dead-claimant',
       processInstanceFingerprint: 'dead-incarnation',
     };
@@ -983,8 +995,8 @@ test('workspace bundle lock priority claims reclaim a reused live pid only for a
     const claimPath = `${lockPath}.priority-claim`;
     writeFileSync(claimPath, JSON.stringify({
       pid: process.pid,
-      createdAtMs: Date.now(),
-      updatedAtMs: Date.now(),
+      createdAtMs: Date.now() - 120_000,
+      updatedAtMs: Date.now() - 120_000,
       token: 'predecessor-claim',
       processInstanceFingerprint: 'old-incarnation',
     }), 'utf8');
@@ -1440,7 +1452,323 @@ test('withWorkspaceBundleLockSync uses the shared workspace bundle lock owner fo
     assert.notEqual(observedOwner.processInstanceFingerprint, '');
     assert.equal(typeof observedOwner.token, 'string');
     assert.notEqual(observedOwner.token, '');
+    if (process.platform === 'linux') {
+      assert.equal(observedOwner.processPidNamespace, readlinkSync('/proc/self/ns/pid'));
+    }
     assert.equal(existsSync(lockPath), false);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('workspace bundle locks preserve a fresh workspace-visible heartbeat when pid liveness is foreign', () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'happier-workspace-bundle-lock-foreign-pid-'));
+  try {
+    const lockPath = join(tempRoot, 'workspace-bundling.lock');
+    const owner = {
+      pid: 42,
+      createdAtMs: Date.now(),
+      updatedAtMs: Date.now(),
+      token: 'foreign-owner',
+      processInstanceFingerprint: 'foreign-incarnation',
+    };
+    const ownerRaw = JSON.stringify(owner);
+    writeFileSync(lockPath, ownerRaw, 'utf8');
+    let entered = false;
+
+    assert.throws(
+      () => withWorkspaceBundleLockSync(
+        () => { entered = true; },
+        {
+          lockPath,
+          timeoutMs: 40,
+          pollIntervalMs: 5,
+          staleAfterMs: 60_000,
+          isRunningPidImpl: () => false,
+          readProcessInstanceFingerprintSyncImpl: () => 'different-local-incarnation',
+        },
+      ),
+      /Timed out waiting for workspace bundle lock/,
+    );
+    assert.equal(entered, false);
+    assert.equal(readFileSync(lockPath, 'utf8'), ownerRaw);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('workspace bundle lock heartbeat survives a blocked owner event loop across PID namespaces', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'happier-workspace-bundle-lock-blocked-owner-'));
+  try {
+    const lockPath = join(tempRoot, 'workspace-bundling.lock');
+    const enteredPath = join(tempRoot, 'owner-entered');
+    const moduleUrl = new URL('./workspaceBundleLock.mjs', import.meta.url).href;
+    const script = `
+import { writeFileSync } from 'node:fs';
+import { withWorkspaceBundleLockSync } from ${JSON.stringify(moduleUrl)};
+withWorkspaceBundleLockSync(() => {
+  writeFileSync(${JSON.stringify(enteredPath)}, 'ready\\n');
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 700);
+}, {
+  lockPath: ${JSON.stringify(lockPath)},
+  timeoutMs: 1_000,
+  staleAfterMs: 100,
+});
+`;
+    const child = spawn(process.execPath, ['--input-type=module', '--eval', script], {
+      stdio: 'ignore',
+    });
+    await waitForCondition(() => existsSync(enteredPath), 'blocked lock owner');
+    const foreignNamespaceOwner = JSON.parse(readFileSync(lockPath, 'utf8'));
+    foreignNamespaceOwner.processPidNamespace = `${readlinkSync('/proc/self/ns/pid')}-foreign`;
+    writeFileSync(lockPath, JSON.stringify(foreignNamespaceOwner), 'utf8');
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const refreshedOwner = JSON.parse(readFileSync(lockPath, 'utf8'));
+    assert.ok(
+      Date.now() - refreshedOwner.updatedAtMs < 100,
+      'the independent heartbeat must keep the blocked owner lease fresh',
+    );
+    let contenderEntered = false;
+
+    assert.throws(
+      () => withWorkspaceBundleLockSync(
+        () => { contenderEntered = true; },
+        {
+          lockPath,
+          timeoutMs: 80,
+          pollIntervalMs: 5,
+          staleAfterMs: 100,
+          isRunningPidImpl: () => true,
+          readProcessInstanceFingerprintSyncImpl: () => 'foreign-namespace-incarnation',
+        },
+      ),
+      /Timed out waiting for workspace bundle lock/,
+    );
+    assert.equal(contenderEntered, false);
+    await new Promise((resolve, reject) => {
+      child.once('error', reject);
+      child.once('exit', (code, signal) => {
+        if (code === 0) resolve();
+        else reject(new Error(`blocked lock owner exited code=${String(code)} signal=${String(signal)}`));
+      });
+    });
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('workspace bundle lock fallback heartbeat cannot overwrite a successor installed mid-refresh', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'happier-workspace-bundle-lock-fallback-heartbeat-'));
+  try {
+    const lockPath = join(tempRoot, 'workspace-bundling.lock');
+    const retiredPath = join(tempRoot, 'retired-owner.lock');
+    const successorRaw = JSON.stringify({
+      pid: 42,
+      createdAtMs: Date.now(),
+      updatedAtMs: Date.now(),
+      token: 'successor-owner',
+      processInstanceFingerprint: 'successor-incarnation',
+    });
+    let replaced = false;
+
+    await withWorkspaceBundleLock(
+      async () => {
+        await waitForCondition(() => replaced, 'fallback heartbeat', 1_000);
+        assert.equal(readFileSync(lockPath, 'utf8'), successorRaw);
+      },
+      {
+        lockPath,
+        timeoutMs: 2_000,
+        staleAfterMs: 100,
+        startWorkspaceLockHeartbeatImpl: () => null,
+        beforeWorkspaceLockHeartbeatWriteImpl: () => {
+          if (replaced) return;
+          replaced = true;
+          renameSync(lockPath, retiredPath);
+          writeFileSync(lockPath, successorRaw, 'utf8');
+        },
+      },
+    );
+    assert.equal(readFileSync(lockPath, 'utf8'), successorRaw);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('workspace bundle locks reclaim a fresh authenticated dead owner in the same Linux PID namespace', {
+  skip: process.platform !== 'linux',
+}, async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'happier-workspace-bundle-lock-same-pid-namespace-'));
+  try {
+    const lockPath = join(tempRoot, 'workspace-bundling.lock');
+    writeFileSync(lockPath, JSON.stringify({
+      pid: 42,
+      createdAtMs: Date.now(),
+      updatedAtMs: Date.now(),
+      token: 'dead-owner',
+      processInstanceFingerprint: 'dead-incarnation',
+      processMachineId: readFileSync('/etc/machine-id', 'utf8').trim(),
+      processBootId: readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(),
+      processPidNamespace: readlinkSync('/proc/self/ns/pid'),
+    }), 'utf8');
+
+    let entered = false;
+    const result = await withWorkspaceBundleLock(
+      async () => {
+        entered = true;
+        return 'reclaimed';
+      },
+      {
+        lockPath,
+        timeoutMs: 100,
+        pollIntervalMs: 5,
+        staleAfterMs: 60_000,
+        isRunningPidImpl: () => false,
+      },
+    );
+
+    assert.equal(result, 'reclaimed');
+    assert.equal(entered, true);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('workspace bundle locks preserve a fresh authenticated owner in another Linux PID namespace', {
+  skip: process.platform !== 'linux',
+}, () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'happier-workspace-bundle-lock-other-pid-namespace-'));
+  try {
+    const lockPath = join(tempRoot, 'workspace-bundling.lock');
+    const ownerRaw = JSON.stringify({
+      pid: 42,
+      createdAtMs: Date.now(),
+      updatedAtMs: Date.now(),
+      token: 'foreign-owner',
+      processMachineId: readFileSync('/etc/machine-id', 'utf8').trim(),
+      processBootId: readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(),
+      processPidNamespace: `${readlinkSync('/proc/self/ns/pid')}-foreign`,
+    });
+    writeFileSync(lockPath, ownerRaw, 'utf8');
+    let entered = false;
+
+    assert.throws(
+      () => withWorkspaceBundleLockSync(
+        () => { entered = true; },
+        {
+          lockPath,
+          timeoutMs: 40,
+          pollIntervalMs: 5,
+          staleAfterMs: 60_000,
+          isRunningPidImpl: () => true,
+        },
+      ),
+      /Timed out waiting for workspace bundle lock/,
+    );
+    assert.equal(entered, false);
+    assert.equal(readFileSync(lockPath, 'utf8'), ownerRaw);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('workspace bundle locks reclaim an expired owner from another Linux PID namespace even when local pid facts collide', {
+  skip: process.platform !== 'linux',
+}, () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'happier-workspace-bundle-lock-expired-other-pid-namespace-'));
+  try {
+    const lockPath = join(tempRoot, 'workspace-bundling.lock');
+    const expiredAtMs = Date.now() - 120_000;
+    writeFileSync(lockPath, JSON.stringify({
+      pid: process.pid,
+      createdAtMs: expiredAtMs,
+      updatedAtMs: expiredAtMs,
+      token: 'foreign-owner',
+      processInstanceFingerprint: 'colliding-incarnation',
+      processMachineId: readFileSync('/etc/machine-id', 'utf8').trim(),
+      processBootId: readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(),
+      processPidNamespace: `${readlinkSync('/proc/self/ns/pid')}-foreign`,
+    }), 'utf8');
+
+    const result = withWorkspaceBundleLockSync(
+      () => 'reclaimed',
+      {
+        lockPath,
+        timeoutMs: 100,
+        pollIntervalMs: 5,
+        staleAfterMs: 60_000,
+        isRunningPidImpl: () => true,
+        readProcessInstanceFingerprintSyncImpl: () => 'colliding-incarnation',
+      },
+    );
+
+    assert.equal(result, 'reclaimed');
+    assert.equal(existsSync(lockPath), false);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('workspace bundle locks reclaim an expired owner from another Linux host even when local pid facts collide', {
+  skip: process.platform !== 'linux',
+}, () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'happier-workspace-bundle-lock-expired-other-host-'));
+  try {
+    const lockPath = join(tempRoot, 'workspace-bundling.lock');
+    const expiredAtMs = Date.now() - 120_000;
+    writeFileSync(lockPath, JSON.stringify({
+      pid: process.pid,
+      createdAtMs: expiredAtMs,
+      updatedAtMs: expiredAtMs,
+      token: 'foreign-owner',
+      processInstanceFingerprint: 'colliding-incarnation',
+      processMachineId: `${readFileSync('/etc/machine-id', 'utf8').trim()}-foreign`,
+      processBootId: readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(),
+      processPidNamespace: readlinkSync('/proc/self/ns/pid'),
+    }), 'utf8');
+
+    const result = withWorkspaceBundleLockSync(
+      () => 'reclaimed',
+      {
+        lockPath,
+        timeoutMs: 100,
+        pollIntervalMs: 5,
+        staleAfterMs: 60_000,
+        isRunningPidImpl: () => true,
+        readProcessInstanceFingerprintSyncImpl: () => 'colliding-incarnation',
+      },
+    );
+
+    assert.equal(result, 'reclaimed');
+    assert.equal(existsSync(lockPath), false);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('workspace bundle lock owners can fence publication after losing the lock', () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'happier-workspace-bundle-lock-publication-fence-'));
+  try {
+    const lockPath = join(tempRoot, 'workspace-bundling.lock');
+    const successorRaw = JSON.stringify({
+      pid: 42,
+      createdAtMs: Date.now(),
+      updatedAtMs: Date.now(),
+      token: 'successor-owner',
+      processInstanceFingerprint: 'successor-incarnation',
+    });
+
+    assert.throws(
+      () => withWorkspaceBundleLockSync(
+        ({ assertOwned }) => {
+          writeFileSync(lockPath, successorRaw, 'utf8');
+          assertOwned();
+        },
+        { lockPath },
+      ),
+      /lost workspace bundle lock ownership/i,
+    );
+    assert.equal(readFileSync(lockPath, 'utf8'), successorRaw);
   } finally {
     rmSync(tempRoot, { recursive: true, force: true });
   }
@@ -1452,8 +1780,8 @@ test('workspace bundle locks reclaim a reused live pid only when the exact proce
     const lockPath = join(tempRoot, 'workspace-bundling.lock');
     writeFileSync(lockPath, JSON.stringify({
       pid: process.pid,
-      createdAtMs: Date.now(),
-      updatedAtMs: Date.now(),
+      createdAtMs: Date.now() - 120_000,
+      updatedAtMs: Date.now() - 120_000,
       token: 'predecessor-token',
       processInstanceFingerprint: 'old-incarnation',
     }), 'utf8');
@@ -1482,8 +1810,8 @@ test('workspace bundle locks re-observe a matching live pid before reclaiming it
     const lockPath = join(tempRoot, 'workspace-bundling.lock');
     writeFileSync(lockPath, JSON.stringify({
       pid: process.pid,
-      createdAtMs: Date.now(),
-      updatedAtMs: Date.now(),
+      createdAtMs: Date.now() - 120_000,
+      updatedAtMs: Date.now() - 120_000,
       token: 'incumbent-token',
       processInstanceFingerprint: 'incumbent-incarnation',
     }), 'utf8');

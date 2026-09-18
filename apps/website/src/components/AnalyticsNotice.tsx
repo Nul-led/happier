@@ -1,6 +1,11 @@
-import { useState } from 'react';
+import { useSyncExternalStore } from 'react';
 
-import { isAnalyticsActive, optIn, optOut, readOptOut } from '../analytics/analytics';
+import {
+    getAnalyticsStatus,
+    optIn,
+    optOut,
+    subscribeAnalyticsStatus,
+} from '../analytics/analytics';
 import { rich } from '../i18n/rich';
 import { useSiteData } from '../i18n/siteData';
 
@@ -21,28 +26,35 @@ import { useSiteData } from '../i18n/siteData';
  */
 export function AnalyticsNotice() {
     const { pageProse: { PAGE_PROSE } } = useSiteData();
-
-    const [optedOut, setOptedOut] = useState(() => readOptOut());
-    const [wasActive] = useState(() => isAnalyticsActive());
+    const status = useSyncExternalStore(
+        subscribeAnalyticsStatus,
+        getAnalyticsStatus,
+        () => 'loading',
+    );
 
     function toggle() {
-        if (optedOut) {
+        if (status === 'opted-out') {
             optIn();
-            setOptedOut(false);
         } else {
             optOut();
-            setOptedOut(true);
         }
     }
+
+    if (status === 'loading') return null;
+
+    const optedOut = status === 'opted-out';
+    const canToggle = status === 'active' || optedOut;
 
     return (
         <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1">
             <span>
                 {optedOut
                     ? 'Anonymous analytics off.'
-                    : wasActive
+                    : status === 'active'
                       ? 'Anonymous, cookieless analytics.'
-                      : 'Analytics off — your browser asked us not to.'}
+                      : status === 'browser-refused'
+                        ? 'Analytics off — Global Privacy Control is enabled.'
+                        : 'Anonymous analytics unavailable.'}
             </span>
             <a
                 href="https://docs.happier.dev/legal/privacy#analytics-posthog"
@@ -51,7 +63,7 @@ export function AnalyticsNotice() {
                 className="underline underline-offset-2 transition-opacity hover:opacity-100"
                 style={{ opacity: 0.75 }}
             >{rich(PAGE_PROSE.analyticsNotice.p0)}</a>
-            {wasActive || optedOut ? (
+            {canToggle ? (
                 <button
                     onClick={toggle}
                     className="underline underline-offset-2 transition-opacity hover:opacity-100"

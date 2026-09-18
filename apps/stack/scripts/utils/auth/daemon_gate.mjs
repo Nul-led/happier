@@ -25,8 +25,11 @@ export function hasStackCredentials({ cliHomeDir, serverUrl = '', env = process.
 export function isAuthFlowEnabled(env) {
   const v = (env?.HAPPIER_STACK_AUTH_FLOW ?? '').toString().trim();
   const wait = (env?.HAPPIER_STACK_DAEMON_WAIT_FOR_AUTH ?? '').toString().trim();
+  // The TUI owns guided login even though its service child has no interactive TTY.
+  // Its server/UI must remain available before credentials can be created.
+  const tui = (env?.HAPPIER_STACK_TUI ?? '').toString().trim();
   const isTrue = (s) => s === '1' || String(s).toLowerCase() === 'true';
-  return isTrue(v) || isTrue(wait);
+  return isTrue(v) || isTrue(wait) || isTrue(tui);
 }
 
 export function resolveStackDaemonStartRequested({ env = process.env, noDaemon = false } = {}) {

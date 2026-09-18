@@ -76,6 +76,7 @@ function main() {
     changed_stack: String(Boolean(classified.stack)),
     changed_plugin_sdk: String(Boolean(versioned.plugin_sdk)),
     changed_sdk: String(Boolean(versioned.sdk)),
+    changed_runner: String(Boolean(versioned.runner)),
     compatibility_analysis_required: String(risks.compatibilityAnalysisRequired),
     risk_cli_upgrade: String(risks.cliUpgrade),
     risk_session_continuity: String(risks.sessionContinuity),

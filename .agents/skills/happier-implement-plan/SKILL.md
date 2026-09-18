@@ -121,7 +121,8 @@ Before declaring plan completion:
 
 - map every material requirement/invariant to `VERIFIED_COMPLETE`, approved supersession, or defensible `NOT_APPLICABLE`;
 - verify canonical ownership, reachable wiring, required removals, RED/GREEN proof, broader validation, and material live QA;
-- preserve `IMPLEMENTED_NOT_VERIFIED` wherever behavior is present but not exercised;
+- preserve `IMPLEMENTED_NOT_VERIFIED` only where an executor-runnable check exists and has not been run; evidence that only release automation or human QA can produce (devices, tenants, mail, signing, packaging, production-like infrastructure) is recorded once as a named release check, not as `IMPLEMENTED_NOT_VERIFIED`, and a plan whose only open items are release checks is implementation-complete;
+- do not add gates, ledgers, evidence matrices, certification sections, or review rounds in order to reach completion; if the remaining work is release checks, declare implementation-complete and list them;
 - use `.agents/skills/verify-claims` for decision-material delegated claims at the applicable boundary;
 - run final plan-completeness review through `.agents/skills/happier-review`;
 - run `.agents/skills/attack-conclusion` against omissions, neighboring cases, split-brains, environment gaps, and unsupported confidence;

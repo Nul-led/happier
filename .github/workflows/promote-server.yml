@@ -46,7 +46,7 @@ on:
         default: false
         type: boolean
       qualified_v4_activation_approval:
-        description: "Qualified V4 migration — I verified backup/restore readiness, all old API and worker writers are stopped, they will remain stopped if migration fails, and old-server or old-daemon rollback is prohibited"
+        description: "Irreversible server migrations — I verified backup/restore readiness, all old API and worker writers are stopped, including legacy read-state writers, they will remain stopped if migration fails, and old-server or old-daemon rollback is prohibited"
         required: true
         default: false
         type: boolean
@@ -87,7 +87,7 @@ on:
         default: false
         type: boolean
       qualified_v4_activation_approval:
-        description: "Qualified V4 migration — caller attests backup/restore readiness, all old API and worker writers are stopped, they will remain stopped if migration fails, and no old-server or old-daemon rollback"
+        description: "Irreversible server migrations — caller attests backup/restore readiness, all old API and worker writers are stopped, including legacy read-state writers, they will remain stopped if migration fails, and no old-server or old-daemon rollback"
         required: false
         default: false
         type: boolean
@@ -288,7 +288,7 @@ jobs:
           path: candidate
           fetch-depth: 0
           persist-credentials: false
-      - name: Admit irreversible Qualified V4 activation
+      - name: Admit irreversible server migrations
         env:
           DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
           QUALIFIED_V4_ACTIVATION_APPROVED: ${{ inputs.qualified_v4_activation_approval }}

@@ -79,6 +79,13 @@ test('buildStackTauriDevConfig disables beforeDevCommand and points Tauri at the
       },
       bundle: {
         externalBin: ['binaries/hsetup'],
+        resources: {
+          '../../../packages/iroh-native/release-evidence/THIRD-PARTY-NOTICES.txt':
+            'licenses/iroh-native/THIRD-PARTY-NOTICES.txt',
+          '../../../packages/iroh-native/release-evidence/sbom.cdx.json':
+            'licenses/iroh-native/sbom.cdx.json',
+          '../runtime-assets/default.json': 'runtime/default.json',
+        },
       },
       app: {
         windows: [{ title: 'Happier', dragDropEnabled: false }],
@@ -101,6 +108,9 @@ test('buildStackTauriDevConfig disables beforeDevCommand and points Tauri at the
   assert.equal(config.build.beforeDevCommand, '');
   assert.equal(config.build.beforeBuildCommand, '');
   assert.deepEqual(config.bundle.externalBin, ['binaries/hsetup']);
+  assert.deepEqual(config.bundle.resources, {
+    '../runtime-assets/default.json': 'runtime/default.json',
+  });
   assert.equal(config.app.windows[0]?.title, 'Happier (dev)');
   assert.equal(config.app.windows[0]?.dragDropEnabled, false);
 });

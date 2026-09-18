@@ -62,6 +62,26 @@ export const COMMAND_HELP_PUBLISH = {
     examples: ['node scripts/pipeline/run.mjs publish-hstack-binaries --channel preview --release-message "Stack preview"'],
   },
 
+  'publish-runner-binaries': {
+    summary: 'Build + publish signed Happier Runner binaries to GitHub Releases.',
+    usage:
+      `node scripts/pipeline/run.mjs publish-runner-binaries --channel <${publicReleaseChannelChoices}> [--release-message <text>] [--dry-run]`,
+    options: [
+      `--channel <${publicReleaseChannelChoices}>        Required.`,
+      '--allow-stable <bool>            true|false (default: false).',
+      '--release-message <text>         Optional.',
+      '--run-contracts <auto|true|false> (default: auto).',
+      '--check-installers <bool>        true|false (default: true).',
+      '--allow-dirty <bool>             true|false (default: false).',
+      '--dry-run',
+      '--secrets-source <auto|env|keychain>',
+      '--keychain-service <name>         (default: happier/pipeline).',
+      '--keychain-account <name>',
+    ],
+    bullets: ['Publishes only targets admitted by the Runner product registry and requires the canonical Minisign release key.'],
+    examples: ['node scripts/pipeline/run.mjs publish-runner-binaries --channel preview'],
+  },
+
   'publish-server-runtime': {
     summary: 'Build + publish relay-server (server runner) runtime binaries to GitHub Releases.',
     usage:

@@ -38,6 +38,7 @@ Remote development targets:
 - Provision macOS/Linux SSH and add: `hstack dev-targets add <name> --host=<host> --user=<user> [--repo-dir=<path>] [--cli-home-dir=<path>] [--stack=<name>]`
 - Inspect: `hstack dev-targets list|path [--stack=<name>]`, `hstack dev-targets show <name> [--stack=<name>]`
 - Preflight: `hstack dev-targets doctor [name] [--stack=<name>]`
+- Managed Lima capacity: `hstack dev-targets capacity show <name> [--stack=<name>]`, `hstack dev-targets capacity set <name> shared|dedicated [--shared-cpus=<count> --shared-memory-gib=<GiB> --dedicated-cpus=<count> --dedicated-memory-gib=<GiB>] [--force] [--stack=<name>]`
 - Synchronization: `hstack dev-targets status|sync <name> [--stack=<name>]`, or `hstack dev-targets sync-service start [--detached]|status|stop [--stack=<name>]`
 - Remote execution: `hstack dev-targets exec <name>|auto [--cwd=<repo-relative-path>] [--env=KEY=VALUE]... [--flush] [--tty] [--stack=<name>] -- <command> [args...]`
 - Remove: `hstack dev-targets remove <name> [--stack=<name>]`
@@ -49,6 +50,7 @@ Managed development VM (development-only, unreleased):
 - Setup/reconcile: `hstack dev-vm setup` (checkout-local equivalent: `yarn dev-vm -- setup`)
 - Candidate-retirement handoff: `hstack dev-vm activate` (after the owning cutover workflow completes its required checks)
 - Lifecycle: `hstack dev-vm start|stop`
+- Capacity: `hstack dev-vm capacity show`, `hstack dev-vm capacity set shared|dedicated [--shared-cpus=<count> --shared-memory-gib=<GiB> --dedicated-cpus=<count> --dedicated-memory-gib=<GiB>] [--force]`
 - Inspect/repair: `hstack dev-vm status|doctor [--repair-forwarding]`
 - Agent skills: `hstack dev-vm skills sync` (checkout-local equivalent: `yarn dev-vm skills sync`)
 - Guest commands: `hstack dev-vm shell [--guest-cwd=<absolute-path>] [-- COMMAND...]`, `hstack dev-vm exec [--guest-cwd=<absolute-path>] -- COMMAND [ARG...]`

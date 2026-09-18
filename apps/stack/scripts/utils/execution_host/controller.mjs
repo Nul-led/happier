@@ -1,5 +1,6 @@
 import { doctorManagedLimaInstance } from '../managed_lima/manager.mjs';
 import { startManagedLimaInstance } from '../managed_lima/lifecycle.mjs';
+import { resolveManagedLimaCapacityResources } from '../managed_lima/capacity.mjs';
 
 const HOST_ONLY_COMMANDS = new Set([
   'dev-vm',
@@ -51,6 +52,7 @@ export async function inspectExecutionHost({ profile, doctor = doctorManagedLima
     instance: profile.instance,
     profileName: profile.profile,
     diskImageFormat: profile.diskImageFormat,
+    resources: resolveManagedLimaCapacityResources(profile.capacity),
   });
   return {
     configured: true,
@@ -80,6 +82,7 @@ export async function executeCandidateHostCommand({
     instance: profile.instance,
     profileName: profile.profile,
     diskImageFormat: profile.diskImageFormat,
+    resources: resolveManagedLimaCapacityResources(profile.capacity),
   });
   if (diagnosis.ok !== true) {
     throw new Error('[execution-host] managed Lima doctor reported drift; run `hstack dev-vm doctor` before execution');

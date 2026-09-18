@@ -18,8 +18,8 @@ clear answer about whether a feature is available, it treats it as unavailable.
 That is why a feature can seem to vanish when a server is unreachable, and why
 a misconfigured self-hosted server hides features rather than half-enabling them.
 
-There are 131 features in the catalog. 23 of them have a switch you can
-reach; the other 108 are decided before you get there.
+There are 146 features in the catalog. 23 of them have a switch you can
+reach; the other 123 are decided before you get there.
 
 ## Features you can turn on yourself
 
@@ -103,6 +103,10 @@ behaviour but still needs the server to advertise the capability.
 | `bugReports` | Bug report submission and diagnostics capability. | server | — | `HAPPIER_FEATURE_BUG_REPORTS__ENABLED` |
 | `connectedServices.accountFallback` | Connected service account group fallback and automatic active account switching APIs. | server | `connectedServices.accountGroups`, `sessions.usageLimitRecovery` | `HAPPIER_FEATURE_CONNECTED_SERVICES_ACCOUNT_FALLBACK__ENABLED` |
 | `connectedServices.accountGroups` | Connected service account groups and member management APIs. | server | — | `HAPPIER_FEATURE_CONNECTED_SERVICES_ACCOUNT_GROUPS__ENABLED` |
+| `connectedServices.autoDisablePlanInvalid` | Opt-in disabling of pool accounts that cannot use the selected model. | server | `connectedServices.accountFallback` | — |
+| `connectedServices.autoQuotaReset` | Opt-in banked quota reset spending after account pool exhaustion. | server | `connectedServices.accountFallback`, `connectedServices.quotas` | — |
+| `connectedServices.poolQuotaLimitSelection` | Pool-specific selection of provider-reported quota allowance families. | server | `connectedServices.accountFallback`, `connectedServices.quotas` | — |
+| `connectedServices.subscription` | Connected service subscription status snapshots and details. | server | — | — |
 | `devices` | Device and simulator preview/control surfaces. | client | — | `HAPPIER_FEATURE_DEVICES__ENABLED` |
 | `devices.simulatorPreview` | Simulator and emulator preview panes over the live-stream substrate. | server | `devices`, `machines.liveStream`, `browser.viewTargets` | `HAPPIER_FEATURE_DEVICES_SIMULATOR_PREVIEW__ENABLED` |
 | `e2ee.keylessAccounts` | Keyless account support (accounts may omit E2EE signing keys). | server | — | — |
@@ -123,6 +127,7 @@ behaviour but still needs the server to advertise the capability.
 | `machines.liveStream.serverRouted` | Server-routed machine live stream fallback capability. | server | `machines.liveStream` | `HAPPIER_FEATURE_MACHINES_LIVE_STREAM_SERVER_ROUTED__ENABLED` |
 | `machines.peerMediation` | Peer mediation substrate for machine tunnels, live streams, grants, and relay-owned flows. | client | `machines` | — |
 | `machines.peerMediation.observability` | Scoped peer mediation flow observability for tunnels, streams, preview requests, and relay diagnostics. | server | `machines.peerMediation` | `HAPPIER_FEATURE_MACHINES_PEER_MEDIATION_OBSERVABILITY__ENABLED` |
+| `machines.pools` | Personal Machine Pool administration and exact target selection. | server | `machines` | `HAPPIER_FEATURE_MACHINES_POOLS__ENABLED` |
 | `machines.rpc` | Machine RPC direct-route control plane. | client | `machines` | — |
 | `machines.rpc.directPeer` | Direct peer machine RPC capability. | server | `machines.rpc` | `HAPPIER_FEATURE_MACHINES_RPC_DIRECT_PEER__ENABLED` |
 | `machines.transfer` | Same-account machine transfer control plane. | client | `machines` | — |
@@ -150,7 +155,13 @@ behaviour but still needs the server to advertise the capability.
 | `search` | Personal Home plaintext transcript search indexing and authenticated query route. | server | — | `HAPPIER_FEATURE_SEARCH__ENABLED` |
 | `sessions` | Session-level product surfaces and control-plane capabilities. | client | — | — |
 | `sessions.agentSwitching` | Continue one Session in place with another coding Agent, and create configurable Sessions from a typed source-context recipe. | server | `sessions` | `HAPPIER_FEATURE_SESSIONS_AGENT_SWITCHING__ENABLED` |
+| `sessions.board` | Shared Session Board: durable Session surface items, their organization into Board views, and the Board Actions that author them. | server | `sessions` | `HAPPIER_FEATURE_SESSIONS_BOARD__ENABLED` |
+| `sessions.collaboration` | Current Account, Team and Group Session access, responsibility and atomic initial access. | server | `sessions`, `sharing.session` | `HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED` |
+| `sessions.conversations` | Human conversations inside a shared Session: discussions, authored messages, mentions and private read cursors. | server | `sessions.collaboration` | `HAPPIER_FEATURE_SESSIONS_CONVERSATIONS__ENABLED` |
 | `sessions.drafts` | Cross-device composer and new-session draft synchronization. | server | `sessions` | `HAPPIER_FEATURE_SESSIONS_DRAFTS__ENABLED` |
+| `sessions.ephemeralRunner` | Creator-authorized temporary-computer Session activation. | server | `sessions`, `machines`, `sessions.drafts` | `HAPPIER_FEATURE_SESSIONS_EPHEMERAL_RUNNER__ENABLED` |
+| `sessions.filteredListing` | Structurally filtered Session listing before Home-local pagination. | server | `sessions` | `HAPPIER_FEATURE_SESSIONS_FILTERED_LISTING__ENABLED` |
+| `sessions.following` | Durable per-Account Follow of an accessible Session, its notification/Voice preferences, and the four auto-follow defaults. | server | `sessions` | `HAPPIER_FEATURE_SESSIONS_FOLLOWING__ENABLED` |
 | `sessions.handoff` | Session handoff between machines. | server | `sessions` | `HAPPIER_FEATURE_SESSIONS_HANDOFF__ENABLED` |
 | `sessions.usageLimitRecovery` | Session usage-limit recovery, wait/resume intents, and usage-limit retry controls. | server | `sessions` | `HAPPIER_FEATURE_SESSIONS_USAGE_LIMIT_RECOVERY__ENABLED` |
 | `setup.machine.allowLocalMachineSetup` | Build-time policy gate: whether local machine setup surfaces are allowed. | client | — | — |
@@ -169,12 +180,16 @@ behaviour but still needs the server to advertise the capability.
 | `sharing.pendingQueueV2` | Pending queue v2 sharing/bridging surfaces and runtime. | server | — | — |
 | `sharing.public` | Public sharing link support for session content. | server | — | — |
 | `sharing.session` | Session sharing capability (share session with other users/devices). | server | — | — |
+| `teams` | Team membership, governance, and administration surfaces. | server | — | `HAPPIER_FEATURE_TEAMS__ENABLED` |
+| `teams.credentialResources` | Team shared credential resource administration and use. | server | `teams` | `HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES__ENABLED` |
+| `teams.credentialResources.externalApi` | External API access to Team credential resources. | server | `teams.credentialResources` | `HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES_EXTERNAL_API__ENABLED` |
 | `terminal.renderer.androidTermux` | Optional Android Termux-based native terminal renderer. | client | `terminal.renderer.native` | — |
 | `terminal.renderer.iosGhostty` | Optional iOS Ghostty-based native terminal renderer. | client | `terminal.renderer.native` | — |
 | `terminal.renderer.native` | Optional native terminal renderers gated behind the byte-stream terminal foundation. | client | `terminal.transport.byteStream` | — |
 | `terminal.transport.byteStream` | Byte-stream terminal transport using bounded base64 frames over machine RPC. | server | `terminal.embeddedPty` | `HAPPIER_FEATURE_TERMINAL_TRANSPORT_BYTE_STREAM__ENABLED` |
 | `updates.ota` | Expo over-the-air update checks and apply flows. | server | — | `HAPPIER_FEATURE_UPDATES_OTA__ENABLED` |
 | `voice.happierVoice` | Happier-hosted voice backend availability (server-configured voice). | server | `voice` | — |
+| `workflows` | Structured Workflow authoring, execution, inspection, and Action surfaces. | server | `automations` | `HAPPIER_FEATURE_WORKFLOWS__ENABLED` |
 
 Where a feature depends on another, both must be enabled — enabling the
 dependant alone does nothing.

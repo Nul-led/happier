@@ -1,4 +1,6 @@
 import { join } from 'node:path';
+import { isAuthFlowEnabled } from '../auth/daemon_gate.mjs';
+import { findExistingStackCredentialPath } from '../auth/credentials_paths.mjs';
 
 import { killProcessTree, spawnProc } from '../proc/proc.mjs';
 import { resolveMutagenSessionName } from './mutagen_project.mjs';
@@ -13,8 +15,9 @@ import {
 import { inspectDevTargetSync, runDevTargetDependencyBootstrap } from './executor.mjs';
 import { startDevTargetRuntime } from './managed_runtime.mjs';
 import { waitForExpoMetroRunning } from '../expo/expo.mjs';
-import { resolveServerReadyTimeoutMs, waitForServerReady as waitForHappierServerReady } from '../server/server.mjs';
+import { waitForServerReady as waitForHappierServerReady } from '../server/server.mjs';
 import {
+  DEFAULT_REMOTE_STACK_STARTUP_TIMEOUT_MS,
   buildRemoteStackCommand,
   buildRemoteStackStopCommand,
   buildRemoteDaemonReadinessProbeCommand,
@@ -28,13 +31,21 @@ import {
 } from './remote_commands.mjs';
 
 const TARGET_SYNC_READY = Symbol('TARGET_SYNC_READY');
+const READINESS_RETRY_INTERVAL_MS = 5_000;
+
+export function resolveRemoteServerReadyTimeoutMs(env = process.env) {
+  const configured = Number.parseInt(String(env.HAPPIER_STACK_SERVER_READY_TIMEOUT_MS ?? ''), 10);
+  return Number.isFinite(configured) && configured >= 1_000
+    ? configured
+    : DEFAULT_REMOTE_STACK_STARTUP_TIMEOUT_MS;
+}
 
 function planRunsRuntimeServices(plan) {
   return Object.values(plan?.services ?? {}).some(Boolean);
 }
 
 export function planRequiresRemoteCliWorkspacePreparation(plan) {
-  return plan?.services?.daemon === true || plan?.services?.expo === true;
+  return plan?.services?.daemon === true;
 }
 
 function planDefersRemoteCompanionPreparation(plan) {
@@ -111,7 +122,7 @@ async function defaultWaitForExpoReady({ port, env = process.env, signal } = {})
 }
 
 async function defaultWaitForServerReady({ url, env = process.env, signal } = {}) {
-  const timeoutMs = resolveServerReadyTimeoutMs({ env });
+  const timeoutMs = resolveRemoteServerReadyTimeoutMs(env);
   await waitForHappierServerReady(url, {
     timeoutMs,
     intervalMs: 500,
@@ -166,7 +177,7 @@ async function defaultWaitForDaemonReady({
       env,
     });
     if (result?.code === 0) return;
-    await waitForAbortableDelay(5_000, signal);
+    await waitForAbortableDelay(READINESS_RETRY_INTERVAL_MS, signal);
   }
   if (signal?.aborted) {
     throw signal.reason ?? new Error('remote daemon readiness was cancelled');
@@ -203,12 +214,14 @@ export async function startStackDevTargets(
     localServerPort,
     localExpoPort = null,
     publicServerUrl = '',
+    canonicalServerUrl = '',
     expoPublicUrl = '',
     resolveMobilePublicUrlsOnTarget = false,
     expoListenHost = '127.0.0.1',
     startMobile = false,
     activeServerId,
     credentialPath,
+    cliHomeDir,
     remoteServerRuntimeConfig = null,
     remoteWorkspacePreparation = null,
     targets,
@@ -251,7 +264,7 @@ export async function startStackDevTargets(
   // by the command executor; an unrelated target must not keep Expo/daemon down.
   // Preserve the original command-only behavior when no runtime service exists.
   const requiredSyncPlans = servicePlans.length > 0 ? servicePlans : plans;
-  if (plans.some((plan) => plan.services.daemon) && !credentialPath) {
+  if (plans.some((plan) => plan.services.daemon) && !credentialPath && !isAuthFlowEnabled(env)) {
     throw new Error(
       '[dev-targets] the local stack has no daemon credential to seed remotely; authenticate the local daemon first',
     );
@@ -271,6 +284,7 @@ export async function startStackDevTargets(
   const targetFailuresByTarget = new Map();
   const provisionedTargets = new Set();
   const deferredCompanionPreparationsByTarget = new Map();
+  const credentialPreparationsByTarget = new Map();
   const lifecycleTasks = [];
   let monitorWorker = null;
   let syncProject = null;
@@ -349,13 +363,18 @@ export async function startStackDevTargets(
       let tunnel = existingTunnel;
       let createdTunnel = false;
       let credentialSeedTask = null;
+      let credentialSeeded = false;
       deferredCompanionPreparationsByTarget.delete(target.name);
       const beginPhase = (nextPhase) => {
         phase = nextPhase;
         publishTargetState(plan, 'starting', { phase });
       };
       const seedRemoteCredential = async () => {
-        if (!services.daemon) return;
+        if (!services.daemon || credentialSeeded) return true;
+        const currentCredentialPath = credentialPath || (cliHomeDir
+          ? findExistingStackCredentialPath({ cliHomeDir, serverUrl: `http://127.0.0.1:${localServerPort}`, env })
+          : null);
+        if (!currentCredentialPath) return false;
         beginPhase('credentials');
         const { stagedPath, finalPath } = remoteCredentialPaths(target, stackName);
         requireSuccessful(
@@ -367,7 +386,7 @@ export async function startStackDevTargets(
               ...openSsh.sshArgs,
               '-o',
               'BatchMode=yes',
-              credentialPath,
+              currentCredentialPath,
               `${target.ssh}:${stagedPath}`,
             ],
             env: infraEnv,
@@ -389,10 +408,15 @@ export async function startStackDevTargets(
           }),
           `${target.name} credential installation`,
         );
+        credentialSeeded = true;
+        return true;
       };
       const beginCredentialSeed = () => {
         if (!credentialSeedTask) {
-          credentialSeedTask = seedRemoteCredential();
+          credentialSeedTask = seedRemoteCredential().then((seeded) => {
+            if (!seeded) credentialSeedTask = null;
+            return seeded;
+          });
           // Deferred targets intentionally seed credentials before server
           // readiness. Their lifecycle awaits and reports this same task once
           // companion preparation is admitted, so suppress only an early
@@ -401,11 +425,25 @@ export async function startStackDevTargets(
         }
         return credentialSeedTask;
       };
+      credentialPreparationsByTarget.set(target.name, async (signal) => {
+        while (!credentialSeeded && !closed) {
+          if (signal?.aborted) throw signal.reason;
+          try {
+            if (await beginCredentialSeed()) return;
+          } catch (error) {
+            credentialSeedTask = null;
+            throw error;
+          }
+          await waitForAbortableDelay(READINESS_RETRY_INTERVAL_MS, signal);
+        }
+      });
       const prepareRemoteServices = async () => {
         await beginCredentialSeed();
         beginPhase('bootstrap');
         if (planRequiresRemoteCliWorkspacePreparation(plan) && remoteWorkspacePreparation) {
-          await remoteWorkspacePreparation;
+          await (typeof remoteWorkspacePreparation === 'function'
+            ? remoteWorkspacePreparation()
+            : remoteWorkspacePreparation);
         }
         requireSuccessful(
           await runDependencyBootstrap({
@@ -522,9 +560,10 @@ export async function startStackDevTargets(
         const remoteStackOptions = {
           services,
           attended: env.HAPPIER_STACK_TUI === '1',
-          deferDaemonStartUntilCredentials: deferCompanionPreparation && services.daemon,
+          deferDaemonStartUntilCredentials: services.daemon && (deferCompanionPreparation || !credentialPath),
           serverUrl: `http://127.0.0.1:${remoteServerPort}`,
           publicServerUrl,
+          canonicalServerUrl,
           activeServerId,
           stackName,
           remoteServerPort,
@@ -610,8 +649,11 @@ export async function startStackDevTargets(
           tunnelsByTarget.set(target.name, tunnel);
         }
         if (!services.server) {
-          requireSuccessful(
-            await runProcess({
+          const readinessDeadline = Date.now() + resolveRemoteServerReadyTimeoutMs(env);
+          let readinessAttempt = 0;
+          let readinessResult;
+          do {
+            readinessResult = await runProcess({
               label: `remote:${target.name}`,
               command: 'ssh',
               args: [
@@ -622,7 +664,23 @@ export async function startStackDevTargets(
                 buildRemoteForwardProbeCommand(target, { remoteServerPort }),
               ],
               env: infraEnv,
-            }),
+            });
+            if (readinessResult?.code === 0 || tunnel.exitCode != null || Date.now() >= readinessDeadline) {
+              break;
+            }
+            readinessAttempt += 1;
+            const retryOutcome = await Promise.race([
+              waitForRetry({
+                attempt: readinessAttempt,
+                delayMs: READINESS_RETRY_INTERVAL_MS,
+                target,
+              }).then(() => 'retry'),
+              closeRequested.then(() => 'close'),
+            ]);
+            if (retryOutcome === 'close' || closed) return null;
+          } while (!closed);
+          requireSuccessful(
+            readinessResult,
             `${target.name} reverse tunnel readiness`,
           );
         }
@@ -708,7 +766,7 @@ export async function startStackDevTargets(
         };
         const waitForReadinessRetry = async () => {
           const retryOutcome = await Promise.race([
-            waitForRetry({ attempt: 1, delayMs: 5_000, target }).then(() => 'retry'),
+            waitForRetry({ attempt: 1, delayMs: READINESS_RETRY_INTERVAL_MS, target }).then(() => 'retry'),
             closeRequested.then(() => 'close'),
           ]);
           return retryOutcome !== 'close' && !closed;
@@ -781,13 +839,16 @@ export async function startStackDevTargets(
                   ),
                 );
                 if (!daemonReady) outcomePromises.push(
-                  waitForDaemonReady({
-                    target,
-                    stackName,
-                    sshArgs: openSsh.sshArgs,
-                    runProcess,
-                    env: infraEnv,
-                    signal: readinessController.signal,
+                  credentialPreparationsByTarget.get(target.name)(readinessController.signal).then(() => {
+                    readinessController.signal.throwIfAborted();
+                    return waitForDaemonReady({
+                      target,
+                      stackName,
+                      sshArgs: openSsh.sshArgs,
+                      runProcess,
+                      env: infraEnv,
+                      signal: readinessController.signal,
+                    });
                   }).then(
                     () => ({ kind: 'daemon-ready' }),
                     (error) => ({ kind: 'daemon-readiness-failed', error }),

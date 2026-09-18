@@ -74,6 +74,11 @@ test('managed host preparation mounts an enabled guest workspace after the VM is
   const mountedProfile = {
     ...namedProfile,
     diskImageFormat: 'asif',
+    capacity: {
+      mode: 'shared',
+      shared: { cpus: 10, memoryGiB: 48 },
+      dedicated: { cpus: 14, memoryGiB: 72 },
+    },
     autoMount: true,
     hostMountDir: '/Users/example/.happier-stack/workspace',
   };
@@ -81,8 +86,8 @@ test('managed host preparation mounts an enabled guest workspace after the VM is
     workspaceId: '0.3',
     executor: { kind: 'test-executor' },
     start: async ({ instance }) => { calls.push(['start', instance]); },
-    doctor: async ({ instance, profileName, diskImageFormat }) => {
-      calls.push(['doctor', instance, profileName, diskImageFormat]);
+    doctor: async ({ instance, profileName, diskImageFormat, resources }) => {
+      calls.push(['doctor', instance, profileName, diskImageFormat, resources]);
       return { ok: true };
     },
     reconcileServiceTunnel: async ({ profile: received, workspaceId, executor: receivedExecutor }) => {
@@ -95,7 +100,7 @@ test('managed host preparation mounts an enabled guest workspace after the VM is
 
   assert.deepEqual(calls, [
     ['start', 'primary'],
-    ['doctor', 'primary', 'balanced', 'asif'],
+    ['doctor', 'primary', 'balanced', 'asif', { cpus: 10, memoryGiB: 48 }],
     ['forward', 'primary', '0.3', { kind: 'test-executor' }],
     ['mount', 'primary', '/Users/example/.happier-stack/workspace', { kind: 'test-executor' }],
   ]);
@@ -498,8 +503,11 @@ test('active named host delegation uses the selected guest repo-local entrypoint
 
   assert.deepEqual(result, { exitCode: 23, signal: null });
   assert.equal(spawns[0].command, 'limactl');
+  const delegatedScopeUnit = spawns[0].args.find((arg) => arg.startsWith('--unit=happier-execution-host-'));
+  assert.match(delegatedScopeUnit ?? '', /^--unit=happier-execution-host-[a-z0-9-]+\.scope$/);
   assert.deepEqual(spawns[0].args, [
     'shell', '--workdir', '/home/example/.happier-stack/workspace/0.3', 'primary', '--',
+    'systemd-run', '--user', '--scope', '--quiet', delegatedScopeUnit, '--',
     'env',
     'HAPPIER_STACK_EXECUTION_HOST_REENTRY=1',
     'HAPPIER_STACK_INVOKED_CWD=/home/example/.happier-stack/workspace/0.3',
@@ -513,4 +521,60 @@ test('active named host delegation uses the selected guest repo-local entrypoint
     !spawns[0].args.some((arg) => arg.includes('/Users/example/.happier/stacks')),
     'host filesystem paths must not leak into the guest environment',
   );
+});
+
+test('execution-host delegation cancels the complete guest scope when the host is interrupted', async () => {
+  const spawns = [];
+  const primarySignals = [];
+  let signalHandler;
+  let closePrimary;
+  let closeCancellation;
+  const primary = {
+    once(event, listener) {
+      if (event === 'close') closePrimary = listener;
+      return this;
+    },
+    kill(signal) {
+      primarySignals.push(signal);
+      queueMicrotask(() => closePrimary?.(null, signal));
+    },
+  };
+  const cancelled = {
+    once(event, listener) {
+      if (event === 'close') closeCancellation = listener;
+      return this;
+    },
+  };
+
+  const running = runDelegatedHstackCommand({
+    profile: namedProfile,
+    argv: ['dev-targets', 'exec', 'mac2-linux', '--', 'vitest', 'run'],
+    cwd: '/Users/example/happier/dev',
+    env: { PATH: '/usr/bin' },
+    prepare: async () => {},
+    boundary: {
+      spawn(command, args, options) {
+        spawns.push({ command, args, options });
+        return spawns.length === 1 ? primary : cancelled;
+      },
+      onSignal(handler) {
+        signalHandler = handler;
+        return () => {};
+      },
+    },
+  });
+
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+  signalHandler('SIGINT');
+  assert.deepEqual(primarySignals, [], 'the host must not tear down the primary transport before guest cleanup finishes');
+  closeCancellation(0, null);
+  assert.deepEqual(await running, { exitCode: null, signal: 'SIGINT' });
+  assert.deepEqual(primarySignals, ['SIGINT']);
+  assert.equal(spawns.length, 2);
+  const delegatedUnit = spawns[0].args.find((arg) => String(arg).startsWith('--unit='));
+  assert.match(delegatedUnit, /^--unit=happier-execution-host-[a-z0-9-]+\.scope$/);
+  assert.ok(spawns[0].args.includes('systemd-run'));
+  assert.ok(spawns[1].args.some((arg) => String(arg).includes('systemctl --user kill')));
+  assert.ok(spawns[1].args.some((arg) => String(arg).includes(delegatedUnit.slice('--unit='.length))));
+  assert.ok(spawns[1].args.some((arg) => String(arg).includes('-lt 150')));
 });

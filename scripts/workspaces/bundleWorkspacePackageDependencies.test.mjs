@@ -88,6 +88,34 @@ test('live publication remains incremental and preserves an already-held lock id
   ]);
 });
 
+test('a canonical package build does not recursively readmit its prepared dependency closure', async () => {
+  const publications = [];
+
+  await bundleWorkspacePackageDependencies({
+    repoRoot: '/repo',
+    hostPackageDir: '/repo/packages/plugin-sdk',
+    publicationMode: 'live',
+    env: {
+      HAPPIER_WORKSPACE_PACKAGE_PREREQUISITES_READY: '1',
+    },
+    withWorkspaceBundleLock: async (publish) => (
+      await publish({ heldLockValue: 'shared-publication-lease' })
+    ),
+    ensureWorkspacePackagesBuiltByName: async () => {
+      throw new Error('prepared package dependencies must not be readmitted');
+    },
+    loadCliCommonWorkspacesModule: async (_root, _env, admit, options) => {
+      await admit('/repo', ['@happier-dev/cli-common'], options);
+      return {
+        resolveWorkspaceBundlesFromPackageJson: () => [{ packageName: '@happier-dev/protocol' }],
+        bundleWorkspacePackagesWithRuntimeDependencies: () => publications.push('published'),
+      };
+    },
+  });
+
+  assert.deepEqual(publications, ['published']);
+});
+
 test('prepared readers stay inside the shared publication lock and inherit its lease', async () => {
   const observedLeases = [];
   let sharedPublicationLockHeld = false;
@@ -149,7 +177,6 @@ test('prepared readers stay inside the shared publication lock and inherit its l
 
   assert.deepEqual(observedLeases, [
     ['load-publication-owner', 'plugin-sdk-package-lease'],
-    ['admit:@happier-dev/protocol', 'plugin-sdk-package-lease'],
     ['publish-shared-dependencies'],
     ['consume-prepared-package', 'shared-publication-lease', '/tmp/plugin-sdk-stage', '1'],
   ]);

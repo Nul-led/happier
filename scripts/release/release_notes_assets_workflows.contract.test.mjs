@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parse } from 'yaml';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');
@@ -24,4 +25,16 @@ test('the release-owned UI promotion is the only writer of rolling release-note 
     assert.doesNotMatch(raw, /publish-release-notes-assets\.mjs/);
     assert.doesNotMatch(raw, /release_notes_assets_token/);
   }
+});
+
+test('combined preview and production UI artifacts are isolated by channel', async () => {
+  const workflow = parse(await loadWorkflow('promote-ui.yml'));
+  const validateSteps = workflow.jobs.validate_candidate.steps;
+  const promoteSteps = workflow.jobs.promote.steps;
+  const releaseNotes = 'ui-release-notes-${{ inputs.environment }}-${{ needs.apply_bump.outputs.release_sha }}';
+  const ota = 'ui-ota-${{ inputs.environment }}-${{ needs.apply_bump.outputs.release_sha }}';
+  assert.equal(validateSteps.find((step) => step?.name === 'Upload release notes assets')?.with?.name, releaseNotes);
+  assert.equal(validateSteps.find((step) => step?.name === 'Upload prepared OTA artifacts')?.with?.name, ota);
+  assert.equal(promoteSteps.find((step) => step?.name === 'Download release notes assets')?.with?.name, releaseNotes);
+  assert.equal(promoteSteps.find((step) => step?.name === 'Download prepared OTA artifacts')?.with?.name, ota);
 });

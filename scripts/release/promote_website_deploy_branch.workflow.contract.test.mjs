@@ -50,4 +50,7 @@ test('promote-website builds without deploy secrets and publishes only the built
   assert.ok(upload, 'validate_candidate must upload the built site');
   assert.equal(upload.with?.['include-hidden-files'], true, 'dist/.well-known must survive the artifact hop');
   assert.equal(upload.with?.['if-no-files-found'], 'error', 'an empty dist must fail rather than deploy nothing');
+  assert.equal(upload.with?.name, 'website-dist-${{ inputs.environment }}-${{ needs.apply_bump.outputs.release_sha }}');
+  const download = deploy.steps.find((step) => step?.name === 'Download the exact built site');
+  assert.equal(download?.with?.name, upload.with?.name);
 });

@@ -7,6 +7,8 @@ import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import { buildTypeScriptPackageDist } from './buildTypeScriptPackageDist.mjs';
+import { withWorkspaceBundleLock } from './workspaceBundleLock.mjs';
+import { resolveWorkspacePackageBuildLockPath } from './workspacePackageBuildLock.mjs';
 
 async function writeJson(path, value) {
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, 'utf-8');
@@ -112,6 +114,26 @@ test('buildTypeScriptPackageDist preserves previous dist when TypeScript compila
   );
 
   assert.equal(await readFile(join(packageDir, 'dist', 'index.js'), 'utf-8'), 'export const stable = true;\n');
+});
+
+test('buildTypeScriptPackageDist removes stale outputs whose source no longer exists', async (t) => {
+  const packageDir = await createPackageFixture(t, 'build-ts-package-retired-source');
+  await writeFile(join(packageDir, 'src', 'index.ts'), 'export const built = true;\n', 'utf-8');
+  await writeFile(join(packageDir, 'dist', 'retired.js'), 'export const retired = true;\n', 'utf-8');
+
+  await buildTypeScriptPackageDist({
+    packageDir,
+    args: ['-p', 'tsconfig.json'],
+    stdio: 'ignore',
+    resolveTypeScriptCliInvocationImpl: () => ({ command: 'tsc', argsPrefix: [] }),
+    runCommandImpl: (_command, args) => {
+      writeTypeScriptFixtureOutput(args);
+      return { status: 0 };
+    },
+  });
+
+  assert.equal(existsSync(join(packageDir, 'dist', 'retired.js')), false);
+  assert.equal(await readFile(join(packageDir, 'dist', 'index.js'), 'utf-8'), 'export const built = true;\n');
 });
 
 test('buildTypeScriptPackageDist promotes portable source maps for packed consumers', async (t) => {
@@ -488,39 +510,199 @@ test('buildTypeScriptPackageDist keeps TypeScript incremental metadata out of pr
   assert.equal(existsSync(join(packageDir, 'dist', '.tsbuildinfo')), false);
 });
 
-test('buildTypeScriptPackageDist reuses one stable compiler work tree across staged output destinations', async (t) => {
+test('buildTypeScriptPackageDist isolates concurrent staged compiler work trees under an unrelated outer lock', async (t) => {
   const packageDir = await createPackageFixture(t, 'build-ts-package-persistent-cache');
   await writeFile(join(packageDir, 'src', 'index.ts'), 'export const built = true;\n', 'utf-8');
   const stagedOutputs = [join(packageDir, '.stage-one'), join(packageDir, '.stage-two')];
   const compilerRuns = [];
 
-  for (const outputDir of stagedOutputs) {
-    await buildTypeScriptPackageDist({
-      packageDir,
-      args: ['-p', 'tsconfig.json'],
-      outputDir,
-      stdio: 'ignore',
-      resolveTypeScriptCliInvocationImpl: () => ({ command: 'tsc', argsPrefix: [] }),
-      runCommandImpl: (_command, args) => {
-        const compilerOutputDir = args[args.indexOf('--outDir') + 1];
-        const tsBuildInfoFile = args[args.indexOf('--tsBuildInfoFile') + 1];
-        compilerRuns.push({ compilerOutputDir, tsBuildInfoFile });
-        mkdirSync(compilerOutputDir, { recursive: true });
-        writeFileSync(join(compilerOutputDir, 'index.js'), 'export const built = true;\n', 'utf-8');
-        writeFileSync(join(compilerOutputDir, 'index.d.ts'), 'export declare const built: boolean;\n', 'utf-8');
-        writeFileSync(tsBuildInfoFile, JSON.stringify({ fileNames: ['src/index.ts'] }), 'utf-8');
-        return { status: 0 };
-      },
-    });
-  }
+  await withWorkspaceBundleLock(async ({ heldLockValue }) => {
+    await Promise.all(stagedOutputs.map(async (outputDir) => {
+      await buildTypeScriptPackageDist({
+        packageDir,
+        args: ['-p', 'tsconfig.json'],
+        outputDir,
+        env: { HAPPIER_WORKSPACE_DIST_BUILD_LOCK_HELD: heldLockValue },
+        stdio: 'ignore',
+        resolveTypeScriptCliInvocationImpl: () => ({ command: 'tsc', argsPrefix: [] }),
+        runCommandImpl: (_command, args) => {
+          const compilerOutputDir = args[args.indexOf('--outDir') + 1];
+          const tsBuildInfoFile = args[args.indexOf('--tsBuildInfoFile') + 1];
+          compilerRuns.push({ compilerOutputDir, tsBuildInfoFile });
+          mkdirSync(compilerOutputDir, { recursive: true });
+          writeFileSync(join(compilerOutputDir, 'index.js'), 'export const built = true;\n', 'utf-8');
+          writeFileSync(join(compilerOutputDir, 'index.d.ts'), 'export declare const built: boolean;\n', 'utf-8');
+          writeFileSync(tsBuildInfoFile, JSON.stringify({ fileNames: ['src/index.ts'] }), 'utf-8');
+          return { status: 0 };
+        },
+      });
+    }));
+  }, { lockPath: join(packageDir, '.unrelated-outer.lock') });
+
+  assert.equal(compilerRuns.length, 2);
+  assert.notEqual(compilerRuns[1].compilerOutputDir, compilerRuns[0].compilerOutputDir);
+  assert.notEqual(compilerRuns[1].tsBuildInfoFile, compilerRuns[0].tsBuildInfoFile);
+  assert.notEqual(compilerRuns[0].compilerOutputDir, stagedOutputs[0]);
+  assert.notEqual(compilerRuns[1].compilerOutputDir, stagedOutputs[1]);
+  assert.equal(existsSync(compilerRuns[0].tsBuildInfoFile), false);
+  assert.equal(existsSync(compilerRuns[1].tsBuildInfoFile), false);
+  assert.match(await readFile(join(stagedOutputs[1], 'index.js'), 'utf-8'), /built/);
+});
+
+test('buildTypeScriptPackageDist reuses and protects its staged compiler work tree under the authenticated package lock', async (t) => {
+  const packageDir = await createPackageFixture(t, 'build-ts-package-locked-persistent-cache');
+  const packageJson = JSON.parse(await readFile(join(packageDir, 'package.json'), 'utf-8'));
+  const lockPath = resolveWorkspacePackageBuildLockPath(packageDir, packageJson);
+  await writeFile(join(packageDir, 'src', 'index.ts'), 'export const built = true;\n', 'utf-8');
+  const stagedOutputs = [join(packageDir, '.stage-one'), join(packageDir, '.stage-two')];
+  const compilerRuns = [];
+
+  await withWorkspaceBundleLock(async ({ heldLockValue }) => {
+    for (const outputDir of stagedOutputs) {
+      await buildTypeScriptPackageDist({
+        packageDir,
+        args: ['-p', 'tsconfig.json'],
+        outputDir,
+        env: { HAPPIER_WORKSPACE_DIST_BUILD_LOCK_HELD: heldLockValue },
+        stdio: 'ignore',
+        resolveTypeScriptCliInvocationImpl: () => ({ command: 'tsc', argsPrefix: [] }),
+        runCommandImpl: (_command, args) => {
+          const compilerOutputDir = args[args.indexOf('--outDir') + 1];
+          const tsBuildInfoFile = args[args.indexOf('--tsBuildInfoFile') + 1];
+          compilerRuns.push({ compilerOutputDir, tsBuildInfoFile });
+          mkdirSync(compilerOutputDir, { recursive: true });
+          writeFileSync(join(compilerOutputDir, 'index.js'), 'export const built = true;\n', 'utf-8');
+          writeFileSync(join(compilerOutputDir, 'index.d.ts'), 'export declare const built: boolean;\n', 'utf-8');
+          writeFileSync(tsBuildInfoFile, JSON.stringify({ fileNames: ['src/index.ts'] }), 'utf-8');
+          return { status: 0 };
+        },
+      });
+    }
+  }, { lockPath });
 
   assert.equal(compilerRuns.length, 2);
   assert.equal(compilerRuns[1].compilerOutputDir, compilerRuns[0].compilerOutputDir);
   assert.equal(compilerRuns[1].tsBuildInfoFile, compilerRuns[0].tsBuildInfoFile);
-  assert.notEqual(compilerRuns[0].compilerOutputDir, stagedOutputs[0]);
-  assert.notEqual(compilerRuns[1].compilerOutputDir, stagedOutputs[1]);
   assert.equal(existsSync(compilerRuns[0].tsBuildInfoFile), true);
-  assert.match(await readFile(join(stagedOutputs[1], 'index.js'), 'utf-8'), /built/);
+
+  await assert.rejects(
+    () => buildTypeScriptPackageDist({
+      packageDir,
+      args: ['-p', 'tsconfig.json'],
+      outputDir: join(packageDir, '.unlocked-failing-stage'),
+      stdio: 'ignore',
+      resolveTypeScriptCliInvocationImpl: () => ({ command: 'tsc', argsPrefix: [] }),
+      runCommandImpl: (_command, args) => {
+        assert.notEqual(args[args.indexOf('--outDir') + 1], compilerRuns[0].compilerOutputDir);
+        return { status: 1 };
+      },
+    }),
+    /TypeScript package build failed/,
+  );
+  assert.equal(
+    existsSync(compilerRuns[0].tsBuildInfoFile),
+    true,
+    'an unlocked failing stage must not discard the lock-owned incremental cache',
+  );
+});
+
+test('buildTypeScriptPackageDist rebuilds an authenticated staged compiler cache when a declared output disappeared', async (t) => {
+  const packageDir = await createPackageFixture(t, 'build-ts-package-locked-interrupted-cache');
+  const packageJson = JSON.parse(await readFile(join(packageDir, 'package.json'), 'utf-8'));
+  const lockPath = resolveWorkspacePackageBuildLockPath(packageDir, packageJson);
+  await writeFile(join(packageDir, 'src', 'index.ts'), 'export const built = true;\n', 'utf-8');
+  let compilerOutputDir = '';
+  let tsBuildInfoFile = '';
+  let compilerRuns = 0;
+  let cacheWasReset = false;
+
+  await withWorkspaceBundleLock(async ({ heldLockValue }) => {
+    const build = (outputDir) => buildTypeScriptPackageDist({
+      packageDir,
+      args: ['-p', 'tsconfig.json'],
+      outputDir,
+      env: { HAPPIER_WORKSPACE_DIST_BUILD_LOCK_HELD: heldLockValue },
+      stdio: 'ignore',
+      resolveTypeScriptCliInvocationImpl: () => ({ command: 'tsc', argsPrefix: [] }),
+      runCommandImpl: (_command, args) => {
+        compilerRuns += 1;
+        compilerOutputDir = args[args.indexOf('--outDir') + 1];
+        tsBuildInfoFile = args[args.indexOf('--tsBuildInfoFile') + 1];
+        cacheWasReset = !existsSync(tsBuildInfoFile);
+        if (!cacheWasReset) {
+          // A real incremental compiler can exit successfully without re-emitting
+          // when its authenticated build-info cache still says everything is current.
+          return { status: 0 };
+        }
+        mkdirSync(compilerOutputDir, { recursive: true });
+        writeFileSync(join(compilerOutputDir, 'index.js'), 'export const rebuilt = true;\n', 'utf-8');
+        writeFileSync(join(compilerOutputDir, 'index.d.ts'), 'export declare const rebuilt: boolean;\n', 'utf-8');
+        writeFileSync(tsBuildInfoFile, JSON.stringify({ fileNames: ['src/index.ts'] }), 'utf-8');
+        return { status: 0 };
+      },
+    });
+
+    await build(join(packageDir, '.stage-one'));
+    await rm(join(compilerOutputDir, 'index.js'));
+    await build(join(packageDir, '.stage-two'));
+  }, { lockPath });
+
+  assert.equal(compilerRuns, 2);
+  assert.equal(cacheWasReset, true, 'missing declared output must invalidate otherwise valid compiler state');
+  assert.equal(
+    await readFile(join(packageDir, '.stage-two', 'index.js'), 'utf-8'),
+    'export const rebuilt = true;\n',
+  );
+});
+
+test('buildTypeScriptPackageDist does not invalidate compiler output for a wildcard owned by a staged producer', async (t) => {
+  const packageDir = await createPackageFixtureWithUiArtifacts(t, 'build-ts-package-locked-ui-cache');
+  const packageJson = JSON.parse(await readFile(join(packageDir, 'package.json'), 'utf-8'));
+  const lockPath = resolveWorkspacePackageBuildLockPath(packageDir, packageJson);
+  await writeFile(join(packageDir, 'src', 'index.ts'), 'export const built = true;\n', 'utf-8');
+  let compilerCacheReused = false;
+  let uiBuildCalls = 0;
+
+  await withWorkspaceBundleLock(async ({ heldLockValue }) => {
+    for (const outputDir of [join(packageDir, '.stage-one'), join(packageDir, '.stage-two')]) {
+      await buildTypeScriptPackageDist({
+        packageDir,
+        args: ['-p', 'tsconfig.json', '--happier-staged-output-script', 'build:ui'],
+        outputDir,
+        env: { HAPPIER_WORKSPACE_DIST_BUILD_LOCK_HELD: heldLockValue },
+        stdio: 'ignore',
+        resolveTypeScriptCliInvocationImpl: () => ({ command: 'tsc', argsPrefix: [] }),
+        resolveYarnCommandInvocationImpl: () => ({ command: 'yarn', args: ['-s', 'build:ui'] }),
+        runCommandImpl: (_command, args, options) => {
+          if (args.includes('tsconfig.json')) {
+            const tsBuildInfoFile = args[args.indexOf('--tsBuildInfoFile') + 1];
+            if (existsSync(tsBuildInfoFile)) {
+              compilerCacheReused = true;
+              return { status: 0 };
+            }
+            writeTypeScriptFixtureOutput(args);
+            writeFileSync(tsBuildInfoFile, JSON.stringify({ fileNames: ['src/index.ts'] }), 'utf-8');
+            return { status: 0 };
+          }
+          if (args.includes('build:ui')) {
+            uiBuildCalls += 1;
+            const stagedOutputDir = options.env.HAPPIER_WORKSPACE_DIST_OUTPUT_DIR;
+            mkdirSync(join(stagedOutputDir, 'happier-plugin-ui'), { recursive: true });
+            writeFileSync(
+              join(stagedOutputDir, 'happier-plugin-ui', 'ui-artifacts.json'),
+              '{"version":1,"entries":["rebuilt"]}\n',
+              'utf-8',
+            );
+            return { status: 0 };
+          }
+          throw new Error(`Unexpected command: ${args.join(' ')}`);
+        },
+      });
+    }
+  }, { lockPath });
+
+  assert.equal(compilerCacheReused, true);
+  assert.equal(uiBuildCalls, 2);
 });
 
 test('buildTypeScriptPackageDist permits an incremental repeat but does not replace identical dist', async (t) => {
@@ -709,7 +891,6 @@ test('buildTypeScriptPackageDist invalidates its stable cache when compiler stat
   await buildTypeScriptPackageDist({
     packageDir,
     args: ['-p', 'tsconfig.json'],
-    outputDir: join(packageDir, '.first-stage'),
     stdio: 'ignore',
     resolveTypeScriptCliInvocationImpl: () => ({ command: 'tsc', argsPrefix: [] }),
     runCommandImpl: (_command, args) => {
@@ -726,11 +907,10 @@ test('buildTypeScriptPackageDist invalidates its stable cache when compiler stat
   await rm(removedSourcePath);
   await writeFile(renamedSourcePath, 'export const renamed = true;\n', 'utf-8');
 
-  const secondStage = join(packageDir, '.second-stage');
+  const secondStage = join(packageDir, 'dist');
   await buildTypeScriptPackageDist({
     packageDir,
     args: ['-p', 'tsconfig.json'],
-    outputDir: secondStage,
     stdio: 'ignore',
     resolveTypeScriptCliInvocationImpl: () => ({ command: 'tsc', argsPrefix: [] }),
     runCommandImpl: (_command, args) => {
@@ -765,7 +945,6 @@ test('buildTypeScriptPackageDist invalidates its stable cache when the compiler 
   await buildTypeScriptPackageDist({
     packageDir,
     args: ['-p', 'tsconfig.json'],
-    outputDir: join(packageDir, '.config-first-stage'),
     stdio: 'ignore',
     resolveTypeScriptCliInvocationImpl: () => ({ command: 'tsc', argsPrefix: [] }),
     runCommandImpl: (_command, args) => {
@@ -789,11 +968,10 @@ test('buildTypeScriptPackageDist invalidates its stable cache when the compiler 
   const tsconfig = JSON.parse(await readFile(tsconfigPath, 'utf-8'));
   await writeJson(tsconfigPath, { ...tsconfig, include: ['src/index.ts'] });
 
-  const secondStage = join(packageDir, '.config-second-stage');
+  const secondStage = join(packageDir, 'dist');
   await buildTypeScriptPackageDist({
     packageDir,
     args: ['-p', 'tsconfig.json'],
-    outputDir: secondStage,
     stdio: 'ignore',
     resolveTypeScriptCliInvocationImpl: () => ({ command: 'tsc', argsPrefix: [] }),
     runCommandImpl: (_command, args) => {

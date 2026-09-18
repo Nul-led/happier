@@ -3,9 +3,22 @@ title: Terminal surface
 description: Resolve an Agent-specific terminal launch plan.
 ---
 
-Implement `AgentRuntime.surfaces.terminal.resolveLaunch(request)` when the Agent can run in a host terminal.
+Declare the terminal surface in `capabilities.surfaces` when the Agent can run
+in a host terminal. Exactly one owner then implements
+`resolveLaunch(request)`, chosen by the Agent's runtime kind:
 
-The result contains the executable argument vector, optional launch environment, supported process presentation, and bounded result metadata. The Agent leaf owns its CLI arguments and native breadcrumbs. The host owns terminal selection, process presentation, liveness, input policy, session continuity, and public state.
+- a `custom` runtime returns it as `AgentRuntime.surfaces.terminal`, alongside
+  the sessions or execution-run runtime it already owns;
+- a host-owned runtime — `acp` and the other declarative kinds — has no runtime
+  object of its own, so it registers `terminal` on the same `definePlugin`
+  Agent entry as its declaration.
+
+The two are mutually exclusive. `definePlugin` rejects a `custom` Agent that
+also registers a contribution, rejects a host-owned Agent that declares the
+capability without one, and the host runtime lease fails closed if a runtime
+and a contributed surface both arrive for one Agent.
+
+The result contains the argument vector, optional launch environment, supported process presentation, and bounded result metadata. `argv` carries arguments only: the host resolves the Agent CLI executable and its own arguments and then appends `argv`, so repeating the executable name there launches it twice. The Agent leaf owns its CLI arguments and native breadcrumbs. The host owns terminal selection, process presentation, liveness, input policy, session continuity, and public state.
 
 Terminal metadata does not grant write access to a running session. Do not write Happier transcript rows or session state directly; return the public launch plan and let the host apply supported result metadata.
 
@@ -18,12 +31,12 @@ callbacks have deliberately narrow jobs:
 - `resolveTarget({ metadata, fallbackServerBaseUrl })` derives a string-only
   target from bounded Session metadata;
 - `createArgs(target)` creates the Agent CLI argument vector; and
-- `buildHealthUrl(target)` returns the endpoint the host should probe, or
-  `null` when no health probe applies.
+- `resolveReachability(target)` returns the HTTP or machine-local socket
+  endpoint the host should probe, or `null` when no reachability probe applies.
 
-Happier owns executable resolution, process creation, credentials, health
-probing, connection custody, and Session continuity. OpenCode is the current
-positive consumer of this public declaration.
+Happier owns executable resolution, process creation, credentials, reachability
+probing, connection custody, and Session continuity. OpenCode and Codex are the
+current positive consumers of this public declaration.
 
 ## Prompt-submit verification
 

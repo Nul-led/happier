@@ -46,6 +46,14 @@ docker pull happierdev/relay-server:preview
 docker compose up -d --force-recreate
 ```
 
+<Callout type="warn">
+  If your Home runs more than one Redis-backed API replica, do not roll the
+  replicas one at a time across the Socket.IO Redis adapter `0.2` → `0.3`
+  boundary. Drain and stop the complete old API pool, then start the new pool as
+  one generation; roll back the same way. See [Upgrading API replicas](/self-hosting#upgrading-api-replicas)
+  for the reason, ACL preflight, and validation steps.
+</Callout>
+
 **MySQL upgrade warning:** before an upgrade first applies
 `20260729102000_add_voice_conversation_grant_provenance`, do not use a normal
 rolling restart. Stop every old API and worker writer, preflight the target
@@ -317,7 +325,7 @@ The DB provider is selected via:
 
 Supported values:
 
-- Full flavor: `postgres` (default), `mysql` (MySQL 8.0.16+)
+- Full flavor: `postgres` (default), `mysql` (MySQL 8.0.17+)
 - Light flavor: `pglite` (default), `sqlite`
 
 Image support depends on how the image was built. Prebuilt `relay-server` images include SQLite and Postgres runtime support; MySQL requires a source-built `server` image with MySQL included.
@@ -344,7 +352,7 @@ docker run --rm -p 53288:53288 \
   happier-server
 ```
 
-### Full flavor (MySQL 8.0.16+)
+### Full flavor (MySQL 8.0.17+)
 
 The image runs migrations before starting the server. Before this command or a
 Compose deployment upgrades an existing MySQL database, complete the
@@ -490,9 +498,9 @@ volumes:
   minio:
 ```
 
-### Full flavor (single process, MySQL 8.0.16+)
+### Full flavor (single process, MySQL 8.0.17+)
 
-This example uses MySQL 8.0.16+ + Minio.
+This example uses MySQL 8.0.17+ + Minio.
 
 ```yaml
 services:
@@ -588,6 +596,11 @@ If you split roles, run:
 - Worker container with `SERVER_ROLE=worker`
 
 With more than one API replica, enable Redis fanout (`REDIS_URL` + `HAPPIER_SOCKET_ADAPTER=redis-streams`) and configure sticky sessions at your load balancer.
+
+For adapter `0.2` → `0.3` upgrades, stop every old API replica before starting
+the new API pool. A normal rolling update creates an unsupported mixed discovery
+backplane even though ordinary room broadcasts may appear healthy. Follow
+[Upgrading API replicas](/self-hosting#upgrading-api-replicas).
 
 Minimal example (add this on top of the full-flavor compose above):
 

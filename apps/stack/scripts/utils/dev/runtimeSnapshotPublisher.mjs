@@ -57,6 +57,7 @@ export async function publishRepositoryRuntimeSnapshotInChildProcess({
   authority,
   requestedComponents,
   env = process.env,
+  platform = process.platform,
   children = [],
   workerPath = fileURLToPath(new URL('./runtimeSnapshotPublicationWorker.mjs', import.meta.url)),
   spawnProcImpl = spawnProc,
@@ -72,11 +73,24 @@ export async function publishRepositoryRuntimeSnapshotInChildProcess({
   let diagnosticOut = '';
   let diagnosticErr = '';
   let failureDiagnosticTruncated = false;
+  // Publication writes this machine's runtime store. Reuse protected local
+  // dispatch without sending those writes through automatic remote placement.
+  // Publication repairs the running Stack, so it must remain backgrounded but
+  // must not wait behind the machine-wide heavyweight validation queue.
+  const command = platform === 'linux'
+    ? fileURLToPath(new URL('../../../bin/hstack-exec', import.meta.url))
+    : process.execPath;
+  const args = platform === 'linux'
+    ? ['--local', '--', process.execPath, workerPath, request]
+    : [workerPath, request];
+  const childEnv = platform === 'linux'
+    ? { ...env, HAPPIER_HSTACK_DISPATCH_CONTROL: '1' }
+    : env;
   const child = spawnProcImpl(
     'runtime-publisher',
-    process.execPath,
-    [workerPath, request],
-    env,
+    command,
+    args,
+    childEnv,
     {
       cwd: rootDir,
       lineFilter({ stream, line }) {

@@ -16,7 +16,7 @@ test('nightly-dev verifies exact immutable candidates before promoting any user-
   const workflow = YAML.parse(raw);
   const releaseVerifyWorkflow = YAML.parse(releaseVerifyRaw);
 
-  assert.match(raw, /release_verify:[\s\S]*?needs:\s*\[prepare_release_candidate, cli, hstack, server_runtime, ui_web, resolve_validation_risk\]/);
+  assert.match(raw, /release_verify:[\s\S]*?needs:\s*\[prepare_release_candidate, cli, hstack, runner, server_runtime, ui_web, resolve_validation_risk\]/);
   assert.match(
     raw,
     /release_verify:[\s\S]*?channel:\s*dev/,
@@ -51,21 +51,21 @@ test('nightly-dev verifies exact immutable candidates before promoting any user-
   assert.match(JSON.stringify(candidate.steps), /Automated nightly dev release\./);
 
   const exactSha = '${{ needs.prepare_release_candidate.outputs.source_sha }}';
-  for (const jobName of ['cli', 'hstack', 'server_runtime', 'ui_web']) {
+  for (const jobName of ['cli', 'hstack', 'runner', 'server_runtime', 'ui_web']) {
     const job = workflow.jobs[jobName];
     assert.ok(job.needs.includes('prepare_release_candidate'), `${jobName} must wait for the exact nightly candidate`);
     assert.ok(job.needs.includes('verify_source_ci'), `${jobName} must wait for ordinary CI on the exact source`);
     assert.equal(job.if, "${{ needs.prepare_release_candidate.outputs.release_needed == 'true' }}");
     assert.equal(job.with.source_ref, exactSha, `${jobName} must consume the exact nightly candidate SHA`);
   }
-  for (const jobName of ['cli', 'hstack', 'server_runtime', 'ui_web', 'docker']) {
+  for (const jobName of ['cli', 'hstack', 'runner', 'server_runtime', 'ui_web', 'docker']) {
     assert.equal(
       workflow.jobs[jobName].with.authorized_sha,
       exactSha,
       `${jobName} must enforce the caller-authorized nightly candidate SHA`,
     );
   }
-  for (const jobName of ['cli', 'hstack', 'server_runtime', 'ui_web']) {
+  for (const jobName of ['cli', 'hstack', 'runner', 'server_runtime', 'ui_web']) {
     assert.equal(workflow.jobs[jobName].with.publish_rolling, false, `${jobName} must stop after immutable publication`);
   }
 
@@ -84,10 +84,12 @@ test('nightly-dev verifies exact immutable candidates before promoting any user-
   assert.equal(releaseVerify.with.candidate_cli_version, '${{ needs.cli.outputs.version }}');
   assert.equal(releaseVerify.with.candidate_stack_version, '${{ needs.hstack.outputs.version }}');
   assert.equal(releaseVerify.with.candidate_server_version, '${{ needs.server_runtime.outputs.version }}');
+  assert.equal(releaseVerify.with.candidate_runner_version, '${{ needs.runner.outputs.version }}');
   assert.equal(releaseVerify.with.candidate_ui_web_version, '${{ needs.ui_web.outputs.version }}');
   assert.equal(releaseVerify.with.verify_cli_release, "${{ needs.resolve_resume.outputs.cli_version == '' }}");
   assert.equal(releaseVerify.with.verify_stack_release, "${{ needs.resolve_resume.outputs.stack_version == '' }}");
   assert.equal(releaseVerify.with.verify_server_release, "${{ needs.resolve_resume.outputs.server_version == '' }}");
+  assert.equal(releaseVerify.with.verify_runner_release, "${{ needs.resolve_resume.outputs.runner_version == '' }}");
   assert.equal(releaseVerify.with.verify_ui_web_release, "${{ needs.resolve_resume.outputs.ui_web_version == '' }}");
 
   const orderedPromotions = ['promote_server', 'promote_hstack', 'promote_cli', 'promote_ui_web'];
@@ -112,6 +114,9 @@ test('nightly-dev verifies exact immutable candidates before promoting any user-
     assert.ok(job.needs.includes(requiredPredecessor[jobName]), `${jobName} must follow the safe promotion order`);
     assert.equal(job.with.retry_version, immutableVersionSource[jobName]);
   }
+  assert.ok(workflow.jobs.promote_runner.needs.includes('prepare_release_candidate'));
+  assert.ok(workflow.jobs.promote_runner.needs.includes('release_verify'));
+  assert.equal(workflow.jobs.promote_runner.with.retry_version, '${{ needs.runner.outputs.version }}');
 
   assert.ok(workflow.jobs.ui_mobile.needs.includes('release_verify'));
   assert.ok(workflow.jobs.ui_desktop.needs.includes('release_verify'));
@@ -119,6 +124,8 @@ test('nightly-dev verifies exact immutable candidates before promoting any user-
   assert.ok(workflow.jobs.verify_promoted.needs.includes('docker'));
   assert.ok(workflow.jobs.verify_promoted.needs.includes('ui_mobile'));
   assert.ok(workflow.jobs.verify_promoted.needs.includes('ui_desktop'));
+  assert.ok(workflow.jobs.verify_promoted.needs.includes('promote_runner'));
+  assert.equal(workflow.jobs.verify_promoted.with.verify_runner_release, true);
 
   const status = workflow.jobs.release_status;
   assert.ok(status, 'nightly must project terminal release status even when upstream work fails');
@@ -127,6 +134,7 @@ test('nightly-dev verifies exact immutable candidates before promoting any user-
   assert.equal(projection.env.RELEASE_RUN_URL, 'https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}');
   assert.match(projection.run, /project-release-status\.mjs/);
   assert.equal(projection.env.CLI_RESUME_VERIFIED, '${{ needs.verify_resume_candidates.outputs.cli_verified }}');
+  assert.equal(projection.env.RUNNER_RESUME_VERIFIED, '${{ needs.verify_resume_candidates.outputs.runner_verified }}');
   assert.equal(projection.env.IMMUTABLE_VERIFICATION_RESULT, '${{ needs.release_verify.result }}');
   assert.match(JSON.stringify(status.steps), /actions\/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02/);
   assert.equal(
@@ -145,7 +153,7 @@ test('scheduled nightlies require exact-SHA CI and safely no-op only after a com
   assert.equal(candidate.permissions.actions, 'read');
   assert.match(JSON.stringify(candidate.steps), /gh run list/);
   assert.match(JSON.stringify(candidate.steps), /--status success/);
-  for (const tag of ['server-dev', 'stack-dev', 'cli-dev', 'ui-web-dev']) {
+  for (const tag of ['server-dev', 'stack-dev', 'cli-dev', 'runner-dev', 'ui-web-dev']) {
     assert.match(JSON.stringify(candidate.steps), new RegExp(tag));
   }
   assert.equal(verify.permissions.actions, 'read');

@@ -108,6 +108,8 @@ adding it leaves your current Home, sidebar groups, and other saved credentials 
 
 From the Home host, `happier home pair-device` starts the same kind of new short-lived, Home-bound pairing session. Each retry creates fresh invitation material; do not reuse an expired or exposed QR/link. `happier home link-account` separately links the Home to your selected Account Service for discovery without transferring Home authority to that service.
 
+To undo that link, use **Settings → Account → Homes → Stop letting {Service} sign in to this Home**, or run `happier home unlink-account [--home PROFILE]` on the Home host. Unlinking makes the Home refuse future delegated sign-ins from that service. It does **not** revoke Home credentials the service already issued: devices that are already signed in keep their access until you sign them out on the Home, and the Home stays listed in that service's Homes list.
+
 ### Restore a new browser or desktop
 
 1. On the new browser/computer, open **Restore account**

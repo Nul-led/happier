@@ -1106,12 +1106,14 @@ async function main() {
       localServerPort: serverPort,
       localExpoPort: remoteExpoPort,
       publicServerUrl: remotePublicServerUrl,
+      canonicalServerUrl,
       expoPublicUrl,
       resolveMobilePublicUrlsOnTarget,
       expoListenHost: resolveExpoDevHost({ env: baseEnv }) === 'lan' ? '0.0.0.0' : '127.0.0.1',
       startMobile,
       activeServerId: resolveStackActiveServerId({ env: baseEnv, stackName }),
       credentialPath,
+      cliHomeDir,
       remoteServerRuntimeConfig,
       syncTargets: devTargets,
       targetPlans: servicePlans.targets,
@@ -1134,10 +1136,10 @@ async function main() {
   };
   if (devTargetsStartOptions) {
     const remoteWorkspacePreparation = remoteWorkspacePreparationExecutor
-      ? remoteWorkspacePreparationExecutor.build()
+      ? () => remoteWorkspacePreparationExecutor.build()
       : null;
     if (remoteWorkspacePreparation) {
-      void remoteWorkspacePreparation.catch((error) => {
+      void remoteWorkspacePreparation().catch((error) => {
         console.error(
           '[local] remote workspace preparation failed; remote targets will retry while local last-green services remain available. '
             + (error instanceof Error ? error.message : String(error)),

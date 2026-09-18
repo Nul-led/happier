@@ -22,6 +22,10 @@ const PRODUCT_SOURCES = Object.freeze({
     githubTagPrefix: 'server-v',
     npmPackage: '@happier-dev/relay-server',
   }),
+  runner: Object.freeze({
+    githubTagPrefix: 'runner-v',
+    npmPackage: '',
+  }),
   support: Object.freeze({
     githubTagPrefix: 'support-v',
     npmPackage: '@happier-dev/support',
@@ -420,6 +424,7 @@ function getProductSource(productId) {
  *   baseVersion: string;
  *   explicitVersion?: string;
  *   publishSurface?: 'github' | 'npm' | 'all';
+ *   allowExistingExactVersion?: boolean;
  *   env?: Record<string, string | undefined>;
  *   dryRun?: boolean;
  * }} opts
@@ -542,7 +547,7 @@ export async function resolveRollingPublishVersion(opts) {
       { npmDistTagsByPackage, finalNpmDistTag },
     );
     const isBehindTarget = comparisonBuild && compareBuildOrder(explicitBuild, comparisonBuild) < 0;
-    if (isOlderThanOverall || isAlreadyPublishedForTarget || isBehindTarget) {
+    if (isOlderThanOverall || isBehindTarget || (isAlreadyPublishedForTarget && !opts.allowExistingExactVersion)) {
       throw new Error(
         `[release] refusing to publish ${explicitVersion}; latest published ${opts.productId} ${channelSuffix} version is ${previous.version}`,
       );

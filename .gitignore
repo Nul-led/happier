@@ -89,7 +89,7 @@ __pycache__/
 /apps/cli/.project-permission-result.json
 
 # Nested sibling-checkout snapshots must never enter this repository
-/remote-dev/
+/0.2/
 
 # local build/log artifacts
 apps/cli/.dist.hstack-backup/

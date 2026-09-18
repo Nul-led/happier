@@ -30,6 +30,10 @@ import { resolveYarnCommandInvocation } from './execYarnCommand.mjs';
 import { resolveTypeScriptCliInvocation } from './resolveTypeScriptCliInvocation.mjs';
 import { withWorkspaceBundleLock } from './workspaceBundleLock.mjs';
 import { resolveWorkspacePackageBuildLockPath } from './workspacePackageBuildLock.mjs';
+import {
+  createWorkspaceLockLeaseValue,
+  parseWorkspaceLockLeaseValue,
+} from '../../packages/cli-common/workspaceLockLease.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const STAGED_OUTPUT_SCRIPT_FLAG = '--happier-staged-output-script';
@@ -78,8 +82,8 @@ async function markBinTargetsExecutable({ packageDir, outputDir, packageJson }) 
   }
 }
 
-function verifyStagedExportTargets({ packageDir, outputDir, packageJson }) {
-  const missing = collectPackageBuildOutputTargets(packageJson)
+function collectMissingStagedExportTargets({ packageDir, outputDir, packageJson }) {
+  return collectPackageBuildOutputTargets(packageJson)
     .filter(isLocalPackageBuildOutputTarget)
     .filter((target) => resolvePackageBuildOutputTargetMatches({
       packageDir,
@@ -87,6 +91,10 @@ function verifyStagedExportTargets({ packageDir, outputDir, packageJson }) {
       target,
     }).length === 0)
     .map((target) => ({ target }));
+}
+
+function verifyStagedExportTargets({ packageDir, outputDir, packageJson }) {
+  const missing = collectMissingStagedExportTargets({ packageDir, outputDir, packageJson });
 
   if (missing.length === 0) return;
 
@@ -261,6 +269,26 @@ function resolvePersistentCompilerWorkTree({ packageDir, compilerArgs, outputMod
   };
 }
 
+function workspaceLockLeaseTargetsPath(lockPath, leaseValue) {
+  const lease = parseWorkspaceLockLeaseValue(leaseValue);
+  if (!lease) return false;
+  const normalizedLockPath = parseWorkspaceLockLeaseValue(createWorkspaceLockLeaseValue({
+    lockPath,
+    ownerToken: 'path-comparison',
+  }))?.path;
+  return lease.path === normalizedLockPath;
+}
+
+function isolateCompilerWorkTree(compilerWorkTree, buildId) {
+  const workDir = `${compilerWorkTree.workDir}.isolated.${buildId}`;
+  return {
+    ...compilerWorkTree,
+    workDir,
+    outputDir: join(workDir, 'dist'),
+    tsBuildInfoFile: join(workDir, '.tsbuildinfo'),
+  };
+}
+
 function isDescendantPath(parentPath, candidatePath) {
   const relation = relative(parentPath, candidatePath);
   return relation === '' || (
@@ -274,11 +302,28 @@ function isTypeScriptSourcePath(path) {
   return /\.(?:cts|mts|tsx?|json)$/u.test(path);
 }
 
-function compilerCacheNeedsReset({ packageDir, projectPath, compilerOutputDir, tsBuildInfoFile }) {
+function compilerCacheNeedsReset({
+  packageDir,
+  packageJson,
+  projectPath,
+  compilerOutputDir,
+  tsBuildInfoFile,
+}) {
   if (!existsSync(tsBuildInfoFile)) {
     return existsSync(compilerOutputDir);
   }
   if (!existsSync(compilerOutputDir)) return true;
+  // Concrete declared targets must be present for a build-info cache to be
+  // reusable. Wildcards can be owned by a later staged producer (for example,
+  // plugin UI artifacts), so their final completeness remains the verifier's
+  // responsibility after all producers have run.
+  if (collectMissingStagedExportTargets({
+    packageDir,
+    outputDir: compilerOutputDir,
+    packageJson,
+  }).some(({ target }) => !target.includes('*'))) {
+    return true;
+  }
 
   try {
     const projectStat = statSync(projectPath, { bigint: true });
@@ -319,9 +364,10 @@ function compilerCacheNeedsReset({ packageDir, projectPath, compilerOutputDir, t
   return false;
 }
 
-async function preparePersistentCompilerWorkTree(compilerWorkTree, { packageDir }) {
+async function preparePersistentCompilerWorkTree(compilerWorkTree, { packageDir, packageJson }) {
   if (compilerCacheNeedsReset({
     packageDir,
+    packageJson,
     projectPath: compilerWorkTree.projectPath,
     compilerOutputDir: compilerWorkTree.outputDir,
     tsBuildInfoFile: compilerWorkTree.tsBuildInfoFile,
@@ -514,12 +560,25 @@ export async function buildTypeScriptPackageDist({
   const buildId = `${Date.now()}.${process.pid}.${rand()}`;
   const stagedDistDir = resolve(explicitOutputDir || join(resolvedPackageDir, `.dist.build.${buildId}`));
   const backupDir = join(resolvedPackageDir, `.dist.backup.${buildId}`);
-  const compilerWorkTree = resolvePersistentCompilerWorkTree({
+  const persistentCompilerWorkTree = resolvePersistentCompilerWorkTree({
     packageDir: resolvedPackageDir,
     compilerArgs: parsedArgs.compilerArgs,
     outputMode: explicitOutputDir ? 'staged' : 'promoted',
   });
   const commandEnv = { ...process.env, ...env };
+  const lockPath = resolveWorkspacePackageBuildLockPath(resolvedPackageDir, packageJson);
+  const stagedBuildTargetsPackageLock = explicitOutputDir && workspaceLockLeaseTargetsPath(
+    lockPath,
+    commandEnv.HAPPIER_WORKSPACE_DIST_BUILD_LOCK_HELD,
+  );
+  // Canonical outer publishers authenticate reentry into this package lock and
+  // may safely reuse its incremental compiler tree. A standalone staged build
+  // has no owner serializing that mutable tree, so keep its compiler state
+  // private to the build instead of racing another staged publisher.
+  const isolateCompilerState = explicitOutputDir && !stagedBuildTargetsPackageLock;
+  const compilerWorkTree = isolateCompilerState
+    ? isolateCompilerWorkTree(persistentCompilerWorkTree, buildId)
+    : persistentCompilerWorkTree;
 
   const runBuild = async (buildEnv) => {
     await rm(stagedDistDir, { recursive: true, force: true });
@@ -528,6 +587,7 @@ export async function buildTypeScriptPackageDist({
     try {
       await preparePersistentCompilerWorkTree(compilerWorkTree, {
         packageDir: resolvedPackageDir,
+        packageJson,
       });
       const stagedBuildEnv = {
         ...buildEnv,
@@ -605,15 +665,28 @@ export async function buildTypeScriptPackageDist({
       if (!explicitOutputDir) {
         await rm(stagedDistDir, { recursive: true, force: true }).catch(() => {});
       }
+      if (isolateCompilerState) {
+        await rm(compilerWorkTree.workDir, { recursive: true, force: true }).catch(() => {});
+      }
       await rm(backupDir, { recursive: true, force: true }).catch(() => {});
     }
   };
 
   if (explicitOutputDir) {
-    return await runBuild(commandEnv);
+    if (!stagedBuildTargetsPackageLock) return await runBuild(commandEnv);
+    return await withWorkspaceBundleLockImpl(
+      ({ heldLockValue }) => runBuild({
+        ...commandEnv,
+        HAPPIER_WORKSPACE_DIST_BUILD_LOCK_HELD: heldLockValue,
+      }),
+      {
+        lockPath,
+        heldLockValue: commandEnv.HAPPIER_WORKSPACE_DIST_BUILD_LOCK_HELD,
+        errorLabel: `${packageJson?.name ?? resolvedPackageDir} workspace dist build lock`,
+      },
+    );
   }
 
-  const lockPath = resolveWorkspacePackageBuildLockPath(resolvedPackageDir, packageJson);
   return await withWorkspaceBundleLockImpl(
     ({ heldLockValue }) => runBuild({
       ...commandEnv,

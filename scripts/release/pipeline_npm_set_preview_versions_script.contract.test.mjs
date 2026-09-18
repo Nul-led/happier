@@ -111,6 +111,41 @@ test('set-preview-versions catches npm preview version up to the published CLI b
   assert.equal(readJson(dir, 'apps/cli/package.json').version, '1.2.3');
 });
 
+test('set-preview-versions reconstructs an exact caller-bound version already published to npm', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'happier-preview-versions-'));
+  writeJson(dir, 'apps/cli/package.json', { name: '@happier-dev/cli', version: '1.2.3' });
+
+  const out = execFileSync(
+    process.execPath,
+    [
+      resolve(repoRoot, 'scripts', 'pipeline', 'npm', 'set-preview-versions.mjs'),
+      '--repo-root', dir,
+      '--publish-cli', 'true',
+      '--publish-stack', 'false',
+      '--publish-server', 'false',
+      '--cli-version', '1.2.3-preview.7',
+      '--write', 'false',
+    ],
+    {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        HAPPIER_RELEASE_PUBLISHED_VERSIONS_JSON: JSON.stringify({
+          github: {},
+          npm: { '@happier-dev/cli': ['1.2.3-preview.7'] },
+          npmDistTags: { '@happier-dev/cli': { next: '1.2.3-preview.7' } },
+        }),
+      },
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 30_000,
+    },
+  ).trim();
+
+  assert.deepEqual(JSON.parse(out), { cli: '1.2.3-preview.7' });
+  assert.equal(readJson(dir, 'apps/cli/package.json').version, '1.2.3');
+});
+
 test('set-preview-versions allocates the plugin SDK pair at the public 0.1.0 preview baseline and writes both package versions', async () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'happier-preview-plugin-sdk-'));
   writeJson(dir, 'packages/plugin-sdk/package.json', { name: '@happier-dev/plugin-sdk', version: '0.0.0' });

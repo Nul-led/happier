@@ -4,10 +4,13 @@ import { isAbsolute, relative, resolve, posix } from 'node:path';
 import { createManagedLimaHostExecutor } from '../managed_lima/host_executor.mjs';
 import { startManagedLimaInstance } from '../managed_lima/lifecycle.mjs';
 import { doctorManagedLimaInstance } from '../managed_lima/manager.mjs';
+import { resolveManagedLimaCapacityResources } from '../managed_lima/capacity.mjs';
 import { parseArgs } from '../cli/args.mjs';
 import { inferTuiStackName } from '../tui/args.mjs';
 import { mountExecutionHostWorkspace } from './workspace_mount.mjs';
 import { ensureExecutionHostServiceTunnel, superviseExecutionHostServiceTunnel } from './service_tunnel.mjs';
+
+let delegatedCommandSequence = 0;
 
 function defaultBoundary() {
   return {
@@ -186,6 +189,7 @@ export async function prepareManagedHost(profile, dependencies = {}) {
     instance: profile.instance,
     profileName: profile.profile,
     diskImageFormat: profile.diskImageFormat,
+    resources: resolveManagedLimaCapacityResources(profile.capacity),
   });
   const pendingLegacyServiceForwardCutover = diagnosis.ok !== true
     && isPendingLegacyServiceForwardCutover(diagnosis);
@@ -251,8 +255,16 @@ export async function runDelegatedHstackCommand({
   const delegatedArgv = command === 'tui' && !argv.includes('--rescue')
     ? [...argv, '--rescue']
     : argv;
+  delegatedCommandSequence += 1;
+  const delegatedUnit = [
+    'happier-execution-host',
+    process.pid.toString(36),
+    Date.now().toString(36),
+    delegatedCommandSequence.toString(36),
+  ].join('-') + '.scope';
   const child = boundary.spawn('limactl', [
     'shell', '--workdir', guestCwd, profile.instance, '--',
+    'systemd-run', '--user', '--scope', '--quiet', `--unit=${delegatedUnit}`, '--',
     'env',
     'HAPPIER_STACK_EXECUTION_HOST_REENTRY=1',
     `HAPPIER_STACK_INVOKED_CWD=${guestCwd}`,
@@ -282,18 +294,48 @@ export async function runDelegatedHstackCommand({
         return { status: 'failed', error };
       })
     : Promise.resolve({ status: 'not_requested' });
+  let guestCancellation = null;
   const removeSignalHandlers = boundary.onSignal((signal) => {
-    try {
-      child.kill(signal);
-    } catch {
-      // The delegated process may already have reached its terminal state.
+    if (!guestCancellation) {
+      const cancellationScript = [
+        `systemctl --user kill --kill-whom=all --signal=SIGTERM ${delegatedUnit} >/dev/null 2>&1 || true`,
+        `grace_attempt=0; while [ "$grace_attempt" -lt 150 ]; do state=$(systemctl --user show --property=ActiveState --value ${delegatedUnit} 2>/dev/null || true); case "$state" in active|activating|deactivating) ;; *) break ;; esac; sleep 0.1; grace_attempt=$((grace_attempt + 1)); done`,
+        `systemctl --user kill --kill-whom=all --signal=SIGKILL ${delegatedUnit} >/dev/null 2>&1 || true`,
+      ].join('; ');
+      const cancellationChild = boundary.spawn('limactl', [
+        'shell', '--workdir', '/', profile.instance, '--',
+        '/bin/sh', '-c', cancellationScript,
+      ], {
+        cwd,
+        env: { ...env, LIMA_HOME: profile.limaHome },
+        stdio: 'ignore',
+        shell: false,
+      });
+      guestCancellation = new Promise((resolveCancellation) => {
+        let settled = false;
+        const settle = () => {
+          if (settled) return;
+          settled = true;
+          resolveCancellation();
+        };
+        cancellationChild.once('error', settle);
+        cancellationChild.once('close', settle);
+      }).finally(() => {
+        try {
+          child.kill(signal);
+        } catch {
+          // The delegated process may already have reached its terminal state.
+        }
+      });
     }
   });
   try {
-    return await new Promise((resolvePromise, rejectPromise) => {
+    const result = await new Promise((resolvePromise, rejectPromise) => {
       child.once('error', rejectPromise);
       child.once('close', (exitCode, signal) => resolvePromise({ exitCode, signal }));
     });
+    if (guestCancellation) await guestCancellation;
+    return result;
   } finally {
     reconciliationController.abort();
     await reconciliation;

@@ -221,7 +221,7 @@ test('active Mac repo-local mirror uses the mapped Stack identity before delegat
     const calls = readFileSync(logPath, 'utf8');
     assert.match(
       calls,
-      new RegExp(`shell --workdir ${guestRepoDir.replaceAll('/', '\\/')} primary -- env HAPPIER_STACK_EXECUTION_HOST_REENTRY=1 HAPPIER_STACK_INVOKED_CWD=${guestRepoDir.replaceAll('/', '\\/')} HAPPIER_STACK_STACK=${stackName} node ${guestRepoDir.replaceAll('/', '\\/')}\\/apps\\/stack\\/scripts\\/repo_local\\.mjs dev-targets sync-service status --json`),
+      new RegExp(`shell --workdir ${guestRepoDir.replaceAll('/', '\\/')} primary -- systemd-run --user --scope --quiet --unit=happier-execution-host-[^ ]+\\.scope -- env HAPPIER_STACK_EXECUTION_HOST_REENTRY=1 HAPPIER_STACK_INVOKED_CWD=${guestRepoDir.replaceAll('/', '\\/')} HAPPIER_STACK_STACK=${stackName} node ${guestRepoDir.replaceAll('/', '\\/')}\\/apps\\/stack\\/scripts\\/repo_local\\.mjs dev-targets sync-service status --json`),
     );
   } finally {
     rmSync(fixtureRoot, { recursive: true, force: true });

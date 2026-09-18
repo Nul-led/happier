@@ -202,6 +202,15 @@ jobs:
           ref: ${{ job.workflow_sha }}
           fetch-depth: 1
           persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.x
+          registry-url: https://registry.npmjs.org
+          cache: yarn
+          cache-dependency-path: yarn.lock
+
       - name: Resolve release inputs
         id: release_inputs
         env:
@@ -248,14 +257,6 @@ jobs:
             --source-ref HEAD \
             --source-sha "$SOURCE_SHA" \
             --summary-file "$GITHUB_STEP_SUMMARY"
-
-      - name: Setup Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with:
-          node-version: 22.x
-          registry-url: https://registry.npmjs.org
-          cache: yarn
-          cache-dependency-path: yarn.lock
 
       - name: Setup Corepack (Yarn 1.22.22)
         run: |
@@ -339,6 +340,15 @@ jobs:
         if: inputs.publish_channels_protocol && inputs.run_tests
         run: yarn --cwd packages/channels-protocol test
 
+      - name: Checkout trusted npm release control
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: trusted-control
+          fetch-depth: 1
+          persist-credentials: false
+
       - name: Resolve release metadata
         id: meta
         env:
@@ -359,7 +369,8 @@ jobs:
           SERVER_RUNNER_DIR: ${{ steps.server_runner.outputs.dir }}
         run: |
           set -euo pipefail
-          node scripts/pipeline/npm/resolve-release-metadata.mjs \
+          node "$GITHUB_WORKSPACE/trusted-control/scripts/pipeline/npm/resolve-release-metadata.mjs" \
+            --repo-root "$GITHUB_WORKSPACE" \
             --channel "$INPUT_CHANNEL" \
             --npm-tag "$INPUT_NPM_TAG" \
             --source-ref "$RESOLVED_SOURCE_REF" \

@@ -755,6 +755,7 @@ async function ensureWorkspacePackageBuilt(packageDir, {
     async ({ heldLockValue }) => await buildUnderPackageLock(heldLockValue),
     {
       lockPath: workspaceBundleLockPath,
+      heldLockValue: env.HAPPIER_WORKSPACE_DIST_BUILD_LOCK_HELD,
       env,
       onWait: reportLockWait,
     },

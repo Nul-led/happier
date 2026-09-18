@@ -55,6 +55,17 @@ The **All** action is scope-aware:
 
 Repository view remains the source of truth. Turn/session scopes are convenience filters that depend on the quality of provider/runtime attribution.
 
+## Opening a file diff
+
+<Callout type="info">
+  In the current development build (unreleased), a file's available diff is
+  readable without waiting for the full file preview. Open the file view or choose
+  Edit when you need its text. If a requested preview fails, an available diff
+  stays readable with an error and **Retry** action. Preview size limits still
+  apply; seeing a diff does not mean the full file is ready to edit.
+  If the details pane itself fails to load, use its **Retry** action to try again.
+</Callout>
+
 ## Review
 
 **Review** is the “scroll through the actual work” surface for current uncommitted changes.
@@ -77,6 +88,17 @@ Use Review when you want to:
 - If you manually collapse a diff, Happier remembers that and does not auto-expand it again just because you scroll away and back.
 - Switching away from Review and coming back restores your previous position.
 
+<Callout type="info">
+  In the current development build (unreleased), the **Previous file** and **Next
+  file** icons move within the current review scope. For a file with multiple diff
+  hunks, **Previous hunk** and **Next hunk** move between those groups of changed
+  lines. The compact toolbar stays above the scrolling review, and navigation
+  stops at either end. Choose **Included**, **Pending**, or **Combined** from the
+  diff-area dropdown. On web, hover or focus an icon to see its label. When actions
+  overflow a narrow pane, scroll the toolbar horizontally; fading edges indicate
+  more actions.
+</Callout>
+
 ### Editing from Review
 
 Review is not a dead-end viewer.
@@ -85,8 +107,21 @@ From Review you can open a changed file into its own details tab, edit it, then 
 
 On mobile cockpit layouts, Review opens in the **Tabs** surface. Use the back button to return to the Git list you opened it from, or use the bottom tabs to switch surfaces without adding extra tab switches to the back stack.
 
-Attribution uses direct operation signals and provider/runtime change sets first. When multiple sessions are active on the same repository, attribution reliability is lower, so Happier favors repository truth over weak inference.
-If a scoped view cannot be supported confidently, Happier falls back to repository view or hides that scope rather than showing an empty or misleading list.
+Attribution depends on the available Agent/tool and repository evidence. A Session
+scope helps locate relevant changes; it does not prove exclusive authorship.
+
+<Callout type="info">
+  The current development implementation (unreleased) separates how precisely a
+  change is known from how confidently it is linked to this Session or turn.
+  A checkpoint can capture an exact repository change while another Happier turn
+  overlaps the capture interval. Agent/tool correlation remains useful alongside
+  that overlap evidence. Workspace touched paths provide only a best-effort hint.
+
+  Overlap describes the recorded capture interval. It can observe only checkpoint
+  intervals in the same process, so no observed overlap does not rule out an editor,
+  shell, another daemon or another Agent writing files. Sessions appearing in the
+  same Project do not establish who changed a file.
+</Callout>
 
 ## Related
 

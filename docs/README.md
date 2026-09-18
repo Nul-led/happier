@@ -10,11 +10,15 @@ This folder documents how Happier works internally, with a focus on protocol, ba
 - encryption.md: Encryption boundaries, on-wire encoding, and session storage modes.
 - feature-gating.md: Canonical feature catalog, payload, policy, and gate-consumption contracts.
 - peer-mediation.md: Route decision, grants, transports and observability for device↔machine flows; the enablement contract and current reachability.
-- compatibility.md: Released and live `remote-dev` predecessor baselines, mixed-version seams, rollout directions, and compatibility-path lifecycle.
+- compatibility.md: Released and live `../0.2` predecessor baselines, mixed-version seams, rollout directions, and compatibility-path lifecycle.
 - testing.md: Repository test lanes, placement rules, and e2e conventions.
 - binary-runtime.md: Binary-safe runtime rules and bundled internal workspace packaging.
 - backend-architecture.md: Internal backend structure, data flow, and key subsystems.
 - search.md: Universal Search and Commands — owners, data flow, target scoping, feature vs capability roles, privacy/storage, plugin provider seam, and intentional exclusions.
+- teams.md: Team identity, lifecycle, capabilities, closed policy, Team-owned branding, directory paging, and invalidation.
+- teams-membership-and-groups.md: Team membership lifetime, flat Groups, the contribution union, Session-history horizons, and the external-fact seam.
+- teams-invitations.md: Team invitation intent, token custody, admission paths, and the one membership admission owner.
+- enterprise-identity.md: Managed identity providers, the provider catalog and OAuth security binding, WorkOS/OIDC/GitHub identity, Team identity connections, and directory provisioning.
 - deployment.md: How to deploy the backend and required infrastructure.
 - cli-architecture.md: CLI and daemon architecture and how they interact with the server.
 - ios-simulator-helper.md: iOS simulator helper architecture, trust chain, and the private-framework App Store / TOS posture.

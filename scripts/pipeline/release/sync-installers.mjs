@@ -5,6 +5,7 @@
 import { chmod, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createNumericPlanetFrame } from '../../../packages/cli-common/numericPlanetFrame.mjs';
 
 import {
   INSTALLER_FILENAMES,
@@ -74,6 +75,37 @@ async function fileExists(path) {
   }
 }
 
+// Project the CLI's numeric globe at authoring time: shipped installers remain
+// standalone Bash/PowerShell, with no renderer or JavaScript runtime dependency.
+function projectInstallerPlanet(source, filename) {
+  const marker = /^([ \t]*)# BEGIN GENERATED NUMERIC PLANET\n[\s\S]*?^[ \t]*# END GENERATED NUMERIC PLANET/m;
+  if (!source.includes('# BEGIN GENERATED NUMERIC PLANET')) return source;
+  if (!marker.test(source)) throw new Error('Unterminated installer planet projection: ' + filename);
+  const frame = createNumericPlanetFrame({ columns: 28, seconds: 1.6 });
+  const plain = frame.map((row) => row.map((cell) => cell?.digit ?? ' ').join(''));
+  const colored = frame.map((row) => row.map((cell) => cell
+    ? '\\033[38;2;' + cell.rgb.join(';') + 'm' + cell.digit
+    : ' ').join('') + '\\033[0m');
+  const lines = filename.endsWith('.sh')
+    ? [
+        'HAPPIER_INSTALLER_ART_ROWS=(',
+        ...plain.map((row) => "  '" + row + "'"), ')',
+        'HAPPIER_INSTALLER_ART_RGB_ROWS=(',
+        ...colored.map((row) => "  $'" + row + "'"), ')',
+      ]
+    : [
+        '$rows = @(',
+        ...plain.map((row, index) => "  '" + row + "'" + (index < plain.length - 1 ? ',' : '')), ')',
+        '$rgbRows = @(',
+        ...colored.map((row, index) => '  "' + row.replaceAll('\\033', '$([char]27)') + '"' + (index < colored.length - 1 ? ',' : '')), ')',
+      ];
+  return source.replace(marker, (_match, indent) => [
+    '# BEGIN GENERATED NUMERIC PLANET',
+    ...lines,
+    '# END GENERATED NUMERIC PLANET',
+  ].map((line) => indent + line).join('\n'));
+}
+
 export async function syncInstallers({
   sourceDir,
   targetDir,
@@ -86,9 +118,15 @@ export async function syncInstallers({
   const desiredTargetMode = 0o644;
   for (const spec of INSTALLER_PUBLISH_SPECS) {
     const sourcePath = join(sourceDir, spec.source);
-    const sourceContents = await readFileOrNull(sourcePath);
+    let sourceContents = await readFileOrNull(sourcePath);
     if (!sourceContents) {
       throw new Error(`[release] missing installer source file: ${sourcePath}`);
+    }
+    const projected = Buffer.from(projectInstallerPlanet(sourceContents.toString('utf8'), spec.source));
+    if (!buffersEqual(sourceContents, projected)) {
+      if (checkOnly) throw new Error('[release] installer source planet is out of sync: ' + sourcePath);
+      await writeFile(sourcePath, projected);
+      sourceContents = projected;
     }
     const publishedContents = applyInstallerPublishTransform(sourceContents, spec.transform);
 

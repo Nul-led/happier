@@ -95,6 +95,25 @@ test('execution host inspection is read-only and keeps candidate status explicit
   assert.equal(doctorInput.diskImageFormat, 'asif');
 });
 
+test('execution host inspection evaluates the active capacity preset', async () => {
+  let doctorInput;
+  await inspectExecutionHost({
+    profile: {
+      ...profile,
+      capacity: {
+        mode: 'shared',
+        shared: { cpus: 10, memoryGiB: 48 },
+        dedicated: { cpus: 14, memoryGiB: 72 },
+      },
+    },
+    doctor: async (input) => {
+      doctorInput = input;
+      return { ok: true, status: 'Running', drift: {} };
+    },
+  });
+  assert.deepEqual(doctorInput.resources, { cpus: 10, memoryGiB: 48 });
+});
+
 test('ordinary delegation requires active mode and stays disabled in recursion, sandbox, CI, Linux, and host-only commands', () => {
   const active = { ...profile, activation: 'active' };
   assert.equal(shouldDelegateToActiveExecutionHost({ profile, argv: ['typecheck'], platform: 'darwin', env: {} }), false);

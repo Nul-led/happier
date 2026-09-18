@@ -15,13 +15,14 @@ import {
 } from './lib/rolling-version-allocation.mjs';
 import { normalizePublicReleaseChannel } from './lib/public-release-rings.mjs';
 
-/** @type {readonly ('cli' | 'stack' | 'server' | 'ui-web')[]} */
-const CANDIDATE_VERSION_PRODUCTS = ['cli', 'stack', 'server', 'ui-web'];
+/** @type {readonly ('cli' | 'stack' | 'server' | 'runner' | 'ui-web')[]} */
+const CANDIDATE_VERSION_PRODUCTS = ['cli', 'stack', 'server', 'runner', 'ui-web'];
 
 const IMMUTABLE_TAG_PREFIX = Object.freeze({
   cli: 'cli-v',
   stack: 'stack-v',
   server: 'server-v',
+  runner: 'runner-v',
   'ui-web': 'ui-web-v',
 });
 
@@ -29,6 +30,7 @@ const ROLLING_TAG_PREFIX = Object.freeze({
   cli: 'cli-',
   stack: 'stack-',
   server: 'server-',
+  runner: 'runner-',
   'ui-web': 'ui-web-',
 });
 
@@ -36,6 +38,7 @@ const MANIFEST_PRODUCT = Object.freeze({
   cli: 'happier',
   stack: 'hstack',
   server: 'happier-server',
+  runner: 'happier-runner',
 });
 
 /** @param {string} value */
@@ -75,7 +78,7 @@ function isCliManifestSpec(manifest) {
 /**
  * @param {{
  *   channel: string;
- *   versions: Partial<Record<'cli' | 'stack' | 'server' | 'ui-web', string>>;
+ *   versions: Partial<Record<'cli' | 'stack' | 'server' | 'runner' | 'ui-web', string>>;
  * }} input
  */
 export function validateCandidateVersions(input) {
@@ -87,8 +90,8 @@ export function validateCandidateVersions(input) {
   if (!channel) {
     throw new Error(`[release] unsupported candidate verification channel: ${requestedChannel}`);
   }
-  /** @type {Record<'cli' | 'stack' | 'server' | 'ui-web', string>} */
-  const versions = { cli: '', stack: '', server: '', 'ui-web': '' };
+  /** @type {Record<'cli' | 'stack' | 'server' | 'runner' | 'ui-web', string>} */
+  const versions = { cli: '', stack: '', server: '', runner: '', 'ui-web': '' };
   for (const productId of CANDIDATE_VERSION_PRODUCTS) {
     const version = String(input.versions[productId] ?? '');
     if (!version) continue;
@@ -113,9 +116,9 @@ export function validateCandidateVersions(input) {
  *
  * @param {{
  *   channel: string;
- *   versions: Partial<Record<'cli' | 'stack' | 'server' | 'ui-web', string>>;
+ *   versions: Partial<Record<'cli' | 'stack' | 'server' | 'runner' | 'ui-web', string>>;
  *   verifyDeploy: { ui: boolean; server: boolean; website: boolean; docs: boolean };
- *   verifyRelease: Record<'cli' | 'stack' | 'server' | 'ui-web', boolean>;
+ *   verifyRelease: Record<'cli' | 'stack' | 'server' | 'runner' | 'ui-web', boolean>;
  * }} input
  */
 export function resolveCandidateVerificationTargets(input) {
@@ -439,6 +442,7 @@ export async function main(argv = process.argv.slice(2)) {
       'candidate-cli-version': { type: 'string', default: '' },
       'candidate-stack-version': { type: 'string', default: '' },
       'candidate-server-version': { type: 'string', default: '' },
+      'candidate-runner-version': { type: 'string', default: '' },
       'candidate-ui-web-version': { type: 'string', default: '' },
       'candidate-product': { type: 'string', default: '' },
       'candidate-version': { type: 'string', default: '' },
@@ -457,6 +461,7 @@ export async function main(argv = process.argv.slice(2)) {
       'verify-cli-release': { type: 'string', default: 'false' },
       'verify-stack-release': { type: 'string', default: 'false' },
       'verify-server-release': { type: 'string', default: 'false' },
+      'verify-runner-release': { type: 'string', default: 'false' },
       'verify-ui-web-release': { type: 'string', default: 'false' },
       'api-base-url': { type: 'string', default: 'https://api.github.com' },
     },
@@ -470,7 +475,7 @@ export async function main(argv = process.argv.slice(2)) {
   if (candidateProduct) {
     const product = candidateProduct === 'hstack' ? 'stack' : candidateProduct;
     if (!CANDIDATE_VERSION_PRODUCTS.includes(
-      /** @type {'cli' | 'stack' | 'server' | 'ui-web'} */ (product),
+      /** @type {'cli' | 'stack' | 'server' | 'runner' | 'ui-web'} */ (product),
     )) {
       throw new Error(`[release] unsupported candidate product: ${candidateProduct}`);
     }
@@ -478,6 +483,7 @@ export async function main(argv = process.argv.slice(2)) {
       values['candidate-cli-version'],
       values['candidate-stack-version'],
       values['candidate-server-version'],
+      values['candidate-runner-version'],
       values['candidate-ui-web-version'],
     ].some(Boolean)) {
       throw new Error('[release] generic and product-specific candidate options cannot be combined');
@@ -497,7 +503,7 @@ export async function main(argv = process.argv.slice(2)) {
     const token = String(process.env.GITHUB_TOKEN ?? '').trim();
     if (!token) throw new Error('[release] GITHUB_TOKEN is required');
     const baseUrl = String(values['api-base-url'] ?? '').replace(/\/+$/u, '');
-    const key = /** @type {'cli' | 'stack' | 'server' | 'ui-web'} */ (product);
+    const key = /** @type {'cli' | 'stack' | 'server' | 'runner' | 'ui-web'} */ (product);
     const version = validated.versions[key];
     const tag = `${IMMUTABLE_TAG_PREFIX[key]}${version}`;
     const sha = await resolveGitRef(baseUrl, repository, `tags/${tag}`, token);
@@ -514,6 +520,7 @@ export async function main(argv = process.argv.slice(2)) {
       cli: String(values['candidate-cli-version'] ?? ''),
       stack: String(values['candidate-stack-version'] ?? ''),
       server: String(values['candidate-server-version'] ?? ''),
+      runner: String(values['candidate-runner-version'] ?? ''),
       'ui-web': String(values['candidate-ui-web-version'] ?? ''),
     },
   });
@@ -544,6 +551,7 @@ export async function main(argv = process.argv.slice(2)) {
           cli: parseBoolean(values['verify-cli-release'], '--verify-cli-release'),
           stack: parseBoolean(values['verify-stack-release'], '--verify-stack-release'),
           server: parseBoolean(values['verify-server-release'], '--verify-server-release'),
+          runner: parseBoolean(values['verify-runner-release'], '--verify-runner-release'),
           'ui-web': parseBoolean(values['verify-ui-web-release'], '--verify-ui-web-release'),
         },
       })
@@ -572,6 +580,7 @@ export async function main(argv = process.argv.slice(2)) {
       '.github/workflows/publish-cli-binaries.yml',
       '.github/workflows/publish-hstack-binaries.yml',
       '.github/workflows/publish-server-runtime.yml',
+      '.github/workflows/publish-runner-binaries.yml',
     ],
     publication: orchestratorWorkflowPaths,
   };

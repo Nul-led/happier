@@ -5,9 +5,11 @@
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 
-import { parseArtifactChecksums } from './lib/artifact-checksums.mjs';
-import { normalizeChannel, parseArgs } from './lib/binary-release.mjs';
-import { buildManifestRecord, parseArtifactFilename } from './lib/manifests.mjs';
+import { parseArtifactArchiveMetadata, parseArtifactChecksums } from './lib/artifact-checksums.mjs';
+import { parseReleaseManifestV1 } from '@happier-dev/release-runtime/releaseManifest';
+import { parseArgs } from './lib/release-script-arguments.mjs';
+import { normalizePublicReleaseChannel } from './lib/public-release-rings.mjs';
+import { RELEASE_PRODUCTS, buildManifestRecord, parseArtifactFilename } from './lib/manifests.mjs';
 
 function ensureUrlBase(baseUrl) {
   const value = String(baseUrl ?? '').trim();
@@ -31,9 +33,11 @@ async function main() {
   const { kv } = parseArgs(process.argv.slice(2));
   const product = String(kv.get('--product') ?? '').trim();
   if (!product) {
-    throw new Error('[release] --product is required (happier|hstack|happier-server)');
+    throw new Error(`[release] --product is required (${RELEASE_PRODUCTS.join('|')})`);
   }
-  const channel = normalizeChannel(kv.get('--channel'));
+  const rawChannel = String(kv.get('--channel') ?? '').trim();
+  const channel = rawChannel ? normalizePublicReleaseChannel(rawChannel) : 'stable';
+  if (!channel) throw new Error(`[release] invalid channel: ${rawChannel} (expected stable|preview|dev)`);
   const artifactsDir = resolve(String(kv.get('--artifacts-dir') ?? '').trim() || join(process.cwd(), 'dist', 'release-assets'));
   const outDir = resolve(String(kv.get('--out-dir') ?? '').trim() || join(process.cwd(), 'dist', 'manifests'));
   const assetsBaseUrl = ensureUrlBase(kv.get('--assets-base-url'));
@@ -58,7 +62,7 @@ async function main() {
 
   const entries = await readdir(artifactsDir);
   const parsedArtifacts = entries
-    .filter((name) => name.endsWith('.tar.gz'))
+    .filter((name) => name.endsWith('.tar.gz') || name.endsWith('.zip'))
     .map((name) => parseArtifactFilename(name))
     .filter(Boolean)
     .filter((artifact) => artifact.product === product);
@@ -72,6 +76,7 @@ async function main() {
   const checksums = new Map(
     parseArtifactChecksums(checksumsRaw).map((entry) => [entry.name, entry.sha256]),
   );
+  const archiveMetadata = parseArtifactArchiveMetadata(checksumsRaw);
   const checksumsSigName = `checksums-${product}-v${version}.txt.minisig`;
   const checksumsSigPresent = entries.includes(checksumsSigName);
   if (!checksumsSigPresent) {
@@ -101,21 +106,25 @@ async function main() {
       commitSha,
       buildWorkflowRunId,
       publicationWorkflowRunId,
+      ...(product === 'happier-runner' ? (archiveMetadata.has(artifact.filename)
+        ? archiveMetadata.get(artifact.filename)
+        : (() => { throw new Error(`[release] signed Runner archive metadata missing for ${artifact.filename}`); })()) : {}),
     });
     records.push(record);
-
-    const platformManifestPath = join(outDir, 'v1', product, channel, `${artifact.os}-${artifact.arch}.json`);
-    await writeJson(platformManifestPath, record);
   }
 
-  const latestManifest = {
+  const latestManifest = parseReleaseManifestV1({
     schemaVersion: 'v1',
     product,
     channel,
     version,
     publishedAt: new Date().toISOString(),
     records,
-  };
+  });
+  for (const record of latestManifest.records) {
+    const platformManifestPath = join(outDir, 'v1', product, channel, `${record.os}-${record.arch}.json`);
+    await writeJson(platformManifestPath, record);
+  }
   const latestPath = join(outDir, 'v1', product, channel, 'latest.json');
   await writeJson(latestPath, latestManifest);
 

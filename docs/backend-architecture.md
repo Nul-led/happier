@@ -163,13 +163,42 @@ sequenceDiagram
     Server-->>Client: Response
 ```
 
-The backend does not store passwords. Instead:
-- Clients authenticate with a signed challenge (`/v1/auth`) using a public key.
-- The server upserts the account by public key and returns a Bearer token.
-- Tokens are generated and verified by privacy-kit using `HANDY_MASTER_SECRET`.
-- Tokens are cached in-memory for fast verification.
+Clients authenticate through method modules resolved by one effective Home decision:
 
-GitHub OAuth uses short-lived "ephemeral" tokens to protect the callback and is separate from normal auth.
+- **Key challenge** — the primary method. Clients authenticate with a server-issued,
+  single-use signed challenge (`/v1/auth`, v2) using the Account's public key; the
+  server upserts the Account by public key and returns a Bearer token. Tokens are
+  generated and verified by privacy-kit using `HANDY_MASTER_SECRET` and cached
+  in-memory for fast verification.
+- **External providers** — GitHub OAuth, generic OIDC, and WorkOS identity provider
+  adapters authenticate through their own callbacks and finalize through the same
+  Account/identity owners (see [enterprise-identity.md](enterprise-identity.md)).
+  GitHub OAuth still uses short-lived "ephemeral" tokens to protect the callback and is
+  separate from normal auth.
+- **mTLS** — certificate authentication for browsers and service clients.
+- **Native email/password (0.3 development)** — the one credential row per Account that
+  stores a password verifier: a server-side scrypt hash for Plain Accounts, or an
+  E2EE password envelope plus a one-way verifier of the client-derived authentication
+  key (see [encryption.md](encryption.md) for the envelope). Password verification is
+  admission to the existing token owner; it never mints encryption material or a
+  second credential shape. The method is default-off and unreleased; real SMTP,
+  loaded-client, and mixed-version certification remains an activation gate.
+
+One effective authentication-method decision — resolved from deployment policy, the
+persisted Home governance document, and transactional-mail readiness — is the single
+source feeding `/v1/features` publication, request admission, startup lockout safety,
+and the contextual `POST /v1/auth/entry` projection. Consumers must not recompute
+availability from environment variables or provider registries. The Home's permitted
+Account modes narrow fresh provisioning only; they do not disable login, recovery, or
+connection for an existing Account whose persisted mode is no longer offered for new
+Accounts. Proven mailbox control is recorded by the narrow `AccountEmail` owner,
+whose rows exist only after proof
+(invitation acceptance, sign-in-email change, or trusted provider admission); the
+native sign-in locator itself stays the globally unique `AccountIdentity(provider='email')`
+row. Released 0.2 clients classify unknown method ids as OAuth, so the static
+`/v1/features` auth projection remains an old-client-safe subset that omits
+`email_password`; new clients read the complete list from `/v1/auth/entry`
+(see [compatibility.md](compatibility.md)).
 
 ## Realtime sync architecture
 

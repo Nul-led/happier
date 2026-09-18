@@ -371,7 +371,7 @@ test('candidate code is isolated from Tauri and Apple private signing authority'
   assert.match(String(candidateBuild?.run ?? ''), /--secrets-source env/);
 
   const candidateUpload = build.steps.find((step) => step?.name === 'Upload desktop candidate');
-  assert.equal(candidateUpload?.with?.name, 'tauri-candidate-${{ matrix.platform_key }}');
+  assert.equal(candidateUpload?.with?.name, 'tauri-candidate-${{ inputs.environment }}-${{ matrix.platform_key }}');
   assert.doesNotMatch(JSON.stringify(build.steps), /Upload updater assets artifact/);
 
   assert.equal(finalize?.permissions?.contents, 'read');
@@ -388,6 +388,8 @@ test('candidate code is isolated from Tauri and Apple private signing authority'
   );
 
   const materialize = finalize.steps.find((step) => step?.name === 'Validate and materialize desktop candidate');
+  const candidateDownload = finalize.steps.find((step) => step?.name === 'Download desktop candidate');
+  assert.equal(candidateDownload?.with?.name, 'tauri-candidate-${{ inputs.environment }}-${{ matrix.platform_key }}');
   const materializeRun = String(materialize?.run ?? '');
   assert.match(materializeRun, /tauri-bundle-candidate/);
   assert.match(materializeRun, /--mode materialize/);
@@ -408,7 +410,7 @@ test('candidate code is isolated from Tauri and Apple private signing authority'
   assert.match(String(nonMacSigner?.run ?? ''), /tauri-sign-updater-artifacts/);
 
   const finalizedUpload = finalize.steps.find((step) => step?.name === 'Upload finalized updater assets');
-  assert.equal(finalizedUpload?.with?.name, 'tauri-updates-${{ matrix.platform_key }}');
+  assert.equal(finalizedUpload?.with?.name, 'tauri-updates-${{ inputs.environment }}-${{ matrix.platform_key }}');
 
   assert.equal(prepareAssets?.permissions?.contents, 'read');
   const prepareCheckout = prepareAssets.steps.find((step) => step?.uses === 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262');
@@ -416,4 +418,11 @@ test('candidate code is isolated from Tauri and Apple private signing authority'
   assert.equal(prepareCheckout?.with?.ref, '${{ job.workflow_sha }}');
   assert.equal(prepareCheckout?.with?.['persist-credentials'], false);
   assert.deepEqual(prepareAssets?.needs, ['resolve_source', 'finalize']);
+  const finalizedDownload = prepareAssets.steps.find((step) => step?.name === 'Download updater assets artifacts');
+  assert.equal(finalizedDownload?.with?.pattern, 'tauri-updates-${{ inputs.environment }}-*');
+  const publishUpload = prepareAssets.steps.find((step) => step?.name === 'Upload publish assets artifact');
+  assert.equal(publishUpload?.with?.name, 'ui-desktop-assets-${{ inputs.environment }}');
+  for (const jobName of ['publish_preview', 'publish_dev', 'publish_stable_release']) {
+    assert.equal(parsed?.jobs?.[jobName]?.with?.assets_artifact, 'ui-desktop-assets-${{ inputs.environment }}');
+  }
 });

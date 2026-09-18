@@ -3,7 +3,7 @@ title: Privacy Policy
 description: Your privacy is our priority
 ---
 
-**Last Updated: August 2026**
+**Last Updated: September 2026**
 
 ## Overview
 
@@ -29,6 +29,12 @@ Happier is committed to protecting your privacy. This policy explains how Happie
 - **Timestamps**: When messages were created and synced
 - **Device IDs**: Anonymous identifiers for device pairing
 - **Session IDs**: Identifiers for your coding-agent sessions
+- **Session discussion metadata (0.3 development)**: When the default-off
+  Conversations feature is enabled, Happier synchronizes discussion and message
+  identifiers, ordering, author Account IDs, mentioned Account IDs, timestamps,
+  archive state, private read cursors, and ciphertext size. In E2EE mode,
+  discussion titles and message bodies remain encrypted, but this synchronization
+  metadata does not. This feature has not shipped in a public release.
 - **Push Notification Tokens**: Device tokens for sending push notifications via Expo's push notification service
 
 ### Analytics (PostHog)
@@ -64,6 +70,19 @@ We use PostHog for product analytics. It runs in PostHog's **EU region (Frankfur
 - Location data
 
 This guarantee is about Happier-owned sync and storage. It does not mean an external service cannot process data that your device or daemon sends to that service when you select and use it.
+
+Storage encryption is not transport confidentiality for the Action API. When an
+API Token or SDK call is relayed through your configured server with an ordinary
+`hap_v1` bearer token, that server deliberately reads the request and the result
+while it routes them to the selected machine — the fact that the content is later
+stored in an E2EE Session does not protect the call that created it. Two ways to
+avoid that relay: send the call to a daemon directly, or use the development
+encryption-capable `hapc_v1` credential, which seals the whole request and result
+before they leave your process. Even then, bootstrap and routing metadata (the
+token's own wrapped-key record and the machine list) travel with the bearer alone,
+so protected invocation is a confidentiality property of the Action call, not a
+claim that every HTTP request is encrypted. See
+[SDK and Action API](/extending/sdk#server-relay-readability-and-revocation).
 
 ## How We Use Data
 

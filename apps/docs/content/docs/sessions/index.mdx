@@ -21,6 +21,89 @@ driving it well from wherever you happen to be.
 - [Session settings](/sessions/session-settings) — the closest thing to a settings reference.
 - [Session modes](/sessions/session-modes) — plan, accept-edits and the rest, and where each agent's modes come from.
 
+## Session Board and Companion
+
+> **Development preview:** Session Board is not released or enabled by default. A
+> self-hosted development Home must set
+> `HAPPIER_FEATURE_SESSIONS_BOARD__ENABLED=1`, and the Board remains unavailable
+> until that Home's current Session System Records contract is active. Each
+> Session uses its own Home's decision, so enabling one Home does not enable
+> another.
+
+The Board keeps notes, interactive views, and installed-plugin widgets with a
+Session. Its items, Board views, order, and semantic sizes are shared Session
+state: everyone who can read the Session can read them. The Board view you have
+open and what you keep in your Companion are local to your viewer and device.
+Opening either one does not follow the Session, mark it read, or create an
+unseen badge.
+
+Where it shows up depends on the space you have. On a wide window the Board is a
+**Board** tab in Details beside chat, with a compact **Board** tab in the right
+sidebar that offers **Open in Details** rather than acting as a second editor. On a
+phone it is one destination in the session cockpit. The session's overflow menu
+reaches it everywhere the Home has the feature on, whether or not the Board has
+content yet; a dedicated header button appears once the session has something on
+its Board. There is no unread count or badge for Board activity.
+
+Inside the Board, a quiet **Board views** strip appears once a session has more than
+the default **Overview** view, and stays hidden until then. Adding offers **Note**,
+**Interactive view**, and **From plugins…**. Items keep one shared order and a
+semantic size — **Compact** through **Full width**, and **Fit content** or a fixed
+height — rather than free coordinates, so the same Board linearizes predictably on a
+phone. An empty Board offers **Ask the agent**, which only puts an editable
+suggestion in the composer; it never sends on your behalf.
+
+Board access follows the Session's existing access and encryption model. Reading
+requires current transcript access; adding, editing, organizing, or removing an
+item requires Session-record edit access. Plain Sessions store explicit plain
+record envelopes. E2EE Sessions use the Session's existing data key and remain
+locked when that key is unavailable; Happier never interprets failed E2EE data
+as plaintext.
+
+When an agent creates or updates a Board item through a Board Action, the
+transcript row for that call shows the resulting widget in place, with an **Open
+Board** action that opens it on the Board. That inline card is a mirror of the
+shared item, not a second copy: it reads the same record and shows the same
+loading, encrypted, unreadable, removed, and unavailable states. Interactive
+content runs in one placement at a time, so the inline card stays a preview while
+the Board, Details, or your Companion is running it.
+
+Actions can ask Happier to change the Board, but confirmation and authorization
+remain separate. Requiring or skipping a confirmation never supplies missing
+Session access, enables the Board, or grants a renderer, plugin, Resource, or
+Action more authority. Removing an installed widget removes the shared Board
+item and its placements; it does not uninstall the plugin.
+
+If another editor changes the same item or layout, Happier reports a conflict and
+refreshes the shared state for review instead of silently overwriting it. While
+offline, the last-known Board can remain visible, but editing pauses. If a request
+loses its result and Happier cannot tell whether it committed, refresh the Board
+before retrying; it does not guess or submit the change again automatically.
+Viewer-layout requests from an agent follow the same rule: they can open or focus
+content only for the currently bound viewer, keep the person's layout reversible,
+and do not change the shared Board.
+
+The Companion is the personal side of this. **Add to companion** keeps a Board
+widget — or the first-party session summary, with waiting approvals, running
+workflows, changed files and context use — beside chat, on whichever edge you
+choose. It is a preference on this device only: adding, removing, reordering or
+collapsing it changes nothing for anyone else, and **Remove from companion** does not
+touch the shared Board. When the window is narrow, a pane is open, text is large, or
+the keyboard is up, the Companion collapses to a header affordance rather than
+covering chat.
+
+Installed first-party and external plugins are trusted installed code and use
+the same public Plugin SDK path under equivalent grants. HTML authored directly
+into a Board item is different: it has no plugin identity or ambient plugin
+authority, receives only the caller-hosted method ceiling, and still passes each
+Resource and Action's normal checks. Current development source has shared frame
+implementations for web/desktop, iOS, and Android, but loaded isolation and
+lifecycle validation remains open per platform; an unavailable renderer keeps
+the item and offers recovery instead of deleting or rewriting it.
+
+Plugin authors can declare embedded Session content with
+`container: 'sessionWidget'`; see [Embedded Session widgets](/plugins/ui#embedded-session-widgets).
+
 ## Coming back to a session
 
 Several of these sound alike, so one page owns the distinction:

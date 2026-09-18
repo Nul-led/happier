@@ -31,6 +31,9 @@ import { fileURLToPath } from 'node:url';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_CONTENT_ROOT = resolve(HERE, '..', 'content', 'docs');
 const DEFAULT_TRANSLATIONS = resolve(HERE, '..', '..', 'ui', 'sources', 'text', 'translations', 'en.ts');
+const DEFAULT_BUNDLED_PLUGIN_TRANSLATIONS = resolve(
+  HERE, '..', '..', 'ui', 'sources', 'text', 'bundledPluginTranslations.generated.ts',
+);
 const DEFAULT_AGENT_DEFINITIONS = resolve(
   HERE, '..', '..', '..', 'packages', 'agents', 'src', 'generated', 'bundledAgentDefinitions.ts',
 );
@@ -184,12 +187,16 @@ export function checkInternalLinks({ contentRoot = DEFAULT_CONTENT_ROOT } = {}) 
  * chain is not checked. This catches renames of navigation paths, which is
  * where the damage has historically been, not every label mention on the site.
  */
-export function checkUiLabels({
-  contentRoot = DEFAULT_CONTENT_ROOT,
-  translationsFile = DEFAULT_TRANSLATIONS,
-  agentDefinitionsFile = DEFAULT_AGENT_DEFINITIONS,
-  allow = UI_LABEL_ALLOWLIST,
-} = {}) {
+export function checkUiLabels(options = {}) {
+  const {
+    contentRoot = DEFAULT_CONTENT_ROOT,
+    agentDefinitionsFile = DEFAULT_AGENT_DEFINITIONS,
+    allow = UI_LABEL_ALLOWLIST,
+  } = options;
+  const translationFiles = options.translationFiles
+    ?? (options.translationsFile
+      ? [options.translationsFile]
+      : [DEFAULT_TRANSLATIONS, DEFAULT_BUNDLED_PLUGIN_TRANSLATIONS]);
   function readTranslationSourceGraph(file, visited = new Set()) {
     const normalized = resolve(file);
     if (visited.has(normalized)) return '';
@@ -216,13 +223,16 @@ export function checkUiLabels({
     return [source, ...importedSources].join('\n');
   }
 
-  const translations = readTranslationSourceGraph(translationsFile);
-  if (!translations) {
+  const translationSources = translationFiles
+    .map((file) => readTranslationSourceGraph(file))
+    .filter(Boolean);
+  if (translationSources.length === 0) {
     // The client workspace is not always checked out beside the docs (docs-only
     // deploys, for one). Skipping is correct: a missing sibling is not evidence
     // that a label is wrong, and failing here would block a legitimate build.
     return [];
   }
+  const translations = translationSources.join('\n');
   // Line-scoped on purpose. A whole-file tokenizer de-syncs on the first
   // apostrophe inside a value ("don't") and silently loses most of the file —
   // which reads as "this label does not exist" for thousands of real strings.
@@ -298,7 +308,7 @@ export function checkUiLabels({
           problems.push({
             at: `${where}:${i + 1}`,
             label: segment,
-            reason: 'no such string in apps/ui/sources/text/translations/en.ts',
+            reason: 'no such string in the app translation sources',
           });
         }
       }

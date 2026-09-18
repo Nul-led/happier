@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
+import { createWriteStream } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import archiver from 'archiver';
 
 import {
   finalizePreparedBinaryArtifacts,
@@ -35,6 +37,19 @@ async function writeCliEvidence(artifactsDir) {
 async function writeProductEvidence(artifactsDir, suffix) {
   await writeFile(join(artifactsDir, `darwin-x64.${suffix}.json`), '{"target":"darwin-x64"}\n', 'utf8');
   await writeFile(join(artifactsDir, `darwin-arm64.${suffix}.json`), '{"target":"darwin-arm64"}\n', 'utf8');
+}
+
+async function writeRunnerArchive(archivePath) {
+  await new Promise((resolvePromise, reject) => {
+    const output = createWriteStream(archivePath, { flags: 'wx', mode: 0o600 });
+    const archive = archiver('zip', { zlib: { level: 9 } });
+    output.on('close', resolvePromise);
+    output.on('error', reject);
+    archive.on('error', reject);
+    archive.pipe(output);
+    archive.append('runner\n', { name: 'happier-runner', mode: 0o755, date: new Date(0) });
+    void archive.finalize();
+  });
 }
 
 test('finalizePreparedBinaryArtifacts signs one complete native CLI artifact matrix', async () => {
@@ -76,6 +91,43 @@ test('finalizePreparedBinaryArtifacts signs one complete native CLI artifact mat
     }]);
     assert.equal(result.artifacts.length, CLI_TARGETS.length + 2);
     assert.equal(result.signaturePath, join(artifactsDir, `checksums-happier-v${version}.txt.minisig`));
+  } finally {
+    await rm(artifactsDir, { recursive: true, force: true });
+  }
+});
+
+test('finalizePreparedBinaryArtifacts signs the first publication-eligible Runner ZIP without requiring other native targets', async () => {
+  const artifactsDir = await mkdtemp(join(tmpdir(), 'happier-prebuilt-runner-'));
+  const version = '1.2.3-preview.4';
+  const archiveName = `happier-runner-v${version}-linux-x64.zip`;
+  try {
+    await writeRunnerArchive(join(artifactsDir, archiveName));
+    const writes = [];
+
+    const result = await finalizePreparedBinaryArtifacts({
+      artifactsDir,
+      productSpec: getBinaryPublishProductSpec('runner'),
+      channel: 'preview',
+      version,
+      writeChecksums: async (input) => {
+        writes.push(input);
+        return join(artifactsDir, `checksums-happier-runner-v${version}.txt`);
+      },
+      signFile: async ({ path }) => `${path}.minisig`,
+    });
+
+    assert.deepEqual(
+      writes[0].artifacts.map((artifact) => [artifact.os, artifact.arch, artifact.name]),
+      [['linux', 'x64', archiveName]],
+    );
+    assert.equal(writes[0].artifacts[0].archiveMetadata.sizeBytes > 0, true);
+    assert.deepEqual(writes[0].artifacts[0].archiveMetadata.entries, [{
+      path: 'happier-runner',
+      kind: 'file',
+      sizeBytes: 7,
+      mode: 0o755,
+    }]);
+    assert.deepEqual(result.artifacts.map((artifact) => artifact.name), [archiveName]);
   } finally {
     await rm(artifactsDir, { recursive: true, force: true });
   }

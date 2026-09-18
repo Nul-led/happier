@@ -1,10 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import * as buildModule from './build_stack_artifacts.mjs';
+import { createRuntimeArtifactFingerprint } from './runtime_artifact_identity.mjs';
+import { resolveRuntimeBuildRequestIdentity } from './runtime_build_request_identity.mjs';
 
 test('runtime artifact identity inputs include only the toolchains consumed by each component', async () => {
   assert.equal(typeof buildModule.collectRuntimeBuildToolchainInputs, 'function');
@@ -242,99 +244,128 @@ test('assertSelectedBuildPrerequisites accepts bun from BUN_INSTALL even when PA
   }
 });
 
-test('the artifact coordinator delegates preparation to component owners and only coordinates identity locks and retention', async () => {
+test('the artifact coordinator settles daemon workspace publication before capturing build identities', async () => {
   assert.equal(typeof buildModule.buildRuntimeArtifactComponents, 'function');
   const events = [];
   const stackBaseDir = '/stacks/repository-producer';
+  const fixtureRepoRoot = mkdtempSync(join(tmpdir(), 'runtime-build-preidentity-publication-'));
+  const fixtureStackRoot = join(fixtureRepoRoot, 'apps', 'stack');
+  mkdirSync(fixtureStackRoot, { recursive: true });
+  const installedWorkspacePath = join(
+    fixtureRepoRoot,
+    'apps',
+    'cli',
+    'node_modules',
+    '@happier-dev',
+    'protocol',
+    'dist',
+    'identity.txt',
+  );
+  mkdirSync(join(installedWorkspacePath, '..'), { recursive: true });
+  writeFileSync(installedWorkspacePath, 'stale', 'utf8');
 
-  const result = await buildModule.buildRuntimeArtifactComponents({
-    rootDir: '/repo',
-    stackBaseDir,
-    selection: {
-      components: { web: false, server: true, daemon: true },
-      activateRuntime: false,
-      forceRebuild: false,
-    },
-    env: {},
-    assertSelectedBuildPrerequisitesImpl: () => {},
-    ensureWorkspacePackagesBuiltForComponentImpl: async () => {
-      throw new Error('the artifact coordinator must not run a generic workspace build');
-    },
-    refreshLocalBundledWorkspacePackagesImpl: async () => {
-      throw new Error('the artifact coordinator must not run the Stack bundled-workspace preflight');
-    },
-    collectBuildSourceMetadataImpl: async () => ({
-      repoDir: '/repo',
-      sourceFingerprint: 'provenance-a',
-      builtAt: '2026-08-16T12:00:00.000Z',
-      serverComponent: 'happier-server-light',
-      dbProvider: 'sqlite',
-    }),
-    ensureArtifactSourceInputsReadyImpl: async () => {
-      throw new Error('the artifact coordinator must not prepare daemon source inputs before identity resolution');
-    },
-    resolveRuntimeBuildRequestIdentityImpl: async () => ({
-      sourceMetadata: {
-        repoDir: '/repo',
-        sourceFingerprint: 'provenance-a',
-        builtAt: '2026-08-16T12:00:00.000Z',
-        serverComponent: 'happier-server-light',
-        dbProvider: 'sqlite',
+  try {
+    const result = await buildModule.buildRuntimeArtifactComponents({
+      rootDir: fixtureStackRoot,
+      stackBaseDir,
+      selection: {
+        components: { web: false, server: true, daemon: true },
+        activateRuntime: false,
+        forceRebuild: false,
       },
-      artifactFingerprints: { server: 'server-code-a', daemon: 'daemon-code-a' },
-      supportArtifactFingerprints: { server: 'server-support-a', daemon: 'daemon-support-a' },
-    }),
-    withWorkspaceBundleLockImpl: async (fn, options) => {
-      assert.equal(
-        options.lockPath,
-        events.includes('server-payload')
-          ? join(stackBaseDir, 'artifacts', 'daemon', 'daemon-code-a.lock')
-          : join(stackBaseDir, 'artifacts', 'server', 'server-code-a.lock'),
-      );
-      assert.equal(options.lockPath.includes('/runtime/'), false);
-      events.push(`component-lock:${options.lockPath.includes(join('artifacts', 'daemon')) ? 'daemon' : 'server'}`);
-      return await fn({ waited: false });
-    },
-    buildSelectedStackArtifactsImpl: async ({ buildComponent }) => ({
-      server: await buildComponent('server', async (input) => {
-        assert.deepEqual(events, [
-          'component-lock:server',
-        ]);
-        assert.equal(input.supportArtifactFingerprint, 'server-support-a');
-        events.push('server-payload');
+      env: {},
+      assertSelectedBuildPrerequisitesImpl: () => {},
+      prepareCliBinaryArtifactWorkspacePublicationImpl: async ({ repoRoot }) => {
+        assert.equal(repoRoot, fixtureRepoRoot);
+        events.push('daemon-workspace-publication');
+        writeFileSync(installedWorkspacePath, 'settled', 'utf8');
+      },
+      collectBuildSourceMetadataImpl: async ({ rootDir }) => {
+        assert.equal(rootDir, fixtureStackRoot);
+        events.push('source-metadata');
         return {
-          artifactDir: '/stacks/repository-producer/artifacts/server/server-code-a',
-          manifest: {
-            component: 'server',
-            artifactFingerprint: 'server-code-a',
-            serverSupportArtifactFingerprint: 'server-support-a',
-          },
+          repoDir: fixtureRepoRoot,
+          sourceFingerprint: 'provenance-a',
+          builtAt: '2026-08-16T12:00:00.000Z',
+          serverComponent: 'happier-server-light',
+          dbProvider: 'sqlite',
         };
-      }),
-      daemon: await buildComponent('daemon', async (input) => {
-        assert.deepEqual(events, [
-          'component-lock:server',
-          'server-payload',
-          'component-retention:server',
-          'component-retention:server-support',
-          'component-lock:daemon',
-        ]);
-        assert.equal(input.supportArtifactFingerprint, 'daemon-support-a');
-        events.push('daemon-payload');
+      },
+      resolveRuntimeBuildRequestIdentityImpl: async () => {
+        assert.equal(readFileSync(installedWorkspacePath, 'utf8'), 'settled');
+        events.push('build-request-identity');
         return {
-          artifactDir: '/stacks/repository-producer/artifacts/daemon/daemon-code-a',
-          manifest: {
-            component: 'daemon',
-            artifactFingerprint: 'daemon-code-a',
-            daemonSupportArtifactFingerprint: 'daemon-support-a',
+          sourceMetadata: {
+            repoDir: fixtureRepoRoot,
+            sourceFingerprint: 'provenance-a',
+            builtAt: '2026-08-16T12:00:00.000Z',
+            serverComponent: 'happier-server-light',
+            dbProvider: 'sqlite',
           },
+          artifactFingerprints: { server: 'server-code-a', daemon: 'daemon-code-a' },
+          supportArtifactFingerprints: { server: 'server-support-a', daemon: 'daemon-support-a' },
         };
+      },
+      withWorkspaceBundleLockImpl: async (fn, options) => {
+        assert.equal(
+          options.lockPath,
+          events.includes('server-payload')
+            ? join(stackBaseDir, 'artifacts', 'daemon', 'daemon-code-a.lock')
+            : join(stackBaseDir, 'artifacts', 'server', 'server-code-a.lock'),
+        );
+        assert.equal(options.lockPath.includes('/runtime/'), false);
+        events.push(`component-lock:${options.lockPath.includes(join('artifacts', 'daemon')) ? 'daemon' : 'server'}`);
+        return await fn({ waited: false });
+      },
+      buildSelectedStackArtifactsImpl: async ({ buildComponent }) => ({
+        server: await buildComponent('server', async (input) => {
+          assert.deepEqual(events, [
+            'source-metadata',
+            'daemon-workspace-publication',
+            'build-request-identity',
+            'component-lock:server',
+          ]);
+          assert.equal(input.supportArtifactFingerprint, 'server-support-a');
+          events.push('server-payload');
+          return {
+            artifactDir: '/stacks/repository-producer/artifacts/server/server-code-a',
+            manifest: {
+              component: 'server',
+              artifactFingerprint: 'server-code-a',
+              serverSupportArtifactFingerprint: 'server-support-a',
+            },
+          };
+        }),
+        daemon: await buildComponent('daemon', async (input) => {
+          assert.deepEqual(events, [
+            'source-metadata',
+            'daemon-workspace-publication',
+            'build-request-identity',
+            'component-lock:server',
+            'server-payload',
+            'component-retention:server',
+            'component-retention:server-support',
+            'component-lock:daemon',
+          ]);
+          assert.equal(input.supportArtifactFingerprint, 'daemon-support-a');
+          events.push('daemon-payload');
+          return {
+            artifactDir: '/stacks/repository-producer/artifacts/daemon/daemon-code-a',
+            manifest: {
+              component: 'daemon',
+              artifactFingerprint: 'daemon-code-a',
+              daemonSupportArtifactFingerprint: 'daemon-support-a',
+            },
+          };
+        }),
       }),
-    }),
-    pruneComponentArtifactsImpl: async ({ component }) => events.push(`component-retention:${component}`),
-  });
+      pruneComponentArtifactsImpl: async ({ component }) => events.push(`component-retention:${component}`),
+    });
 
-  assert.deepEqual(events, [
+    assert.deepEqual(events, [
+      'source-metadata',
+      'daemon-workspace-publication',
+      'build-request-identity',
       'component-lock:server',
       'server-payload',
       'component-retention:server',
@@ -344,8 +375,12 @@ test('the artifact coordinator delegates preparation to component owners and onl
       'component-retention:daemon',
       'component-retention:daemon-support',
     ]);
-  assert.equal(result.artifacts.server.manifest.artifactFingerprint, 'server-code-a');
-  assert.equal(result.artifacts.daemon.manifest.artifactFingerprint, 'daemon-code-a');
+    assert.equal(readFileSync(installedWorkspacePath, 'utf8'), 'settled');
+    assert.equal(result.artifacts.server.manifest.artifactFingerprint, 'server-code-a');
+    assert.equal(result.artifacts.daemon.manifest.artifactFingerprint, 'daemon-code-a');
+  } finally {
+    rmSync(fixtureRepoRoot, { recursive: true, force: true });
+  }
 });
 
 test('same component identity builds once while its waiter reuses the published object', async () => {
@@ -461,7 +496,74 @@ test('repository publication holds the runtime lock only for producer snapshot c
   assert.equal(result.snapshotId.length > 0, true);
 });
 
-test('repository publication component resolution is current-pointer based and returns canonical string arrays', async () => {
+test('repository publication preflight forwards daemon without reading stale installed workspace identity', async () => {
+  assert.equal(typeof buildModule.resolveRepositoryRuntimePublicationComponents, 'function');
+  const fixtureRepoRoot = mkdtempSync(join(tmpdir(), 'runtime-publication-preflight-'));
+  const installedWorkspacePath = join(fixtureRepoRoot, 'apps', 'cli', 'node_modules', 'identity.txt');
+  mkdirSync(join(installedWorkspacePath, '..'), { recursive: true });
+  writeFileSync(installedWorkspacePath, 'stale-installed-workspace', 'utf8');
+  const staleDaemonArtifactFingerprint = createRuntimeArtifactFingerprint({
+    component: 'daemon',
+    sourceMetadata: {
+      repoDir: fixtureRepoRoot,
+      sourceFingerprint: 'source-a',
+      builtAt: '2026-08-16T12:00:00.000Z',
+      serverComponent: 'happier-server-light',
+      dbProvider: 'sqlite',
+    },
+    componentSourceFingerprint: 'daemon-source-a',
+    supportArtifactFingerprint: 'daemon-support-a',
+    toolchainInputs: [],
+  });
+
+  let identityResolutionCalls = 0;
+  try {
+    const result = await buildModule.resolveRepositoryRuntimePublicationComponents({
+      rootDir: fixtureRepoRoot,
+      authority: { producerStackBaseDir: '/stacks/repo-producer' },
+      requestedComponents: ['daemon'],
+      inspectActiveRuntimeSnapshotImpl: async () => ({
+        valid: true,
+        snapshot: { snapshotId: 'snapshot-current' },
+        manifest: {
+          components: {
+            daemon: { artifactFingerprint: staleDaemonArtifactFingerprint },
+          },
+        },
+      }),
+      resolveRuntimeBuildRequestIdentityImpl: async (input) => {
+        identityResolutionCalls += 1;
+        return await resolveRuntimeBuildRequestIdentity({
+          ...input,
+          sourceMetadata: {
+            repoDir: fixtureRepoRoot,
+            sourceFingerprint: 'source-a',
+            builtAt: '2026-08-16T12:00:00.000Z',
+            serverComponent: 'happier-server-light',
+            dbProvider: 'sqlite',
+          },
+          assertSelectedBuildPrerequisitesImpl: () => {},
+          collectRuntimeBuildToolchainInputsImpl: async () => ({ daemon: [] }),
+          collectRuntimeComponentSourceFingerprintsImpl: async () => {
+            assert.equal(readFileSync(installedWorkspacePath, 'utf8'), 'stale-installed-workspace');
+            return { daemon: 'daemon-source-a' };
+          },
+          resolveDaemonSupportArtifactFingerprintImpl: async () => 'daemon-support-a',
+        });
+      },
+    });
+
+    assert.deepEqual(result, {
+      components: ['daemon'],
+      currentSnapshotId: 'snapshot-current',
+    });
+    assert.equal(identityResolutionCalls, 0);
+  } finally {
+    rmSync(fixtureRepoRoot, { recursive: true, force: true });
+  }
+});
+
+test('repository publication preflight filters non-daemon identities while forwarding daemon', async () => {
   assert.equal(typeof buildModule.resolveRepositoryRuntimePublicationComponents, 'function');
   const result = await buildModule.resolveRepositoryRuntimePublicationComponents({
     rootDir: '/repo',
@@ -478,8 +580,8 @@ test('repository publication component resolution is current-pointer based and r
       },
     }),
     resolveRuntimeBuildRequestIdentityImpl: async ({ selection }) => {
-      assert.deepEqual(selection.components, { web: false, server: true, daemon: true, tauri: false });
-      return { artifactFingerprints: { server: 'server-current', daemon: 'daemon-new' } };
+      assert.deepEqual(selection.components, { web: false, server: true, daemon: false, tauri: false });
+      return { artifactFingerprints: { server: 'server-current' } };
     },
   });
 

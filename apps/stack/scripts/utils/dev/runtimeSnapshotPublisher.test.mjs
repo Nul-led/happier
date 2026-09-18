@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import {
@@ -23,7 +24,8 @@ function createDeferred() {
   return { promise, resolve, reject };
 }
 
-test('repository publication executes in a tracked child process and returns its canonical result', async () => {
+for (const platform of ['linux', 'darwin', 'win32']) {
+test(`repository publication preserves local authority and tracked results on ${platform}`, async () => {
   const children = [];
   const calls = [];
   const expectedResult = {
@@ -33,6 +35,7 @@ test('repository publication executes in a tracked child process and returns its
 
   const result = await publishRepositoryRuntimeSnapshotInChildProcess({
     rootDir: '/work/happier',
+    platform,
     authority: {
       producerStackName: 'repo-dev-a1cc5e0671',
       producerStackBaseDir: '/stacks/repo-dev-a1cc5e0671',
@@ -58,10 +61,19 @@ test('repository publication executes in a tracked child process and returns its
   assert.deepEqual(children, []);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].label, 'runtime-publisher');
-  assert.equal(calls[0].command, process.execPath);
-  assert.equal(calls[0].args[0], '/work/happier/runtime-publication-worker.mjs');
+  const workerArgs = platform === 'linux' ? calls[0].args.slice(3) : calls[0].args;
+  assert.equal(calls[0].command, platform === 'linux'
+    ? fileURLToPath(new URL('../../../bin/hstack-exec', import.meta.url))
+    : process.execPath);
+  if (platform === 'linux') {
+    assert.deepEqual(calls[0].args.slice(0, 3), [
+      '--local', '--', process.execPath,
+    ]);
+    assert.equal(calls[0].env.HAPPIER_HSTACK_DISPATCH_CONTROL, '1');
+  }
+  assert.equal(workerArgs[0], '/work/happier/runtime-publication-worker.mjs');
   assert.deepEqual(
-    JSON.parse(Buffer.from(calls[0].args[1], 'base64url').toString('utf8')),
+    JSON.parse(Buffer.from(workerArgs[1], 'base64url').toString('utf8')),
     {
       rootDir: '/work/happier',
       authority: {
@@ -79,32 +91,45 @@ test('repository publication executes in a tracked child process and returns its
     false,
   );
 });
+}
 
-test('repository publication parses a machine result that is filtered from human-facing child output', async (t) => {
+for (const platform of ['darwin', 'linux']) {
+test(`repository publication parses a real worker result on ${platform}`, {
+  skip: platform === 'linux' && (process.platform !== 'linux' || process.env.HAPPIER_STACK_RUN_REAL_INTEGRATION_TESTS !== '1'),
+}, async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'happier-runtime-publication-result-'));
   t.after(async () => await rm(root, { recursive: true, force: true }));
   const workerPath = join(root, 'worker.mjs');
   await writeFile(workerPath, [
+    "import { getPriority } from 'node:os';",
+    "import { readFileSync } from 'node:fs';",
     `process.stdout.write(${JSON.stringify(RUNTIME_PUBLICATION_RESULT_PREFIX)} + JSON.stringify({`,
     "  snapshotId: 'snapshot-real-child',",
     '  changed: true,',
+    '  nice: getPriority(),',
+    "  cgroup: process.platform === 'linux' ? readFileSync('/proc/self/cgroup', 'utf8') : null,",
     '}) + \'\\n\');',
     '',
   ].join('\n'));
 
   const result = await publishRepositoryRuntimeSnapshotInChildProcess({
-    rootDir: root,
+    rootDir: platform === 'linux' ? fileURLToPath(new URL('../../../', import.meta.url)) : root,
+    platform,
     authority: { producerStackName: 'repo-dev-a1cc5e0671' },
     requestedComponents: ['web'],
     env: process.env,
     workerPath,
   });
 
-  assert.deepEqual(result, {
-    snapshotId: 'snapshot-real-child',
-    changed: true,
-  });
+  assert.equal(result.snapshotId, 'snapshot-real-child');
+  assert.equal(result.changed, true);
+  if (platform === 'linux') {
+    assert.equal(result.nice, 10);
+    assert.match(result.cgroup, /\/happier-jobs\.slice\//);
+    t.diagnostic(JSON.stringify({ nice: result.nice, cgroup: result.cgroup }));
+  }
 });
+}
 
 test('repository publication preserves bounded child failure evidence', async () => {
   await assert.rejects(

@@ -362,6 +362,71 @@ test('POSIX remote cancellation terminates the live execution tree and removes i
   }
 });
 
+test('POSIX remote execution forwards wrapper termination to its live command tree', async (t) => {
+  try {
+    await execFileAsync('/bin/ps', ['-p', String(process.pid), '-o', 'command=']);
+  } catch (error) {
+    if (error?.code === 'EPERM' || /operation not permitted/i.test(String(error?.stderr ?? error?.message ?? error))) {
+      t.skip('local process inspection is unavailable in this sandbox');
+      return;
+    }
+    throw error;
+  }
+  const root = mkdtempSync(join(tmpdir(), 'happier-remote-signal-'));
+  const liveTarget = {
+    ...posix,
+    repoDir: root,
+    cliHomeDir: join(root, 'home'),
+  };
+  const childPidFile = join(root, 'child.pid');
+  const identityFile = join(liveTarget.cliHomeDir, 'remote-exec', `${executionId}.pid`);
+  const command = buildRemoteExecCommand(liveTarget, {
+    executionId,
+    commandArgs: [
+      '/bin/bash',
+      '-lc',
+      `printf '%s\\n' "$$" > '${childPidFile}'; while :; do sleep 1; done`,
+    ],
+  });
+  const child = spawn('/bin/bash', ['-c', command], { stdio: 'ignore' });
+  const completion = new Promise((resolve) => child.once('close', resolve));
+  let commandPid = null;
+
+  try {
+    const deadline = Date.now() + 5_000;
+    while ((!existsSync(identityFile) || !existsSync(childPidFile)) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(existsSync(identityFile), true, 'remote wrapper must publish its identity');
+    assert.equal(existsSync(childPidFile), true, 'remote child must be running before termination');
+    const wrapperPid = Number(readFileSync(identityFile, 'utf8').trim());
+    commandPid = Number(readFileSync(childPidFile, 'utf8').trim());
+
+    process.kill(wrapperPid, 'SIGTERM');
+    let timeout;
+    try {
+      await Promise.race([
+        completion,
+        new Promise((_, reject) => {
+          timeout = setTimeout(() => reject(new Error('remote wrapper did not exit after SIGTERM')), 10_000);
+          timeout.unref();
+        }),
+      ]);
+    } finally {
+      clearTimeout(timeout);
+    }
+    assert.throws(() => process.kill(commandPid, 0), { code: 'ESRCH' });
+    assert.equal(existsSync(identityFile), false);
+  } finally {
+    if (commandPid != null) {
+      try { process.kill(commandPid, 'SIGKILL'); } catch { }
+    }
+    if (child.exitCode == null && child.signalCode == null) child.kill('SIGKILL');
+    await completion;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('remote execution ids are mandatory and path-safe', () => {
   assert.throws(
     () => buildRemoteExecCommand(posix, { commandArgs: ['pwd'] }),
@@ -543,10 +608,11 @@ test('attended dev-target Stack preserves attended server readiness on the targe
 });
 
 test('remote Stack server uses the stable outer public URL and projects only supported light/SQLite semantics', () => {
-  const command = buildRemoteStackCommand(posix, {
+  const serverPlacedOptions = {
     services: { server: true, expo: true, daemon: false },
     serverUrl: 'http://127.0.0.1:43005',
     publicServerUrl: 'http://192.168.1.20:53005',
+    canonicalServerUrl: 'http://happier-repo-local-dev.localhost:53288',
     activeServerId: 'stack_repo__id_default',
     stackName: 'repo-local-dev',
     remoteServerPort: 43005,
@@ -571,7 +637,8 @@ test('remote Stack server uses the stable outer public URL and projects only sup
         HAPPIER_MASTER_SECRET: 'never-forward-this',
       },
     },
-  });
+  };
+  const command = buildRemoteStackCommand(posix, serverPlacedOptions);
   assert.match(command, /HAPPIER_STACK_SERVER_PORT=43005/);
   assert.match(command, /HAPPIER_STACK_SERVER_COMPONENT=happier-server-light/);
   assert.match(command, /HAPPIER_DB_PROVIDER=sqlite/);
@@ -582,6 +649,14 @@ test('remote Stack server uses the stable outer public URL and projects only sup
   assert.match(command, /HAPPIER_SQLITE_CONNECTION_LIMIT=6/);
   assert.doesNotMatch(command, /do-not-forward|private\/remote-state|never-forward-this|HAPPIER_MASTER_SECRET/);
   assert.match(command, /--server-public-url=.*192\.168\.1\.20:53005/);
+  // The originating Stack owns the signed auth audience: the remote server must sign the origin's
+  // canonical origin, not one derived from the remote target's own Stack name and port.
+  assert.match(command, /HAPPIER_CANONICAL_SERVER_URL=http:\/\/happier-repo-local-dev\.localhost:53288/);
+  const windowsServerCommand = buildRemoteStackCommand(windows, serverPlacedOptions);
+  assert.match(
+    Buffer.from(windowsServerCommand.split(' ').at(-1), 'base64').toString('utf16le'),
+    /HAPPIER_CANONICAL_SERVER_URL=http:\/\/happier-repo-local-dev\.localhost:53288/,
+  );
   assert.match(command, /HAPPIER_STACK_EXPO_DEV_PORT=48081/);
   assert.match(command, /HAPPIER_STACK_EXPO_HOST=localhost/);
   assert.match(command, /EXPO_PACKAGER_PROXY_URL=http:\/\/192\.168\.1\.20:18081/);
@@ -594,10 +669,12 @@ test('remote Stack server uses the stable outer public URL and projects only sup
     services: { server: false, expo: true, daemon: false },
     serverUrl: 'http://127.0.0.1:43006',
     publicServerUrl: 'http://192.168.1.20:53005',
+    canonicalServerUrl: 'http://happier-repo-local-dev.localhost:53288',
     activeServerId: 'stack_repo__id_default',
     stackName: 'repo-local-dev',
     remoteExpoPort: 48081,
   });
+  assert.doesNotMatch(expoOnly, /HAPPIER_CANONICAL_SERVER_URL/);
   assert.match(expoOnly, /--no-server/);
   assert.match(expoOnly, /--server-url=.*127\.0\.0\.1:43006/);
   assert.match(expoOnly, /--server-public-url=.*192\.168\.1\.20:53005/);
@@ -676,6 +753,10 @@ test('SSH tunnel owns the reverse forward independently from the monitored worke
     [
       '-T',
       '-o',
+      'ControlMaster=no',
+      '-o',
+      'ControlPath=none',
+      '-o',
       'BatchMode=yes',
       '-o',
       'ExitOnForwardFailure=yes',
@@ -715,13 +796,21 @@ test('SSH tunnel owns the reverse forward independently from the monitored worke
 });
 
 test('SSH forwarding supports local and reverse routes in one transport owner', () => {
+  const args = buildSshForwardArgs(posix, {
+    forwards: [
+      { direction: 'reverse', listenHost: '127.0.0.1', listenPort: 43005, targetHost: '127.0.0.1', targetPort: 3005 },
+      { direction: 'local', listenHost: '0.0.0.0', listenPort: 18081, targetHost: 'localhost', targetPort: 48081 },
+    ],
+  });
+  assert.deepEqual(args.slice(0, 5), [
+    '-T',
+    '-o',
+    'ControlMaster=no',
+    '-o',
+    'ControlPath=none',
+  ]);
   assert.deepEqual(
-    buildSshForwardArgs(posix, {
-      forwards: [
-        { direction: 'reverse', listenHost: '127.0.0.1', listenPort: 43005, targetHost: '127.0.0.1', targetPort: 3005 },
-        { direction: 'local', listenHost: '0.0.0.0', listenPort: 18081, targetHost: 'localhost', targetPort: 48081 },
-      ],
-    }).slice(-6),
+    args.slice(-6),
     [
       '-R',
       '127.0.0.1:43005:127.0.0.1:3005',

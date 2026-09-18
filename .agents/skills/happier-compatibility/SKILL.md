@@ -1,6 +1,6 @@
 ---
 name: happier-compatibility
-description: Audit, design, implement, and verify Happier compatibility across UI, CLI, daemon, server, installers, and persisted state. Use when changes affect wire or semantic contracts, serialization, sessions/settings/queues, schemas or migrations, capability negotiation, mixed-version operation, upgrades, rollback, or the `remote-dev` predecessor frontier for `dev`.
+description: Audit, design, implement, and verify Happier compatibility across UI, CLI, daemon, server, installers, and persisted state. Use when changes affect wire or semantic contracts, serialization, sessions/settings/queues, schemas or migrations, capability negotiation, mixed-version operation, upgrades, rollback, or the `../0.2` predecessor frontier for `dev`.
 ---
 
 # Happier Compatibility
@@ -37,7 +37,7 @@ record this checklist before implementation:
 
 Use [the canonical doctrine](../../docs/compatibility.md#sdk-protocol-evolution)
 for the normative rules. It also defines the direct-cut ruling: current `dev` →
-`remote-dev` rollback is not a supported SDK-author-contract direction.
+`../0.2` rollback is not a supported SDK-author-contract direction.
 
 ### SDK package SemVer
 
@@ -90,6 +90,8 @@ Cover new-reader/old-writer by default. Cover old-reader/new-writer only when in
 When old-client/new-server support would require dual writers, parallel persisted formats, rollout modes, operator flags, socket-drain protocols, or another substantial mechanism, pause before designing it. Present the concrete user-visible choices and obtain an explicit developer/product decision: preserve the operation with the heavier transition, degrade only the affected operation with a clear update requirement, or intentionally require a client update. Do not silently force all clients to update, and do not silently build the machinery. This decision point applies only to genuinely incompatible high-cost changes; never turn routine server evolution into a client-version bump.
 
 Do not expand unaffected roles into a Cartesian product. Broaden only when a shared protocol, persisted shape, installer/service state, or deployment order couples them.
+
+For browser clients, adding a request header is also a CORS compatibility change. Before using one for capability negotiation, verify that every supported predecessor relay already permits it in `Access-Control-Allow-Headers`; changing only the current relay does not make a new client compatible with an older relay. Prefer a CORS-safelisted header, query parameter, or request body when the value is not sensitive. When a custom header is necessary, negotiate predecessor support first and exercise the real `OPTIONS` preflight for each reachable origin/relay direction. If browser code must read a new response header, verify `Access-Control-Expose-Headers` too.
 
 ## 5. Choose the narrowest safe transition
 

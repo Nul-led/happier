@@ -2,13 +2,17 @@
 
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { createReadStream } from 'node:fs';
-import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { closeSync, createReadStream, openSync } from 'node:fs';
+import { copyFile, mkdtemp, readdir, readFile, rename, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
+import { buildRollingAssetPlan } from './rolling-release-asset-plan.mjs';
 
 const FULL_SHA = /^[a-f0-9]{40}$/;
+const DEFAULT_ASSET_READ_ATTEMPTS = 4;
+const DEFAULT_ASSET_READ_RETRY_DELAY_MS = 2_000;
+const DEFAULT_ASSET_READ_MAX_RETRY_DELAY_MS = 8_000;
 
 function fail(message) {
   throw new Error(message);
@@ -57,21 +61,47 @@ function isExplicitHttpNotFound(error) {
 /**
  * @param {string} cmd
  * @param {string[]} args
+ * @param {string} destination
  * @param {{ env?: Record<string, string>; dryRun?: boolean; cwd?: string }} [opts]
  */
-function runBuffer(cmd, args, opts = {}) {
+function runToFile(cmd, args, destination, opts = {}) {
   const printable = `${cmd} ${args.map((arg) => (arg.includes(' ') ? JSON.stringify(arg) : arg)).join(' ')}`;
   if (opts.dryRun) {
     console.log(`[dry-run] ${printable}`);
-    return Buffer.alloc(0);
+    return;
   }
-  return execFileSync(cmd, args, {
-    cwd: opts.cwd ?? process.cwd(),
-    env: { ...process.env, ...(opts.env ?? {}) },
-    encoding: 'buffer',
-    stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: 10 * 60_000,
-  });
+  const output = openSync(destination, 'w');
+  try {
+    execFileSync(cmd, args, {
+      cwd: opts.cwd ?? process.cwd(),
+      env: { ...process.env, ...(opts.env ?? {}) },
+      stdio: ['ignore', output, 'pipe'],
+      timeout: 10 * 60_000,
+    });
+  } finally {
+    closeSync(output);
+  }
+}
+
+function readPositiveIntegerEnv(name, defaultValue) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return defaultValue;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 1) fail(`${name} must be a positive integer.`);
+  return value;
+}
+
+function readNonNegativeIntegerEnv(name, defaultValue) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return defaultValue;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 0) fail(`${name} must be a non-negative integer.`);
+  return value;
+}
+
+function sleepSync(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.trunc(ms));
 }
 
 async function fileSha256(filePath) {
@@ -108,24 +138,31 @@ async function assertSignedBundle(directory) {
       + `${unsupportedExtras.length > 0 ? `; unsupported extras ${unsupportedExtras.join(', ')}` : ''}`,
     );
   }
-  return { names, checksumsName };
+  return { names, checksumsName, payloadNames: archiveNames };
 }
 
-async function assertDirectoriesEqual(leftDir, rightDir) {
-  const leftNames = (await readdir(leftDir)).sort();
+async function assertAssetPlanEqual(leftDir, rightDir, assetPlan) {
+  const leftNames = assetPlan.map(({ name }) => name).sort();
   const rightNames = (await readdir(rightDir)).sort();
   if (leftNames.length !== rightNames.length || leftNames.some((name, index) => name !== rightNames[index])) {
-    fail('Rolling release asset names differ from the immutable release.');
+    fail('Rolling release asset names differ from the planned channel projection.');
   }
-  for (const name of leftNames) {
+  for (const { name, sourceName } of assetPlan) {
     const [leftSha, rightSha] = await Promise.all([
-      fileSha256(join(leftDir, name)),
+      fileSha256(join(leftDir, sourceName)),
       fileSha256(join(rightDir, name)),
     ]);
     if (leftSha !== rightSha) {
       fail(`Rolling release asset differs from immutable source bytes: ${name}`);
     }
   }
+}
+
+function sourceVersionFromTag(sourceTag) {
+  const separator = sourceTag.lastIndexOf('-v');
+  const version = separator >= 0 ? sourceTag.slice(separator + 2) : '';
+  if (!version) fail(`Immutable source tag does not identify a version: ${sourceTag}`);
+  return version;
 }
 
 function readTagSha({ repo, tag, env, dryRun }) {
@@ -307,29 +344,64 @@ async function downloadReleaseAssetsById({ repo, releaseId, destination, env, dr
     if (separator <= 0) fail(`Invalid release asset row: ${line}`);
     const assetId = line.slice(0, separator);
     const name = line.slice(separator + 1);
-    const bytes = runBuffer('gh', [
-      'api',
-      `repos/${repo}/releases/assets/${assetId}`,
-      '-H',
-      'Accept: application/octet-stream',
-    ], { env, dryRun });
-    if (!dryRun) await writeFile(join(destination, name), bytes);
+    const destinationPath = join(destination, name);
+    const attemptPath = `${destinationPath}.attempt`;
+    const attempts = readPositiveIntegerEnv('HAPPIER_PIPELINE_GH_ASSET_READ_ATTEMPTS', DEFAULT_ASSET_READ_ATTEMPTS);
+    const retryDelayMs = readNonNegativeIntegerEnv(
+      'HAPPIER_PIPELINE_GH_ASSET_READ_RETRY_DELAY_MS',
+      DEFAULT_ASSET_READ_RETRY_DELAY_MS,
+    );
+    const maxRetryDelayMs = readNonNegativeIntegerEnv(
+      'HAPPIER_PIPELINE_GH_ASSET_READ_MAX_RETRY_DELAY_MS',
+      DEFAULT_ASSET_READ_MAX_RETRY_DELAY_MS,
+    );
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      await rm(attemptPath, { force: true });
+      try {
+        runToFile('gh', [
+          'api',
+          `repos/${repo}/releases/assets/${assetId}`,
+          '-H',
+          'Accept: application/octet-stream',
+        ], attemptPath, { env, dryRun });
+        if (!dryRun) await rename(attemptPath, destinationPath);
+        break;
+      } catch (error) {
+        await rm(attemptPath, { force: true });
+        if (attempt >= attempts) throw error;
+        const delayMs = Math.min(retryDelayMs * (2 ** (attempt - 1)), maxRetryDelayMs);
+        console.warn(`[pipeline] retrying GitHub release asset read for ${name} (${attempt + 1}/${attempts})`);
+        sleepSync(delayMs);
+      }
+    }
   }
 }
 
-async function auditReleaseByTag({ repo, tag, expectedDir, publicKey, env }) {
-  const destination = await mkdtemp(join(tmpdir(), 'happier-visible-release-audit-'));
+async function auditDownloadedAssetDirectory({ directory, expectedDir, assetPlan, publicKey }) {
+  const signedDestination = await mkdtemp(join(tmpdir(), 'happier-visible-release-signed-audit-'));
   try {
-    run('gh', ['release', 'download', tag, '--repo', repo, '--dir', destination], { env });
-    const { checksumsName } = await assertSignedBundle(destination);
-    await assertDirectoriesEqual(expectedDir, destination);
+    for (const { name, sourceName } of assetPlan) {
+      await copyFile(join(directory, name), join(signedDestination, sourceName));
+    }
+    const { checksumsName } = await assertSignedBundle(signedDestination);
     run(process.execPath, [
       'scripts/pipeline/release/verify-artifacts.mjs',
-      '--artifacts-dir', destination,
-      '--checksums', join(destination, checksumsName),
+      '--artifacts-dir', signedDestination,
+      '--checksums', join(signedDestination, checksumsName),
       '--public-key', publicKey,
       '--skip-smoke',
     ]);
+    await assertAssetPlanEqual(expectedDir, directory, assetPlan);
+  } finally {
+    await rm(signedDestination, { recursive: true, force: true });
+  }
+}
+
+async function auditReleaseByTag({ repo, tag, expectedDir, assetPlan, publicKey, env }) {
+  const destination = await mkdtemp(join(tmpdir(), 'happier-visible-release-audit-'));
+  try {
+    run('gh', ['release', 'download', tag, '--repo', repo, '--dir', destination], { env });
+    await auditDownloadedAssetDirectory({ directory: destination, expectedDir, assetPlan, publicKey });
   } finally {
     await rm(destination, { recursive: true, force: true });
   }
@@ -376,6 +448,7 @@ async function main() {
   };
   const sourceDir = await mkdtemp(join(tmpdir(), 'happier-immutable-release-'));
   const auditDir = await mkdtemp(join(tmpdir(), 'happier-rolling-release-audit-'));
+  let assetPlan = [];
   try {
     const immutableSha = readTagSha({ repo, tag: sourceTag, env: ghEnv, dryRun });
     if (!dryRun && immutableSha !== targetSha) {
@@ -383,7 +456,7 @@ async function main() {
     }
     run('gh', ['release', 'download', sourceTag, '--repo', repo, '--dir', sourceDir], { env: ghEnv, dryRun });
     if (!dryRun) {
-      const { checksumsName } = await assertSignedBundle(sourceDir);
+      const { names, checksumsName, payloadNames } = await assertSignedBundle(sourceDir);
       run(process.execPath, [
         'scripts/pipeline/release/verify-artifacts.mjs',
         '--artifacts-dir', sourceDir,
@@ -391,6 +464,12 @@ async function main() {
         '--public-key', publicKey,
         '--skip-smoke',
       ]);
+      assetPlan = buildRollingAssetPlan({
+        immutableNames: names,
+        payloadNames,
+        version: sourceVersionFromTag(sourceTag),
+        rollingTag,
+      });
     }
 
     const body = releaseMessage && notes ? `${releaseMessage}\n\n${notes}` : releaseMessage || notes;
@@ -440,7 +519,7 @@ async function main() {
     if (!dryRun && rollingRelease && rollingSha === targetSha) {
       let alreadyExact = false;
       try {
-        await auditReleaseByTag({ repo, tag: rollingTag, expectedDir: sourceDir, publicKey, env: ghEnv });
+        await auditReleaseByTag({ repo, tag: rollingTag, expectedDir: sourceDir, assetPlan, publicKey, env: ghEnv });
         alreadyExact = true;
       } catch {
         // The ref alone is not admission; replace a stale or incomplete release object below.
@@ -496,15 +575,14 @@ async function main() {
     }
 
     if (!dryRun) {
-      const { names } = await assertSignedBundle(sourceDir);
-      for (const name of names) {
+      for (const { name, sourceName } of assetPlan) {
         let uploadError = null;
         try {
           run('gh', [
             'api', '--hostname', 'uploads.github.com', '-X', 'POST',
             `repos/${repo}/releases/${draftReleaseId}/assets?name=${encodeURIComponent(name)}`,
             '-H', 'Content-Type: application/octet-stream',
-            '--input', join(sourceDir, name),
+            '--input', join(sourceDir, sourceName),
             '--silent',
           ], { env: ghEnv });
         } catch (error) {
@@ -523,15 +601,12 @@ async function main() {
 
     await downloadReleaseAssetsById({ repo, releaseId: draftReleaseId, destination: auditDir, env: ghEnv, dryRun });
     if (!dryRun) {
-      const { checksumsName } = await assertSignedBundle(auditDir);
-      await assertDirectoriesEqual(sourceDir, auditDir);
-      run(process.execPath, [
-        'scripts/pipeline/release/verify-artifacts.mjs',
-        '--artifacts-dir', auditDir,
-        '--checksums', join(auditDir, checksumsName),
-        '--public-key', publicKey,
-        '--skip-smoke',
-      ]);
+      await auditDownloadedAssetDirectory({
+        directory: auditDir,
+        expectedDir: sourceDir,
+        assetPlan,
+        publicKey,
+      });
     }
 
     const predecessor = rollingRelease;
@@ -579,7 +654,7 @@ async function main() {
         fail(`Published rolling tag ${rollingTag} did not resolve to audited target ${targetSha}.`);
       }
       if (!dryRun) {
-        await auditReleaseByTag({ repo, tag: rollingTag, expectedDir: sourceDir, publicKey, env: ghEnv });
+        await auditReleaseByTag({ repo, tag: rollingTag, expectedDir: sourceDir, assetPlan, publicKey, env: ghEnv });
       }
     } catch (switchError) {
       if (!dryRun) {

@@ -2,12 +2,13 @@
 
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, readdir, rm } from 'node:fs/promises';
+import { mkdir, readdir, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 
 import { parseArtifactFilename } from '../lib/manifests.mjs';
 import { normalizePublicReleaseChannel } from '../lib/public-release-rings.mjs';
+import * as runnerPackaging from '../lib/runner-packaging.mjs';
 import { resolveArtifactVerifyExecution, resolveArtifactVerifyTarget } from './artifact-verify-target.mjs';
 import { getBinaryPublishProductSpec } from './product-specs.mjs';
 
@@ -97,17 +98,23 @@ export async function finalizePreparedBinaryArtifacts(params) {
     const binaryRelease = await import('../lib/binary-release.mjs');
     targets ??= params.productSpec.id === 'server'
       ? binaryRelease.SERVER_TARGETS
-      : binaryRelease.CLI_STACK_TARGETS;
+      : params.productSpec.id === 'runner'
+        // Publication eligibility is owned once by the Runner packaging owner;
+        // a build flag must never add a target whose native release admission
+        // has not been implemented. Availability remains publication + feature owned.
+        ? runnerPackaging.resolveRunnerPublicationEligibleBinaryTargets(binaryRelease.CLI_STACK_TARGETS)
+        : binaryRelease.CLI_STACK_TARGETS;
     writeChecksums ??= binaryRelease.writeChecksumsFile;
     signFile ??= binaryRelease.maybeSignFile;
   }
+  const archiveExtension = params.productSpec.id === 'runner' ? 'zip' : 'tar.gz';
   const expectedArtifacts = targets.map((target) => ({
     ...target,
-    name: `${params.productSpec.manifestProduct}-v${version}-${target.os}-${target.arch}.tar.gz`,
+    name: `${params.productSpec.manifestProduct}-v${version}-${target.os}-${target.arch}.${archiveExtension}`,
   }));
   const expectedNames = new Set(expectedArtifacts.map((artifact) => artifact.name));
   const archiveNames = (await readdir(artifactsDir))
-    .filter((name) => name.endsWith('.tar.gz'))
+    .filter((name) => name.endsWith('.tar.gz') || name.endsWith('.zip'))
     .sort();
 
   for (const name of archiveNames) {
@@ -130,14 +137,22 @@ export async function finalizePreparedBinaryArtifacts(params) {
     os: artifact.os,
     arch: artifact.arch,
   }));
+  if (params.productSpec.id === 'runner') {
+    const { verifyReleaseArchiveAdmission } = await import('../verify-artifacts.mjs');
+    for (const artifact of artifacts) {
+      const entries = await verifyReleaseArchiveAdmission({ archivePath: artifact.path, archiveName: artifact.name });
+      const archive = await stat(artifact.path);
+      artifact.archiveMetadata = { sizeBytes: archive.size, entries };
+    }
+  }
   const evidenceSuffix = params.productSpec.notarizationEvidenceSuffix;
   const evidenceNames = (await readdir(artifactsDir))
     .filter((name) => name.endsWith(`.${evidenceSuffix}.json`))
     .sort();
-  const expectedEvidenceNames = [
-    `darwin-arm64.${evidenceSuffix}.json`,
-    `darwin-x64.${evidenceSuffix}.json`,
-  ];
+  const expectedEvidenceNames = targets
+    .filter((target) => target.os === 'darwin')
+    .map((target) => `darwin-${target.arch}.${evidenceSuffix}.json`)
+    .sort();
   const missingEvidenceNames = expectedEvidenceNames.filter((name) => !evidenceNames.includes(name));
   if (missingEvidenceNames.length > 0) {
     throw new Error(

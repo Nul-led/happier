@@ -101,7 +101,7 @@ test('real workspace sync obeys the explicit reusable-workflow selection boundar
   const parsed = YAML.parse(await readWorkflow('.github/workflows/tests.yml'));
   assert.equal(
     parsed?.jobs?.['workspace-sync-real']?.if,
-    '${{ !inputs.select_jobs_explicitly || inputs.run_workspace_sync_real }}',
+    '${{ !inputs.select_jobs_explicitly || inputs.run_workspace_sync_real || inputs.run_workspace_sync_performance }}',
   );
 });
 

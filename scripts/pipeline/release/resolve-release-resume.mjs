@@ -11,11 +11,12 @@ import { validateCandidateVersions } from './verify-release-candidate-identity.m
 const SHA_PATTERN = /^[a-f0-9]{40}$/u;
 const DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/u;
 const OPERATION_ID_PATTERN = /^rel_[A-Za-z0-9_-]{8,80}$/u;
-const RESUMABLE_PRODUCTS = new Set(['cli', 'stack', 'server', 'ui-web']);
+const RESUMABLE_PRODUCTS = new Set(['cli', 'stack', 'server', 'runner', 'ui-web']);
 const RESUMABLE_SURFACE_PRODUCTS = new Map([
   ['cli-immutable-candidate', 'cli'],
   ['hstack-immutable-candidate', 'stack'],
   ['server-immutable-candidate', 'server'],
+  ['runner-immutable-candidate', 'runner'],
   ['ui-web-immutable-candidate', 'ui-web'],
 ]);
 const TRUSTED_RELEASE_CONTROL_BRANCHES = new Set(['dev', 'preview', 'main']);
@@ -178,15 +179,15 @@ export function resolveReleaseResume(input) {
   }
   if (!Array.isArray(status.surfaces)) throw new Error('[release] resume status surfaces must be an array');
 
-  /** @type {Record<'cli' | 'stack' | 'server' | 'ui-web', string>} */
-  const versions = { cli: '', stack: '', server: '', 'ui-web': '' };
-  /** @type {Record<'cli' | 'stack' | 'server' | 'ui-web', boolean>} */
-  const requested = { cli: false, stack: false, server: false, 'ui-web': false };
+  /** @type {Record<'cli' | 'stack' | 'server' | 'runner' | 'ui-web', string>} */
+  const versions = { cli: '', stack: '', server: '', runner: '', 'ui-web': '' };
+  /** @type {Record<'cli' | 'stack' | 'server' | 'runner' | 'ui-web', boolean>} */
+  const requested = { cli: false, stack: false, server: false, runner: false, 'ui-web': false };
   for (const [index, rawSurface] of status.surfaces.entries()) {
     const surface = asRecord(rawSurface, `resume status surface ${index}`);
     const declaredProduct = RESUMABLE_SURFACE_PRODUCTS.get(String(surface.id ?? ''));
     if (declaredProduct && surface.requested === true) {
-      requested[/** @type {'cli' | 'stack' | 'server' | 'ui-web'} */ (declaredProduct)] = true;
+      requested[/** @type {'cli' | 'stack' | 'server' | 'runner' | 'ui-web'} */ (declaredProduct)] = true;
     }
     if (surface.state !== 'complete' || surface.result !== 'success') continue;
     if (!surface.identity || typeof surface.identity !== 'object' || Array.isArray(surface.identity)) continue;
@@ -199,7 +200,7 @@ export function resolveReleaseResume(input) {
     if (requiredSha(identity.sourceSha, `resumable ${product} source SHA`) !== statusSourceSha) {
       throw new Error(`[release] resumable ${product} candidate source SHA does not match the release`);
     }
-    const key = /** @type {'cli' | 'stack' | 'server' | 'ui-web'} */ (product);
+    const key = /** @type {'cli' | 'stack' | 'server' | 'runner' | 'ui-web'} */ (product);
     if (versions[key]) throw new Error(`[release] duplicate resumable ${product} candidate`);
     versions[key] = requiredString(identity.version, `resumable ${product} version`);
   }
@@ -274,10 +275,12 @@ export async function main(argv = process.argv.slice(2)) {
       cli_version: resolved.versions.cli,
       stack_version: resolved.versions.stack,
       server_version: resolved.versions.server,
+      runner_version: resolved.versions.runner,
       ui_web_version: resolved.versions['ui-web'],
       cli_requested: String(resolved.requested.cli),
       stack_requested: String(resolved.requested.stack),
       server_requested: String(resolved.requested.server),
+      runner_requested: String(resolved.requested.runner),
       ui_web_requested: String(resolved.requested['ui-web']),
     });
     return resolved;

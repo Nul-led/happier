@@ -223,9 +223,17 @@ test('remote exec flushes the live replica after health inspection and before SS
 
   assert.equal(result.code, 0);
   assert.equal(calls.filter((call) => call.includes('flush')).length, 1);
+  assert.match(calls[0][0], /hstack-dev-target-control$/);
+  assert.ok(calls[0].includes('list'));
   const flushIndex = calls.findIndex((call) => call.includes('flush'));
   const sshIndex = calls.findIndex((call) => call[0] === 'ssh');
   assert.ok(flushIndex > 0 && flushIndex < sshIndex);
+  assert.match(calls[flushIndex][0], /hstack-dev-target-control$/);
+  assert.deepEqual(calls[flushIndex].slice(1, 4), [
+    '--sync-flush',
+    'happier-linux',
+    '--',
+  ]);
   const sshCall = calls.find((call) => call[0] === 'ssh');
   assert.ok(sshCall);
   assert.ok(sshCall.includes('BatchMode=yes'));
@@ -302,7 +310,10 @@ test('an explicit flush request retains the single pre-launch flush contract', a
     },
   );
 
-  assert.deepEqual(calls.map((call) => call[0]), ['mutagen', 'mutagen', 'ssh']);
+  assert.match(calls[0][0], /hstack-dev-target-control$/);
+  assert.ok(calls[0].includes('list'));
+  assert.match(calls[1][0], /hstack-dev-target-control$/);
+  assert.equal(calls[2][0], 'ssh');
   assert.ok(calls[1].includes('flush'));
 });
 
@@ -353,7 +364,12 @@ test('sync status and explicit sync use the target session in the stack Mutagen 
     target, stackBaseDir: '/tmp/stack', env: { PATH: '/test/bin' },
   }, deps);
   assert.equal(synced.state, 'ready');
-  assert.ok(calls.some((call) => call.args.includes('flush')));
+  const flushCall = calls.find((call) => call.args.includes('flush'));
+  assert.ok(flushCall);
+  assert.equal(
+    flushCall.env.HAPPIER_DEV_TARGET_CONTROL_STATE_DIR,
+    '/tmp/stack/dev-target-command-load-native/sync-control',
+  );
   assert.ok(calls.every((call) => call.env.MUTAGEN_DATA_DIRECTORY === '/tmp/stack/mutagen/data'));
 });
 
@@ -403,7 +419,7 @@ test('explicit sync applies its bounded timeout to both status and flush operati
     timeoutMs: 120_000,
   }, {
     runCaptureResult: async ({ args, timeoutMs }) => {
-      timeouts.push({ operation: args[1], timeoutMs });
+      timeouts.push({ operation: args.includes('list') ? 'list' : 'flush', timeoutMs });
       return args.includes('list')
         ? readyListResult()
         : { ok: true, exitCode: 0, out: '', err: '' };
@@ -495,7 +511,7 @@ test('remote exec cancels the exact remote process tree before stopping SSH and 
     {
       runCaptureResult: async ({ command, args }) => {
         calls.push([command, ...args]);
-        if (command === 'mutagen') return readyListResult();
+        if (args.includes('list')) return readyListResult();
         return { ok: true, exitCode: 0, out: '', err: '' };
       },
       spawnProcess: () => child,
@@ -515,7 +531,10 @@ test('remote exec cancels the exact remote process tree before stopping SSH and 
   signalSource.emit('SIGINT');
   const result = await execution;
   assert.deepEqual(stopped, { ownedChild: child, signal: 'SIGINT' });
-  assert.deepEqual(calls.map((call) => call[0]), ['mutagen', 'mutagen', 'ssh', 'stop-local-ssh']);
+  assert.match(calls[0][0], /hstack-dev-target-control$/);
+  assert.ok(calls[0].includes('list'));
+  assert.match(calls[1][0], /hstack-dev-target-control$/);
+  assert.deepEqual(calls.slice(2).map((call) => call[0]), ['ssh', 'stop-local-ssh']);
   assert.match(calls[2].at(-1), /018f0f52-5fe8-7a9f-8ef5-f81f20572791/);
   assert.equal(result.signal, 'SIGINT');
   assert.equal(signalSource.listenerCount('SIGINT'), 0);
@@ -534,11 +553,11 @@ test('remote cancellation failure still stops local SSH and reports unconfirmed 
   const execution = runDevTargetCommand(
     { target, stackBaseDir: '/tmp/stack', commandArgs: ['long-test'], env: {} },
     {
-      runCaptureResult: async ({ command }) => (
-        command === 'mutagen'
-          ? readyListResult()
-          : { ok: false, exitCode: 255, out: '', err: 'connection lost' }
-      ),
+      runCaptureResult: async ({ args }) => {
+        if (args.includes('list')) return readyListResult();
+        if (args.includes('flush')) return { ok: true, exitCode: 0, out: '', err: '' };
+        return { ok: false, exitCode: 255, out: '', err: 'connection lost' };
+      },
       spawnProcess: () => child,
       signalSource,
       createExecutionId: () => '018f0f52-5fe8-7a9f-8ef5-f81f20572791',

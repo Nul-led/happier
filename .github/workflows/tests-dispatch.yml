@@ -25,6 +25,11 @@ on:
         required: true
         default: ""
         type: string
+      workspace_sync_performance:
+        description: "Run the existing 1 GiB workspace-sync measurement (manual/release evidence; no threshold)"
+        required: true
+        default: false
+        type: boolean
       ui_e2e_specs:
         description: "UI E2E — Optional comma-separated repo-relative *.spec.ts paths; blank runs all shards"
         required: false
@@ -285,7 +290,8 @@ jobs:
       runner_pool: ${{ inputs.runner_pool }}
       run_ui_e2e: ${{ needs.resolve.outputs.run_ui_e2e == 'true' }}
       ui_e2e_specs: ${{ needs.resolve.outputs.ui_e2e_specs }}
-      run_workspace_sync_real: ${{ needs.resolve.outputs.run_workspace_sync_real == 'true' }}
+      run_workspace_sync_real: ${{ needs.resolve.outputs.run_workspace_sync_real == 'true' || inputs.workspace_sync_performance }}
+      run_workspace_sync_performance: ${{ inputs.workspace_sync_performance }}
       run_mobile_e2e_android: ${{ needs.resolve.outputs.run_mobile_e2e_android == 'true' }}
       run_mobile_e2e_ios: ${{ needs.resolve.outputs.run_mobile_e2e_ios == 'true' }}
       run_ui: ${{ needs.resolve.outputs.run_ui == 'true' }}
@@ -306,6 +312,8 @@ jobs:
       run_release_contracts: ${{ needs.resolve.outputs.run_release_contracts == 'true' }}
       run_installers_smoke: ${{ needs.resolve.outputs.run_installers_smoke == 'true' }}
       installers_channel: ${{ inputs.installers_channel }}
+      installers_source: local-build
+      installers_ref: .
       run_binary_smoke: ${{ needs.resolve.outputs.run_binary_smoke == 'true' }}
       run_cli_update_continuity: ${{ needs.resolve.outputs.run_cli_update_continuity == 'true' }}
       run_daemon_continuity: ${{ needs.resolve.outputs.run_daemon_continuity == 'true' }}

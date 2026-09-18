@@ -1,7 +1,29 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { resolveTypeScriptCliInvocation } from './resolveTypeScriptCliInvocation.mjs';
+import {
+  resolveTypeScriptCliInvocation,
+  shouldRouteTypeScriptCliThroughHstack,
+} from './resolveTypeScriptCliInvocation.mjs';
+
+test('routes direct no-emit compilation through hstack but executes an admitted payload directly', () => {
+  assert.equal(shouldRouteTypeScriptCliThroughHstack({
+    args: ['--noEmit', '-p', 'tsconfig.json'],
+    env: {},
+  }), true);
+  assert.equal(shouldRouteTypeScriptCliThroughHstack({
+    args: ['--noEmit'],
+    env: { HAPPIER_DEV_TARGET_EXECUTION: '1' },
+  }), false);
+  assert.equal(shouldRouteTypeScriptCliThroughHstack({
+    args: ['--noEmit'],
+    env: { HAPPIER_HSTACK_EXECUTION: '1' },
+  }), false);
+  assert.equal(shouldRouteTypeScriptCliThroughHstack({
+    args: ['-p', 'tsconfig.json', '--outDir', 'dist'],
+    env: {},
+  }), false);
+});
 
 test('resolves the native TypeScript CLI from its exported package manifest', () => {
   const resolutions = [];

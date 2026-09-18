@@ -28,10 +28,12 @@ test('one trusted reusable workflow resolves prior release candidates by exact r
     'cli_version',
     'stack_version',
     'server_version',
+    'runner_version',
     'ui_web_version',
     'cli_requested',
     'stack_requested',
     'server_requested',
+    'runner_requested',
     'ui_web_requested',
   ]) {
     assert.ok(parsed.on.workflow_call.outputs[output], `missing resume output ${output}`);
@@ -50,6 +52,7 @@ test('one trusted reusable workflow resolves prior release candidates by exact r
 for (const [name, buildJobs] of [
   ['publish-cli-binaries.yml', ['prepare', 'build_native', 'finalize_darwin', 'publish']],
   ['publish-hstack-binaries.yml', ['prepare', 'build_candidate', 'finalize_darwin', 'finalize_publish']],
+  ['publish-runner-binaries.yml', ['prepare', 'build_candidate', 'finalize_publish']],
   ['publish-server-runtime.yml', ['build_native', 'finalize_darwin', 'finalize_publish']],
   ['publish-ui-web.yml', ['prepare', 'build_candidate', 'publish']],
 ]) {
@@ -121,11 +124,14 @@ test('full release resume binds the prior run to the same operation and authoriz
   assert.match(parsed.jobs.plan.outputs.publish_cli_binaries_needed, /needs\.resolve_resume\.outputs\.cli_requested/);
   assert.match(parsed.jobs.plan.outputs.publish_stack, /needs\.resolve_resume\.outputs\.stack_requested/);
   assert.match(parsed.jobs.plan.outputs.publish_server_runtime_needed, /needs\.resolve_resume\.outputs\.server_requested/);
+  assert.match(parsed.jobs.plan.outputs.publish_runner_binaries_needed, /needs\.resolve_resume\.outputs\.runner_requested/);
+  assert.match(parsed.jobs.plan.outputs.publish_runner_binaries_needed, /steps\.plan\.outputs\.changed_runner/);
   assert.match(parsed.jobs.publish_ui_web.if, /needs\.resolve_resume\.outputs\.ui_web_requested/);
   for (const [jobName, output] of [
     ['publish_cli_binaries', 'cli_version'],
     ['publish_hstack_binaries', 'stack_version'],
     ['publish_server_runtime', 'server_version'],
+    ['publish_runner_binaries', 'runner_version'],
     ['publish_ui_web', 'ui_web_version'],
   ]) {
     assert.ok(needs(parsed.jobs[jobName]).includes('resolve_resume'));
@@ -134,21 +140,23 @@ test('full release resume binds the prior run to the same operation and authoriz
   assert.equal(parsed.jobs.verify_release_candidates.with.verify_cli_release, "${{ needs.publish_cli_binaries.result == 'success' && needs.resolve_resume.outputs.cli_version == '' }}");
   assert.equal(parsed.jobs.verify_release_candidates.with.verify_stack_release, "${{ needs.publish_hstack_binaries.result == 'success' && needs.resolve_resume.outputs.stack_version == '' }}");
   assert.equal(parsed.jobs.verify_release_candidates.with.verify_server_release, "${{ needs.publish_server_runtime.result == 'success' && needs.resolve_resume.outputs.server_version == '' }}");
+  assert.equal(parsed.jobs.verify_release_candidates.with.verify_runner_release, "${{ needs.publish_runner_binaries.result == 'success' && needs.resolve_resume.outputs.runner_version == '' }}");
   assert.equal(parsed.jobs.verify_release_candidates.with.verify_ui_web_release, "${{ needs.publish_ui_web.result == 'success' && needs.resolve_resume.outputs.ui_web_version == '' }}");
   const statusSource = parsed.jobs.release_status.steps.map((step) => step.run ?? '').join('\n');
   assert.match(statusSource, /project-release-status\.mjs[\s\S]*--mode standard/);
   const projection = parsed.jobs.release_status.steps.find((step) => String(step.name).includes('Project release status facts'));
   assert.equal(projection.env.CLI_RESUME_VERIFIED, '${{ needs.verify_resume_candidates.outputs.cli_verified }}');
   assert.equal(projection.env.SERVER_RESUME_VERIFIED, '${{ needs.verify_resume_candidates.outputs.server_verified }}');
+  assert.equal(projection.env.RUNNER_RESUME_VERIFIED, '${{ needs.verify_resume_candidates.outputs.runner_verified }}');
 });
 
 test('failed aggregate verification independently certifies successful immutable siblings for resume', () => {
   const verifier = workflow('verify-release-resume-candidates.yml');
-  for (const output of ['cli_verified', 'stack_verified', 'server_verified', 'ui_web_verified']) {
+  for (const output of ['cli_verified', 'stack_verified', 'server_verified', 'runner_verified', 'ui_web_verified']) {
     assert.ok(verifier.on.workflow_call.outputs[output], `missing per-product output ${output}`);
   }
   const verifyJob = verifier.jobs.verify;
-  for (const id of ['verify_cli', 'verify_stack', 'verify_server', 'verify_ui_web']) {
+  for (const id of ['verify_cli', 'verify_stack', 'verify_server', 'verify_runner', 'verify_ui_web']) {
     const step = verifyJob.steps.find((candidate) => candidate.id === id);
     assert.ok(step, `missing independent ${id} step`);
     assert.equal(step['continue-on-error'], true);
@@ -156,7 +164,7 @@ test('failed aggregate verification independently certifies successful immutable
     assert.match(step.if, /always\(\)/);
   }
   const outputSource = verifyJob.steps.find((step) => step.id === 'outputs')?.run ?? '';
-  for (const id of ['cli', 'stack', 'server', 'ui_web']) {
+  for (const id of ['cli', 'stack', 'server', 'runner', 'ui_web']) {
     assert.match(outputSource, new RegExp(`emit_result ${id} `));
   }
 
@@ -177,7 +185,7 @@ test('failed aggregate verification independently certifies successful immutable
     grouped.steps.some((step) => /--candidate-build-run-id "\$CANDIDATE_BUILD_RUN_ID"[\s\S]*--publication-run-id "\$PUBLICATION_RUN_ID"[\s\S]*--derive-targets true/.test(step.run ?? '')),
     'aggregate run provenance and release targets must remain owned by the canonical verifier',
   );
-  for (const id of ['cli', 'stack', 'server', 'ui_web']) {
+  for (const id of ['cli', 'stack', 'server', 'runner', 'ui_web']) {
     const step = grouped.steps.find((candidate) => candidate.id === `verify_${id}`);
     assert.ok(step, `aggregate verifier must delegate ${id} artifact verification to the shared owner`);
     assert.equal(step.uses, './.release-control/.github/actions/verify-immutable-release-candidate');
@@ -185,14 +193,17 @@ test('failed aggregate verification independently certifies successful immutable
   }
 
   for (const [name, groupedJob, candidates] of [
-    ['nightly-dev.yml', 'release_verify', ['cli', 'hstack', 'server_runtime', 'ui_web']],
-    ['release.yml', 'verify_release_candidates', ['publish_cli_binaries', 'publish_hstack_binaries', 'publish_server_runtime', 'publish_ui_web']],
+    ['nightly-dev.yml', 'release_verify', ['cli', 'hstack', 'runner', 'server_runtime', 'ui_web']],
+    ['release.yml', 'verify_release_candidates', ['publish_cli_binaries', 'publish_hstack_binaries', 'publish_server_runtime', 'publish_runner_binaries', 'publish_ui_web']],
   ]) {
     const parsed = workflow(name);
     const independent = parsed.jobs.verify_resume_candidates;
     assert.ok(independent, `${name} must independently certify successful siblings`);
     assert.ok(needs(independent).includes(groupedJob));
     for (const candidate of candidates) assert.ok(needs(independent).includes(candidate));
+    if (name === 'nightly-dev.yml') {
+      assert.equal(independent.with.candidate_runner_version, "${{ needs.runner.result == 'success' && needs.runner.outputs.version || '' }}");
+    }
     assert.match(independent.if, new RegExp(`needs\\.${groupedJob}\\.result != 'success'`));
     assert.ok(needs(parsed.jobs.release_status).includes('verify_resume_candidates'));
     for (const promotion of Object.values(parsed.jobs).filter((job) => String(job.name ?? '').startsWith('Promote verified') || String(job.name ?? '').startsWith('Recover rolling'))) {

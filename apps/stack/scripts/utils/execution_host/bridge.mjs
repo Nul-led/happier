@@ -3,6 +3,7 @@ import { isAbsolute, posix } from 'node:path';
 
 import { shouldDelegateToActiveExecutionHost } from './controller.mjs';
 import { resolveHostWorkspaceMapping, runDelegatedHstackCommand } from './delegation.mjs';
+import { runForegroundChild } from './foreground_child.mjs';
 import { startGhopsCredentialBroker } from './ghops_credential_broker.mjs';
 
 function defaultBoundary() {
@@ -18,24 +19,6 @@ function defaultBoundary() {
       };
     },
   };
-}
-
-async function waitForChild(child, boundary) {
-  const removeSignalHandlers = boundary.onSignal((signal) => {
-    try {
-      child.kill(signal);
-    } catch {
-      // The bridged process may already have reached its terminal state.
-    }
-  });
-  try {
-    return await new Promise((resolvePromise, rejectPromise) => {
-      child.once('error', rejectPromise);
-      child.once('close', (exitCode, signal) => resolvePromise({ exitCode, signal }));
-    });
-  } finally {
-    removeSignalHandlers();
-  }
 }
 
 export async function runExecutionHostBridge({
@@ -56,13 +39,18 @@ export async function runExecutionHostBridge({
   }
   const shouldDelegate = shouldDelegateToActiveExecutionHost({ profile, argv, platform, env });
   if (!shouldDelegate) {
-    const child = boundary.spawn(process.execPath, [entrypoint, ...argv], {
-      cwd,
-      env: { ...env, HAPPIER_STACK_EXECUTION_HOST_ADAPTER_REENTRY: '1' },
-      stdio: 'inherit',
-      shell: false,
+    const outcome = await runForegroundChild({
+      command: process.execPath,
+      args: [entrypoint, ...argv],
+      options: {
+        cwd,
+        env: { ...env, HAPPIER_STACK_EXECUTION_HOST_ADAPTER_REENTRY: '1' },
+        stdio: 'inherit',
+        shell: false,
+      },
+      boundary,
     });
-    return { ...(await waitForChild(child, boundary)), delegated: false };
+    return { ...outcome, delegated: false };
   }
 
   const mapping = resolveHostWorkspaceMapping(profile, cwd);

@@ -118,6 +118,28 @@ test('accepts a navigation label supplied by an imported translation module', ()
   );
 });
 
+test('accepts a navigation label supplied by the bundled plugin translation projection', () => {
+  const root = fixture({
+    'p.mdx': 'Open **Settings → Agents → Plugin Agent**.\n',
+  });
+  const translationsRoot = fixture({
+    'en.ts': "export const en = { settings: 'Settings', agents: 'Agents' };\n",
+    'bundledPluginTranslations.generated.ts': [
+      'export const BUNDLED_PLUGIN_TRANSLATIONS = {',
+      '  en: { "agentInput.agent.plugin": "Plugin Agent" },',
+      '};',
+    ].join('\n'),
+  });
+
+  assert.deepEqual(checkUiLabels({
+    contentRoot: root,
+    translationFiles: [
+      join(translationsRoot, 'en.ts'),
+      join(translationsRoot, 'bundledPluginTranslations.generated.ts'),
+    ],
+  }), []);
+});
+
 test('finds a label declared in an inline multi-property object', () => {
   // The end-anchored extractor this replaced only saw a value at the end of a
   // line, so a label written alongside a sibling property was invisible and the

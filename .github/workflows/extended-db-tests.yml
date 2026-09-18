@@ -245,15 +245,20 @@ jobs:
       - name: Check provider schema synchronization
         run: yarn --cwd apps/server schema:sync:check
 
+      - name: Run Session System Record preview upgrade contract (Postgres)
+        run: node packages/tests/scripts/run-extended-db-docker.mjs --db postgres --mode session-system-record-upgrade
+
       - name: Migrate (Postgres)
         env:
+          HAPPIER_DB_PROVIDER: postgres
           DATABASE_URL: postgresql://happier:happier@127.0.0.1:${{ job.services.postgres.ports[5432] }}/happier?sslmode=disable
-        run: yarn --cwd apps/server -s prisma migrate deploy
+        run: yarn --cwd apps/server -s migrate:full:deploy
 
       - name: Run db contract suite (Postgres)
         env:
           HAPPIER_DB_PROVIDER: postgres
           DATABASE_URL: postgresql://happier:happier@127.0.0.1:${{ job.services.postgres.ports[5432] }}/happier?sslmode=disable
+          HAPPIER_TEST_POSTGRES_DATABASE_URL: postgresql://happier:happier@127.0.0.1:${{ job.services.postgres.ports[5432] }}/happier?sslmode=disable
         run: yarn --cwd apps/server test:db-contract
 
   db-contract-mysql:
@@ -301,6 +306,9 @@ jobs:
       - name: Check provider schema synchronization
         run: yarn --cwd apps/server schema:sync:check
 
+      - name: Run Session System Record preview upgrade contract (MySQL)
+        run: node packages/tests/scripts/run-extended-db-docker.mjs --db mysql --mode session-system-record-upgrade
+
       - name: Run Voice identity rolling-upgrade contract (MySQL)
         env:
           HAPPIER_DB_PROVIDER: mysql
@@ -319,4 +327,5 @@ jobs:
         env:
           HAPPIER_DB_PROVIDER: mysql
           DATABASE_URL: mysql://root:happier@127.0.0.1:${{ job.services.mysql.ports[3306] }}/happier
+          HAPPIER_TEST_MYSQL_DATABASE_URL: mysql://root:happier@127.0.0.1:${{ job.services.mysql.ports[3306] }}/happier
         run: yarn --cwd apps/server test:db-contract

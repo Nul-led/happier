@@ -18,14 +18,14 @@ async function withTempDir(run) {
   }
 }
 
-function runPublishManifests({ artifactsDir, outDir }) {
+function runPublishManifests({ artifactsDir, outDir, product = 'happier', version = '1.2.3' }) {
   return spawnSync(
     process.execPath,
     [
       publishManifestsPath,
-      '--product=happier',
+      `--product=${product}`,
       '--channel=stable',
-      '--version=1.2.3',
+      `--version=${version}`,
       `--artifacts-dir=${artifactsDir}`,
       `--out-dir=${outDir}`,
       '--assets-base-url=https://example.com/downloads/cli-stable',
@@ -35,6 +35,36 @@ function runPublishManifests({ artifactsDir, outDir }) {
     { encoding: 'utf-8' }
   );
 }
+
+test('publish-manifests projects Runner bounds only from the signed checksum envelope', async () => {
+  await withTempDir(async (dir) => {
+    const artifactsDir = join(dir, 'artifacts');
+    const outDir = join(dir, 'out');
+    const product = 'happier-runner';
+    const version = '0.3.0';
+    const archiveName = `${product}-v${version}-linux-x64.zip`;
+    const checksumsName = `checksums-${product}-v${version}.txt`;
+    const metadata = { sizeBytes: 321, entries: [{ path: 'happier-runner', kind: 'file', sizeBytes: 300, mode: 0o755 }] };
+    await mkdir(artifactsDir, { recursive: true });
+    await writeFile(join(artifactsDir, archiveName), 'archive', 'utf-8');
+    await writeFile(join(artifactsDir, checksumsName), [
+      `${'a'.repeat(64)}  ${archiveName}`,
+      `# happier-artifact-v1 ${JSON.stringify({ name: archiveName, ...metadata })}`,
+      '',
+    ].join('\n'), 'utf-8');
+    await writeFile(join(artifactsDir, `${checksumsName}.minisig`), 'signature', 'utf-8');
+
+    const result = runPublishManifests({ artifactsDir, outDir, product, version });
+    assert.equal(result.status, 0, result.stderr);
+    const latest = JSON.parse(await readFile(join(outDir, 'v1', product, 'stable', 'latest.json'), 'utf-8'));
+    assert.deepEqual({ sizeBytes: latest.records[0].sizeBytes, entries: latest.records[0].entries }, metadata);
+
+    await writeFile(join(artifactsDir, checksumsName), `${'a'.repeat(64)}  ${archiveName}\n`, 'utf-8');
+    const missing = runPublishManifests({ artifactsDir, outDir: join(dir, 'missing'), product, version });
+    assert.notEqual(missing.status, 0);
+    assert.match(`${missing.stdout}\n${missing.stderr}`, /signed Runner archive metadata missing/i);
+  });
+});
 
 test('publish-manifests fails when minisign signature asset is missing', async () => {
   await withTempDir(async (dir) => {

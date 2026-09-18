@@ -290,7 +290,7 @@ test('linux provision (happier profile) runs corepack enable as root', async () 
   );
   assert.match(
     corepackOut,
-    /corepack npm exec --yes --package=playwright@1\.58\.2 -- playwright install chromium-headless-shell root=0 project_spec=0/,
+    /corepack npm exec --yes --package=playwright@1\.58\.2 -- playwright install --with-deps chromium-headless-shell root=0 project_spec=0/,
   );
   assert.doesNotMatch(await readIfExists(agentBrowserLog), /agent-browser install --with-deps/);
   assert.deepEqual(

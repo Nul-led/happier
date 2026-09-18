@@ -300,6 +300,51 @@ test('CLI binary publishing builds and validates each released target on its nat
   const buildRuns = build.steps.map((step) => String(step.run ?? '')).join('\n');
   assert.match(buildRuns, /\bgo test \.\/\.\.\./);
   assert.match(buildRuns, /\bgo vet \.\/\.\.\./);
+  const processCustodyTests = build.steps.find(
+    (step) => step.name === 'Run native process-custody tests',
+  );
+  assert.equal(
+    processCustodyTests?.['working-directory'],
+    'apps/cli/native/processcustody',
+    'each native matrix runner must execute the process-custody module on its own OS',
+  );
+  assert.equal(processCustodyTests?.shell, 'bash');
+  assert.equal(processCustodyTests?.if, undefined, 'Darwin and Windows must not be filtered out');
+  assert.match(String(processCustodyTests?.run ?? ''), /^\s*set -euo pipefail\s+go test \.\/\.\.\.\s*$/u);
+  const nativeConfinedSmoke = build.steps.find(
+    (step) => step.name === 'Exercise packaged workspace confinement through the CLI owner',
+  );
+  assert.equal(
+    nativeConfinedSmoke?.if,
+    "matrix.platform_os == 'macos' || matrix.platform_os == 'windows'",
+    'the packaged confinement smoke must run on both supported native filesystem implementations',
+  );
+  assert.equal(
+    nativeConfinedSmoke?.env?.HAPPIER_RUN_NATIVE_CONFINED_WORKSPACE_SYNC_REAL_INTEGRATION,
+    '1',
+  );
+  assert.match(
+    String(nativeConfinedSmoke?.run ?? ''),
+    /PACKAGED_CUSTODY_PATH="\$\(find "\$\{PACKAGED_PAYLOAD_PATH\}" -type f -name "\$CUSTODY_NAME" -print\)"/,
+    'the smoke must consume the helper extracted from the exact candidate archive',
+  );
+  assert.match(
+    String(nativeConfinedSmoke?.run ?? ''),
+    /cp "\$\{PACKAGED_CUSTODY_PATH\}" "\$\{STAGED_CUSTODY_PATH\}"/,
+    'the smoke must place the packaged helper at the default resolver staging location',
+  );
+  assert.match(
+    String(nativeConfinedSmoke?.run ?? ''),
+    /yarn workspace @happier-dev\/cli vitest run[\s\S]*workspaceSyncNativeConfinedFileSystem\.test\.ts[\s\S]*uses the staged native helper for read, abort preservation, and committed deletion/,
+    'the native matrix must cross the real TypeScript resolver/spawn/protocol boundary',
+  );
+  const packagedConformanceStep = build.steps.find(
+    (step) => step.name === 'Run retained conformance harness against the packaged wrapper',
+  );
+  assert.ok(
+    build.steps.indexOf(nativeConfinedSmoke) > build.steps.indexOf(packagedConformanceStep),
+    'the smoke must consume the archive after canonical extraction and packaged validation',
+  );
   assert.doesNotMatch(
     buildRuns,
     /\btar\s+-xzf\s+"\$\{ARCHIVE\}"/,

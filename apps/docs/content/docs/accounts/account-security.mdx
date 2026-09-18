@@ -1,0 +1,110 @@
+---
+title: Account security
+description: Sign in with email and password, change or recover your password, and keep access to encrypted data.
+---
+
+Use Account Security to manage the one email address and password that sign you
+in to the selected Home, without changing the keys that protect existing data.
+
+<Callout>
+  **Developer Preview:** native email and password sign-in is implemented in
+  Happier's development source. It is not a released or publicly available
+  feature yet. Your Home must enable the method and configure email delivery
+  before the app offers it. The complete SMTP, browser, desktop, iOS, and
+  Android journeys have not yet been certified from the current source.
+</Callout>
+
+## What you need first
+
+- The correct Home selected in Happier. Passwords, sign-in email addresses, and
+  recovery operations belong to one Home.
+- Access to the sign-in mailbox when you are creating an account, adding email
+  and password, changing the sign-in email, or resetting a Plain account.
+- For an E2EE account, keep the recovery key saved somewhere outside Happier.
+
+## Sign in or create an account
+
+Choose **Email and password** on the Home's sign-in screen. Happier shows only
+the actions and account protection modes that Home currently permits.
+
+When you create an account, open the confirmation link sent to your mailbox and
+return to the same Home to finish. On an invitation-only Home, a valid Team
+invitation can authorize this bounded account-creation path even when public
+signup is unavailable.
+
+The two account modes recover differently:
+
+- A **Home-readable** account can use an emailed password-reset link. Setting a
+  new password signs that account out everywhere else, but does not revoke its
+  API Tokens.
+- An **End-to-end encrypted** account uses the password locally to open the same
+  recovery secret your recovery key represents. The Home cannot use an emailed
+  reset to reconstruct encrypted data.
+
+## Change email or password
+
+Open **Settings → Account → Account Security**. The email and password section
+shows the current sign-in email and whether a password is set up.
+
+- To change the sign-in email, request a confirmation message and open its link.
+  The old address keeps working until the confirmed change commits.
+- To change a password, enter the requested current credential and the new
+  password. An E2EE password change wraps the same recovery secret; it does not
+  re-encrypt your Sessions or rotate the Account identity.
+- To remove email and password, confirm the removal. Happier refuses a change
+  that would leave the Account without a usable sign-in route.
+
+When email delivery is available, Happier sends an authentication-change notice
+after a password is added, changed, removed, or reset, and after the sign-in
+email changes. The notice links back to Account Security when the Home can
+publish that destination; the security change still succeeds if delivery fails.
+
+Passwords must contain at least 15 Unicode scalar values and fit within 1,024
+UTF-8 bytes. Happier preserves the exact text without trimming or Unicode
+normalization. Spaces, paste, and password managers are supported.
+
+## Automation and plugin boundary
+
+The safe Account Security read returns only the authenticated Account's sign-in
+email and effective security state. An ordinary API token and an installed
+built-in or external plugin can use that read when its Action surface is enabled;
+neither gets a privileged plugin-only path.
+
+Password enrollment, change, removal, and sign-in-email replacement stay on
+Happier's interactive UI and CLI hosts. They collect secrets locally and require
+present-user authority, so they are not published through the generic API, MCP,
+agent, or plugin Action catalogs.
+
+## Recover access
+
+Choose **Forgot password?** from email and password sign-in.
+
+For a Home-readable account, request a reset email, open its one-time link, and
+choose a new password. The response is deliberately neutral even when the
+address is not an active account, so do not use it to test whether somebody has
+an account.
+
+For an E2EE account, choose **Use your recovery key**. The existing recovery key
+authenticates the Account and lets you wrap that same encrypted identity with a
+new password. If no signed-in device and no saved recovery key can open the
+Account, proving control of the email address cannot restore its encrypted data.
+
+## When it goes wrong
+
+- An expired or already-used email link changes nothing. Return to the original
+  flow and request another one.
+- If the link opens the wrong Home, stop and reopen the complete link. Do not
+  copy only its one-time token to another server.
+- If the Home disables email and password, use another sign-in method the Home
+  offers or ask a Home administrator to restore an allowed route.
+- If Happier reports that the password changed elsewhere, reload Account
+  Security before trying again.
+- A disabled Account must be re-enabled by a Home administrator; changing its
+  password does not reactivate it.
+
+## Related
+
+- [Encryption model](/security/encryption) — why password and recovery-key sign-in reach the same E2EE Account.
+- [Device linking and restore](/accounts/device-linking-and-restore) — approve or restore another device.
+- [API Tokens](/security/api-tokens) — automation credentials managed beneath Account Security.
+- [Team invitations](/accounts/team-invitations) — account creation and sign-in from an invitation.

@@ -172,7 +172,6 @@ export const DECLARED_UNRESOLVED_MOCK_SPECIFIERS: Readonly<Record<string, readon
   "apps/ui/sources/components/sessions/transcript/MessageView.jumpHighlight.test.tsx": ["@/components/sessions/sessionMedia/SessionMediaInlineImages"],
   "apps/ui/sources/components/sessions/transcript/MessageView.messagePinButton.test.tsx": ["@/components/sessions/sessionMedia/SessionMediaInlineImages"],
   "apps/ui/sources/components/sessions/transcript/MessageView.unsupportedContent.test.tsx": ["@/components/sessions/sessionMedia/SessionMediaInlineImages","@/components/sessions/transcript/messageCopyVisibility"],
-  "apps/ui/sources/hooks/session/useSessionExecutionRunLaunchability.test.tsx": ["@/hooks/server/useSessionMachineReachability"],
   "apps/ui/sources/voice/agent/initializeVoiceAgentHandle.spec.ts": ["@/voice/agent/resolveVoiceAgentModels"],
 });
 

@@ -12,6 +12,9 @@ function classifySshDoctorDiagnosticLine(line) {
   if (/permission denied \(|host key verification failed|too many authentication failures/i.test(diagnostic)) {
     return 'ssh-authentication-failed';
   }
+  if (/mux_client_request_session: session request failed: Session open refused by peer/i.test(diagnostic)) {
+    return 'ssh-multiplex-session-refused';
+  }
   return null;
 }
 
@@ -71,20 +74,21 @@ export async function runDevTargetsDoctor(
     const managedRuntime = target.managedRuntime
       ? await doctorManagedRuntime({ target, env })
       : null;
-    const sshArgs = [
-      ...(target.sshConfigFile ? ['-F', target.sshConfigFile] : []),
-      '-o',
-      'ControlMaster=no',
-      '-o',
-      'BatchMode=yes',
-      '-o',
-      'ConnectTimeout=10',
-      target.ssh,
-      buildRemoteDoctorCommand(target),
-    ];
     let sshProcessResult;
     let diagnosticReason;
     for (let attempt = 1; attempt <= MAX_SSH_DOCTOR_ATTEMPTS; attempt += 1) {
+      const sshArgs = [
+        ...(target.sshConfigFile ? ['-F', target.sshConfigFile] : []),
+        '-o',
+        'ControlMaster=no',
+        ...(attempt > 1 ? ['-o', 'ControlPath=none'] : []),
+        '-o',
+        'BatchMode=yes',
+        '-o',
+        'ConnectTimeout=10',
+        target.ssh,
+        buildRemoteDoctorCommand(target),
+      ];
       sshProcessResult = await runProcess({
         label: `remote:${target.name}`,
         command: 'ssh',
@@ -94,7 +98,7 @@ export async function runDevTargetsDoctor(
       diagnosticReason = resolveSshDoctorDiagnosticReason(sshProcessResult);
       if (
         sshProcessResult?.code === 0
-        || diagnosticReason !== 'ssh-connect-timeout'
+        || !['ssh-connect-timeout', 'ssh-multiplex-session-refused'].includes(diagnosticReason)
         || attempt === MAX_SSH_DOCTOR_ATTEMPTS
       ) {
         break;

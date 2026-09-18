@@ -108,6 +108,7 @@ test('background readiness leaves deferred-auth daemon startup to the inner runn
     { HAPPIER_STACK_DAEMON_WAIT_FOR_AUTH: '1' },
     { HAPPIER_STACK_AUTH_FLOW: 'true' },
     { HAPPIER_STACK_DAEMON_WAIT_FOR_AUTH: 'true' },
+    { HAPPIER_STACK_TUI: '1' },
   ]) {
     const server = await withListeningServer();
     try {

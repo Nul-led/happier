@@ -8,6 +8,7 @@ import {
   resolveWorkspaceBundleLockPath,
   withWorkspaceBundleLock as withWorkspaceBundleLockDefault,
 } from './workspaceBundleLock.mjs';
+import { WORKSPACE_PACKAGE_PREREQUISITES_READY_ENV_VAR } from './workspaceChildBuildEnv.mjs';
 
 const WORKSPACE_DIST_BUILD_LOCK_HELD_ENV_VAR = 'HAPPIER_WORKSPACE_DIST_BUILD_LOCK_HELD';
 
@@ -45,8 +46,11 @@ export async function bundleWorkspacePackageDependencies(options) {
   const forceArtifactWorkspaceBuilds = publicationMode === 'artifact';
   const quiet = options.quiet ?? false;
   const baseEnv = options.env ?? process.env;
-  const ensureWorkspacePackagesBuiltByName = options.ensureWorkspacePackagesBuiltByName
-    ?? ensureWorkspacePackagesBuiltByNameDefault;
+  const ensureWorkspacePackagesBuiltByName = (
+    baseEnv?.[WORKSPACE_PACKAGE_PREREQUISITES_READY_ENV_VAR] === '1'
+      ? async (_repoRoot, packageNames) => ({ ok: true, built: [], skipped: packageNames })
+      : options.ensureWorkspacePackagesBuiltByName ?? ensureWorkspacePackagesBuiltByNameDefault
+  );
   const loadCliCommonWorkspacesModule = options.loadCliCommonWorkspacesModule
     ?? loadCliCommonWorkspacesModuleDefault;
   const withWorkspaceBundleLock = options.withWorkspaceBundleLock

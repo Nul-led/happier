@@ -7,7 +7,7 @@ Happier has three public Plugin UI models. Choose the narrowest one that fits th
 
 - **Declarative host-rendered UI** for settings, actions, and other forms the host can render from manifest descriptors.
 - **React Native UI** for a trusted, host-integrated component that needs the app's native UI model.
-- **Hosted web UI** for an isolated, packaged web artifact whose runtime frame is admitted by the host.
+- **Hosted web UI** for an isolated, packaged web artifact whose runtime frame is admitted by the host. The development SDK also accepts [self-contained inline HTML](/plugins/ui/hosted-web#inline-html-in-development) through that frame path.
 
 React Native plugin code is trusted package code and runs in the client realm; it is not a sandbox.
 
@@ -214,6 +214,88 @@ native tablet. On native phone, it admits only `appPage`/`app`,
 other pane cells are intentionally unavailable. An emitted web, iOS, or Android
 artifact does not widen that matrix. Treat these as source-level admission
 rules—loaded mobile and tablet validation remains a separate host proof.
+
+## Embedded Session widgets
+
+> **Development preview:** Session Board placement is still being completed and
+> validated across Happier's supported hosts. A self-hosted development server
+> must explicitly enable `HAPPIER_FEATURE_SESSIONS_BOARD__ENABLED`, and Happier
+> exposes the Board only after the current Session System Records contract is
+> active. Plugin declarations remain installed and recoverable while the Board
+> is unavailable; availability does not grant Session access or Action authority.
+
+A `sessionWidget` view is embedded Session content, not a destination. Happier
+frames it as one *widget* that a person can place on a Session Board and open
+from Details, the compact sidebar, the Companion and the mobile Cockpit — all
+through the same host. It never appears in navigation, collision domains, or
+`openSurface`, and it takes no `instancePolicy`.
+
+```ts
+{
+  id: 'review-status-widget',
+  container: 'sessionWidget',
+  target: { kind: 'session' },
+  renderer: 'review-native',
+  fallbackRenderers: ['review-web'],
+  title: 'Review status',
+}
+```
+
+Because it is embedded content rather than a destination, `sessionWidget` sits
+outside the destination-binding matrix above: the registry declares it for every
+supported UI platform, in `content` and `fill` presentations only. Whether a given
+person can actually see it still depends on their Home enabling the Board and on
+their client admitting your renderer.
+
+What the host guarantees at every mount:
+
+- `mount.kind` is `embedded`, `role` is `sessionWidget`, and `presentation` is
+  `content` (a framed card whose host owns bounds and scrolling) or `fill` (the
+  expanded host, where your surface owns its own content scroll). There is no
+  compact or inline presentation: measured geometry, platform, theme, scale,
+  safe area and active state already arrive through the surface context, so
+  adapt to the space rather than to a Happier shell name.
+- `target` is the exact current Session. It is resolved from the Session the
+  person is looking at, never from a stored value or the focused Home.
+- The stored Board item keeps only your `{ pluginId, localId }` identity plus a
+  bounded launch input. A plugin update therefore keeps the widget in place: the
+  host retires the old generation and remounts the current one against the same
+  surface identity. Declared `fallbackRenderers` may switch renderer within that
+  same surface; nothing switches surface, plugin, machine or generation.
+- Each physical placement is its own mount with its own instance identity and
+  lifetime. Only one placement per viewer and window is executable at a time;
+  the others are inert previews.
+
+When the plugin is disabled, uninstalled, retired, or no longer declares the
+surface, Happier keeps the widget's frame and title and shows a localized state
+with the recovery the person can actually perform. It never deletes the item,
+guesses a replacement surface, or rewrites its stored source.
+
+Installed first-party and external plugins use this same contract with the same
+capabilities under equivalent grants: there is no privileged built-in path. A
+widget still consumes only its negotiated Host API subset, and each Action and
+Resource keeps its ordinary admission and approval policy.
+
+The Board records and organization are shared with everyone who can read the
+Session. Which Board view is active and what each person keeps in their Companion
+stay local to that viewer and device. Reading Board content requires current
+Session transcript access; changing it requires Session-record edit access.
+Actions do not bypass those checks or Happier's normal authentication,
+confirmation, and approval policy.
+
+Do not confuse an installed plugin's `hostedHtml` renderer with HTML authored
+directly into a Board item. Installed first-party and external plugins are trusted
+through the public SDK contract above. Caller-authored Board HTML has no plugin
+identity or ambient plugin capability, and its smaller Host API ceiling is limited
+to context, Resource reads and watches, Action execution, and notifications. Each
+Resource and Action still applies its own admission and approval checks.
+
+Current development source carries caller-authored Board HTML through the shared
+frame implementation on web/Tauri, iOS, and Android. That is implementation
+reachability, not a released support claim: loaded isolation and lifecycle proof
+remains open for each advertised realm. When a current client cannot admit its
+renderer, Happier preserves the item and shows a recoverable unavailable state
+rather than deleting, retargeting, or rewriting it.
 
 ## Accessibility, currentness, and offline behavior
 

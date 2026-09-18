@@ -1,6 +1,9 @@
 // @ts-check
 
 import { execFileSync, spawn } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { resolveOptionalDockerBuildArgs } from './resolve-build-args.mjs';
 import { resolveDockerTagSpec } from './resolve-tag-spec.mjs';
@@ -595,10 +598,14 @@ async function main() {
 
   /**
    * @param {readonly string[]} tags
-   * @param {{ target: string; file: string; context?: string; cacheScope: string; extraArgs?: string[] }} params
+   * @param {{ target: string; file: string; context?: string; cacheScope: string; extraArgs?: string[]; verifyPublishedIndex?: boolean; publishedBase?: string }} params
    */
   const runBuildxForTags = async (tags, params) => {
     if (tags.length === 0) return;
+    const metadataDirectory = params.verifyPublishedIndex
+      ? mkdtempSync(join(String(process.env.RUNNER_TEMP ?? tmpdir()), 'happier-buildx-'))
+      : null;
+    const metadataFile = metadataDirectory ? join(metadataDirectory, 'metadata.json') : null;
     const args = [
       'buildx',
       'build',
@@ -610,6 +617,7 @@ async function main() {
       '--platform',
       'linux/amd64,linux/arm64',
       '--push',
+      ...(metadataFile ? ['--metadata-file', metadataFile] : []),
       ...(useGhaCache ? ['--cache-from', `type=gha,scope=${params.cacheScope}`] : []),
       ...(useGhaCache ? ['--cache-to', `type=gha,mode=max,scope=${params.cacheScope}`] : []),
       ...(params.extraArgs ?? []),
@@ -619,18 +627,93 @@ async function main() {
       params.context ?? '.',
     ];
 
-    await runDockerBuildxBuildWithRetry({
-      dockerArgs: args,
-      dryRun,
-      onRetry: (attempt, errorText) => {
-        console.warn(`[pipeline] docker buildx build failed (attempt ${attempt}/${DEFAULT_BUILD_RETRIES}), retrying...`);
-        if (errorText) {
-          const firstLine = String(errorText).split('\n').find(Boolean);
-          if (firstLine) console.warn(`[pipeline] transient error: ${firstLine}`);
+    try {
+      await runDockerBuildxBuildWithRetry({
+        dockerArgs: args,
+        dryRun,
+        onRetry: (attempt, errorText) => {
+          console.warn(`[pipeline] docker buildx build failed (attempt ${attempt}/${DEFAULT_BUILD_RETRIES}), retrying...`);
+          if (errorText) {
+            const firstLine = String(errorText).split('\n').find(Boolean);
+            if (firstLine) console.warn(`[pipeline] transient error: ${firstLine}`);
+          }
+          dockerPreflight({ dryRun: false });
+        },
+      });
+      if (metadataFile && params.publishedBase) {
+        const digest = dryRun
+          ? `sha256:${'0'.repeat(64)}`
+          : String(JSON.parse(readFileSync(metadataFile, 'utf8'))['containerimage.digest'] ?? '');
+        if (!/^sha256:[0-9a-f]{64}$/u.test(digest)) {
+          throw new Error(`[pipeline] buildx did not report an immutable pushed digest for ${params.publishedBase}`);
         }
-        dockerPreflight({ dryRun: false });
-      },
-    });
+        const exactReference = `${params.publishedBase}@${digest}`;
+        const raw = run('docker', ['buildx', 'imagetools', 'inspect', '--raw', exactReference], {
+          dryRun,
+          stdio: 'pipe',
+        });
+        if (dryRun) {
+          console.log('[dry-run] require linux/amd64 linux/arm64 and attestation-manifest entries with spdx SBOM and slsa provenance predicates');
+        } else {
+          const index = JSON.parse(raw);
+          const manifests = Array.isArray(index.manifests) ? index.manifests : [];
+          /** @type {Map<string, string>} */
+          const platformDigests = new Map();
+          for (const architecture of ['amd64', 'arm64']) {
+            const platformManifest = manifests.find(
+              (manifest) => manifest?.platform?.os === 'linux' && manifest?.platform?.architecture === architecture,
+            );
+            if (!platformManifest) {
+              throw new Error(`[pipeline] ${exactReference} is missing linux/${architecture}`);
+            }
+            const platformDigest = String(platformManifest.digest ?? '');
+            if (!/^sha256:[0-9a-f]{64}$/u.test(platformDigest)) {
+              throw new Error(`[pipeline] ${exactReference} contains linux/${architecture} without an immutable digest`);
+            }
+            platformDigests.set(architecture, platformDigest);
+          }
+          const attestations = manifests.filter((manifest) => manifest?.annotations?.['vnd.docker.reference.type'] === 'attestation-manifest');
+          /** @type {Map<string, Set<string>>} */
+          const predicatesBySubjectDigest = new Map();
+          for (const attestation of attestations) {
+            const attestationDigest = String(attestation?.digest ?? '');
+            if (!/^sha256:[0-9a-f]{64}$/u.test(attestationDigest)) {
+              throw new Error(`[pipeline] ${exactReference} contains an attestation without an immutable digest`);
+            }
+            const subjectDigest = String(attestation?.annotations?.['vnd.docker.reference.digest'] ?? '');
+            if (!/^sha256:[0-9a-f]{64}$/u.test(subjectDigest)) {
+              throw new Error(`[pipeline] ${params.publishedBase}@${attestationDigest} is missing its immutable subject digest`);
+            }
+            const attestationManifest = JSON.parse(run(
+              'docker',
+              ['buildx', 'imagetools', 'inspect', '--raw', `${params.publishedBase}@${attestationDigest}`],
+              { dryRun: false, stdio: 'pipe' },
+            ));
+            const predicateTypes = new Set(
+              (Array.isArray(attestationManifest.layers) ? attestationManifest.layers : [])
+                .map((layer) => String(layer?.annotations?.['in-toto.io/predicate-type'] ?? '')),
+            );
+            const subjectPredicates = predicatesBySubjectDigest.get(subjectDigest) ?? new Set();
+            for (const predicateType of predicateTypes) subjectPredicates.add(predicateType);
+            predicatesBySubjectDigest.set(subjectDigest, subjectPredicates);
+          }
+          for (const [architecture, platformDigest] of platformDigests) {
+            const predicateTypes = predicatesBySubjectDigest.get(platformDigest) ?? new Set();
+            if (
+              ![...predicateTypes].some((type) => type.includes('spdx'))
+              || ![...predicateTypes].some((type) => type.includes('slsa'))
+            ) {
+              throw new Error(`[pipeline] ${exactReference} linux/${architecture} is missing its SBOM/provenance attestations`);
+            }
+          }
+        }
+        console.log(dryRun
+          ? `[dry-run] would verify pushed image index: ${exactReference}`
+          : `[pipeline] verified pushed image index: ${exactReference}`);
+      }
+    } finally {
+      if (metadataDirectory) rmSync(metadataDirectory, { recursive: true, force: true });
+    }
   }
 
   const useGhaCache = String(process.env.GITHUB_ACTIONS ?? '').toLowerCase() === 'true';
@@ -697,6 +780,8 @@ async function main() {
         context: 'deploy/iroh-relay',
         cacheScope: 'iroh-relay',
         extraArgs: ['--sbom=true', '--provenance=true'],
+        verifyPublishedIndex: true,
+        publishedBase: tagSet.base,
       });
     }
   }

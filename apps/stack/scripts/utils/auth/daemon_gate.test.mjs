@@ -64,6 +64,20 @@ test('daemonStartGate blocks daemon start in daemon-wait auth flow when missing 
   assert.equal(gate.reason, 'auth_flow_missing_credentials');
 });
 
+test('TUI startup keeps authentication services available while the daemon waits for credentials', async (t) => {
+  const dir = await withTempRoot(t);
+  const env = { HAPPIER_STACK_TUI: '1' };
+  assert.deepEqual(daemonStartGate({ env, cliHomeDir: dir }), {
+    ok: false,
+    reason: 'auth_flow_missing_credentials',
+  });
+  await writeFile(join(dir, 'access.key'), 'dummy', 'utf-8');
+  assert.deepEqual(daemonStartGate({ env, cliHomeDir: dir }), {
+    ok: true,
+    reason: 'credentials_present',
+  });
+});
+
 test('daemonStartGate blocks daemon start when missing credentials (non-auth flow)', async (t) => {
   const dir = await withTempRoot(t);
   const gate = daemonStartGate({ env: {}, cliHomeDir: dir });

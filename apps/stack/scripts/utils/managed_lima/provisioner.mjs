@@ -72,7 +72,7 @@ export async function inspectManagedLimaGuestIdentity({ executor, instance: rawI
   return { homeDir, user };
 }
 
-const LOGIN_MANAGER_HEALTH_COMMAND = 'timeout 5 loginctl list-sessions --no-legend >/dev/null 2>&1';
+const LOGIN_MANAGER_HEALTH_COMMAND = 'timeout 10 loginctl list-sessions --no-legend >/dev/null 2>&1';
 const LOGIN_MANAGER_REPAIR_COMMAND = [
   'set -eu',
   'sudo systemctl kill --kill-whom=main --signal=KILL systemd-logind.service || true',

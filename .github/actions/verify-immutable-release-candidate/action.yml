@@ -12,7 +12,7 @@ inputs:
     description: Exact source commit identified by the immutable tag
     required: true
   product:
-    description: Candidate product (cli, hstack, server, ui-web)
+    description: Candidate product (cli, hstack, server, runner, ui-web)
     required: true
   version:
     description: Exact immutable candidate version
@@ -47,6 +47,10 @@ runs:
             tag_prefix='server-v'
             checksum_stem='happier-server'
             ;;
+          runner)
+            tag_prefix='runner-v'
+            checksum_stem='happier-runner'
+            ;;
           ui-web)
             tag_prefix='ui-web-v'
             checksum_stem='happier-ui-web'
@@ -65,10 +69,34 @@ runs:
           --candidate-product "$CANDIDATE_PRODUCT" \
           --candidate-version "$CANDIDATE_VERSION"
 
-        candidate_dir="$(mktemp -d "$RUNNER_TEMP/happier-verify-${CANDIDATE_PRODUCT}-XXXXXX")"
-        gh release download "${tag_prefix}${CANDIDATE_VERSION}" \
-          --repo "$REPOSITORY" \
-          --dir "$candidate_dir"
+        candidate_root="$(mktemp -d "$RUNNER_TEMP/happier-verify-${CANDIDATE_PRODUCT}-XXXXXX")"
+        candidate_dir="$candidate_root/candidate"
+        max_attempts=4
+        delay_seconds="${HAPPIER_GITHUB_READ_RETRY_DELAY_SECONDS:-2}"
+        if [[ ! "$delay_seconds" =~ ^[0-9]+$ ]]; then
+          echo "HAPPIER_GITHUB_READ_RETRY_DELAY_SECONDS must be a non-negative integer." >&2
+          exit 2
+        fi
+        downloaded=false
+        for ((attempt = 1; attempt <= max_attempts; attempt += 1)); do
+          attempt_dir="$candidate_root/attempt-${attempt}"
+          rm -rf "$attempt_dir"
+          if gh release download "${tag_prefix}${CANDIDATE_VERSION}" \
+            --repo "$REPOSITORY" \
+            --dir "$attempt_dir"; then
+            mv "$attempt_dir" "$candidate_dir"
+            downloaded=true
+            break
+          fi
+          rm -rf "$attempt_dir"
+          if [ "$attempt" -lt "$max_attempts" ]; then
+            echo "Retrying transient GitHub release read (attempt=$((attempt + 1))/${max_attempts})." >&2
+            sleep "$((delay_seconds * (2 ** (attempt - 1))))"
+          fi
+        done
+        if [ "$downloaded" != true ]; then
+          exit 1
+        fi
         checksums="$candidate_dir/checksums-${checksum_stem}-v${CANDIDATE_VERSION}.txt"
         test -f "$checksums"
         test -f "${checksums}.minisig"

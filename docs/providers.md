@@ -90,11 +90,21 @@ The compatibility result is `verified`, `experimental`, or `incompatible`:
 
 Provider plugins may declare narrow compatibility overrides for known endpoint quirks. Generic host code must not branch on provider ids.
 
+Compatibility and Connected Account suppression use the qualified contributed identity, not a
+provider-local scalar id. Legacy built-in scalar declarations are normalized once at Protocol ingress;
+they cannot suppress or authorize another plugin's same-named binding.
+
 Codex integrations use the OpenAI Responses protocol unless a separately tested adapter is introduced. Emitted Codex `model_providers` fields are allowlisted for the verified Codex version; unsupported or newly documented fields are never emitted accidentally.
 
 ## Credentials and endpoint safety
 
 Version 1 supports unauthenticated and API-key credentials. Raw secrets remain in Saved Secrets and are resolved by the daemon only after all non-secret checks pass. Plugins receive credential descriptors/materialization inputs, not unrestricted access to the secret store.
+
+An unauthenticated Provider remains credential-free through managed-runtime authorization and Agent
+materialization: the host carries an explicit no-credential result and never synthesizes a bearer.
+A Provider-managed runtime may use a declared `systemTool` only through the existing tool authority:
+the operation, immutable Provider declaration, same-plugin tool declaration, executable, and allowed
+environment must all match before the daemon resolves or launches it.
 
 The spawn/probe order is security-sensitive:
 
@@ -157,6 +167,62 @@ Managed subscription-backed routing is experimental and explicit. Upstream polic
 
 This product-risk posture is not a legal-compliance determination. It does not authorize request cloaking, prompt replacement for client impersonation, identity confusion, tracking-identity disguise, or other enforcement-evasion behavior. Managed gateways remain fail closed, and their security, privacy, credential-handling, platform, and correctness gates still apply.
 
+### Team credential resources (development only)
+
+Current 0.3 development source contains the protocol, server routes, and UI foundations for
+sharing an existing Connected Account, Connected Service Pool, or Provider Connection as a
+Team credential resource. This is not a released capability and is disabled by default behind
+`teams.credentialResources`; the independently exposed Internet API also requires
+`teams.credentialResources.externalApi`. Neither a schema nor an enabled feature bit proves that
+the end-to-end broker, direct-delivery, selection, usage, recovery, and revocation journeys are
+ready.
+
+The source Account keeps credential custody. A Team resource stores a typed reference to the
+current source plus audience and use policy; it does not copy a Provider definition or create a
+second credential store. Resource access has two intentionally different privacy contracts:
+
+- **Brokered** access keeps usable credential material on one exact broker Machine. A custodian
+  can configure that Machine directly or choose a personal Machine Pool. For a genuinely new
+  Pool-backed open, the source-owning daemons return only current eligibility status, the Home
+  applies the canonical Pool selector once, and the ordinary exact-Machine broker path continues.
+  The Home admits the current Account, Team resource, Session or execution run, policy, limits,
+  and placement for each request; the broker then performs the Provider request. Recipients do
+  not receive credential bytes, the private Pool roster, or Pool-management authority.
+- **Direct** access deliberately discloses usable current material to an authorized recipient for
+  a source that supports export. Future revocation can stop new retrieval, but cannot recall
+  material already delivered or enforce later out-of-product requests.
+
+For normal Sessions and execution runs, the runtime admission owner supplies the authenticated
+accountable Account independently of message authorship. Background work must not guess that
+authority from Machine ownership, the last human message, or Session storage ownership. External
+API keys identify one resource and accountable API client; they do not let a caller select a
+Machine, source member, Pool member, internal bearer, or loopback endpoint.
+
+Recipient catalogs expose only selection and recovery facts. Source identity, broker placement,
+grant internals, revisions, limits, and encrypted material remain manager/source-owner data.
+Readiness and failures use the typed Team-credential result unions; clients must preserve the
+reported recovery action and must not silently fall back to a personal connection or from direct
+to brokered delivery.
+
+The development Temporary-computer flow resolves its Team credential before a Session exists. The
+reviewed `RunnerCredentialSelectionBindingV1` pins the exact resource, broker Machine, resource
+revision, Provider application binding, and source/catalog revision. For direct placement that is
+the configured Machine. For Pool placement, the server intersects current generic Pool availability
+with source-specific content-free eligibility, selects once, and emits the same exact binding; the
+Runner never lists, joins, manages, or reranks the Pool. It deliberately does not own the chosen
+model or initial prompt: those remain inside the creator-reviewed sealed launch manifest. Resolution
+creates no Session, sends no paid inference request, exports no credential, and retains no broker or
+managed-service lease.
+
+Readiness does not turn that review result into durable authority. Immediately before materializing
+the Machine and Session, the activation owner revalidates the signed readiness statement, reviewed
+selection, current resource and source, exact broker Machine and endpoint, application protocol,
+Agent installation, and current creator consent. Any mismatch returns a typed unavailable or
+conflict result before Session creation; it never substitutes a newer model, source, or Machine.
+Pool membership changes after exact selection do not become a new Runner ACL. Resource relocation
+or Pool deletion changes the resource revision and invalidates the binding; source, Machine,
+endpoint, policy, and usage controls remain current through their existing owners.
+
 ## Model catalogs, visibility, and stale references
 
 The canonical model catalog merges sources in this order:
@@ -186,6 +252,8 @@ A model-picker read waits for the demand it schedules only when a connection is 
 ## Session lifecycle
 
 At launch, Happier persists the structured model selection plus exact non-secret resolution metadata: connection revision, chosen protocol, `compatibilityFingerprint`, `bindingSecurityFingerprint`, and the materialization kind. It does not persist a transient compatibility status, a derived materialization fingerprint, or credentials in session metadata.
+
+In the development Session-creation Action path, a daemon Provider rejection retains its validated `ProviderErrorV1` in the `spawn_failed` result, including the Provider's retryability. The ordinary New Session composer uses that result for its existing inline recovery controls. Recovery stays bound to the original launch context; changing the Home, Machine, or Provider selection must not retry the previous request against the new target.
 
 Agent plugins own model-switch policy. A same-session switch may be permitted only when the adapter can apply the new provider/model safely. Otherwise the UI offers restart/fork semantics. Resume and fork re-resolve the exact stored connection and refuse actionably when it was deleted, disabled, changed incompatibly, or lost its required grant/secret.
 

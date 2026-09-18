@@ -3,7 +3,7 @@
 // @ts-check
 
 import { createReadStream, existsSync } from 'node:fs';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
@@ -12,6 +12,7 @@ import { pathToFileURL } from 'node:url';
 import { fileSha256, parseArtifactChecksums } from './lib/artifact-checksums.mjs';
 import { parseArtifactFilename } from './lib/manifests.mjs';
 import { parseArgs } from './lib/release-script-arguments.mjs';
+import { isRunnerTargetEligibleForPublication, resolveRunnerPackageLayout } from './lib/runner-packaging.mjs';
 import { shouldSmokeTestReleaseArtifact } from './publishing/artifact-smoke-compatibility.mjs';
 import { terminateProcessTreeByPid } from '../../testing/process/processTree.mjs';
 
@@ -26,7 +27,7 @@ const CANONICAL_DIRECTORY_MODES = new Set([0o755]);
 const CANONICAL_NATIVE_FILE_MODES = new Set([0o644, 0o755]);
 const CANONICAL_UI_WEB_FILE_MODES = new Set([0o644]);
 const RELEASE_ARCHIVE_NAME_PATTERN =
-  /^(?<stem>(?<product>happier-ui-web|happier-server|happier|hstack)-v.+-(?<platform>darwin|linux|windows|web)-(?<arch>x64|arm64|any))\.tar\.gz$/u;
+  /^(?<stem>(?<product>happier-ui-web|happier-server|happier-runner|happier|hstack)-v.+-(?<platform>darwin|linux|windows|web)-(?<arch>x64|arm64|any))\.(?:tar\.gz|zip)$/u;
 // These are deliberately bounded, high-confidence ASCII signatures. Generic
 // words such as "token" or "private key", public certificates, and entropy
 // heuristics are excluded to keep binaries and license text admissible.
@@ -61,6 +62,8 @@ class ReleaseArchiveAdmissionError extends Error {}
  *   stem: string;
  *   product: string;
  *   family: ReleaseArchiveFamily;
+ *   platform: string;
+ *   arch: string;
  * }} ReleaseArchiveIdentity
  * @typedef {import('@happier-dev/release-runtime/archiveExtraction').InspectedTarArchiveEntry} InspectedTarArchiveEntry
  */
@@ -80,6 +83,8 @@ function parseReleaseArchiveIdentity(archiveName) {
     stem,
     product,
     family: uiWeb ? 'ui-web' : 'native-binary',
+    platform,
+    arch,
   };
 }
 
@@ -176,8 +181,40 @@ function assertCanonicalArchiveLayout({ archiveName, identity, entries }) {
   }
 }
 
-/** @param {{ archivePath: string; archiveName: string }} params */
-export async function verifyReleaseArchiveAdmission({ archivePath, archiveName }) {
+async function readRunnerClosedZipLayout({ archivePath, archiveName, layout, signal }) {
+  const {
+    inspectClosedZipArchiveEntries,
+  } = await import('@happier-dev/release-runtime/archiveExtraction');
+  const archive = await lstat(archivePath);
+  if (!archive.isFile() || archive.isSymbolicLink() || archive.size < 1) {
+    throw new ReleaseArchiveAdmissionError(
+      `[release] Runner archive source is invalid: ${archiveName}`,
+    );
+  }
+  // The exact-path check below is stricter than root containment, so the
+  // shared extractor must not pre-empt the Runner-specific admission message.
+  const entries = await inspectClosedZipArchiveEntries({
+    archivePath,
+    archiveSizeBytes: archive.size,
+    expectedEntryCount: 1,
+    signal,
+  });
+  const entry = entries[0];
+  if (
+    !entry
+    || entry.path !== layout.executablePath
+    || entry.kind !== 'file'
+    || entry.mode !== 0o755
+  ) {
+    throw new ReleaseArchiveAdmissionError(
+      `[release] Runner archive must contain exactly one ${layout.payloadRootName} executable payload: ${archiveName}`,
+    );
+  }
+  return { archiveSizeBytes: archive.size, entries };
+}
+
+/** @param {{ archivePath: string; archiveName: string; signal?: AbortSignal }} params */
+export async function verifyReleaseArchiveAdmission({ archivePath, archiveName, signal }) {
   const {
     extractArchivePayloadToDirectory,
     inspectTarArchiveEntries,
@@ -187,6 +224,65 @@ export async function verifyReleaseArchiveAdmission({ archivePath, archiveName }
     throw new ReleaseArchiveAdmissionError(
       `[release] unsupported release archive family: ${archiveName}`,
     );
+  }
+
+  // Runner is the one native ZIP product. Its archive is intentionally the
+  // immutable payload consumed by creator-side package assembly, not the
+  // directory-rooted CLI install payload. Publication eligibility and the
+  // per-target layout both come from the canonical Runner packaging owner, so a
+  // build flag cannot publish a target whose native release admission is absent.
+  // This is not the Home availability decision: that additionally requires an
+  // exact verified immutable release record and the default-off product gate.
+  if (identity.product === 'happier-runner') {
+    const targetId = `${identity.platform}-${identity.arch}`;
+    if (!archiveName.endsWith('.zip') || !isRunnerTargetEligibleForPublication(targetId)) {
+      throw new ReleaseArchiveAdmissionError(
+        `[release] Runner target is not eligible for publication: ${archiveName}`,
+      );
+    }
+    const layout = resolveRunnerPackageLayout(targetId);
+    if (layout.payloadKind !== 'appimage') {
+      // Making an app-bundle or exe target publication eligible requires its own admission
+      // evidence (stapled ticket, bundle layout, Authenticode). Adding a branch
+      // before that gate exists would let an unproven payload shape through.
+      throw new ReleaseArchiveAdmissionError(
+        `[release] Runner ${layout.payloadKind} admission is not implemented for ${archiveName}`,
+      );
+    }
+    const scratch = await mkdtemp(join(tmpdir(), 'happier-runner-release-admission-'));
+    try {
+      const closedZipLayout = await readRunnerClosedZipLayout({
+        archivePath,
+        archiveName,
+        layout,
+        signal,
+      });
+      await extractArchivePayloadToDirectory({
+        archivePath,
+        archiveName,
+        closedZipLayout,
+        extractDir: scratch,
+        signal,
+      });
+      const names = await readdir(scratch);
+      if (names.length !== 1 || names[0] !== layout.payloadRootName) {
+        throw new ReleaseArchiveAdmissionError(
+          `[release] Runner archive must contain exactly one ${layout.payloadRootName} payload: ${archiveName}`,
+        );
+      }
+      const executablePath = join(scratch, layout.executablePath);
+      const executable = await lstat(executablePath);
+      const mode = executable.mode & 0o7777;
+      if (!executable.isFile() || mode !== 0o755) {
+        throw new ReleaseArchiveAdmissionError(
+          `[release] Runner archive executable metadata is invalid: ${archiveName}`,
+        );
+      }
+      await scanFileForPrivateMaterial(executablePath);
+      return [{ path: layout.executablePath, kind: 'file', sizeBytes: executable.size, mode }];
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
   }
 
   let entries;
@@ -375,23 +471,38 @@ async function runSmokeCommand({ command, args, cwd, env, timeoutMs }) {
   });
 }
 
-async function smokeTestArchive({ archivePath }) {
+export async function smokeTestArchive({ archivePath, signal }) {
   const artifact = parseArtifactFilename(basename(archivePath));
   const {
     extractArchivePayloadToDirectory,
   } = await import('@happier-dev/release-runtime/archiveExtraction');
   const scratch = await mkdtemp(join(tmpdir(), 'happier-release-smoke-'));
   try {
+    const archiveName = basename(archivePath);
+    const closedZipLayout = artifact?.product === 'happier-runner'
+      ? await readRunnerClosedZipLayout({
+          archivePath,
+          archiveName,
+          layout: resolveRunnerPackageLayout(`${artifact.os}-${artifact.arch}`),
+          signal,
+        })
+      : undefined;
     await extractArchivePayloadToDirectory({
       archivePath,
-      archiveName: basename(archivePath),
+      archiveName,
+      ...(closedZipLayout ? { closedZipLayout } : {}),
       extractDir: scratch,
+      signal,
     });
     const roots = await readdir(scratch);
     if (roots.length === 0) {
       throw new Error(`[release] extracted archive is empty: ${archivePath}`);
     }
-    const root = join(scratch, roots[0]);
+    const firstRootPath = join(scratch, roots[0]);
+    const firstRootStat = await stat(firstRootPath);
+    // Runner ZIPs intentionally contain the immutable executable at the archive
+    // root; existing CLI/server tarballs retain their product directory.
+    const root = firstRootStat.isDirectory() ? firstRootPath : scratch;
     const entries = await readdir(root, { withFileTypes: true });
     const candidate = entries
       .filter((entry) => entry.isFile())
@@ -406,6 +517,13 @@ async function smokeTestArchive({ archivePath }) {
     const binPath = join(root, candidate);
     const serverBinary = isServerBinaryCandidate(candidate);
     const args = serverBinary ? [] : ['--version'];
+    // The Runner payload is an AppImage, which self-mounts through FUSE. Asking
+    // it to extract instead keeps the smoke honest on images without FUSE; the
+    // shell still sees the same arguments and still resolves its activation file
+    // beside the AppImage through `$APPIMAGE`.
+    const runnerEnv = artifact?.product === 'happier-runner'
+      ? { ...process.env, APPIMAGE_EXTRACT_AND_RUN: '1' }
+      : process.env;
     const env = serverBinary
       ? {
           ...process.env,
@@ -413,7 +531,7 @@ async function smokeTestArchive({ archivePath }) {
           METRICS_PORT: '0',
           HAPPIER_SERVER_LIGHT_DATA_DIR: join(scratch, 'server-light-data'),
         }
-      : process.env;
+      : runnerEnv;
     const result = await runSmokeCommand({
       command: binPath,
       args,
@@ -444,12 +562,72 @@ async function smokeTestArchive({ archivePath }) {
     if (serverBinary) {
       throw new Error(`[release] server binary exited before the smoke window for ${archivePath}`);
     }
-    if (artifact?.product === 'happier') {
+    if (artifact?.product === 'happier' || artifact?.product === 'happier-runner') {
       const actualVersion = String(result.stdout ?? '').trim();
-      if (actualVersion !== artifact.version) {
+      const expectedVersion = artifact.product === 'happier-runner'
+        ? `happier-runner ${artifact.version}`
+        : artifact.version;
+      if (actualVersion !== expectedVersion) {
         throw new Error(
-          `[release] CLI version mismatch for ${archivePath}: expected ${artifact.version}, got ${actualVersion || '<empty>'}`,
+          `[release] binary version mismatch for ${archivePath}: expected ${expectedVersion}, got ${actualVersion || '<empty>'}`,
         );
+      }
+    }
+    if (artifact?.product === 'happier-runner') {
+      const hostileCwd = join(scratch, 'ambient-project');
+      await mkdir(hostileCwd);
+      await writeFile(
+        join(hostileCwd, '.env'),
+        'HAPPIER_RUNNER_AMBIENT_DOTENV_MUST_NOT_LOAD=1\n',
+        'utf8',
+      );
+      await writeFile(
+        join(hostileCwd, 'ambient-preload.mjs'),
+        'process.stdout.write("HAPPIER_RUNNER_AMBIENT_PRELOAD_EXECUTED\\n");\n',
+        'utf8',
+      );
+      await writeFile(
+        join(hostileCwd, 'bunfig.toml'),
+        'preload = ["./ambient-preload.mjs"]\n',
+        'utf8',
+      );
+
+      const startupEnv = { ...runnerEnv };
+      delete startupEnv.BUN_BE_BUN;
+      const startup = await runSmokeCommand({
+        command: binPath,
+        args: [],
+        cwd: hostileCwd,
+        env: startupEnv,
+        timeoutMs: 20_000,
+      });
+      const startupOutput = formatSmokeOutput(startup);
+      if (startup.timedOut) {
+        throw new Error(`[release] Runner startup smoke timed out before the activation-file boundary: ${startupOutput.trim()}`);
+      }
+      if ((startup.status ?? 0) === 0
+        || !String(startup.stderr ?? '').includes('Happier Runner could not continue. Open Happier for details.')
+        || startupOutput.includes('HAPPIER_RUNNER_AMBIENT_PRELOAD_EXECUTED')) {
+        throw new Error(`[release] Runner startup smoke did not fail at the activation-file boundary: ${startupOutput.trim()}`);
+      }
+
+      // Bun 1.3.5 standalone executables can expose the embedded Bun CLI when
+      // BUN_BE_BUN is inherited. JavaScript cannot sanitize an environment
+      // variable before Bun's native dispatcher runs, so release admission
+      // must reject any candidate that reaches the embedded dispatcher.
+      const bunDispatcherProbe = await runSmokeCommand({
+        command: binPath,
+        args: ['--eval', 'process.stdout.write("HAPPIER_RUNNER_BUN_DISPATCH_EXECUTED\\n")'],
+        cwd: hostileCwd,
+        env: { ...startupEnv, BUN_BE_BUN: '1' },
+        timeoutMs: 20_000,
+      });
+      const bunDispatcherOutput = formatSmokeOutput(bunDispatcherProbe);
+      if (bunDispatcherProbe.timedOut
+        || (bunDispatcherProbe.status ?? 0) === 0
+        || bunDispatcherOutput.includes('HAPPIER_RUNNER_BUN_DISPATCH_EXECUTED')
+        || !String(bunDispatcherProbe.stderr ?? '').includes('Happier Runner could not continue. Open Happier for details.')) {
+        throw new Error(`[release] Runner candidate permits ambient Bun executable dispatch: ${bunDispatcherOutput.trim()}`);
       }
     }
   } finally {
@@ -481,10 +659,10 @@ async function main() {
   if (flags.has('--require-all-archives-checksummed')) {
     const checksummedArchives = entries
       .map((entry) => entry.name)
-      .filter((name) => name.endsWith('.tar.gz'))
+      .filter((name) => name.endsWith('.tar.gz') || name.endsWith('.zip'))
       .sort((left, right) => left.localeCompare(right));
     const presentArchives = (await readdir(artifactsDir))
-      .filter((name) => name.endsWith('.tar.gz'))
+      .filter((name) => name.endsWith('.tar.gz') || name.endsWith('.zip'))
       .sort((left, right) => left.localeCompare(right));
     if (
       checksummedArchives.length !== presentArchives.length
@@ -539,7 +717,7 @@ async function main() {
 
   if (!flags.has('--skip-archive-admission')) {
     for (const entry of entries) {
-      if (!entry.name.endsWith('.tar.gz')) continue;
+      if (!entry.name.endsWith('.tar.gz') && !entry.name.startsWith('happier-runner-v')) continue;
       await verifyReleaseArchiveAdmission({
         archivePath: join(artifactsDir, entry.name),
         archiveName: entry.name,
@@ -550,7 +728,7 @@ async function main() {
   const skipOptionalSmoke = flags.has('--skip-smoke');
   const cliVersionAttestations = [];
   for (const entry of entries) {
-    if (!entry.name.endsWith('.tar.gz')) continue;
+    if (!entry.name.endsWith('.tar.gz') && !entry.name.endsWith('.zip')) continue;
     if (!shouldSmokeTestReleaseArtifact({ archiveName: entry.name })) continue;
     const artifact = parseArtifactFilename(entry.name);
     const requiresCliVersionAttestation = artifact?.product === 'happier';

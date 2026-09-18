@@ -27,6 +27,24 @@ pi --version
 happier pi
 ```
 
+## Permissions
+
+Use the shared permission vocabulary when starting Pi:
+
+```bash
+happier pi --permission-mode read_only
+happier pi --permission-mode auto
+```
+
+Read-only limits Pi to Happier's read-tool allowlist. Auto, Default, and YOLO do
+not pass Pi's `--tools` option, so Pi keeps its full native catalog, including
+the platform shell and installed extension/custom tools such as subagents. Auto
+is not a workspace-confinement guarantee. Older spellings such as `safe-yolo`
+and `workspace_write` remain accepted for compatibility. Unknown permission
+values fail closed to the read-tool allowlist.
+
+For the cross-Agent vocabulary and aliases, see [Permissions](/sessions/permissions).
+
 ## Local authentication in Happier
 
 Pi does not currently expose a native interactive login flow through Happier Agent settings.
@@ -55,6 +73,14 @@ Important limitation:
 - Pi does not currently accept Claude OAuth profiles from `claude-subscription`; use a Claude setup-token profile instead.
 
 See: [Connected services](/accounts/connected-services)
+
+## Permission changes
+
+In the current development runtime, Pi's tool permissions are set when its
+process starts. Changing permission mode during a running session is unsupported;
+the running permissions stay unchanged. Start a new Pi runtime with the desired
+mode instead. Model and thinking-level updates remain available without changing
+the permission mode.
 
 ## Troubleshooting
 

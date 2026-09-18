@@ -55,6 +55,25 @@ missed, reconcile deterministically. A device asleep for a day should end up in
 the same state as one that stayed connected, which is why messages carry a
 monotonic `seq` rather than relying on arrival order.
 
+## Multiple relay replicas (0.3 development)
+
+A single API process can keep Socket.IO rooms in memory. If a development Home
+runs more than one API replica, configure `HAPPIER_SOCKET_ADAPTER=redis-streams`
+and `REDIS_URL` for every replica. The current 0.3 source uses the Redis Streams
+adapter for ordinary room broadcasts and Redis Pub/Sub for cross-replica socket
+discovery and request/acknowledgement traffic.
+
+That shared transport is required for live Session viewers and typing, remote
+permission or policy eviction, RPC, and tunnel routing to agree across replicas.
+Presence itself is not persisted in Redis: a disconnect, restart, or unavailable
+backplane makes current viewer evidence unknown until connected clients declare
+their visible Sessions again.
+
+The Redis adapter upgrade and two-node recovery/ACL gates described here are
+development deployment requirements, not stable or preview availability claims.
+Use [Environment variables](/self-hosting/env) for configuration, and do not mix
+old and new adapter generations in one serving cluster.
+
 ## Where the encryption sits
 
 Content is encrypted on your device before it reaches the relay, and the keys

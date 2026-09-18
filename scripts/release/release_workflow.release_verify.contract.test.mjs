@@ -16,6 +16,7 @@ test('release workflow verifies immutable candidates before promoting preview or
 
   assert.equal(workflow.jobs.publish_cli_binaries.with.publish_rolling, false);
   assert.equal(workflow.jobs.publish_hstack_binaries.with.publish_rolling, false);
+  assert.equal(workflow.jobs.publish_runner_binaries.with.publish_rolling, false);
   assert.equal(workflow.jobs.publish_server_runtime.with.publish_rolling, false);
   assert.equal(workflow.jobs.publish_ui_web.with.publish_rolling, false);
   assert.equal(candidateVerify.uses, './.github/workflows/release-verify.yml');
@@ -26,19 +27,31 @@ test('release workflow verifies immutable candidates before promoting preview or
     'prepare_release_candidate',
     'publish_cli_binaries',
     'publish_hstack_binaries',
+    'publish_runner_binaries',
     'publish_server_runtime',
     'publish_ui_web',
   ]);
   assert.equal(candidateVerify.with.candidate_source_sha, '${{ needs.prepare_release_candidate.outputs.source_sha }}');
   assert.equal(candidateVerify.with.candidate_cli_version, '${{ needs.publish_cli_binaries.outputs.version }}');
   assert.equal(candidateVerify.with.candidate_stack_version, '${{ needs.publish_hstack_binaries.outputs.version }}');
+  assert.equal(candidateVerify.with.candidate_runner_version, '${{ needs.publish_runner_binaries.outputs.version }}');
   assert.equal(candidateVerify.with.candidate_server_version, '${{ needs.publish_server_runtime.outputs.version }}');
   assert.equal(candidateVerify.with.candidate_ui_web_version, '${{ needs.publish_ui_web.outputs.version }}');
   assert.ok(workflow.jobs.promote_server_runtime.needs.includes('verify_release_candidates'));
   assert.ok(workflow.jobs.promote_ui_web.needs.includes('promote_server_runtime'));
   assert.ok(workflow.jobs.promote_cli_binaries.needs.includes('promote_ui_web'));
+  assert.ok(workflow.jobs.promote_runner_binaries.needs.includes('verify_release_candidates'));
+  assert.equal(workflow.jobs.promote_runner_binaries.needs.includes('promote_hstack_binaries'), false);
 
   assert.equal(releaseVerify.uses, './.github/workflows/release-verify.yml');
+  assert.ok(releaseVerify.needs.includes('publish_runner_binaries'));
+  assert.ok(releaseVerify.needs.includes('promote_runner_binaries'));
+  assert.equal(releaseVerify.with.candidate_runner_version, '${{ needs.publish_runner_binaries.outputs.version }}');
+  assert.equal(releaseVerify.with.verify_runner_release, "${{ needs.promote_runner_binaries.result == 'success' }}");
+  assert.match(
+    releaseVerify.if,
+    /needs\.plan\.outputs\.publish_runner_binaries_needed != 'true' \|\| needs\.promote_runner_binaries\.result == 'success'/,
+  );
   assert.doesNotMatch(releaseVerify.if, /inputs\.checks_profile/);
   assert.match(
     releaseVerify.if,
@@ -625,6 +638,11 @@ test('release workflow consumes the public validation profile, projects exact-ca
   const projection = status.steps.find((step) => step.name === 'Project release status facts');
   assert.equal(projection.env.HMAINT_OPERATION_ID, '${{ inputs.hmaint_operation_id }}');
   assert.equal(projection.env.SOURCE_SHA, '${{ needs.prepare_release_candidate.outputs.source_sha || inputs.authorized_promotion_source_sha }}');
+  assert.match(
+    projection.env.REQUEST_DOCKER,
+    /needs\.plan\.outputs\.changed_iroh_relay == 'true'/u,
+    'a relay-only Docker publication must be requested in the terminal projection so a failed publisher cannot appear not_requested',
+  );
   assert.match(projection.run, /project-release-status\.mjs[\s\S]*--mode standard/);
   assert.doesNotMatch(projection.run, /node --input-type=module|requested\(|candidate\(/);
   assert.match(

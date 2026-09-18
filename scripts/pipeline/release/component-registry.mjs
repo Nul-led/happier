@@ -119,6 +119,14 @@ export const versionedComponents = Object.freeze({
     baselineTagPrefix: 'server-v',
     changedWhen: ['server', 'shared', 'cli_stack_shared', 'iroh_transport'],
   },
+  runner: {
+    id: 'runner',
+    baselineTagPrefix: 'runner-v',
+    // The separately published Runner compiles the scoped CLI runtime and the
+    // public plugin host. Its artifact identity must move when any of those
+    // actual build inputs changes, even when the broad CLI product is unchanged.
+    changedWhen: ['cli', 'shared', 'cli_stack_shared', 'release_runtime', 'plugin_sdk', 'iroh_transport'],
+  },
   plugin_sdk: {
     id: 'plugin_sdk',
     baselineTagPrefix: 'plugin-sdk-v',

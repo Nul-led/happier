@@ -8,6 +8,7 @@ import { printResult, wantsHelp, wantsJson } from './utils/cli/cli.mjs';
 import {
   readExecutionHostProfile,
   activateExecutionHostProfile,
+  configureExecutionHostCapacity,
   configureExecutionHostWorkspaceMount,
   resolveExecutionHostSetupConfiguration,
   resolveExecutionHostProfilePath,
@@ -27,7 +28,11 @@ import {
 } from './utils/execution_host/candidate_repository.mjs';
 import { createManagedLimaHostExecutor } from './utils/managed_lima/host_executor.mjs';
 import { startManagedLimaInstance, stopManagedLimaInstance } from './utils/managed_lima/lifecycle.mjs';
-import { setupManagedLimaRuntime } from './utils/managed_lima/manager.mjs';
+import { setupManagedLimaInstance, setupManagedLimaRuntime } from './utils/managed_lima/manager.mjs';
+import {
+  normalizeManagedLimaCapacity,
+  resolveManagedLimaCapacityResources,
+} from './utils/managed_lima/capacity.mjs';
 import { restartManagedLimaGuestAgent } from './utils/managed_lima/provisioner.mjs';
 import { getHappyStacksHomeDir } from './utils/paths/paths.mjs';
 import { resolveNamedWorkspaceConfiguration } from './utils/execution_host/workspace_config.mjs';
@@ -74,7 +79,7 @@ function flagValue(argv, name) {
 function usage(json) {
   printResult({
     json,
-    data: { commands: ['setup', 'activate', 'mirror', 'mount', 'unmount', 'backup', 'forward', 'recovery', 'skills', 'status', 'doctor', 'start', 'stop', 'shell', 'exec'] },
+    data: { commands: ['setup', 'activate', 'capacity', 'mirror', 'mount', 'unmount', 'backup', 'forward', 'recovery', 'skills', 'status', 'doctor', 'start', 'stop', 'restart', 'shell', 'exec'] },
     text: [
       '[dev-vm] usage:',
       '  hstack dev-vm setup [--instance=happier-agent-primary] [--profile=balanced] [--disk-image-format=raw|asif] [--workspace=ID=/absolute/source ...] [--workspace-stack=ID=STACK_NAME ...] [--json]',
@@ -82,7 +87,11 @@ function usage(json) {
       '  hstack dev-vm mirror [--workspace-id=ID] [--source-dir=/absolute/path/to/repo] [--json]',
       '  hstack dev-vm mirror status|sync|stop|adopt-legacy|recover [--workspace-id=ID] [--json]',
       '  hstack dev-vm status|doctor [--repair-forwarding] [--json]',
-      '  hstack dev-vm start|stop [--json]',
+      '  hstack dev-vm start [--json]',
+      '  hstack dev-vm stop [--force] [--json]',
+      '  hstack dev-vm restart [--force] [--json]',
+      '  hstack dev-vm capacity show [--json]',
+      '  hstack dev-vm capacity set shared|dedicated [--shared-cpus=N --shared-memory-gib=N --dedicated-cpus=N --dedicated-memory-gib=N] [--force] [--json]',
       '  hstack dev-vm mount [status|enable|disable] [--mount-dir=/absolute/path] [--json]',
       '  hstack dev-vm unmount [--mount-dir=/absolute/path] [--json]',
       '  hstack dev-vm backup [status] [--stack=NAME] [--destination=/absolute/path] [--retention=1..30, default=3] [--json]',
@@ -158,6 +167,51 @@ function skillsSyncProgramArgs() {
   // Keep the background boot reconciliation bound to this checkout's
   // controller, just like the existing recovery and backup jobs.
   return [process.execPath, fileURLToPath(import.meta.url), 'skills', 'sync', '--json'];
+}
+
+async function startExecutionHostVm({ argv, profile, executor }) {
+  const result = await startManagedLimaInstance({ executor, instance: profile.instance });
+  const skillsSync = result.changed
+    ? startDetachedExecutionHostSkillsSync({ programArgs: skillsSyncProgramArgs(), env: process.env })
+    : null;
+  const requestedWorkspace = flagValue(argv, '--workspace-id').trim();
+  const serviceTunnel = (profile.version !== 2 || requestedWorkspace)
+    ? await ensureExecutionHostServiceTunnel({
+      profile,
+      workspaceId: workspaceIdForProfile(profile, argv),
+      stackName: flagValue(argv, '--stack').trim(),
+      executor,
+      env: process.env,
+    })
+    : null;
+  if (profile.autoMount === true) {
+    await mountExecutionHostWorkspace({ profile, env: process.env, mountDir: profile.hostMountDir || '', executor });
+  }
+  return {
+    ...result,
+    ...(skillsSync ? { skillsSync } : {}),
+    ...(serviceTunnel ? { serviceTunnel } : {}),
+  };
+}
+
+async function stopExecutionHostVm({ profile, executor, force }) {
+  const workspaceIds = profile.version === 2 ? profile.workspaces.map((workspace) => workspace.id) : [''];
+  const serviceTunnels = [];
+  if (force) {
+    serviceTunnels.push(...workspaceIds.map((workspaceId) => ({
+      workspaceId,
+      changed: false,
+      reason: 'skipped_forced_stop',
+    })));
+  } else {
+    for (const workspaceId of workspaceIds) {
+      // eslint-disable-next-line no-await-in-loop
+      serviceTunnels.push(await stopExecutionHostServiceTunnel({ profile, workspaceId, env: process.env }));
+    }
+  }
+  await unmountExecutionHostWorkspace({ profile, env: process.env, mountDir: profile.hostMountDir || '' });
+  const result = await stopManagedLimaInstance({ executor, instance: profile.instance, force });
+  return { ...result, serviceTunnels };
 }
 
 async function main() {
@@ -307,6 +361,69 @@ async function main() {
     return;
   }
   if (!profile) throw new Error('[dev-vm] execution host is not configured; run `hstack dev-vm setup` explicitly');
+  if (command === 'capacity') {
+    const capacityArgument = argv[argv.indexOf(command) + 1] ?? '';
+    const action = capacityArgument.startsWith('-') ? '' : capacityArgument;
+    if (action === 'show') {
+      return printResult({
+        json,
+        data: profile.capacity ?? null,
+        text: profile.capacity
+          ? `[dev-vm] capacity: ${profile.capacity.mode} (${profile.capacity[profile.capacity.mode].cpus} CPUs, ${profile.capacity[profile.capacity.mode].memoryGiB} GiB)`
+          : '[dev-vm] capacity: profile-owned (no shared/dedicated presets configured)',
+      });
+    }
+    if (action !== 'set') {
+      throw new Error(`[dev-vm] unknown capacity command: ${action || '(missing)'}`);
+    }
+    const modeArgument = argv[argv.indexOf(command) + 2] ?? '';
+    const mode = modeArgument.startsWith('-') ? '' : modeArgument;
+    const flagOrCurrent = (flag, preset, field) => {
+      const value = flagValue(argv, flag).trim();
+      return value || profile.capacity?.[preset]?.[field];
+    };
+    const capacity = normalizeManagedLimaCapacity({
+      mode,
+      shared: {
+        cpus: flagOrCurrent('--shared-cpus', 'shared', 'cpus'),
+        memoryGiB: flagOrCurrent('--shared-memory-gib', 'shared', 'memoryGiB'),
+      },
+      dedicated: {
+        cpus: flagOrCurrent('--dedicated-cpus', 'dedicated', 'cpus'),
+        memoryGiB: flagOrCurrent('--dedicated-memory-gib', 'dedicated', 'memoryGiB'),
+      },
+    }, { subject: 'capacity', errorPrefix: '[dev-vm]' });
+    const desiredProfile = { ...profile, capacity };
+    const executor = executorFor(profile);
+    const diagnosis = await inspectExecutionHost({ profile: desiredProfile, executor });
+    const requiresRestart = diagnosis.doctor?.exists !== true
+      || (diagnosis.doctor?.drift?.resources?.length ?? 0) > 0;
+    if (requiresRestart && !argv.includes('--force')) {
+      const error = new Error('[dev-vm] capacity change requires --force because the managed VM must restart');
+      error.code = 'EXECUTION_HOST_CAPACITY_FORCE_REQUIRED';
+      throw error;
+    }
+    if (requiresRestart) {
+      await stopExecutionHostVm({ profile, executor, force: false });
+    }
+    const saved = await configureExecutionHostCapacity(capacity, process.env);
+    let reconciliation = null;
+    if (requiresRestart) {
+      reconciliation = await setupManagedLimaInstance({
+        executor,
+        instance: saved.instance,
+        profileName: saved.profile,
+        diskImageFormat: saved.diskImageFormat,
+        resources: resolveManagedLimaCapacityResources(saved.capacity),
+      });
+      await startExecutionHostVm({ argv, profile: saved, executor });
+    }
+    return printResult({
+      json,
+      data: { capacity: saved.capacity, restarted: requiresRestart, reconciliation },
+      text: `[dev-vm] capacity: ${saved.capacity.mode} (${saved.capacity[saved.capacity.mode].cpus} CPUs, ${saved.capacity[saved.capacity.mode].memoryGiB} GiB)${requiresRestart ? '; VM restarted' : ''}`,
+    });
+  }
   if (command === 'activate') {
     const result = await activateExecutionHostProfile(process.env);
     return printResult({
@@ -571,43 +688,25 @@ async function main() {
     });
   }
   if (command === 'start') {
-    const result = await startManagedLimaInstance({ executor, instance: profile.instance });
-    const skillsSync = result.changed
-      ? startDetachedExecutionHostSkillsSync({ programArgs: skillsSyncProgramArgs(), env: process.env })
-      : null;
-    const requestedWorkspace = flagValue(argv, '--workspace-id').trim();
-    const serviceTunnel = (profile.version !== 2 || requestedWorkspace)
-      ? await ensureExecutionHostServiceTunnel({
-        profile,
-        workspaceId: workspaceIdForProfile(profile, argv),
-        stackName: flagValue(argv, '--stack').trim(),
-        executor,
-        env: process.env,
-      })
-      : null;
-    if (profile.autoMount === true) {
-      await mountExecutionHostWorkspace({ profile, env: process.env, mountDir: profile.hostMountDir || '', executor });
-    }
+    const result = await startExecutionHostVm({ argv, profile, executor });
     return printResult({
       json,
-      data: {
-        ...result,
-        ...(skillsSync ? { skillsSync } : {}),
-        ...(serviceTunnel ? { serviceTunnel } : {}),
-      },
+      data: result,
       text: `[dev-vm] VM status: ${result.status}`,
     });
   }
-  if (command === 'stop') {
-    const workspaceIds = profile.version === 2 ? profile.workspaces.map((workspace) => workspace.id) : [''];
-    const serviceTunnels = [];
-    for (const workspaceId of workspaceIds) {
-      // eslint-disable-next-line no-await-in-loop
-      serviceTunnels.push(await stopExecutionHostServiceTunnel({ profile, workspaceId, env: process.env }));
+  if (command === 'stop' || command === 'restart') {
+    const force = argv.includes('--force');
+    const stop = await stopExecutionHostVm({ profile, executor, force });
+    if (command === 'stop') {
+      return printResult({ json, data: stop, text: `[dev-vm] VM status: ${stop.status}` });
     }
-    await unmountExecutionHostWorkspace({ profile, env: process.env, mountDir: profile.hostMountDir || '' });
-    const result = await stopManagedLimaInstance({ executor, instance: profile.instance });
-    return printResult({ json, data: { ...result, serviceTunnels }, text: `[dev-vm] VM status: ${result.status}` });
+    const start = await startExecutionHostVm({ argv, profile, executor });
+    return printResult({
+      json,
+      data: { status: start.status, stop, start },
+      text: `[dev-vm] VM status: ${start.status}`,
+    });
   }
   if (command === 'shell' || command === 'exec') {
     const separator = argv.indexOf('--');

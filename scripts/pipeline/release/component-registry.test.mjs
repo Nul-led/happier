@@ -72,6 +72,19 @@ test('packages/cli-common changes trigger cli/stack/server versioned component b
   assert.equal(versioned.stack, true);
   assert.equal(versioned.server, true);
   assert.equal(versioned.app, true);
+  assert.equal(versioned.runner, true);
+});
+
+test('Runner candidate change detection follows its real scoped runtime and release inputs', () => {
+  for (const changedPath of [
+    'apps/cli/src/ephemeralRunner/main.ts',
+    'packages/protocol/src/ephemeralRunner/activation.ts',
+    'packages/release-runtime/src/releaseManifest.ts',
+    'packages/plugin-sdk/src/runtime/host.ts',
+  ]) {
+    const versioned = deriveVersionedComponentChanges(classifyChangedPaths([changedPath]));
+    assert.equal(versioned.runner, true, changedPath);
+  }
 });
 
 test('every UI workspace dependency family triggers an app release without pretending UI source changed', () => {

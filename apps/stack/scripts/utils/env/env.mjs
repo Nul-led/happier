@@ -42,6 +42,7 @@ if (!(process.env.HAPPIER_STACK_HOME_DIR ?? '').trim() && existsSync(canonicalEn
 const __homeDir = resolveHomeDir();
 process.env.HAPPIER_STACK_HOME_DIR = process.env.HAPPIER_STACK_HOME_DIR ?? __homeDir;
 
+const TRANSIENT_REPO_OVERRIDE_KEY = 'HAPPIER_STACK_TRANSIENT_REPO_DIR';
 const STALE_STACK_ENV_KEYS_FOR_EXPLICIT_REPO = [
   'HAPPIER_STACK_ENV_FILE',
   'HAPPIER_STACK_STACK',
@@ -49,6 +50,7 @@ const STALE_STACK_ENV_KEYS_FOR_EXPLICIT_REPO = [
   'HAPPIER_STACK_RUNTIME_STATE_PATH',
   'HAPPIER_STACK_CLI_HOME_DIR',
   'HAPPIER_STACK_CLI_IDENTITY',
+  TRANSIENT_REPO_OVERRIDE_KEY,
 ];
 
 function normalizeEnvPathForCompare(value) {
@@ -81,15 +83,21 @@ async function readEnvFileValue(envPath, key) {
 async function detachStaleStackEnvForExplicitRepo(stacksEnv) {
   const stackEnvPath = String(stacksEnv ?? '').trim();
   const explicitRepo = normalizeEnvPathForCompare(process.env.HAPPIER_STACK_REPO_DIR);
-  if (!stackEnvPath || !explicitRepo) return stackEnvPath;
+  if (!stackEnvPath || !explicitRepo) return { stackEnvPath, transientRepoOverride: '' };
 
   const envFileRepoResult = await readEnvFileValue(stackEnvPath, 'HAPPIER_STACK_REPO_DIR');
   if (envFileRepoResult.status === 'missing') {
-    return stackEnvPath;
+    return { stackEnvPath, transientRepoOverride: '' };
   }
   if (envFileRepoResult.status === 'ok') {
     const envFileRepo = normalizeEnvPathForCompare(envFileRepoResult.value);
-    if (!envFileRepo || envFileRepo === explicitRepo) return stackEnvPath;
+    if (!envFileRepo || envFileRepo === explicitRepo) {
+      return { stackEnvPath, transientRepoOverride: '' };
+    }
+    const transientRepoOverride = normalizeEnvPathForCompare(process.env[TRANSIENT_REPO_OVERRIDE_KEY]);
+    if (transientRepoOverride && transientRepoOverride === explicitRepo) {
+      return { stackEnvPath, transientRepoOverride: explicitRepo };
+    }
   }
 
   for (const key of STALE_STACK_ENV_KEYS_FOR_EXPLICIT_REPO) {
@@ -98,7 +106,7 @@ async function detachStaleStackEnvForExplicitRepo(stacksEnv) {
   for (const key of STACK_WRAPPER_CLEAR_UNPREFIXED_KEYS) {
     delete process.env[key];
   }
-  return '';
+  return { stackEnvPath: '', transientRepoOverride: '' };
 }
 
 // Prefer canonical home config:
@@ -166,7 +174,7 @@ if (hasHomeConfig) {
 // that must apply for true per-stack isolation. Do not filter by prefix here.
 {
   const initialStacksEnv = process.env.HAPPIER_STACK_ENV_FILE?.trim() ? process.env.HAPPIER_STACK_ENV_FILE.trim() : '';
-  const stacksEnv = await detachStaleStackEnvForExplicitRepo(initialStacksEnv);
+  const { stackEnvPath: stacksEnv, transientRepoOverride } = await detachStaleStackEnvForExplicitRepo(initialStacksEnv);
   const explicitCliIdentity = String(process.env.HAPPIER_STACK_CLI_IDENTITY ?? '').trim();
   const explicitCliHomeDir = String(process.env.HAPPIER_STACK_CLI_HOME_DIR ?? '').trim();
   if (stacksEnv) {
@@ -185,6 +193,10 @@ if (hasHomeConfig) {
   for (const p of unique) {
     // eslint-disable-next-line no-await-in-loop
     await loadEnvFile(p, { override: true });
+  }
+  if (transientRepoOverride) {
+    process.env.HAPPIER_STACK_REPO_DIR = transientRepoOverride;
+    process.env[TRANSIENT_REPO_OVERRIDE_KEY] = transientRepoOverride;
   }
   if (explicitCliIdentity && explicitCliIdentity !== 'default') {
     process.env.HAPPIER_STACK_CLI_IDENTITY = explicitCliIdentity;

@@ -141,6 +141,25 @@ owner for Agent-native `happy <agent>` argument projection: its optional
 builder receives parsed Agent arguments plus host-resolved settings,
 environment, and start origin, and returns bounded JSON Session options.
 
+Session-control preflight uses one host-owned environment boundary. The capability RPC resolves
+the selected launch profile through the same profile and Saved Secret owners as Session launch,
+then layers selected Connected Account materialization on top. The cold-probe sanitizer still
+removes unrelated ambient credentials; only explicitly selected profile/account material is added
+back before the Agent contribution runs. Model, mode, config-option, and passive-setup probes all
+consume that same environment and include the selected profile identity in their cache scope.
+
+Installed external Agent plugins and bundled Agent plugins are peers at the public Plugin SDK
+boundary. A manifest declaration is admitted by the same host policy and receives the same public
+services; bundled code does not prove external-plugin support when it reaches through a private host
+import. In particular, Agent preflight and launch must resolve personal or shared Saved Secret
+references through the canonical catalog/materializer before entering the plugin callback. A plugin
+receives only the scoped materialization inputs declared for that operation, never unrestricted
+secret-store access or authority derived from being bundled.
+
+The Plugin SDK and external Agent authoring surface remain a Developer Preview until an installed,
+external-style packed plugin proves the relevant activation, launch, reload/update, failure, and
+uninstall journeys. Source-level registration or a built-in-only test is not that proof.
+
 Do not add a second builder for a contributed Agent's catalog entry. Manifest-only
 facts (id, CLI subcommand, CLI detect/auth spec, Connected Service ids) stay in
 `agentCliMetadata.ts#createManifestAgentCatalogEntry`; every hook-shaped fact belongs to
@@ -244,9 +263,14 @@ Both slots have one writer and one reader:
   and a caller can never name an arbitrary metadata key.
 - **Reader** — `resolveVendorResumeIdFromSessionMetadata`
   (`packages/agents/src/session/controls/vendorResumePolicy.ts`), in declared-authority order: the
-  Agent's session-control adapter (Pi resumes from an absolute session-file path, not a bare id),
+  Agent's session-control adapter (Pi resolves an absolute session-file path as its launch selector),
   then the catalog-declared flat field, then the descriptor slot. The descriptor tier is last, so it
   cannot change any bundled Agent's answer.
+
+An Agent-native resume identity and its launch selector are different facts even when most Agents
+use the same string for both. Pi launches with an absolute session-file selector, then validates and
+publishes the native provider Session id reported by the opened runtime. The host must not compare
+that native id to the path or replace the canonical identity with the launch-only selector.
 
 The host publishes the id through the public `provider-session-id` runtime event and through the
 runtime-descriptor publication; the absence of a flat slot no longer suppresses either. Everything
@@ -327,6 +351,52 @@ Instead:
 - explicit “resume inactive session” is **fail-closed**: if `loadSession` fails, we surface the error instead of silently starting a fresh vendor session
 - any ACP capability probing (e.g. `includeAcpCapabilities`) is reserved for opt-in diagnostics / e2e probes, not day-to-day UX
 
+After an ACP connection initializes, runtime-only list, fork, close, and delete operations fail closed
+against the capabilities negotiated on that exact connection. Two of them have product consumers.
+Disposing a Session's ACP runtime cancels the active turn and then, when that handshake negotiated
+`session/close`, releases the Agent-owned session before the transport goes away; an Agent that did
+not negotiate it is never asked, and a refused or silent close never blocks transport teardown
+(`apps/cli/src/agent/acp/AcpBackend.ts`). `session/delete` is reachable only through the
+host-synthesized resume-only External Sessions source described below. Provider model projection preserves declared
+context-window limits, and ACP reasoning and token-count notifications project through the canonical
+reasoning-delta and usage-observation events. Standard ACP steer preserves the admitted structured
+content blocks; it does not by itself prove that an Agent accepts concurrent steer. A manifest may
+advertise steer only when that Agent has a real capability contract rather than merely because the
+shared composer can encode a prompt.
+
+A declarative ACP definition may also name a model config option, map Happier permission intents to
+provider modes, and pass or drop Happier MCP descriptors. The host applies that data through the same
+session composer used by normal Sessions and Session-adapted execution runs. A `null` permission
+mapping deliberately performs no mode request, preserving the Agent's own configured default; this
+policy remains plugin-owned data rather than an Agent-id branch in the host.
+
+Two further declarations stay data-only for the same reason as the rest: a Session opened by the
+out-of-process Session runner rebuilds its runtime from the attested manifest and never loads plugin
+code, so behavior expressed as a plugin callback would silently disappear on that path.
+
+- `mcp.nativeSessionConfig` covers an Agent whose CLI reads MCP servers only from its own config
+  file. Before launch the host materializes a session-private config root, links the user's real
+  provider directory and declared config-root siblings into it, writes the merged server map, and
+  points the declared config-root variable at that root for one launch; the root is removed when the
+  Session ends or the launch fails. The declaration resolves against the effective launch
+  environment — host process environment, then launch overrides, then Session unsets — so the host
+  reads the same config root the Agent will. `policy` stays `drop` because the same servers are
+  already delivered natively and must not also be sent in `session/new`; the schema rejects the
+  declaration beside `pass_through`. A project-scoped provider config that would shadow a Session
+  server fails the launch instead of silently replacing a Happier tool. Devin is the current
+  consumer.
+- `models.suffixOption` covers an Agent that advertises one model per option value and encodes that
+  value in the model id (`<model>-high`, `<model>-high-fast`). The host presents one model plus the
+  declared canonical option and expands a selection back to the exact advertised id. A family
+  collapses only when that is reversible: the projected id must not already be an advertised model,
+  the variants must share one projected name, and each must carry a distinct value.
+
+The public ACP transport declaration includes stdio, WebSocket, and TCP shapes. All three feed the
+same host-owned ACP session lifecycle. WebSocket and TCP connect to the declared endpoint without
+automatic reconnect; connection loss fails an admitted turn and ends the runtime as retryable, while
+session disposal closes the owned connection. A transport declaration still does not by itself prove
+that an installed Agent's endpoint is reachable or implements the negotiated ACP capabilities.
+
 ## External Sessions auxiliary
 
 External Sessions is an optional Agent auxiliary registered through the same manifest Agent identity and plugin generation as the primary runtime. The canonical public SDK owner is `@happier-dev/plugin-sdk/sessions/external`.
@@ -338,6 +408,31 @@ source operations: `resolveSource`, `listCandidates`, `resolveLinkIdentity`,
 contribution provides discovery, linking, and transcript source semantics; it
 does not own hosted runtime lifecycle, follow demand, materialization, or
 takeover admission.
+
+A declarative ACP Agent may instead mark every declared External Sessions source
+`resumeOnly: true`, but only when the same Agent is an ACP, Session-primary Agent whose
+`capabilities.sessions.open` explicitly includes `resume`; the Protocol contribution schema, the
+Plugin SDK authoring gate, and the host's runtime synthesis all reject that declaration otherwise,
+so a source can never advertise resume candidates the Agent cannot fulfill. In that narrow case the
+host supplies the contribution from standard negotiated
+ACP `session/list`; the plugin must not register a competing contribution. The resulting candidates
+are available only to the existing “resume in Happier” picker, which routes the selected opaque
+session id through the same ACP `session/load` path. This declaration does not establish native
+link identity, transcript paging or following, live takeover, terminal attachment, writer safety, or
+identity equivalence with an interactive CLI session.
+
+The same host-synthesized owner also carries the one destructive control that deliberately stays
+outside the plugin contribution: deleting an Agent-owned session record. The contribution family
+owns discovery, linking, and transcripts, never Agent session lifecycle, so a plugin cannot supply
+or reach this control. The host advertises it on a candidate listing only when the connection that
+served that listing negotiated ACP `session/delete`
+(`ExternalSessionsCandidatesListResponse.capabilities.deleteCandidate`), an absent capability is
+never inverted into an offer, and the `sessions.external.candidate.delete` Action re-checks
+negotiation on its own connection before acting. The opaque candidate id crosses unchanged, the
+Happier Session store is untouched, and nothing is removed from the listing until the Agent commits
+the deletion. Gating is generic: it follows the negotiated capability and the resume-only source
+declaration, never an Agent id. This is current source-tree behavior proven by owner tests; no live
+Agent round trip has exercised it on a released build.
 
 Each of those six callbacks receives the host's bounded invocation controls
 (`signal`, `deadlineAtMs`, and `maxSerializedBytes`) plus the existing

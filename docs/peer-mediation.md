@@ -5,7 +5,7 @@ server, and who owns each step. This page is the internal counterpart to the ope
 `apps/docs/content/docs/self-hosting/local-service-previews.mdx`.
 
 **Status of this page.** The Iroh Home and machine-carrier contracts were refreshed against the
-current 0.3 development source on 2026-09-02. The remaining peer-mediation claims below were
+current 0.3 development source on 2026-09-08. The remaining peer-mediation claims below were
 checked against implementing code on 2026-08-23.
 Where the `PMS-1 … PMS-9` specification packets
 (`.project/plans/runtime-unification-v2/stages/stage-A/`) describe behaviour the code does not
@@ -83,6 +83,17 @@ authenticates Iroh EndpointIds and forwards opaque encrypted transport; Home aut
 Machine grants remain the application authority at the endpoints. Happier does not add a shared
 relay endpoint registry. A private callback is available only to a custom composition that already
 owns one complete allowlist for every endpoint class it intends to carry.
+
+Endpoint identity continuity follows the authority that depends on it. A Home endpoint is durable
+first-contact descriptor authority, so lost or changed Home key material fails closed through the
+canonical descriptor continuity record and requires an explicit descriptor recovery/update. A
+Machine may replace wholly absent key material only by publishing its new EndpointId through its
+existing authenticated Machine connection; fresh grants bind that current publication and old
+grants do not migrate. A native Account client likewise receives no authority from a previous
+EndpointId: every new finite-transfer grant binds its current identity. Browser identity remains
+ephemeral per live SharedWorker. Corrupt, unreadable, or partially retained native key material
+fails explicitly rather than being overwritten. These role-specific rules avoid a second endpoint
+registry or universal pairing ledger.
 
 ## 1. The model
 
@@ -297,7 +308,47 @@ code added on the server and not mapped in the client is **silent**, which is wh
 public exposure feature is off" under `publicPreview`, which is why the capability map is keyed by
 node.
 
-## 5. Public exposure is gated deliberately
+## 5. Team Provider broker application path (development only)
+
+The Team credential broker reuses the exact-Machine transport substrate, but it is not a generic
+peer-mediation route and must never enter the same-Account peer control plane. The Home's Team
+credential admission owner first binds the current resource, accountable Account, Session or
+execution run, broker Machine, request facts, and one application target. The transport carries
+that typed application request to the exact Machine; the broker handler may reach only the managed
+Provider endpoint access selected by the binding. It cannot select an arbitrary loopback port,
+open SVC09 directly, or reinterpret the request as a peer-mediation operation.
+
+Authority is request-scoped, not captured once when a connection factory is constructed. Each
+admitted stream/request rechecks its authenticated transport context, route grant, resource and
+source currentness, grant lifetime, placement, Session/run binding, policy, and accountable Account.
+Reusing or multiplexing a connection must not exchange headers, identity, or usage attribution
+between streams. An already admitted upstream request may finish after later revocation; a new
+request must pass current admission again.
+
+Broker readiness is a content-free, non-inference activation exchange. It can establish only that
+the exact application handler for the selected target is installed and eligible; it does not grant
+resource access or prove a Provider request will succeed. Current 0.3 source still requires the
+composed exact-Machine request, cancellation, recovery, and live UI gates before this development
+path may be described as available.
+
+The current Temporary-computer readiness carrier is a distinct
+`provider_broker_readiness` arm of the strict `happier/machine/1` admission union. Its dual-signed
+request is the exact broker-open witness: it binds the Home and activation, sealed launch-manifest
+commitment, resource, Agent target and protocol, Runner installation plus native initiator EndpointId,
+and broker Machine plus native target EndpointId. Native Iroh supplies the authenticated remote
+EndpointId independently; target admission compares that observed identity and its own current
+EndpointId with the signed witness before selecting the fixed readiness application. The readiness
+arm cannot be passed to the inference handler.
+
+The application forwards only that strict signed envelope to the Home's currentness owner and
+returns content-free readiness. It does not carry a prompt, model request, credential, local bearer,
+or arbitrary destination. Closing it retains no tunnel or service lease for later Session use. Final
+materialization consumes the same signed witness and independently rereads the current resource,
+selection binding, broker endpoint, source revision, consent, and installation facts before
+committing the Machine and Session. A later Provider open still performs its own current admission;
+readiness is not a retained authorization for that effect.
+
+## 6. Public exposure is gated deliberately
 
 The public-exposure vertical sits behind `HAPPIER_FEATURE_LOCAL_SERVICES_PUBLIC_PREVIEW__ENABLED`,
 which defaults off. Decision **DEC-7** of
@@ -318,7 +369,7 @@ Consequences for anyone writing about this surface:
 - Keep the reasoning for the gate at the level of *status*. The specific defects behind DEC-7 belong
   in the plan and the review, not in a page that ships.
 
-## 6. Known spec/implementation divergences
+## 7. Known spec/implementation divergences
 
 Recorded here for lane D3, which owns the packet amendments. Each was checked against code:
 
@@ -330,7 +381,7 @@ Recorded here for lane D3, which owns the packet amendments. Each was checked ag
 | The protocol declares five flow kinds | the substrate package models four; `voice_media` is omitted from `activeFlows` |
 | PMS acceptance gates | they are `test -f` / `rg` assertions, so they pass while the behaviour they name is skeletal |
 
-## 7. Related
+## 8. Related
 
 - `apps/docs/content/docs/self-hosting/local-service-previews.mdx` — the operator-facing guide.
 - `docs/feature-gating.md` — how server gates and capabilities are resolved and consumed.

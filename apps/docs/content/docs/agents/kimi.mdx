@@ -1,66 +1,107 @@
 ---
-title: Kimi
-description: Configure Kimi in Happier via ACP-backed local runtime integration.
+title: Kimi Code (experimental)
+description: Install Kimi Code and use its ACP sessions, models, modes, MCP tools, resume, execution runs, and interactive terminal in Happier.
 ---
 
-Happier supports Kimi as a local CLI-backed Agent.
+Happier runs the locally installed Kimi Code CLI through `kimi acp` for managed
+sessions and execution runs. Kimi remains experimental upstream, so verify its
+behavior on the version installed on your Agent machine.
 
 ## Requirements
 
-- Kimi CLI installed locally.
-- Binary available on `PATH` (or set `HAPPIER_KIMI_PATH`).
-
-## Install Kimi
-
-If you use hstack, you can install Kimi with its legacy-named `providers` installer:
+Install the current Kimi Code CLI, ensure `kimi` is on `PATH` (or set
+`HAPPIER_KIMI_PATH`), then sign in:
 
 ```bash
-hstack providers install kimi
-kimi --version
+happier install provider kimi
+kimi login
 ```
 
-Or install manually (macOS / Linux):
+Or install it yourself (macOS / Linux):
 
 ```bash
-curl -LsSf https://code.kimi.com/install.sh | bash
+curl -LsSf https://code.kimi.com/kimi-code/install.sh | bash
 kimi --version
 ```
 
 Windows (PowerShell):
 
 ```powershell
-Invoke-RestMethod https://code.kimi.com/install.ps1 | Invoke-Expression
+Invoke-RestMethod https://code.kimi.com/kimi-code/install.ps1 | Invoke-Expression
 kimi --version
 ```
 
-## Local authentication in Happier
+You can launch the same login flow from **Settings → Agents → Kimi**. Happier
+detects the system CLI; it does not run a package manager on your behalf.
+Auth-status detection for Kimi is currently conservative, so Happier may still
+show **Unknown** even though the login flow is available.
 
-Kimi supports launching its native setup/login flow from:
+## Sessions and controls
 
-- **Settings → Agents → Kimi**
+Start a session with `happier kimi`. Happier projects the models and agent
+modes advertised by Kimi's ACP server instead of keeping a separate model
+list. New sessions, resume, cancellation, and follow-up prompts use the
+shared ACP lifecycle. Happier does not translate modes into top-level Kimi
+flags. When a session ends, Happier releases Kimi's own session through the
+shared lifecycle if that connection advertised session close.
 
-Happier opens Kimi and sends `/setup` for you.
+If Kimi's ACP server advertises session listing, its sessions appear in the
+“resume in Happier” picker, and when the same connection also advertises
+session deletion each listed row offers a confirmed delete. That deletes
+Kimi's own session record; your Happier session and its history stay. Nothing
+disappears from the list until Kimi confirms the deletion, and a failure leaves
+the row in place so you can retry.
 
-Auth-status detection for Kimi is currently conservative, so Happier may still show **Unknown** even though the login flow is available.
+Kimi receives selected Happier tools as per-session ACP MCP descriptors,
+including the stdio, HTTP, and SSE transports Kimi supports. Project and user
+MCP configuration remains owned by Kimi.
 
-For the shared user guide, see [Agent authentication](/agents/provider-authentication).
-
-## Start Kimi with Happier
+Update an existing current installation with:
 
 ```bash
-happier kimi
+kimi upgrade
 ```
 
-## Notes
+## Interactive terminal
 
-- Resume availability is session-specific in Happier and depends on valid resume metadata plus the current backend/settings.
-- Model, mode, and permission behavior can still vary by installed Kimi runtime.
-- Tool calls are normalized to canonical Happier tool renderers.
+The terminal action launches ordinary `kimi` through Happier's existing
+terminal host. It is an auxiliary interactive surface; it does not create a
+second Happier session runtime or promise that terminal and ACP session IDs
+match.
 
 ## Troubleshooting
 
-If Kimi is not detected:
+- Run `kimi --version` on the Agent machine if Kimi is not detected.
+- Run `kimi login` again if Kimi reports an authentication error.
+- If a model or mode is missing, check what the installed `kimi acp`
+  advertises.
 
-1. Verify `kimi --version` works.
-2. Restart Happier.
-3. Set `HAPPIER_KIMI_PATH` if needed.
+### Coming from the retired Python `kimi-cli`
+
+Happier resolves only the `kimi` executable that current Kimi Code installs, so
+a separately installed legacy `kimi-cli` binary is never launched as if it were
+Kimi Code. Existing Happier sessions recorded under the old name keep working,
+because `kimi-cli` is still accepted as a session alias.
+
+What a connected runtime may do is decided from the capabilities that exact ACP
+connection negotiates when Happier connects — never from a version number,
+which is unreliable here because some retired `kimi-cli` releases sort above
+current Kimi Code releases. A runtime that does not negotiate resume cannot be
+resumed, and Happier reports that instead of silently starting a fresh
+conversation.
+
+If you are still on the retired CLI, install current Kimi Code and run the
+vendor migration yourself:
+
+```bash
+kimi migrate
+```
+
+Happier never runs migration automatically. `HAPPIER_KIMI_PATH` only chooses
+which executable is launched; it grants no capability the connected runtime
+does not negotiate.
+
+## Related
+
+- [Agent authentication](/agents/provider-authentication)
+- [MCP servers](/extending/mcp-servers)

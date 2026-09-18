@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -84,42 +84,21 @@ printf '%s\\0' ${orderedPaths.map((path) => `'${path.replaceAll("'", "'\\''")}'`
 }
 
 test('install.sh --version resolves release assets from HAPPIER_RELEASE_ASSETS_DIR without fetching release metadata', () => {
-  const scratch = mkdtempSync(join(tmpdir(), 'happier-installers-local-assets-'));
-  const fakeBinDir = join(scratch, 'bin');
-  const assetsDir = join(scratch, 'assets');
-  const installerPath = resolve(repoRoot, 'scripts', 'release', 'installers', 'install.sh');
-  const curlPath = join(fakeBinDir, 'curl');
-  const bashrcPath = join(scratch, '.bashrc');
-  const archiveName = 'happier-v1.2.3-preview.4-darwin-arm64.tar.gz';
-
-  execFileSync('mkdir', ['-p', fakeBinDir, assetsDir]);
-  writeFileSync(join(assetsDir, archiveName), '');
-  writeFileSync(
-    curlPath,
-    '#!/usr/bin/env bash\n' +
-      'echo "curl should not be called when HAPPIER_RELEASE_ASSETS_DIR is set" >&2\n' +
-      'exit 97\n',
-  );
-  chmodSync(curlPath, 0o755);
-  writeFileSync(bashrcPath, '');
-
-  const output = execFileSync('bash', [installerPath, '--version'], {
-    cwd: repoRoot,
-    encoding: 'utf8',
-    env: {
-      ...process.env,
-      HOME: scratch,
-      PATH: `${fakeBinDir}:${process.env.PATH ?? ''}`,
-      SHELL: '/bin/bash',
-      HAPPIER_CHANNEL: 'preview',
-      HAPPIER_RELEASE_ASSETS_DIR: assetsDir,
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
+  const scenario = createLinuxInstallerVersionScenario({
+    channel: 'preview',
+    assets: ['happier-v1.2.3-preview.4-linux-x64.tar.gz'],
+    findOrder: [0],
   });
 
-  assert.doesNotMatch(output, /Fetching .* release metadata/);
-  assert.match(output, /Happier CLI installer version check/);
-  assert.match(output, /- version: 1\.2\.3-preview\.4/);
+  try {
+    assert.equal(scenario.status, 0, scenario.stderr);
+    assert.doesNotMatch(scenario.stderr, /curl should not be called/);
+    assert.doesNotMatch(scenario.stdout, /Fetching .* release metadata/);
+    assert.match(scenario.stdout, /Happier CLI installer version check/);
+    assert.match(scenario.stdout, /- version: 1\.2\.3-preview\.4/);
+  } finally {
+    rmSync(scenario.scratch, { recursive: true, force: true });
+  }
 });
 
 test('install.sh --version semver-sorts local release assets instead of trusting find order', () => {

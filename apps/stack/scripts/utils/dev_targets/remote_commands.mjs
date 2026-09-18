@@ -4,6 +4,8 @@ import { buildStackStableScopeId } from '../auth/stable_scope_id.mjs';
 import { REQUIRED_MANAGED_LIMA_GUEST_TOOLCHAIN } from '../managed_lima/provisioner.mjs';
 import { resolveEffectiveDbProvider } from '../server/effective_db_provider.mjs';
 
+export const DEFAULT_REMOTE_STACK_STARTUP_TIMEOUT_MS = 30 * 60_000;
+
 export const REMOTE_DEPENDENCY_ADMISSION = Object.freeze({
   directCommands: Object.freeze([
     'node',
@@ -217,11 +219,39 @@ export function buildRemoteExecCommand(
       'printf \'%s\\n\' "$$" > "$pid_file"',
       'cleanup_remote_exec_pid_file() { rm -f -- "$pid_file"; }',
       'trap cleanup_remote_exec_pid_file EXIT',
+      'collect_remote_exec_descendants() { '
+        + 'for child_pid in $(ps -eo pid=,ppid= | awk -v parent="$1" \'$2 == parent { print $1 }\'); do '
+        + 'collect_remote_exec_descendants "$child_pid"; '
+        + 'done; '
+        + 'printf \'%s\\n\' "$1"; '
+        + '}',
+      'terminate_remote_exec_tree() { '
+        + '[ -n "${remote_child_pid-}" ] || return 0; '
+        + 'process_ids=$(collect_remote_exec_descendants "$remote_child_pid"); '
+        + 'for process_id in $process_ids; do kill -TERM "$process_id" 2>/dev/null || true; done; '
+        + 'attempt=0; '
+        + 'while [ "$attempt" -lt 20 ]; do '
+        + 'remaining=0; '
+        + 'for process_id in $process_ids; do kill -0 "$process_id" 2>/dev/null && remaining=1; done; '
+        + '[ "$remaining" -eq 0 ] && break; '
+        + 'sleep 0.1; '
+        + 'attempt=$((attempt + 1)); '
+        + 'done; '
+        + 'for process_id in $process_ids; do kill -KILL "$process_id" 2>/dev/null || true; done; '
+        + '}',
+      'handle_remote_exec_signal() { '
+        + 'trap - HUP INT TERM; '
+        + 'terminate_remote_exec_tree; '
+        + 'exit 130; '
+        + '}',
+      'trap handle_remote_exec_signal HUP INT TERM',
       `cd -- ${posixQuote(workingDirectory)}`,
       ...environmentEntries.map(([key, value]) => `export ${key}=${posixQuote(value)}`),
       'set +e',
-      `${args.map(posixQuote).join(' ')}`,
+      `${args.map(posixQuote).join(' ')} <&0 & remote_child_pid=$!`,
+      'wait "$remote_child_pid"',
       'command_status=$?',
+      'remote_child_pid=',
       'exit "$command_status"',
     ].join('; '),
   );
@@ -463,19 +493,19 @@ function normalizeRemoteServerRuntimeConfig(config) {
   });
 }
 
-function requireStableOuterServerUrl(value) {
+function requireStableOuterServerUrl(value, { label = '--server-public-url' } = {}) {
   const urlText = String(value ?? '').trim();
   if (!urlText || /[\0\r\n]/.test(urlText)) {
-    throw new Error('[dev-targets] remote server placement requires a stable outer --server-public-url');
+    throw new Error(`[dev-targets] remote server placement requires a stable outer ${label}`);
   }
   let url;
   try {
     url = new URL(urlText);
   } catch {
-    throw new Error('[dev-targets] remote server placement requires an HTTP(S) --server-public-url');
+    throw new Error(`[dev-targets] remote server placement requires an HTTP(S) ${label}`);
   }
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
-    throw new Error('[dev-targets] remote server placement requires an HTTP(S) --server-public-url');
+    throw new Error(`[dev-targets] remote server placement requires an HTTP(S) ${label}`);
   }
   return urlText;
 }
@@ -568,6 +598,7 @@ function resolveRemoteStackInvocation(target, {
   services,
   serverUrl,
   publicServerUrl = '',
+  canonicalServerUrl = '',
   stackName,
   remoteServerPort = null,
   remoteExpoPort = null,
@@ -597,6 +628,12 @@ function resolveRemoteStackInvocation(target, {
   const stablePublicServerUrl = normalizedServices.server
     ? (resolveServerPublicUrlOnTarget ? '' : requireStableOuterServerUrl(publicServerUrl))
     : publicServerUrl;
+  // The signed auth audience belongs to the originating Stack: every client reaches this server
+  // through the origin's canonical origin, so the remote server must sign that one instead of the
+  // canonical origin the target would derive from its own Stack name and forwarded port.
+  const originCanonicalServerUrl = normalizedServices.server && String(canonicalServerUrl ?? '').trim()
+    ? requireStableOuterServerUrl(canonicalServerUrl, { label: 'canonical server URL' })
+    : '';
   const expoPort = normalizedServices.expo
     ? requireServicePort(remoteExpoPort, 'remote Expo port')
     : null;
@@ -618,12 +655,13 @@ function resolveRemoteStackInvocation(target, {
     `HAPPIER_STACK_SERVER_COMPONENT=${stackServerComponent}`,
     `HAPPIER_DB_PROVIDER=${stackDbProvider}`,
     ...Object.entries(serverRuntimeConfig?.environment ?? {}).map(([key, value]) => `${key}=${value}`),
-    'HAPPIER_CLI_PKGROLL_TIMEOUT_MS=1800000',
+    `HAPPIER_CLI_PKGROLL_TIMEOUT_MS=${DEFAULT_REMOTE_STACK_STARTUP_TIMEOUT_MS}`,
     'HAPPIER_DEV_TARGET_EXECUTION=1',
     ...(normalizedServices.daemon && deferDaemonStartUntilCredentials
       ? ['HAPPIER_STACK_DAEMON_WAIT_FOR_AUTH=1']
       : []),
     ...(serverPort ? [`HAPPIER_STACK_SERVER_PORT=${serverPort}`] : []),
+    ...(originCanonicalServerUrl ? [`HAPPIER_CANONICAL_SERVER_URL=${originCanonicalServerUrl}`] : []),
     ...(expoPort ? [
       `HAPPIER_STACK_EXPO_DEV_PORT=${expoPort}`,
       'HAPPIER_STACK_EXPO_DEV_PORT_STRATEGY=stable',
@@ -818,6 +856,10 @@ export function buildSshTunnelArgs(
 ) {
   return [
     '-T',
+    '-o',
+    'ControlMaster=no',
+    '-o',
+    'ControlPath=none',
     ...sshArgs,
     '-o',
     'BatchMode=yes',
@@ -864,6 +906,10 @@ export function buildSshForwardArgs(target, { forwards, sshArgs = [] } = {}) {
   }
   return [
     '-T',
+    '-o',
+    'ControlMaster=no',
+    '-o',
+    'ControlPath=none',
     ...sshArgs,
     '-o',
     'BatchMode=yes',

@@ -208,6 +208,162 @@ test('dev-vm help gives the Yarn forwarding form for guest cwd arguments', async
     result.stdout,
     /yarn -s dev-vm -- exec --guest-cwd=\/absolute\/path -- COMMAND \[ARG\.\.\.\]/,
   );
+  assert.match(result.stdout, /hstack dev-vm stop \[--force\] \[--json\]/);
+  assert.match(result.stdout, /hstack dev-vm restart \[--force\] \[--json\]/);
+  assert.match(result.stdout, /hstack dev-vm capacity show \[--json\]/);
+  assert.match(result.stdout, /hstack dev-vm capacity set shared\|dedicated/);
+});
+
+test('dev-vm capacity show reports the execution host presets without starting the VM', async (t) => {
+  const fixture = await createDevVmLifecycleFixture(t);
+  const profilePath = join(fixture.env.HAPPIER_STACK_HOME_DIR, 'execution-host.json');
+  const profile = JSON.parse(await readFile(profilePath, 'utf8'));
+  profile.capacity = {
+    mode: 'dedicated',
+    shared: { cpus: 10, memoryGiB: 48 },
+    dedicated: { cpus: 14, memoryGiB: 72 },
+  };
+  await writeFile(profilePath, `${JSON.stringify(profile)}\n`, 'utf8');
+
+  const result = await runNodeCapture([script, 'capacity', 'show', '--json'], { env: fixture.env });
+
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), profile.capacity);
+  await assert.rejects(readFile(fixture.callsPath, 'utf8'), /ENOENT/);
+});
+
+async function createDevVmLifecycleFixture(t, { withLiveTunnelLock = false } = {}) {
+  const fixture = await createTempFixture(t, { prefix: 'hstack-dev-vm-lifecycle-' });
+  const home = fixture.path('home');
+  const bin = fixture.path('bin');
+  const limaHome = fixture.path('lima');
+  const statePath = fixture.path('instance-state');
+  const callsPath = fixture.path('limactl.log');
+  await Promise.all([
+    mkdir(home, { recursive: true }),
+    mkdir(bin, { recursive: true }),
+    mkdir(fixture.path('mirror'), { recursive: true }),
+    writeFile(statePath, 'Running\n', 'utf8'),
+  ]);
+  await writeFile(join(bin, 'limactl'), [
+    '#!/bin/sh',
+    `state=${JSON.stringify(statePath)}`,
+    `calls=${JSON.stringify(callsPath)}`,
+    'printf "%s\\n" "$*" >> "$calls"',
+    'if [ "$1" = "--version" ]; then echo "limactl version 2.1.0"; exit 0; fi',
+    'if [ "$1" = "list" ]; then',
+    '  status=$(cat "$state")',
+    '  printf \'{"name":"candidate","status":"%s","vmType":"vz","arch":"aarch64","cpus":8,"memory":17179869184,"disk":171798691840,"config":{"mounts":[],"vmOpts":{"vz":{"diskImageFormat":"raw","rosetta":{"enabled":false,"binfmt":false}}},"ssh":{"forwardAgent":false},"containerd":{"user":false,"system":false},"portForwards":[{"guestIP":"0.0.0.0","guestIPMustBeZero":false,"proto":"any","ignore":true}]}}\\n\' "$status"',
+    '  exit 0',
+    'fi',
+    'if [ "$1" = "stop" ]; then printf "Stopped\\n" > "$state"; exit 0; fi',
+    'if [ "$1" = "start" ]; then printf "Running\\n" > "$state"; exit 0; fi',
+    'if [ "$1" = "edit" ]; then exit 0; fi',
+    'exit 90',
+    '',
+  ].join('\n'), 'utf8');
+  await writeFile(join(bin, 'uname'), '#!/bin/sh\necho Darwin\n', 'utf8');
+  await Promise.all([
+    chmod(join(bin, 'limactl'), 0o755),
+    chmod(join(bin, 'uname'), 0o755),
+  ]);
+  await writeFile(join(home, 'execution-host.json'), `${JSON.stringify({
+    version: 2,
+    mode: 'managed-lima',
+    activation: 'active',
+    instance: 'candidate',
+    limaHome,
+    profile: 'small',
+    pressureProfile: 'none',
+    guestWorkspaceDir: '/home/happier/.happier-stack/workspace',
+    mirrorWorkspaceDir: fixture.path('mirror'),
+    autoMount: false,
+    controllerEntrypoint: fixture.path('mirror', '0.3', 'apps', 'stack', 'scripts', 'execution_host_bridge.mjs'),
+    workspaces: [{
+      id: '0.3',
+      hostSourceDir: fixture.path('source'),
+      hostMirrorDir: fixture.path('mirror', '0.3'),
+      guestDir: '/home/happier/.happier-stack/workspace/0.3',
+    }],
+  })}\n`, 'utf8');
+  if (withLiveTunnelLock) {
+    const lockDir = join(home, 'execution-host-tunnels');
+    await mkdir(lockDir, { recursive: true });
+    const now = Date.now();
+    await writeFile(join(lockDir, 'candidate-0.3.json.lock'), JSON.stringify({
+      pid: process.pid,
+      createdAtMs: now,
+      updatedAtMs: now,
+    }), 'utf8');
+  }
+  return {
+    callsPath,
+    env: {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH ?? ''}`,
+      HAPPIER_STACK_HOME_DIR: home,
+      HAPPIER_STACK_DISABLE_STACK_ENV_AUTOLOAD: '1',
+    },
+  };
+}
+
+test('dev-vm stop --force bypasses a wedged tunnel lock and forces the retained VM down', async (t) => {
+  const fixture = await createDevVmLifecycleFixture(t, { withLiveTunnelLock: true });
+
+  const result = await runNodeCapture([script, 'stop', '--force', '--json'], { env: fixture.env });
+
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).status, 'Stopped');
+  assert.match(await readFile(fixture.callsPath, 'utf8'), /^list .*candidate\nstop --force candidate\n$/);
+});
+
+test('dev-vm restart stops and starts the retained VM through the canonical lifecycle', async (t) => {
+  const fixture = await createDevVmLifecycleFixture(t);
+
+  const result = await runNodeCapture([script, 'restart', '--json'], { env: fixture.env });
+
+  assert.equal(result.code, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.status, 'Running');
+  assert.equal(payload.stop.status, 'Stopped');
+  assert.equal(payload.start.status, 'Running');
+  assert.match(
+    await readFile(fixture.callsPath, 'utf8'),
+    /^list .*candidate\nstop candidate\nlist .*candidate\nstart candidate\n/,
+  );
+});
+
+test('dev-vm capacity set --force persists the selected presets and reconciles only the retained VM', async (t) => {
+  const fixture = await createDevVmLifecycleFixture(t);
+
+  const result = await runNodeCapture([
+    script,
+    'capacity',
+    'set',
+    'shared',
+    '--shared-cpus=6',
+    '--shared-memory-gib=16',
+    '--dedicated-cpus=12',
+    '--dedicated-memory-gib=32',
+    '--force',
+    '--json',
+  ], { env: fixture.env });
+
+  assert.equal(result.code, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.restarted, true);
+  assert.deepEqual(payload.capacity, {
+    mode: 'shared',
+    shared: { cpus: 6, memoryGiB: 16 },
+    dedicated: { cpus: 12, memoryGiB: 32 },
+  });
+  const saved = JSON.parse(await readFile(join(fixture.env.HAPPIER_STACK_HOME_DIR, 'execution-host.json'), 'utf8'));
+  assert.deepEqual(saved.capacity, payload.capacity);
+  const calls = await readFile(fixture.callsPath, 'utf8');
+  assert.match(calls, /stop candidate/);
+  assert.match(calls, /edit --tty=false --cpus 6 --memory 16/);
+  assert.match(calls, /start candidate/);
+  assert.doesNotMatch(calls, /create/);
 });
 
 test('dev-vm doctor repairs only the existing Lima guest agent when explicitly requested', async (t) => {
@@ -910,7 +1066,7 @@ test('active execution profile delegates an ordinary hstack command before local
     `if [ "$1" = "list" ]; then echo '${JSON.stringify(instance)}'; exit 0; fi`,
     'if [ "$1" = "shell" ]; then',
     '  case "$*" in',
-    '    *"timeout 5 loginctl"*|*"command -v node"*) exit 0 ;;',
+    '    *"timeout 10 loginctl"*|*"command -v node"*) exit 0 ;;',
     '    *"HAPPIER_STACK_REPO_DIR"*) exit 3 ;;',
     '  esac',
     '  exit 23',

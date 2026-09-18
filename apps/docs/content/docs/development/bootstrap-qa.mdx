@@ -141,7 +141,7 @@ Source plan: `.project/plans/todo/bootstrap/happier-desktop-setup-control-panel-
 
 - `[partial]` Remote SSH bootstrap desktop UX + CLI parity
   - Desktop UI: `apps/ui/sources/components/settings/machines/RemoteSshMachineSetupSection.tsx`, `apps/ui/sources/components/settings/machines/useRemoteSshBootstrapTask.ts`
-  - Executor kind: `apps/bootstrap/src/systemTasks/registry.ts` (`remote.ssh.bootstrapMachine.v1`)
+  - Executor kind: `remote.ssh.bootstrapMachine.v1`, dispatched from `createDefaultInteractiveKinds()` in `apps/bootstrap/src/bin/hsetup.ts`
   - CLI entry: `apps/cli/src/cli/commands/machine/*` (help shows `happier machine setup --ssh ...`)
   - Evidence: unit tests exist; interactive Tauri run still required for the native identity-file picker (`desktop_pick_ssh_identity_file`) and prompt flows.
 
@@ -166,14 +166,12 @@ Source plan: `.project/plans/todo/bootstrap/happier-desktop-setup-control-panel-
   - Spec: `packages/tests/suites/ui-e2e/setup.controlPanel.relayFirst.spec.ts`
   - Missing: stabilize Metro/stack startup harness so the spec runs reliably in CI-style runs; capture evidence under `.project/logs/e2e/ui-playwright/`.
 
-### Plan contract mismatches (needs explicit decision)
-
-- `[partial]` Plan names the drift repair kind as `setup.repairThisComputer.v1`, but current implementation uses `relay.connectBackgroundService.v1`
-  - UI spec builder calls `relay.connectBackgroundService.v1`: `apps/ui/sources/sync/domains/server/relayDrift/relayDriftSystemTask.ts`
-  - Executor handler: `apps/bootstrap/src/systemTasks/registry.ts`
-  - Decision needed: alias/rename to match the plan, or update the plan language to the shipped kind id (do not add multiple “competing” kinds without a clear contract).
-
 ### Plan item fixes applied during audit
+
+- `[done]` Drift repair uses the single kind named by the plan, `setup.repairThisComputer.v1`
+  - UI spec builder: `apps/ui/sources/sync/domains/server/relayDrift/relayDriftSystemTask.ts`
+  - Executor: the interactive kind `apps/bootstrap/src/systemTasks/kinds/setupRepairThisComputerInteractiveKind.ts`, dispatched from `createDefaultInteractiveKinds()` in `apps/bootstrap/src/bin/hsetup.ts` so its pairing prompt can be answered.
+  - The competing `relay.connectBackgroundService.v1` sequence and its step ids are removed; no kind is registered in both dispatch maps.
 
 - `[done]` Remove stale “Linux only” gate for server runtime in the website installer
   - Source-of-truth installer: `scripts/release/installers/install.sh`

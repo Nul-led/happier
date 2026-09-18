@@ -17,8 +17,8 @@ Status legend:
 | Capability | Status | Where it works | Notes |
 | --- | --- | --- | --- |
 | Multi-server profiles + switching | Stable | App, Web, CLI | Accounts and runtime state are scoped per server. |
-| Session sharing + collaboration | Stable | App, Web | Share sessions with friends/teammates and manage access. |
-| Session read/unread state | Stable | App, Web, Mobile app | Unread badges plus Mark as unread/read actions in session lists, context menus, headers, and Session info. Direct sessions can also use provider-observed attention. |
+| Session sharing + collaboration | Development only | App, Web | Direct sharing and public links are the released sharing workflow. Team/Group access, responsibility, and the shared collaboration surface are gated in the current 0.3 development channel. |
+| Session read/unread state | Development only | App, Web, Mobile app | Released clients have unread and Mark as unread/read actions. Per-Account read state for shared Sessions is in the current development path and still needs upgrade and loaded-client validation. |
 | Happier sessions + resume | Stable | App, Web, CLI | Resume inactive Happier-managed sessions when the provider/backend supports vendor resume for that session. |
 | New session shortcuts | Stable | App, Web, Mobile app | Start a new session from a project or Session info while reusing the relevant session setup; existing composer draft content is preserved while launch selections are replaced. |
 | Session handoff between machines | Capability-driven | App, Web | Move a live session to another machine while keeping the same session id. Claude and OpenCode are supported; Codex is experimental. |
@@ -54,20 +54,33 @@ Status legend:
 | Voice: Local voice | Experimental | App, Web | Mix device, OpenAI-compatible, Google, and local-neural STT/TTS providers; supports direct-to-session and agent conversation modes. |
 | Voice: Local neural speech | Experimental | App, Web | Kokoro local neural TTS works on web and native; Sherpa local neural STT currently requires a native build. |
 
-## Provider availability
+## Agent availability
 
-| Provider | Current docs page |
+Every Agent with a documentation page, in the order the docs navigation lists them.
+
+| Agent | Docs page |
 | --- | --- |
-| Claude | [/docs/providers/claude](/agents/claude) |
-| Codex | [/docs/providers/codex](/agents/codex) |
-| Gemini | [/docs/providers/gemini](/agents/gemini) |
-| OpenCode | [/docs/providers/opencode](/agents/opencode) |
-| Augment (Auggie) | [/docs/providers/augment](/agents/augment) |
-| Custom ACP | [/docs/providers/custom-acp](/agents/custom-acp) |
-| Kilo | [/docs/providers/kilo](/agents/kilo) |
-| Kimi | [/docs/providers/kimi](/agents/kimi) |
-| Kiro | [/docs/providers/kiro](/agents/kiro) |
-| Qwen | [/docs/providers/qwen](/agents/qwen) |
+| Claude | [/agents/claude](/agents/claude) |
+| Codex | [/agents/codex](/agents/codex) |
+| Cursor | [/agents/cursor](/agents/cursor) |
+| OpenCode | [/agents/opencode](/agents/opencode) |
+| Gemini | [/agents/gemini](/agents/gemini) |
+| Devin | [/agents/devin](/agents/devin) |
+| FX | [/agents/fx](/agents/fx) |
+| Factory Droid | [/agents/droid](/agents/droid) |
+| Grok | [/agents/grok](/agents/grok) |
+| GitHub Copilot | [/agents/copilot](/agents/copilot) |
+| Qwen | [/agents/qwen](/agents/qwen) |
+| Kimi Code | [/agents/kimi](/agents/kimi) |
+| Augment (Auggie) | [/agents/augment](/agents/augment) |
+| Kilo | [/agents/kilo](/agents/kilo) |
+| Kiro | [/agents/kiro](/agents/kiro) |
+| Pi | [/agents/pi](/agents/pi) |
+| Antigravity | [/agents/antigravity](/agents/antigravity) |
+| Oh My Pi | [/agents/oh-my-pi](/agents/oh-my-pi) |
+| CodeRabbit | [/agents/coderabbit](/agents/coderabbit) |
+| DeepSec | [/agents/deepsec](/agents/deepsec) |
+| Custom ACP | [/agents/custom-acp](/agents/custom-acp) |
 
 ## Related guides
 

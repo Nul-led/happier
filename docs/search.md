@@ -173,7 +173,21 @@ uninstall, or generation retirement removes and fences rows and activation.
 There is no `api.search.register()`, no second executor, no provider-owned
 rendering, and no streaming/result-delta protocol. Triage supplies the first
 query Action and descriptor over its existing matcher; the universal production
-host now consumes that projected section.
+host now consumes that projected section. That query is a client-targeted
+Action. Its host-owned ephemeral scope leases the same Account/plugin/immutable-
+generation list window used by mounted Triage UI, so Search reuses a live
+refresh instead of creating a second acquisition owner. Query cancellation
+releases its lease promptly, while Account or generation retirement disposes
+the shared value and refuses stale acquisition.
+
+The command inside each result uses the canonical closed composable union in
+`packages/protocol/src/plugins/ui/semanticCommands.ts`, including its launch-input
+and whole-command byte limits. Live parsing and cold schema rehydration reject
+the same malformed commands and return the same values. Instance keys use the
+shared declarative string trim before their nonempty and UTF-8 byte checks;
+JSON Schema validation checks this contract without mutating the input. Legal
+sub-path spellings stay unchanged in result data; activation normalizes their
+slashes through `normalizePluginUiSemanticCommandV1` before navigation.
 
 `contributes.searchProviders` is distinct from `composerReferences`
 (query → composer insertion); the composer dispatcher, its trigger grammar,

@@ -83,6 +83,20 @@ See [Account Collections migrations](/plugins/guides/account-collections) and
 the maintained [`projects-tasks`](https://github.com/happier-dev/happier/tree/v0.3/packages/plugin-sdk/examples/projects-tasks)
 example for the row/query shape.
 
+## When a mutation loses its acknowledgement
+
+In the current development source, a Collection mutation whose response is
+lost or invalid reports `plugin_collection_outcome_unknown`; Account KV uses
+`plugin_account_storage_outcome_unknown`. These errors are not marked retryable:
+the write may already have committed. Cancellation after dispatch does not
+prove that nothing was written, and a valid acknowledgement remains the result
+of that exact operation even if its caller has since retired.
+
+Do not automatically replay an unknown-outcome mutation. Reconcile against the
+same Account and the operation's row/version contract before deciding what to
+do next. A new Account or a new invocation is not evidence about the original
+write. An explicit conflict remains a conflict, not an unknown outcome.
+
 ## Account mode, erase, and encryption
 
 Account storage is bound to the Account's encryption mode by the host, and
@@ -95,9 +109,13 @@ Accounts do not require client E2EE key material to read their plain envelope.
 Erasing plugin Account data is a separate, present-user Account action. It
 reaches the plugin's Account settings, key-value data, Collections (rows,
 contracts, indexes, and relations), and qualified Account-secret bindings; it
-never deletes another machine's daemon-local data. It reports completed and
-pending destinations and is safely retryable, so state on an unreachable
-machine stays truthfully pending rather than being relabeled as deleted.
+never deletes another machine's daemon-local data. In the current development
+source, its Settings and Data destinations settle separately. Switching Accounts
+does not discard an already-completed destination, but prevents an unstarted
+destination from running against the replacement Account. A lost acknowledgement
+is reported as pending with `outcome-unknown`, not as proof that nothing changed.
+An explicit retry revisits both idempotent destinations for the selected Account;
+switch back to the original Account to continue that erase.
 Disabling or uninstalling a plugin never erases its data by itself.
 
 Do not put secrets in storage. Use [Secrets](/plugins/services/secrets) or a

@@ -41,7 +41,11 @@ for (const { channel, rollingTag, versionSuffix } of [
         env: {
           ...process.env,
           GH_TOKEN: '',
-          GH_REPO: '',
+          // The canonical hstack-exec mirror intentionally has no Git remote
+          // metadata. This test exercises immutable/rolling tag ordering, so
+          // provide the repository slug required by manifest URL generation
+          // instead of coupling the contract to local checkout metadata.
+          GH_REPO: 'happier-dev/happier',
           GITHUB_REPOSITORY: '',
         },
         encoding: 'utf8',

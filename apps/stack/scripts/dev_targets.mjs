@@ -1,5 +1,5 @@
 import './utils/env/env.mjs';
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,7 +13,10 @@ import {
   upgradeDevTargetsConfigToVersion3,
 } from './utils/dev_targets/config.mjs';
 import { runDevTargetsDoctor } from './utils/dev_targets/doctor.mjs';
-import { doctorManagedDevTargetRuntime } from './utils/dev_targets/managed_runtime.mjs';
+import {
+  applyManagedDevTargetCapacity,
+  doctorManagedDevTargetRuntime,
+} from './utils/dev_targets/managed_runtime.mjs';
 import { provisionPosixDevTarget } from './utils/dev_targets/provision.mjs';
 import { provisionManagedLimaDevTarget } from './utils/dev_targets/managed_worker.mjs';
 import {
@@ -217,6 +220,63 @@ function parseTargetNames(raw) {
   return [...new Set(names)];
 }
 
+function requireCapacityInteger(raw, option) {
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(`[dev-targets] ${option} must be a positive integer`);
+  }
+  return value;
+}
+
+function setTargetCapacity(config, targetName, mode, kv) {
+  const target = requireTarget(config.targets, targetName, 'capacity set');
+  if (!target.managedRuntime) {
+    throw new Error(`[dev-targets] target ${target.name} has no managed Lima runtime`);
+  }
+  const normalizedMode = String(mode ?? '').trim().toLowerCase();
+  if (normalizedMode !== 'shared' && normalizedMode !== 'dedicated') {
+    throw new Error('[dev-targets] capacity mode must be shared or dedicated');
+  }
+  const previous = target.managedRuntime.capacity;
+  const readPreset = (name) => {
+    const cpuOption = `--${name}-cpus`;
+    const memoryOption = `--${name}-memory-gib`;
+    const previousPreset = previous?.[name];
+    if (!previousPreset && (kv.get(cpuOption) == null || kv.get(memoryOption) == null)) {
+      throw new Error(
+        `[dev-targets] initial capacity configuration requires ${cpuOption} and ${memoryOption}`,
+      );
+    }
+    return {
+      cpus: kv.get(cpuOption) == null
+        ? previousPreset.cpus
+        : requireCapacityInteger(kv.get(cpuOption), cpuOption),
+      memoryGiB: kv.get(memoryOption) == null
+        ? previousPreset.memoryGiB
+        : requireCapacityInteger(kv.get(memoryOption), memoryOption),
+    };
+  };
+  const candidate = {
+    ...target,
+    managedRuntime: {
+      ...target.managedRuntime,
+      capacity: {
+        mode: normalizedMode,
+        shared: readPreset('shared'),
+        dedicated: readPreset('dedicated'),
+      },
+    },
+  };
+  const nextConfig = withTargets(
+    config,
+    config.targets.map((entry) => entry.name === target.name ? candidate : entry),
+  );
+  return {
+    config: nextConfig,
+    target: nextConfig.targets.find((entry) => entry.name === target.name),
+  };
+}
+
 async function writeConfig(path, config) {
   await mkdir(dirname(path), { recursive: true });
   const temporary = `${path}.${process.pid}.tmp`;
@@ -251,6 +311,8 @@ async function main() {
         '  hstack dev-targets show NAME [--stack=NAME]',
         '  hstack dev-targets doctor [NAME] [--stack=NAME]',
         '  hstack dev-targets status NAME [--stack=NAME]',
+        '  hstack dev-targets capacity show NAME [--stack=NAME]',
+        '  hstack dev-targets capacity set NAME shared|dedicated [--shared-cpus=N --shared-memory-gib=N --dedicated-cpus=N --dedicated-memory-gib=N] [--force] [--stack=NAME]',
         '  hstack dev-targets sync NAME [--stack=NAME]',
         '  hstack dev-targets sync-service start [--detached] [--stack=NAME]',
         '  hstack dev-targets sync-service status [--stack=NAME]',
@@ -369,6 +431,56 @@ async function main() {
     if (status.state !== 'ready' || managedRuntime?.ok === false) process.exitCode = 1;
     return;
   }
+  if (command === 'capacity') {
+    const action = String(positionals[1] ?? 'show').trim().toLowerCase();
+    if (action === 'show') {
+      const target = requireTarget(loaded.config.targets, positionals[2], 'capacity show');
+      if (!target.managedRuntime) {
+        throw new Error(`[dev-targets] target ${target.name} has no managed Lima runtime`);
+      }
+      printResult({
+        json,
+        data: {
+          path,
+          stackName,
+          target,
+          capacity: target.managedRuntime.capacity ?? null,
+        },
+        text: target.managedRuntime.capacity
+          ? JSON.stringify(target.managedRuntime.capacity, null, 2)
+          : `[dev-targets] ${target.name} uses profile-owned capacity (${target.managedRuntime.profile})`,
+      });
+      return;
+    }
+    if (action === 'set') {
+      const desired = setTargetCapacity(
+        loaded.config,
+        positionals[2],
+        positionals[3],
+        kv,
+      );
+      const force = flags.has('--force');
+      if (force) await writeConfig(path, desired.config);
+      const applied = await applyManagedDevTargetCapacity({
+        target: desired.target,
+        force,
+        env: process.env,
+      });
+      if (!force) await writeConfig(path, desired.config);
+      printResult({
+        json,
+        data: { path, stackName, target: desired.target, applied },
+        text: [
+          `[dev-targets] ${desired.target.name} capacity mode: ${desired.target.managedRuntime.capacity.mode}`,
+          applied.changed
+            ? '[dev-targets] managed Lima VM restarted and capacity applied'
+            : '[dev-targets] managed Lima VM already matched the selected capacity',
+        ].join('\n'),
+      });
+      return;
+    }
+    throw new Error(`[dev-targets] unknown capacity action: ${action}`);
+  }
   if (command === 'sync') {
     const target = requireTarget(loaded.config.targets, positionals[1], command);
     const sync = await syncDevTarget({
@@ -472,21 +584,41 @@ async function main() {
       throw new Error('[dev-targets] exec requires COMMAND [ARG...] (normally after --)');
     }
     let result;
-    if (requestedTarget === 'auto') {
+    const target = requestedTarget === 'auto' ? null : requireTarget(loaded.config.targets, requestedTarget, command);
+    if (!target || (process.platform !== 'win32' && target.platform !== 'windows')) {
       const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-      const invokedCwd = resolve(repoRoot, kv.get('--cwd') ?? '.');
-      if (flags.has('--flush') || flags.has('--tty') || wrapperArgs.some((arg) => arg === '--env' || arg.startsWith('--env='))) {
+      if (!target && (flags.has('--flush') || flags.has('--tty') || wrapperArgs.some((arg) => arg === '--env' || arg.startsWith('--env=')))) {
         throw new Error('[dev-targets] auto execution does not accept --flush, --tty, or --env; choose an exact target for those controls');
       }
       const launcher = resolve(repoRoot, 'apps', 'stack', 'bin', 'hstack-exec');
-      const execution = spawnSync(launcher, ['--', ...remoteCommandArgs], {
-        cwd: invokedCwd,
+      const launcherArgs = target ? [
+        `--target=${target.name}`,
+        ...(flags.has('--tty') ? ['--tty'] : []),
+        `--cwd=${kv.get('--cwd') ?? '.'}`,
+        ...Object.entries(parseRemoteEnvironment(wrapperArgs)).map(([key, value]) => `--env=${key}=${value}`),
+      ] : [];
+      // The native owner performs the one mandatory synchronization barrier;
+      // the legacy --flush spelling does not add a second flush here.
+      const child = spawn(launcher, [...launcherArgs, '--', ...remoteCommandArgs], {
+        cwd: target ? repoRoot : resolve(repoRoot, kv.get('--cwd') ?? '.'),
         env: { ...process.env, HAPPIER_EXEC_CONFIG_PATH: loaded.path },
         stdio: 'inherit',
       });
-      result = { code: execution.status, signal: execution.signal, error: execution.error };
+      // Forward parent-only termination to the native owner and wait for its
+      // remote cancellation/barrier cleanup before this CLI exits.
+      const signalListeners = new Map(['SIGINT', 'SIGTERM'].map((signal) => [signal, () => child.kill(signal)]));
+      for (const [signal, listener] of signalListeners) process.on(signal, listener);
+      try {
+        result = await new Promise((resolveResult) => {
+          child.once('error', (error) => resolveResult({ code: 1, error }));
+          child.once('exit', (code, signal) => resolveResult({ code, signal }));
+        });
+      } finally {
+        for (const [signal, listener] of signalListeners) process.removeListener(signal, listener);
+      }
     } else {
-      const target = requireTarget(loaded.config.targets, requestedTarget, command);
+      // Windows origins and targets require the cross-platform SSH adapter;
+      // POSIX-origin command routing uses the native execution owner above.
       result = await runDevTargetCommand({
         target,
         stackBaseDir: dirname(loaded.path),

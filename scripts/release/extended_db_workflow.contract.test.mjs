@@ -7,8 +7,8 @@ import YAML from 'yaml';
 
 const repoRoot = new URL('../..', import.meta.url).pathname;
 
-function loadWorkflow() {
-  return YAML.parse(readFileSync(join(repoRoot, '.github', 'workflows', 'extended-db-tests.yml'), 'utf8'), {
+function loadWorkflow(fileName = 'extended-db-tests.yml') {
+  return YAML.parse(readFileSync(join(repoRoot, '.github', 'workflows', fileName), 'utf8'), {
     prettyErrors: true,
   });
 }
@@ -56,5 +56,53 @@ test('provider DB contracts check generated schemas without repair before provid
     assert.ok(checkIndex < runIndex, `${jobName} must check schema drift before provider tests`);
     assert.equal(steps[checkIndex].run, 'yarn --cwd apps/server schema:sync:check');
     assert.doesNotMatch(steps[checkIndex].run, /db push|migrate|repair/iu);
+    const providerUrlKey = provider === 'Postgres'
+      ? 'HAPPIER_TEST_POSTGRES_DATABASE_URL'
+      : 'HAPPIER_TEST_MYSQL_DATABASE_URL';
+    assert.equal(
+      steps[runIndex].env[providerUrlKey],
+      steps[runIndex].env.DATABASE_URL,
+      `${jobName} must explicitly identify its disposable provider-test database`,
+    );
   }
+});
+
+test('provider DB contracts exercise the Session System Record preview upgrade before final-schema coverage', () => {
+  const workflow = loadWorkflow();
+  for (const [jobName, provider, db] of [
+    ['db-contract-postgres', 'Postgres', 'postgres'],
+    ['db-contract-mysql', 'MySQL', 'mysql'],
+  ]) {
+    const steps = workflow.jobs[jobName].steps;
+    const schemaIndex = steps.findIndex((step) => step.name === 'Check provider schema synchronization');
+    const upgradeIndex = steps.findIndex(
+      (step) => step.name === `Run Session System Record preview upgrade contract (${provider})`,
+    );
+    const finalContractIndex = steps.findIndex((step) => step.name === `Run db contract suite (${provider})`);
+    assert.ok(schemaIndex >= 0 && schemaIndex < upgradeIndex, `${jobName} must check source schema before the upgrade`);
+    assert.ok(upgradeIndex < finalContractIndex, `${jobName} must finish the preview upgrade before final-schema contracts`);
+    assert.equal(
+      steps[upgradeIndex].run,
+      `node packages/tests/scripts/run-extended-db-docker.mjs --db ${db} --mode session-system-record-upgrade`,
+    );
+  }
+
+  const postgresSteps = workflow.jobs['db-contract-postgres'].steps;
+  const postgresMigration = postgresSteps.find((step) => step.name === 'Migrate (Postgres)');
+  assert.equal(postgresMigration.run, 'yarn --cwd apps/server -s migrate:full:deploy');
+  assert.doesNotMatch(
+    postgresSteps.map((step) => step.run ?? '').join('\n'),
+    /prisma\s+migrate\s+deploy/iu,
+    'Postgres DB contracts must not bypass the canonical Session System Record migration lifecycle',
+  );
+});
+
+test('the primary PostgreSQL DB-contract job also uses the canonical migration owner', () => {
+  const workflow = loadWorkflow('tests.yml');
+  const postgresMigration = workflow.jobs['server-db-contract'].steps.find(
+    (step) => step.name === 'Migrate (Postgres)',
+  );
+  assert.equal(postgresMigration.env.HAPPIER_DB_PROVIDER, 'postgres');
+  assert.equal(postgresMigration.run, 'yarn --cwd apps/server -s migrate:full:deploy');
+  assert.doesNotMatch(postgresMigration.run, /prisma\s+migrate\s+deploy/iu);
 });

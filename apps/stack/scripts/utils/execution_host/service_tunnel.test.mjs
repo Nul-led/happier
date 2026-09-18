@@ -292,9 +292,9 @@ test('execution-host service tunnel starts one detached SSH transport with all r
   assert.equal(spawn.options.env.HAPPIER_STACK_PROCESS_KIND, 'execution-host-service-tunnel');
   assert.deepEqual(spawn.args, [
     '-T',
-    '-F', `${fixture.path('lima')}/primary/ssh.config`,
     '-o', 'ControlMaster=no',
     '-o', 'ControlPath=none',
+    '-F', `${fixture.path('lima')}/primary/ssh.config`,
     '-o', 'SetEnv=HAPPIER_STACK_EXECUTION_HOST_TUNNEL=primary:0.3:repo-dev-1234567890',
     '-o', 'BatchMode=yes',
     '-o', 'ExitOnForwardFailure=yes',
@@ -597,6 +597,64 @@ test('service tunnel readiness keeps waiting when the initial Expo projection na
   assert.deepEqual(result.forwards.map(({ service }) => service), ['server', 'expo-web']);
 });
 
+test('service tunnel readiness ignores a stale command-only target projection for newly declared remote Expo', async (t) => {
+  const fixture = await createTempFixture(t, { prefix: 'execution-host-service-tunnel-stale-remote-expo-' });
+  const env = { HAPPIER_STACK_HOME_DIR: fixture.path('home') };
+  const initialProjection = [
+    'stackName=repo-dev-1234567890',
+    'serverPort=52753',
+    'expoPort=18829',
+    JSON.stringify({
+      stackName: 'repo-dev-1234567890',
+      startedAt: '2026-09-04T05:13:21.224Z',
+      ports: { server: 52753 },
+      placement: { server: 'mac-host', expo: 'mac3-linux', daemon: 'local' },
+      expo: {
+        port: 18829,
+        webPort: 18829,
+        mobilePort: 18829,
+        webEnabled: true,
+        devClientEnabled: true,
+        remoteTarget: 'mac3-linux',
+      },
+      remoteTargets: {
+        'mac3-linux': {
+          services: { server: false, expo: false, daemon: false },
+          serviceStatus: {},
+          status: 'running',
+        },
+      },
+    }),
+  ].join('\n');
+  const readyProjection = runtimeProjection({
+    expoPort: 18829,
+    startedAt: '2026-09-04T05:13:21.224Z',
+  });
+  const executor = {
+    calls: 0,
+    async capture() {
+      this.calls += 1;
+      return { exitCode: 0, out: this.calls === 1 ? initialProjection : readyProjection, err: '' };
+    },
+  };
+  const boundary = tunnelBoundary({
+    listenerPids: (port, spawned) => spawned.length > 0 && (port === 52753 || port === 18829) ? [731] : [],
+  });
+
+  const result = await waitForExecutionHostServiceTunnel({
+    profile: profile(fixture.path('lima')),
+    workspaceId: '0.3',
+    stackName: 'repo-dev-1234567890',
+    executor,
+    env,
+    boundary,
+  });
+
+  assert.equal(result.status, 'running');
+  assert.equal(executor.calls, 2, 'a stale command-only target must not make the new Expo declaration look complete');
+  assert.deepEqual(result.forwards.map(({ service }) => service), ['server', 'expo-web']);
+});
+
 test('service tunnel supervision replaces one transiently exited owned SSH transport and stops on cancellation', async (t) => {
   const fixture = await createTempFixture(t, { prefix: 'execution-host-service-tunnel-supervision-' });
   const env = { HAPPIER_STACK_HOME_DIR: fixture.path('home') };
@@ -710,6 +768,60 @@ test('service tunnel supervision retries after one replacement transport fails t
   );
   const state = JSON.parse(await readFile(`${fixture.path('home')}/execution-host-tunnels/primary-0.3.json`, 'utf8'));
   assert.equal(state.pid, 733);
+});
+
+test('service tunnel supervision retries a transient initial runtime inspection failure', async (t) => {
+  const fixture = await createTempFixture(t, { prefix: 'execution-host-service-tunnel-supervision-initial-retry-' });
+  const env = { HAPPIER_STACK_HOME_DIR: fixture.path('home') };
+  const controller = new AbortController();
+  const warnings = [];
+  let captures = 0;
+  const executor = {
+    async capture() {
+      captures += 1;
+      if (captures === 1) throw new Error('guest temporarily unavailable');
+      return {
+        exitCode: 0,
+        out: runtimeProjection({ startedAt: '2026-09-04T05:13:21.224Z' }),
+        err: '',
+      };
+    },
+  };
+  let activePid = null;
+  const boundary = tunnelBoundary({
+    listenerPids: (_port, _spawned, { candidatePids } = {}) => (
+      activePid != null && candidatePids?.includes(activePid) ? [activePid] : []
+    ),
+  });
+  boundary.spawn = (command, args, options) => {
+    const child = { pid: 731, unref() {} };
+    activePid = child.pid;
+    boundary.spawned.push({ command, args, options, child });
+    return child;
+  };
+  boundary.readFingerprint = (pid) => `darwin-ps:${pid}`;
+  boundary.reportWarning = (message) => warnings.push(message);
+  let delays = 0;
+  boundary.delay = async () => {
+    delays += 1;
+    if (delays === 2) controller.abort();
+  };
+
+  const result = await superviseExecutionHostServiceTunnel({
+    profile: profile(fixture.path('lima')),
+    workspaceId: '0.3',
+    stackName: 'repo-dev-1234567890',
+    executor,
+    env,
+    boundary,
+    signal: controller.signal,
+  });
+
+  assert.equal(result.status, 'cancelled');
+  assert.equal(captures, 2);
+  assert.equal(boundary.spawned.length, 1);
+  assert.match(warnings[0] ?? '', /initial reconciliation failed; retrying: guest temporarily unavailable/);
+  assert.match(warnings[1] ?? '', /recovered after a transient initial reconciliation failure/);
 });
 
 test('service tunnel supervision does not poll a stable initial remote Expo projection', async (t) => {

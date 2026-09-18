@@ -1,0 +1,310 @@
+---
+title: Enterprise identity
+description: How Home-managed identity providers, Team sign-in connections and directory sync fit together on a self-hosted Home, and what each one does and does not grant.
+---
+
+A Home operator can offer company sign-in without every Team asking you to edit server
+environment variables, and — where you allow it — a Team administrator can point their own
+Team at your identity provider and keep its membership in step with your directory.
+
+This page is the map. The per-provider setup steps live on
+[OIDC](/self-hosting/auth-oidc) and [GitHub](/self-hosting/auth-github); what is here is the
+model those pages assume, plus WorkOS and directory sync, which have no page of their own.
+
+<Callout type="warn">
+  **Availability.** Everything on this page is 0.3 development source. It is not in a
+  released Happier version, and its administration screens and sign-in flows have not
+  completed composed validation. Team-scoped surfaces additionally require
+  `HAPPIER_FEATURE_TEAMS__ENABLED`. Read this to plan, not to promise a rollout date.
+</Callout>
+
+## Three things people conflate
+
+Enterprise identity looks like one feature and is three, with three different blast radii.
+Happier keeps them apart and so should your rollout plan:
+
+| | What it means | What it grants |
+| --- | --- | --- |
+| **Identity** | Someone proved who they are through your IdP | An ordinary Happier Account and a linked identity. Nothing else. |
+| **Directory** | Happier holds a copy of your IdP's people and groups | Membership and group placement in one Team, reconciled on a schedule |
+| **Repository** | A GitHub App can also reach code | Nothing here — that is [connected services](/accounts/connected-services), and it is not available for managed Apps yet |
+
+Your IdP attests; Happier authorizes. A WorkOS role, an OIDC `groups` claim, a GitHub org
+membership and an email domain are all evidence, never grants. In particular, no external
+role ever makes someone a Team owner or admin: that stays an explicit assignment inside
+Happier.
+
+Sign-in also produces exactly one credential — the ordinary Happier one. There is no Team
+token, no Team cookie, no second password database and no parallel Account.
+
+## What you need first
+
+- A Home you administer, with `HAPPIER_CANONICAL_SERVER_URL` set and reachable over HTTPS.
+- `HANDY_MASTER_SECRET`. Managed provider credentials are encrypted with it — see
+  [Secrets](#secrets-and-what-happens-if-you-rotate-them).
+- For anything Team-scoped, `HAPPIER_FEATURE_TEAMS__ENABLED`.
+- For WorkOS, a WorkOS account and its two platform values.
+
+## Home-owned providers
+
+A Home administrator adds sign-in connections in the app rather than in env, under
+**Identity providers** → **Home sign-in connections**. These are stored in your database, so
+they can be added, tested and removed without a redeploy.
+
+The in-app editor covers **OIDC**. WorkOS and GitHub App identity are created through their
+own setup flows further down this page, because each needs external tenant evidence an OIDC
+form cannot express.
+
+The same editor is what a Team administrator uses for a Team-owned OIDC provider, when you
+have allowed that kind — one surface, two owners, rather than a separate Team-only screen.
+
+Adding one takes an issuer URL, client ID, client secret, scopes including `openid`, and the
+claim names for login, email and groups. Then:
+
+- **Test sign-in** runs a real authorization round trip and records the result. It links no
+  identity, creates no membership and keeps no token. The result is shown once, to you, on the
+  connection you started it from: whether a subject, sign-in name and email came back and
+  whether that email was verified, how many groups the claim carried, which of your configured
+  eligibility rules matched, and — for a Team connection — which native Team Groups your
+  current mappings would have contributed to. It reports presence and outcomes, never the
+  claim values themselves. A sign-in your rules would deny still produces this result, so you
+  can see *which* rule denied it instead of guessing.
+- The Group-mapping line appears only on a Team connection, because that is where mappings
+  live. If the groups claim did not arrive there, or arrived incomplete (some providers split
+  large group sets out of the token), it reads **Not evaluated** rather than claiming that
+  nothing matched.
+- A connection you have edited in a security-relevant way shows **Retest required** — the
+  previous test no longer describes what would run.
+- **Remove connection** shows its blockers first: how many linked identities and Team
+  connections depend on it, and which Accounts are affected. Removal re-checks those blockers
+  in its own transaction, so there is no check-then-delete race.
+
+The test start and one-time result consume operations are also part of Happier's public Action
+surface for UI, CLI, Agent, API/SDK, and trusted installed-plugin callers. Automation admission
+does not grant Home or Team permission: the domain route still checks the exact owner, current
+Team qualification, connection revision, and configured Action approval. See the generated
+[host Action reference](/plugins/api/host-actions) for the current schemas and surfaces.
+
+In 0.3 development source, an external API Token never borrows the daemon's signed-in Account
+credential. The Home authorizes that API Token's exact public Action, request and target Machine;
+the selected trusted daemon signs each exact downstream method, canonical path, body-presence/body
+digest and resolved target
+with its Machine identity and the parent invocation identity. The existing explicit domain handler
+then performs its normal authorization after the Home reconstructs and rechecks the originating
+Token and Team qualification. This supports the real auxiliary reads and writes an admitted Action
+needs without a second route allowlist or a daemon bearer fallback. A different daemon, parent
+Action, request body or target cannot reuse the signed request. This path has focused source tests,
+but its loaded cross-runtime integration gate is still open. Auxiliary calls carried by the
+existing generic socket RPC use the same signed request envelope and authorization checks; socket
+identity never substitutes for the originating API Token or creates a second authority path.
+
+Env- and file-configured OIDC providers from [the OIDC page](/self-hosting/auth-oidc) keep
+working exactly as before, side by side with these. Managed providers do not shadow, migrate
+or replace them.
+
+### Deciding what Teams may use
+
+Home policy is the ceiling. You choose which provider kinds — `oidc`, `workos_sso`,
+`github_app_identity` — a Team administrator may configure at all. A Team can narrow its own
+sign-in from what you allow; it can never widen it, and it cannot reach a provider kind you
+have not permitted.
+
+Team administration also requires the Team capability **manage authentication**, which is
+separate from managing members or Team policy.
+
+### Secrets, and what happens if you rotate them
+
+Managed provider credentials are write-only. Once submitted they are encrypted at rest and
+never returned — administration screens show only whether a secret is set. Replacing one is a
+deliberate action, not a side effect of editing anything else.
+
+They are encrypted with your `HANDY_MASTER_SECRET`. Two things follow:
+
+- They are **operational** secrets your Home can read, not end-to-end encrypted material.
+  That is what lets the server complete an OAuth exchange on its own.
+- If that master secret is lost or rotated without migrating them, they become undecryptable.
+  The affected provider fails closed and its credential must be entered again. Put managed
+  identity providers on your master-secret rotation checklist.
+
+## WorkOS
+
+WorkOS is the option for "our customers each use a different SAML IdP and we do not want to
+configure each one." Your deployment holds the WorkOS platform credentials; each Team holds
+only references to exact WorkOS objects.
+
+```bash
+WORKOS_API_KEY=sk_...
+WORKOS_CLIENT_ID=client_...
+```
+
+Set both or neither. With exactly one set, or with a pair WorkOS rejects, every WorkOS action
+reports the platform as unavailable rather than half working. Changing either value
+invalidates OAuth attempts already in flight against the old configuration; those users see a
+restart prompt rather than a partially applied sign-in.
+
+Setup runs in three steps, and each one is separately visible in the Team's **Sign-in
+connections**:
+
+<Steps>
+
+### Create the connection
+
+A Team administrator adds a WorkOS connection. Happier creates one WorkOS organization for
+that Team, keyed by an external ID derived from your Home identity and the Team ID, so
+re-running setup finds the existing organization instead of creating a second one.
+
+### Finish setup in the WorkOS Admin Portal
+
+Happier generates a portal link only at the moment it is needed, checks that it is HTTPS,
+hands it over once and never stores it. WorkOS documents these links as short-lived and
+non-revocable, which is exactly why keeping one around would be a liability. If a link
+expires, generate another.
+
+The same operation is exposed as the generated
+`teams.identity.workos.adminPortalLink.create` Action. A browser-capable caller may open the
+returned link; a headless caller receives the same typed, short-lived result. The link is not
+proof that setup completed, and it must not be copied into transcripts, approval summaries, or
+logs.
+
+### Bind the SSO connection
+
+Back in Happier, reconcile. If WorkOS has no active connection yet, the row stays **Setting
+up**. If it has one, Happier binds it. If it has several, Happier asks which one rather than
+guessing.
+
+</Steps>
+
+From then on, sign-in authorizes against that exact connection, and the returned profile must
+match **both** the bound organization and the bound connection before it counts as identity.
+An email address or domain that looks right is not enough and never falls back to matching by
+name.
+
+## Directory sync
+
+A directory source is separate from a sign-in connection, on purpose: SSO-only identity,
+sign-in-time group refresh and full directory sync are three different promises, and the app
+labels them separately.
+
+What sync does: it keeps a projection of your IdP's people, groups and group memberships, and
+reconciles the Team membership and group placements **that this source manages** from it.
+What it does not do: touch a membership someone added natively, touch another source's
+contributions, or delete anybody's Account.
+
+Group placement is additive. One person's membership of a Team group is the union of an
+optional native placement and any number of external contributions. Removing one contribution
+leaves the others — and the history they already granted — intact. An external group that is
+not mapped to a Team group grants nothing at all.
+
+### Freshness, and what the timestamps mean
+
+| Source | Target between successful observations |
+| --- | --- |
+| WorkOS Directory Sync | 5 minutes |
+| GitHub organization | 30 minutes |
+| Full repair reconciliation | at least daily |
+
+A source reads **stale** once twice its target has passed without a successful observation. A
+paused source reports unknown rather than decaying.
+
+These timestamps say when *Happier* last successfully observed your directory — not when your
+IdP last observed reality. WorkOS's own connectors poll upstream on their own schedule, so a
+perfectly fresh Happier observation of a lagging WorkOS directory is still a lagging
+directory. A poll that finds no changes is a success and refreshes the timestamp.
+
+**Sync now** queues and coalesces work for the shared sync worker and tells you it did. It is
+not a promise that the next page load is current.
+
+### When your IdP is unreachable
+
+Incomplete evidence never removes access. A failed or partial import keeps the last known
+native state, shows the error, and retries with backoff. Absence only becomes a
+deprovisioning after every required page of a run completed — which is what stops a truncated
+API response from emptying a Team.
+
+Removing a directory source revokes exactly that source's memberships and group
+contributions. Native memberships, other sources, other Teams and personal work are
+untouched, and no Account is deleted.
+
+## Team sign-in pages
+
+With a Team connection configured, a Team has a sign-in entry that shows the Team's name and
+logo beside the Happier identity, and offers only the methods valid for that Team. Branding is
+restrained co-branding by design: there is no replacement logo, custom CSS, arbitrary theme or
+separate Team bundle, and Team URLs use the immutable Team ID rather than a friendly slug.
+
+That page grants nothing by being reached. Admission is revalidated on the server, and an
+unavailable Team, an archived Team, a disabled feature and an unknown Team ID all produce the
+same answer — so the page cannot be used to discover which Teams exist on your Home.
+
+A Team can narrow this page to an OR-list of usable Home methods and Team connections. Saving
+that restricted policy requires every selected choice to be currently available, external
+choices to have a current successful test, and the administrator's current credential to prove
+one accepted choice. If any check fails, the previous policy remains in force.
+
+Qualification belongs to the exact credential, not to the Account as a whole. A deliberately
+authorized API Token can satisfy a restricted Team only with current evidence issued for that
+Token; a daemon login, pairing, a linked identity row, or a conversational author cannot lend it
+authentication. If policy, provider or evidence currentness is unavailable, the protected Team
+operation fails closed and independent personal or Home-owned work remains usable.
+
+Authentication policy and membership admission are separate settings. **Invitation only** needs
+the exact current invitation. **Directory provisioned** needs an exact unbound directory identity
+from a complete observation. **Just in time** needs current evidence from the configured provider
+or Team connection. A successful OAuth callback is evidence for the selected mode, not a generic
+membership grant; stale or mismatched continuation state restarts or denies without partial
+Account or membership changes.
+
+For directory-provisioned admission, Happier binds a signing-in Account only from exact immutable
+provider evidence: the WorkOS IdP subject or GitHub user ID observed by the configured connection.
+Email, login, display name, and domain never perform that correlation. Native access is applied
+only when the matching directory source has a complete current projection.
+
+### First password enrollment stays in the open app
+
+When a Plain Account with a linked OAuth or mTLS identity enrolls its first password, the open
+Account Security screen prepares the exact salted target credential and canonical mutation digest,
+then obtains a provider-bound external proof. All three live only in current-process memory.
+`TokenStorage`, browser local storage, and native secure storage reject the
+`accountPasswordEnrollment` record; none stores its credential, digest, proof, pending, or
+continuation bytes.
+
+The OAuth callback claims the exact Account, Home, provider, pending value, and request digest once,
+and preserves that ceremony in memory only while navigating from the callback route back to the
+originating Settings screen. Its return target names the exact Home server ID. Reload, replay,
+expiry, cancellation, abandonment, or substitution requires a fresh salted preparation and proof.
+mTLS completes directly in the same process. For an E2EE proof audience, Happier resolves the Home
+authentication target and binds the stable server identity plus canonical server URL rather than a
+device-local alias or transport endpoint. This is intentional security behavior, not resumable setup.
+
+## Limits worth knowing before you plan a rollout
+
+- **Managed GitHub Apps do not grant repository access.** Verifying an installation for
+  identity or directory use does not make repository access available; that consumer fails
+  closed rather than treating an installation ID as authorization.
+- **External PAT-driven autonomous Action propagation still needs loaded integration.** The
+  generated identity test and Admin Portal Actions, exact-invocation authorization and trusted
+  daemon Machine proof exist in development source. Focused tests do not replace the open
+  cross-runtime loaded journey and package gates. Direct authorized administration is independent
+  of that gate.
+- Live sign-in validation against real WorkOS, OIDC and GitHub tenants is still outstanding
+  for these flows.
+
+## When it goes wrong
+
+| What you see | What it means |
+| --- | --- |
+| Every WorkOS action reports the platform unavailable | `WORKOS_API_KEY` and `WORKOS_CLIENT_ID` are missing, half set, or rejected |
+| A sign-in ends with "configuration changed, start again" | The provider was removed, disabled, or edited in a security-relevant way after that attempt began. Cosmetic edits do not do this. |
+| A provider reports its secret is unreadable | `HANDY_MASTER_SECRET` changed, or the record was restored without it. Re-enter the credential. |
+| A member signs in but gets no Team access | Identity is not membership. Check the directory source, the group mapping, and the limits above. |
+| A directory source is stuck **Setting up** | The upstream directory or SSO connection has not been completed in the provider's own console yet |
+| A directory source shows stale with an error | Happier is retrying with backoff. Existing access is retained; incomplete evidence never revokes. |
+| Nobody can administer the Home at all | Ownership, not identity — use [Home owner setup and recovery](/self-hosting/home-owner) |
+
+## Related
+
+- [Auth overview](/self-hosting/auth) — the policy model these providers plug into.
+- [OIDC](/self-hosting/auth-oidc) — provider configuration and the outbound network policy.
+- [GitHub](/self-hosting/auth-github) — GitHub App setup, including the managed flow.
+- [Home owner setup and recovery](/self-hosting/home-owner) — establishing or recovering Home administration.
+- [Environment variables](/self-hosting/env) — the complete server runtime surface.

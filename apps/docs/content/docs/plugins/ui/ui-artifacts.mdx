@@ -113,6 +113,25 @@ for the matching Action declaration and handler.
 If no config is found, the config is invalid, or it declares no targets, the
 command exits non-zero with an actionable error.
 
+## Account-hosted packaged assets (development)
+
+Development builds can host a portable release's packaged assets, including its
+brand icon, in your Account when the server supports artifact hosting. Enabling
+hosting requires an explicit confirmation; installing or trusting a plugin does
+not upload its bytes.
+
+The first upload needs the selected online daemon with the exact admitted
+release. Once publication is confirmed, another client can read the hosted brand
+without that daemon. Until then, or if the icon fails validation, the client uses
+the plugin's display name and neutral fallback. Hosting assets does not make
+machine-side plugin execution available offline.
+
+Hosted bytes consume Account storage. In a plaintext Account the server can read
+them; in an E2EE Account the client encrypts them, while release metadata remains
+visible to the server. Turning hosting off stops future uploads. The separate
+disable-and-remove action also removes that release's hosted UI and packaged
+asset bytes.
+
 ## Runtime verification
 
 The daemon re-derives the digest when loading artifacts. Mismatched, missing, unsafe, or schema-invalid artifact trees fail closed.

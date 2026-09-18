@@ -3,32 +3,40 @@ title: Onboarding
 description: Connect your devices and machines to a Home, or create a Personal Home of your own.
 ---
 
-> **Availability:** Home-aware setup and Personal Home creation are available in the 0.3 development/preview line. Stable 0.2 keeps its released Relay-oriented onboarding.
+> **Availability:** This Home-aware setup and Personal Home journey is in the current unreleased 0.3 checkout. Stable 0.2 keeps its released Relay-oriented onboarding.
 
 Happier follows this high-level flow:
 
 1. **Choose a Home** where your Account, credentials, sessions, settings, and data live.
-2. **Sign in directly or use an Account Service**—Happier Cloud by default—to discover linked Homes.
-3. **Use the desktop app as your control panel** (recommended; the web UI is best for status/management).
+2. **Sign in to that Home directly.** Optional account sign-in can help you find linked Homes; it does not replace the Home's own authentication.
+3. **Use the desktop app or web client as your control panel.** Both can start
+   and drive sessions; desktop can also install and manage the local background
+   service.
 4. **Get a machine ready**:
    - **This computer**: configure the local background service from the app.
    - **Remote machine**: bootstrap it over SSH from the app, and optionally save the SSH target as a reusable Remote host.
 5. **Optionally configure public ingress** for an operator-managed server. Personal Homes can use Iroh without a public address.
 
+The Home hosts the Account and synchronized session state. Coding Agents still
+run on the computer that owns each session; choosing Happier Cloud for sign-in
+or discovery does not move that execution into the cloud.
+
 User guide: [Relay access](/apps/relay-access).
 
 ## Choose your setup
 
-### Option A — Hosted (recommended to start)
-You use Happier Cloud as the selected sign-in and Home-discovery service.
+### Option A — Find an existing Home (recommended to start)
+Use your account to find linked Homes, or connect directly to a Home whose
+address or pairing link you already have. Account-based discovery does not run
+your coding Agents.
 
 1. Open the desktop app (recommended) or the web app.
-2. Choose **Happier Cloud** when the app asks how to find your Homes.
-3. Sign in using one of the methods the service advertises.
+2. On a supported desktop, Personal Home setup is local-first; a named account is optional. Later, choose **Find your Homes** from the connection controls to discover Homes linked to your account.
+3. Sign in using an offered method. An explicit Home remains the destination; without one, a preferred or sole linked Home opens automatically, and multiple Homes without a preference require a choice.
 4. Open the **Setup wizard** and choose **Set up this computer**.
-   - This configures the local background service against the preferred Home you just entered.
+   - This configures the local background service against the Home you selected.
    - If the app detects Home drift later, it shows a repair action instead of silently leaving the background service on another Home.
-   - If you are restoring an already-signed-in device, use **Login with secret key instead** on the mobile login screen.
+   - To restore access with a recovery key, choose **Use a key** on Welcome.
 
 Optional CLI path:
 
@@ -39,7 +47,29 @@ curl -fsSL https://happier.dev/install | bash
 happier setup
 ```
 
-The app-first setup is the recommended control-panel flow. The CLI is the terminal equivalent: it connects to one existing Home, performs any required interactive approval, registers the machine, and reconciles the service. `happier setup plan` only previews the steps.
+The app-first setup is the recommended control-panel flow. The CLI is the
+terminal equivalent. With no usable active Home, `happier setup` first offers
+to find linked Homes through the selected Account Service (recommended),
+connect to an existing Home, create a Personal Home on this computer, or exit.
+The existing-Home path then accepts a saved Home, HTTPS address, or Home
+descriptor file. Passing `--home`, `--home-url`, or
+`--home-descriptor-file <path|->` skips the Home-selection menus. A Home that
+recommends account sign-in still lets you choose direct authentication before
+contacting the optional service. Setup performs any required
+interactive approval, registers the machine, and reconciles the service;
+`happier setup plan` only previews the steps.
+
+If account sign-in connects an encrypted Home but this computer still needs its
+encryption material, setup continues through device pairing. To resume that
+recovery for a saved Home without discarding its stored credential:
+
+```bash
+happier --server <saved-home> auth login --recover-account-material
+```
+
+This development-only option rechecks that Home's encryption mode. Plaintext
+Homes do not require recovery keys; an unavailable mode check is not treated as
+plaintext. Do not use `--force` for this recovery: it clears authentication state.
 
 Notes:
 - The desktop app and the installer-installed CLI are self-contained; you do not need system Node/Yarn installed.
@@ -85,6 +115,12 @@ If you want to use a strict Iroh-only descriptor on a fresh machine, pass `--hom
 
 Operators can still deploy the generic server runtime with `happier relay host install`, Docker, or the runner. This is an advanced hosting path: it does not create an account, close signup, enroll a device, or convert the runtime into a Personal Home. Optional LAN, Tailscale, Cloudflare, and public HTTPS ingress remain documented under [Relay access](/apps/relay-access).
 
+Every client must be able to reach an operator-managed server. Tailscale
+requires both devices on the same tailnet and a server actually published with
+Tailscale Serve or listening on a reachable Tailscale address. LAN access
+requires a non-loopback listener and firewall access. A server bound to
+`localhost` inside a VM is local to that VM, not to the Mac or PC hosting it.
+
 ### One box that hosts a Home and runs Agents
 
 Compose the two canonical commands rather than asking machine setup to create a Home:
@@ -105,6 +141,7 @@ Recommended for first setup:
 
 - The app and CLI support **multiple saved Home profiles**.
 - Credentials/state are **scoped per Home**, so switching does not overwrite other accounts.
+- Switching Homes selects the Account stored on that Home; it does not migrate an Account, sessions, or settings between Homes.
 - Stable Home identity, not a mutable URL, keeps routing changes attached to the same saved Home.
 - Web: you can switch the Relay **for this tab** or **make it the device default**.
 

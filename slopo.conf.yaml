@@ -11,7 +11,7 @@ source_dir_exclude:
   - ".yarn/**"
   - "graphify-out/**"
   - "node_modules/**"
-  - "remote-dev/**"
+  - "0.2/**"
   - "**/.backup.*/**"
   - "**/.dist.build.*/**"
   - "**/.happier/**"

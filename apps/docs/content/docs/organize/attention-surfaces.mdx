@@ -59,6 +59,8 @@ Surfaces can use one of three preview modes:
 
 You can set a default privacy mode and override specific surfaces. For example, you may want the desktop overlay to include previews, while Live Activities or widgets only show status on the lock screen.
 
+In development builds, permission and user-action notification previews are controlled separately from ready-message previews. Remote push and Live Activity request previews default on and can be disabled through the request event privacy policy. Long Live Activity previews are shortened to fit their payload and alert limits while retaining session routing. Webhook request previews also default on; disabling previews for a destination or restricting them in the shared policy omits command and question content. See [Notifications](/extras/notifications-setup) for the content and payload limits.
+
 Direct actions from lock-screen style surfaces are also privacy-aware. A Live Activity or widget action can execute immediately only when the surface is allowed to expose enough context and Happier can verify the target session/server. If privacy is restricted or the target cannot be verified, Happier opens the session instead.
 
 ## Quiet hours

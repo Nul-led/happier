@@ -30,6 +30,41 @@ test('parseArtifactFilename rejects invalid names', () => {
   assert.equal(parseArtifactFilename('happier-v1.2.3-linux-ppc.tar.gz'), null);
 });
 
+test('parseArtifactFilename parses the separately composed Runner product', () => {
+  assert.deepEqual(parseArtifactFilename('happier-runner-v0.3.0-darwin-arm64.zip'), {
+    product: 'happier-runner',
+    version: '0.3.0',
+    os: 'darwin',
+    arch: 'arm64',
+    filename: 'happier-runner-v0.3.0-darwin-arm64.zip',
+  });
+});
+
+test('Runner rejects the retired unpublished tar format', () => {
+  assert.equal(parseArtifactFilename('happier-runner-v0.3.0-linux-x64.tar.gz'), null);
+});
+
+test('parseArtifactFilename does not fold the Runner product into the CLI product', () => {
+  assert.equal(parseArtifactFilename('happier-v0.3.0-linux-x64.tar.gz')?.product, 'happier');
+  assert.equal(parseArtifactFilename('happier-runnerx-v0.3.0-linux-x64.tar.gz'), null);
+});
+
+test('buildManifestRecord publishes happier-runner records', () => {
+  const record = buildManifestRecord({
+    product: 'happier-runner',
+    channel: 'preview',
+    version: '0.3.0-preview.1',
+    os: 'windows',
+    arch: 'x64',
+    url: 'https://example.com/happier-runner-v0.3.0-preview.1-windows-x64.zip',
+    sha256: 'c'.repeat(64),
+    sizeBytes: 123,
+    entries: [{ path: 'Happier Runner.exe', kind: 'file', sizeBytes: 100, mode: 0o755 }],
+  });
+  assert.equal(record.product, 'happier-runner');
+  assert.equal(record.os, 'windows');
+});
+
 test('buildManifestRecord includes required fields and defaults', () => {
   const record = buildManifestRecord({
     product: 'hstack',

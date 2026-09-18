@@ -1,0 +1,92 @@
+---
+title: Home owner setup & recovery
+description: Give a self-hosted Home its first owner, or recover ownership after losing it, using the deployment-local server command.
+---
+
+Every Home has roles: `owner`, `admin`, and `member`. Owners administer Accounts and Home
+policy. A Home with no active owner cannot be administered at all, so it needs an explicit,
+safe way to get its first one.
+
+<Callout type="warning">
+  This command is present in the current 0.3 development source. It is not evidence that an
+  installed stable or preview server already includes Home Administration; check the version
+  and release notes for the server binary you are running.
+</Callout>
+
+Signing up never makes anyone an owner. There is no "first account wins" rule, no public
+claim endpoint, and no bootstrap token or setup password to leak or forget. Instead, the
+first owner is named by somebody who already has shell access to the deployment.
+
+## Establish the first owner
+
+Run the server binary with the Account you want to promote:
+
+```bash
+happier-server --claim-home-owner=<accountId>
+```
+
+The command does its work and exits — it does not start a server, open a listener, or
+touch your object storage. It prints a single JSON line:
+
+```json
+{
+  "v": 1,
+  "command": "claim-home-owner",
+  "intent": "initial_claim",
+  "homeServerIdentityId": "srv_...",
+  "targetAccountId": "acc_...",
+  "result": { "status": "claimed", "ownerAccountId": "acc_..." }
+}
+```
+
+`homeServerIdentityId` tells you which Home you just changed, which matters when one machine
+hosts several.
+
+The Account must already exist and be active: create it by signing in normally first, then
+copy its Account ID from **Settings → Account**.
+
+## Recover a lost owner
+
+If a Home's only owner was disabled or deleted, the same command restores ownership. State
+the intent explicitly so recovery is never something you discover you did:
+
+```bash
+happier-server --claim-home-owner=<accountId> --recover-lost-owner
+```
+
+Recovery is not a back door. It runs the identical checks as the initial claim: the Home
+must currently have **no active owner**, and the named Account must exist and be active.
+`--recover-lost-owner` on its own is refused — it always needs an explicit Account.
+
+## Results and exit codes
+
+The command exits `0` only when it actually claimed ownership. Every refusal exits nonzero
+and says exactly why, so a provisioning script cannot mistake one for success.
+
+| `result.status` | Exit | Meaning |
+| --- | --- | --- |
+| `claimed` | `0` | The named Account is now a Home owner. |
+| `already_owned` | `1` | This Home already has an active owner. Promote further owners from **Home Administration** instead. |
+| `target_inactive` | `1` | The Account exists but is disabled or retired. Re-enable it first. |
+| `target_not_found` | `1` | No Account on this Home has that ID. |
+
+## What ownership does and does not grant
+
+Becoming a Home owner grants governance only: administering Accounts, Home roles, Team
+creation policy, and sign-in policy.
+
+It does **not** grant Team membership, access to anyone's Sessions, or any encryption key
+material. Recovering ownership of a Home therefore does not give you access to its
+end-to-end encrypted content, and it never will — that content is protected by keys the
+server does not hold.
+
+## Personal Home
+
+A managed Personal Home assigns its owner during setup, so you should not need this command.
+If a Personal Home somehow has no owner, the command works there too.
+
+<Callout type="info">
+  Both server flavors accept these arguments. Run the command as the same user, with the
+  same environment and data directory, that the server normally runs with — it reads the
+  Home's database directly.
+</Callout>

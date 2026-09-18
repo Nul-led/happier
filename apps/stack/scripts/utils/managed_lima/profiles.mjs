@@ -34,6 +34,14 @@ function requireInstanceName(value) {
   return instance;
 }
 
+function normalizePositiveResource(value, label) {
+  const normalized = Number(value);
+  if (!Number.isInteger(normalized) || normalized < 1) {
+    throw new Error(`[managed-lima] ${label} must be a positive integer`);
+  }
+  return normalized;
+}
+
 export function normalizeManagedLimaArchitecture(value) {
   const normalized = String(value ?? 'aarch64').trim().toLowerCase();
   const architecture = normalized === 'arm64' ? 'aarch64' : normalized;
@@ -53,11 +61,21 @@ export function normalizeManagedLimaDiskImageFormat(value) {
 
 export function resolveManagedLimaProfile(
   name,
-  { architecture = 'aarch64', diskImageFormat = BASE_PROFILE.diskImageFormat } = {},
+  {
+    architecture = 'aarch64',
+    diskImageFormat = BASE_PROFILE.diskImageFormat,
+    resources = null,
+  } = {},
 ) {
   const normalizedName = String(name ?? '').trim().toLowerCase();
   const size = PROFILE_SIZES[normalizedName];
   if (!size) throw new Error(`[managed-lima] unknown managed Lima profile: ${JSON.stringify(normalizedName)}`);
+  const normalizedResources = resources == null
+    ? size
+    : {
+        cpus: normalizePositiveResource(resources.cpus, 'cpus'),
+        memoryGiB: normalizePositiveResource(resources.memoryGiB, 'memoryGiB'),
+      };
   return {
     schemaVersion: BASE_PROFILE.schemaVersion,
     name: normalizedName,
@@ -65,8 +83,8 @@ export function resolveManagedLimaProfile(
     arch: normalizeManagedLimaArchitecture(architecture),
     template: BASE_PROFILE.template,
     diskImageFormat: normalizeManagedLimaDiskImageFormat(diskImageFormat),
-    cpus: size.cpus,
-    memoryGiB: size.memoryGiB,
+    cpus: normalizedResources.cpus,
+    memoryGiB: normalizedResources.memoryGiB,
     diskGiB: size.diskGiB,
     containerd: BASE_PROFILE.containerd,
     mountNone: BASE_PROFILE.mountNone,

@@ -55,6 +55,7 @@ export async function setupManagedLimaInstance({
   profileName = 'balanced',
   architecture = 'aarch64',
   diskImageFormat = 'raw',
+  resources = null,
   allowInstall = false,
 }) {
   let installed = false;
@@ -68,7 +69,11 @@ export async function setupManagedLimaInstance({
     await installLima(executor);
     installed = true;
   }
-  const profile = resolveManagedLimaProfile(profileName, { architecture, diskImageFormat });
+  const profile = resolveManagedLimaProfile(profileName, {
+    architecture,
+    diskImageFormat,
+    resources,
+  });
   let reconciliation;
   try {
     reconciliation = await reconcileManagedLimaInstance({ executor, instance, profile });
@@ -100,6 +105,7 @@ export async function setupManagedLimaRuntime({
   profileName = 'balanced',
   architecture = 'aarch64',
   diskImageFormat = 'raw',
+  resources = null,
   allowInstall = false,
   guestProvisionScriptSource,
   guestProvisionProfile = 'happier',
@@ -119,6 +125,7 @@ export async function setupManagedLimaRuntime({
     profileName,
     architecture,
     diskImageFormat,
+    resources,
     allowInstall,
   });
   const provision = await provisionGuest({
@@ -154,6 +161,7 @@ export async function doctorManagedLimaInstance({
   profileName = 'balanced',
   architecture = 'aarch64',
   diskImageFormat = 'raw',
+  resources = null,
 }) {
   const host = await executor.capture('uname', ['-s']);
   const lima = await executor.capture('limactl', ['--version']);
@@ -178,7 +186,11 @@ export async function doctorManagedLimaInstance({
       drift: { creation: [], resources: [], configuration: [] },
     };
   }
-  const profile = resolveManagedLimaProfile(profileName, { architecture, diskImageFormat });
+  const profile = resolveManagedLimaProfile(profileName, {
+    architecture,
+    diskImageFormat,
+    resources,
+  });
   const drift = evaluateManagedLimaInstance(current.instance, profile);
   const guestLoginManager = current.status.toLowerCase() === 'running'
     ? await inspectManagedLimaGuestLoginManager({ executor, instance })

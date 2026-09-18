@@ -1,22 +1,104 @@
 # Pending delivery architecture
 
+## Live runner wake-up recovery (development)
+
+The session client owns pending-input wake subscriptions. A transient socket
+disconnect does not end those subscriptions: idle and active-turn consumers must
+still observe later eligibility updates. Caller cancellation and client close
+release the client's listeners. The runtime separately aborts its consumer when
+the turn or session ends.
+
+Idle and active consumers share the same wake handling. The existing backoff for
+unavailable adapters does not periodically materialize the queue. Reconnect does
+not bypass settings convergence, admission, or the Pending row's blocked state;
+an explicitly blocked message still requires its existing Retry action.
+
 ## Current Queue V2 activation ownership
 
-This section describes development behavior that is not yet a released contract. Pending Queue V2 remains the sole durable owner of message custody, ordering, and exact-row actions. An inactive-session activation request is a small session-level authorization for the current eligible `send_now` row; it is not another message-delivery state machine.
+This section describes development behavior that is not yet a released contract. Pending Queue V2 remains the sole durable owner of message custody, ordering, and exact-row actions. An inactive-session activation request is a small session-level authorization for one exact eligible queued row; it is not another message-delivery state machine and does not change that row's delivery priority.
 
 - The resumable inactive composer remains usable while its exact target machine or daemon is offline. Sending persists the message in Pending, while the session continues to present its offline status.
-- The account preference **Automatic resume after sending** (`sessionInactiveResumePolicy`) has one three-state owner. `when_available` persists `send_now` and therefore authorizes the daemon; `online_only` persists `enqueue` and makes at most one user-present UI resume attempt when the exact machine is currently reachable; `manual` only persists `enqueue`. The default is `online_only`.
-- The `online_only` attempt never delegates to the daemon and never changes the row to `send_now`. If reachability changes or the attempt fails, Pending custody remains without authorization for a later unattended start.
-- The banner action **Process when online** reuses the exact-row Pending `send_now` mutation for the displayed message. It does not change the account preference or create a second activation path.
-- The server transaction that mutates Pending rows is the only writer of the current activation authorization. It arms one exact request, clears only that request when its row no longer asks to send now, and never silently retargets older queued input.
+- The account preference **Automatic resume after sending** (`sessionInactiveResumePolicy`) has one three-state owner. All ordinary inactive/offline input persists as FIFO `enqueue`. `when_available` additionally arms the exact Session authorization; `online_only` makes at most one user-present UI resume attempt when the exact machine is currently reachable; `manual` only persists the row. The default is `online_only`.
+- Neither `when_available` nor `online_only` changes an ordinary row to `send_now`; that action remains reserved for an explicit immediate-delivery request. If reachability changes or an `online_only` attempt fails, Pending custody remains without authorization for a later unattended start.
+- The banner action **Process when online** re-arms the exact Session authorization. **Retry** uses the existing manual resume action when the machine is reachable. **Keep queued** clears that authorization while preserving FIFO delivery. These actions do not change the account preference or create a second activation path.
+- The server transaction that mutates Pending rows is the only writer of the current activation authorization. The current main-conversation Pending wire accepts `resumeWhenAvailable` as a mutation command, applies it atomically to the existing Session authorization, and never persists it as a second row-level desired state. Execution-run-targeted input cannot author this Session activation command.
 - `Session.lastActiveAt` is the lifecycle fence. An authorization at or before that value is stale and is not projected, so newer session activity invalidates an old start request without a second client-owned clock.
 - The Pending activation hint is lossy notification only. The durable server-owned session authorization is authoritative, and the daemon consults it both after a live hint and during one finite reconnect scan.
 - The daemon on the session's exact owning machine is the sole unattended starter for modern activation. It re-reads the session and exact Pending row, applies the existing external-session safeguards, and then uses the existing inactive-session resume path. This mechanism does not take over an external or Direct session.
-- Machine or daemon unreachability leaves the authorization waiting. A genuine terminal start failure is recorded as failed and is not retried until the user explicitly chooses **Retry** or **Resume**. There is no periodic polling, unbounded retry loop, or exactly-once delivery guarantee.
-- Becoming active, resolving the exact Pending row, or choosing an action that moves away from activation clears that exact authorization. **Keep queued** changes the exact row away from `send_now`; **Auto-resume options** leads to the account preference for future sends.
+- Machine or daemon unreachability leaves the authorization waiting. A genuine terminal start failure is recorded as failed and is not retried merely because a daemon reconnects. When the machine is reachable, explicit **Retry** uses the canonical manual resume action; while it is offline, **Process when online** re-arms the exact authorization. There is no periodic polling, unbounded retry loop, or exactly-once delivery guarantee.
+- Becoming active, resolving the exact Pending row, or choosing **Keep queued** clears that exact authorization. **Auto-resume options** leads to the account preference for future sends.
 - Modern delegation requires server Pending Input V2 support and activation capability from the session's exact target machine. Older or mixed components retain the existing direct-wake fallback rather than treating unattended daemon activation as available.
 
 The durable banner derives the user-facing state from this ownership: waiting while the machine is offline, waiting while the daemon is reachable, queued without activation, or terminal start failure. Pending owns the payload; the server owns activation authorization; session activity fences staleness; and the daemon owns unattended process start.
+
+## Execution-run targets
+
+The current development implementation uses one Pending store with the **Pending Input V3** target contract. A null `targetExecutionRunId` identifies the main conversation; a non-null value selects one exact execution run. Session Pending counters, main-queue reads, and inactive-session activation consider only null-target rows. Target reads, mutations, recovery, and materialization use the exact run resource and report that run's own queue counts.
+
+`SessionPendingMessage` stays the only durable Session input queue. Ordinary and targeted input share one admission owner, one encryption path, one `(sessionId, localId)` identity, one equality-evidence contract, one materialization owner, and one retry contract; the destination is a column on that shared row rather than a second queue, outbox, per-route sequence, or run mirror. Main, run A, and run B therefore progress independently — an inactive destination cannot block another — while Session-wide operations stay Session-wide: publisher loss blocks all affected delivering rows, deletion and erasure cover every row, and queue-position allocation keeps its Session-wide sequence.
+
+When Pending settlement commits a transcript row, that same transaction copies
+the exact nullable Run target into server-private `SessionMessage` metadata. The
+binding is not caller-authored and is not a client routing projection; it exists
+only so terminal `(sessionId, localId)` retries can prove main-versus-targeted and
+Run-A-versus-Run-B equality after the Pending row has been removed. A matching
+Plain or E2EE retry rejoins the committed result, while a different or
+unverifiable target fails with the ordinary idempotency-conflict result. This is
+one continuation of Pending identity, not a transcript queue or routing owner.
+
+The one operational routing fact is the strict `recipient` accepted by Session input admission: omitting it means the main conversation, and `{ kind: 'execution_run', runId }` selects one exact run. It is label-free — run titles, Agent names, and historical participant labels are display projections and never enter routing, equality, authorization, or pending acknowledgements. Transcript recipient and sidechain metadata are derived from the admitted durable target, so callers never author two routing facts.
+
+New targeted input is admitted only after the daemon's cached server contract reports Pending Input V3; it does not fetch a second feature snapshot merely to decide one send. An unavailable snapshot is not evidence that a target is unsupported: it withholds the capability claim rather than publishing a false negative. Pending Input V3 writes and target claims additionally require the exact target Machine to advertise the current target-admission capability (`sessionInputAdmission` revision 2). That advertisement is a truthful statement that the claim, settlement, blocking, reconnect, and recovery consumers are installed; schema support alone is not enough. Mixed or incomplete components fail before a row is created or claimed and preserve the released main-conversation send path. The server remains authoritative: an old or incomplete component receives the operation-scoped `session_input_target_update_required` result without creating a row. A current accepted resolution binds the exact execution run and expected sidechain, fences the current publisher, and commits through the existing Pending transcript owner. Retries must agree with the committed sidechain and request identity. An unavailable target is blocked or rejected on that exact target path; it never redirects input into the main conversation or another run.
+
+### Target classification is the daemon's Run registry
+
+The server stores a structurally valid target without knowing whether that `runId` is current for the Session, so an admitted target row starts unclassified. The daemon Execution Run registry is the only classification authority, and it acts before claim, Provider effect, or transcript settlement.
+
+Classification is driven by the parent Session's existing durable pending-version wake, not by a poller. `ApiSessionClient` observes each canonical pending update, notifies the exact affected run binding, and `ExecutionRunHostBridge.reconcilePendingExecutionRunTarget(runId)` fetches only the queued rows implicated by that wake. The three outcomes are:
+
+- **Unknown stays queued.** No registry entry, a still-loading run, an already-in-progress or superseded resume, resource pressure, transport failure, or another indeterminate resume failure leaves the rows queued and user-discardable. Absence of evidence is never treated as proof of unavailability.
+- **Resumable-but-unloaded stays queued.** A retained running run for this Session with no live controller is restored through the canonical `ensure({ resume: true })` owner while its rows remain queued and visible.
+- **Positively unavailable is blocked.** Proof that the target belongs to another Session, is terminal, is not a retained interactive run (`runClass: 'long_lived'`, `retentionPolicy: 'resumable'`, `ioMode: 'streaming'`), has a cancelled or non-interactive controller, lacks its matching resume handle, or that the canonical ensure/resume owner returns its typed `permanent` classification for unsupported resume moves each queued row into the existing Pending `blocked` lifecycle with reason `session_input_target_unavailable`. The broad transport code `execution_run_not_allowed` is not itself terminal proof.
+
+Blocking is a lifecycle transition on the existing row, not an effect: it performs no claim, no Provider call, and no transcript write, and the row keeps its ordinary Retry and discard actions. No outcome permits delivery to the parent Session or another run, and no preinsert daemon RPC, server-side run table, or client preflight is an authority for any of them.
+
+Reconnect and restart recovery reuse exactly this path: the same registry and the same Pending row, reached through the ordinary wake, with no recovery queue or polling worker. A target row that exists before its run controller does is classified when the wake arrives.
+
+### Waiting for an exact targeted turn
+
+`wait: true` on a targeted send extends the existing Session wait coordinator above Pending. It binds the admitted `(sessionId, runId, localId)` to the retained runtime's exact sidechain, turn, and occurrence evidence. Parent-Session idle, a sibling run's completion, and a generic or terminal run status never complete it, and it does not call `execution.run.wait`. A timeout stops only the observation — it does not cancel, discard, or replay the admitted input.
+
+`SessionInputAdmissionResultV1` reports the outcome as `accepted`, `alreadyAccepted`, `rejected` with a `SESSION_INPUT_ADMISSION_REJECTION_CODES_V1` code, or `outcomeUnknown`. `outcomeUnknown` retains its `localId` together with a bounded admission code so the caller can reconcile the exact input through the ordinary retry identity; nothing collapses it into a codeless failure, and no wait table, receipt ledger, or per-run completion counter is added.
+
+Recovery after activation uses ordinary Pending state. A failed or uncertain target delivery is observed and retried through the same queued/blocked lifecycle and `localId` identity as main-conversation input; there is no rollback ledger, dual writer, or compatibility mirror for target rows.
+
+The authenticated author and admission receipt survive target preparation and acceptance. Machine-authored input retains its null Account author, including when explicitly sent as new. Editing content or changing the requested action clears prior equality evidence so a later admission cannot reuse evidence for a different request.
+
+These are development contracts. Target support must be negotiated independently of the existing Queue V2 support; older main-conversation clients continue using the null-target path.
+
+## Human authorship in development
+
+The authenticated input-admission receipt records who submitted an accepted human input. Pending admission derives it from the final transaction-scoped Session access decision. Direct authenticated input uses the same admission builder; runtime observations and transcript-only Voice writes do not become human-authored merely because their message role is `user`.
+
+`SessionPendingMessage.authorAccountId` and `SessionMessage.authorAccountId` are nullable relational projections of that receipt. The committed projection supports historical-contribution filtering before Session pagination. It does not grant access, assign responsibility, create a participant roster, or enroll anyone for notifications. Pending materialization and provider-anchor rejoin retain the original receipt and refuse a conflicting non-null author projection. Deleting an Account clears its foreign-key projection while preserving the immutable receipt.
+
+Authenticated page, Pending, and realtime projections use the same Account display-profile leaf. A historical author need not retain current access for another authorized reader to see the byline. A deleted Account has a null profile; missing or invalid admission evidence has no Account attribution. Public/external transcript projections keep their separate coarse actor contract and do not disclose this Account identity or profile. The additive wire field distinguishes an omitted `accountActor` from an explicit null: an older producer's omission preserves previously known metadata, while a current null retracts it.
+
+After deploying the current writers and the nullable-column migration, run the provider-neutral backfill against the explicitly selected database from `apps/server`:
+
+```sh
+HAPPIER_DB_PROVIDER=sqlite DATABASE_URL='file:/absolute/path/to/happier-server-light.sqlite' yarn session-message-author:backfill
+```
+
+For PostgreSQL or MySQL, select `postgres` or `mysql` and supply that deployment's connection URL. The command keyset-pages bounded batches, validates receipts through Protocol, resolves surviving Accounts, and fills only still-null projections. It prints aggregate counts and exits unsuccessfully on a non-null disagreement. It never repairs the receipt from the author column. Stop unsupported older writers before the cutover; if one wrote during the transition, rerun after it has stopped. Enable Lane 09's author-based personal scopes only after the audit succeeds. An interrupted backfill may safely restart; it has no persistent worker or checkpoint.
+
+Migration reconciliation and retained-database requirements remain in [Compatibility and version skew](compatibility.md#migration-history). These are development contracts, not certification of a released upgrade or the composed browser/native authorship journey.
+
+## Automation input cancellation
+
+In current development, authoritative Automation Run cancellation uses the same exact-input cleanup for existing and newly created Sessions. Once the canonical new-Session result is known, the Automation executor registers that Session for cleanup, including while waiting for the admitted input's final result. The existing pending adapter retires only the Run-derived input; if the server reports that exact pending row is absent, it asks the Session runtime to cancel only the active turn whose input identity still matches. A different, finished, unsupported, or unreachable turn never causes broad Session cancellation.
+
+Ordinary claim, lease, or worker invalidation does not authorize this cleanup. Cancelling a Run preserves the produced Session and its history; it does not delete the Session or cancel unrelated later input. Automation Run settlement remains authoritative for any uncertain effect.
 
 > **Superseded attempt-design record (2026-07-14).** Queue V2 is the only active pending-delivery system. `attempt_v1` will not be activated: its runtime/protocol branches are removed after the live exact-selector contract is extracted, and its schema/migrations are squashed or forward-contracted from bounded persistence evidence. Current authority and markers: `../remote-dev/.project/plans/pending-delivery-attempt-v1-and-session-lifecycle-reliability-unification.md`. Everything below this notice is historical design evidence, not implementation or cutover instruction.
 

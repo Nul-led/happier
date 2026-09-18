@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { runCaptureResult } from '../proc/proc.mjs';
 import {
@@ -18,67 +19,19 @@ import {
 } from './mutagen_runtime.mjs';
 
 export const INDEPENDENT_DEV_TARGET_SYNC_OWNER = 'dev-target-sync-service';
-// The managed guest provisioner owns this unit and its MemoryLow=4G contract.
-// Stack only verifies that published contract before placing a future control
-// process in the existing slice.
-const HAPPIER_CRITICAL_SLICE_NAME = 'happier-critical.slice';
-const HAPPIER_CRITICAL_SLICE_MEMORY_LOW_BYTES = 4 * 1024 * 1024 * 1024;
-const DEV_TARGET_CONTROL_MEMORY_LOW_BYTES = 256 * 1024 * 1024;
-const DEV_TARGET_CONTROL_CPU_WEIGHT = 200;
-const DEV_TARGET_CONTROL_IO_WEIGHT = 200;
-const SYSTEMD_USER_CRITICAL_SCOPE_PROBE_TIMEOUT_MS = 1_000;
+const DEV_TARGET_CONTROL_EXECUTABLE = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  '..', '..', '..',
+  'bin',
+  'hstack-dev-target-control',
+);
 
-function hasSystemdUserBus(env) {
-  return process.platform === 'linux'
-    && String(env?.DBUS_SESSION_BUS_ADDRESS ?? '').trim().length > 0;
-}
-
-function parseSystemdProperties(raw) {
-  const properties = new Map();
-  for (const line of String(raw ?? '').split('\n')) {
-    const delimiter = line.indexOf('=');
-    if (delimiter <= 0) continue;
-    properties.set(line.slice(0, delimiter).trim(), line.slice(delimiter + 1).trim());
-  }
-  return properties;
-}
-
-async function resolveDevTargetControlLaunch({ command, args, env }) {
-  if (!hasSystemdUserBus(env)) return { command, args };
-
-  try {
-    const probe = await runCaptureResult('systemctl', [
-      '--user',
-      'show',
-      HAPPIER_CRITICAL_SLICE_NAME,
-      '--property=LoadState',
-      '--property=MemoryLow',
-    ], {
-      env,
-      timeoutMs: SYSTEMD_USER_CRITICAL_SCOPE_PROBE_TIMEOUT_MS,
-    });
-    const properties = parseSystemdProperties(probe.out);
-    if (
-      probe.exitCode !== 0
-      || properties.get('LoadState') !== 'loaded'
-      || properties.get('MemoryLow') !== String(HAPPIER_CRITICAL_SLICE_MEMORY_LOW_BYTES)
-    ) {
-      return { command, args };
-    }
-  } catch {
-    return { command, args };
-  }
-
+export function buildDevTargetControlLaunch({ command, args, syncFlushSession = null }) {
+  if (process.platform === 'win32') return { command, args };
   return {
-    command: 'systemd-run',
+    command: DEV_TARGET_CONTROL_EXECUTABLE,
     args: [
-      '--user',
-      '--scope',
-      '--quiet',
-      `--slice=${HAPPIER_CRITICAL_SLICE_NAME}`,
-      `--property=MemoryLow=${DEV_TARGET_CONTROL_MEMORY_LOW_BYTES}`,
-      `--property=CPUWeight=${DEV_TARGET_CONTROL_CPU_WEIGHT}`,
-      `--property=IOWeight=${DEV_TARGET_CONTROL_IO_WEIGHT}`,
+      ...(syncFlushSession ? ['--sync-flush', syncFlushSession] : []),
       '--',
       command,
       ...args,
@@ -86,8 +39,8 @@ async function resolveDevTargetControlLaunch({ command, args, env }) {
   };
 }
 
-export async function runDevTargetControlProcess({ label, command, args, env }) {
-  const launch = await resolveDevTargetControlLaunch({ command, args, env });
+export async function runDevTargetControlProcess({ label, command, args, env, syncFlushSession = null }) {
+  const launch = buildDevTargetControlLaunch({ command, args, syncFlushSession });
   const result = await runCaptureResult(launch.command, launch.args, { env, streamLabel: label });
   return { ...result, code: result.exitCode };
 }
@@ -118,6 +71,7 @@ export async function flushDevTargetSync(
     label: `sync:${target.name}`,
     command: 'mutagen',
     args: ['sync', 'flush', resolveMutagenSessionName(target.name)],
+    syncFlushSession: resolveMutagenSessionName(target.name),
     env,
   });
   requireSuccessful(result, `${target.name} Mutagen initial flush`);

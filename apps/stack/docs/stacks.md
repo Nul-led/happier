@@ -282,6 +282,8 @@ hstack env set OPENAI_API_KEY=sk-...
 
 ## Daemon auth + “no machine” on first run
 
+In source development, the TUI keeps the server and Expo available while daemon credentials are missing, so its `a` login action can complete. The daemon waits for authentication before starting; the development runner checks again after credentials are created.
+
 On a **fresh machine** (or any new stack), the daemon may need to authenticate before it can register a “machine”.
 If the UI shows “no machine” (or the daemon shows `auth_required`), it usually means the stack-specific CLI home
 doesn’t have credentials yet:

@@ -52,12 +52,22 @@ if supports_color; then
   COLOR_GREEN=$'\033[32m'
   COLOR_YELLOW=$'\033[33m'
   COLOR_CYAN=$'\033[36m'
+  COLOR_ART_YELLOW=$'\033[93m'
+  COLOR_ART_RED=$'\033[91m'
+  COLOR_ART_MAGENTA=$'\033[95m'
+  COLOR_ART_CYAN=$'\033[96m'
+  COLOR_ART_BLUE=$'\033[94m'
 else
   COLOR_RESET=""
   COLOR_BOLD=""
   COLOR_GREEN=""
   COLOR_YELLOW=""
   COLOR_CYAN=""
+  COLOR_ART_YELLOW=""
+  COLOR_ART_RED=""
+  COLOR_ART_MAGENTA=""
+  COLOR_ART_CYAN=""
+  COLOR_ART_BLUE=""
 fi
 
 say() {
@@ -89,6 +99,97 @@ installer_has_tty_output() {
   [[ -t 1 ]] && [[ -t 2 ]]
 }
 
+installer_should_animate() {
+  installer_has_tty_output \
+    && [[ "${TERM:-}" != "dumb" ]] \
+    && [[ "${HAPPIER_NO_ANIMATION:-0}" != "1" ]]
+}
+
+installer_terminal_is_wide() {
+  local columns="${COLUMNS:-}"
+  if [[ ! "${columns}" =~ ^[0-9]+$ ]] || [[ "${columns}" == "0" ]]; then
+    columns="$(tput cols 2>/dev/null || true)"
+  fi
+  if [[ ! "${columns}" =~ ^[0-9]+$ ]] || [[ "${columns}" == "0" ]]; then
+    columns="80"
+  fi
+  [[ "${columns:-0}" =~ ^[0-9]+$ ]] && [[ "${columns}" -ge 76 ]]
+}
+
+INSTALLER_WELCOME_SHOWN="0"
+# BEGIN GENERATED NUMERIC PLANET
+HAPPIER_INSTALLER_ART_ROWS=(
+  '         8557531822         '
+  '     751448095236608919     '
+  '   9008479751008911184043   '
+  '  134069691908745137496009  '
+  ' 15908889374662814990040775 '
+  '8460391940911977361087356084'
+  '3686579386469759261860770407'
+  '8426999911207303208277772263'
+  ' 91900644319441053135416199 '
+  '  572641993727001697448951  '
+  '   5488295512800135204007   '
+  '     793254239790824733     '
+  '         4203319290         '
+)
+HAPPIER_INSTALLER_ART_RGB_ROWS=(
+  $'         \033[38;2;245;184;102m8\033[38;2;250;187;104m5\033[38;2;251;188;105m5\033[38;2;251;188;105m7\033[38;2;251;188;105m5\033[38;2;251;188;105m3\033[38;2;249;187;104m1\033[38;2;246;184;103m8\033[38;2;242;181;101m2\033[38;2;236;177;98m2         \033[0m'
+  $'     \033[38;2;225;162;116m7\033[38;2;235;169;121m5\033[38;2;241;173;124m1\033[38;2;242;174;124m4\033[38;2;242;174;124m4\033[38;2;242;174;124m8\033[38;2;242;174;124m0\033[38;2;242;174;124m9\033[38;2;242;174;124m5\033[38;2;242;174;124m2\033[38;2;242;174;124m3\033[38;2;242;174;124m6\033[38;2;242;174;124m6\033[38;2;239;172;123m0\033[38;2;235;169;121m8\033[38;2;231;166;118m9\033[38;2;225;162;115m1\033[38;2;215;155;111m9     \033[0m'
+  $'   \033[38;2;211;145;130m9\033[38;2;220;151;136m0\033[38;2;226;155;139m0\033[38;2;231;159;142m8\033[38;2;232;160;143m4\033[38;2;232;160;143m7\033[38;2;232;160;143m9\033[38;2;232;160;143m7\033[38;2;232;160;143m5\033[38;2;232;160;143m1\033[38;2;232;160;143m0\033[38;2;232;160;143m0\033[38;2;232;160;143m8\033[38;2;232;160;143m9\033[38;2;232;160;143m1\033[38;2;232;160;143m1\033[38;2;229;158;142m1\033[38;2;226;155;139m8\033[38;2;221;152;137m4\033[38;2;216;149;134m0\033[38;2;210;145;130m4\033[38;2;201;138;124m3   \033[0m'
+  $'  \033[38;2;199;130;146m1\033[38;2;207;135;151m3\033[38;2;212;139;155m4\033[38;2;217;142;158m0\033[38;2;221;144;161m6\033[38;2;223;146;163m9\033[38;2;223;146;163m6\033[38;2;223;146;163m9\033[38;2;223;146;163m1\033[38;2;223;146;163m9\033[38;2;223;146;163m0\033[38;2;223;146;163m8\033[38;2;223;146;163m7\033[38;2;223;146;163m4\033[38;2;223;146;163m5\033[38;2;223;146;163m1\033[38;2;222;145;162m3\033[38;2;219;143;160m7\033[38;2;216;141;158m4\033[38;2;213;139;155m9\033[38;2;208;136;152m6\033[38;2;204;133;149m0\033[38;2;198;130;145m0\033[38;2;191;125;139m9  \033[0m'
+  $' \033[38;2;184;113;157m1\033[38;2;191;118;163m5\033[38;2;197;121;168m9\033[38;2;201;124;171m0\033[38;2;205;126;175m8\033[38;2;208;128;177m8\033[38;2;210;130;180m8\033[38;2;213;131;181m9\033[38;2;214;132;182m3\033[38;2;214;132;182m7\033[38;2;214;132;182m4\033[38;2;214;132;182m6\033[38;2;214;132;182m6\033[38;2;214;132;182m2\033[38;2;214;132;182m8\033[38;2;213;132;182m1\033[38;2;211;131;180m4\033[38;2;209;129;179m9\033[38;2;207;128;177m9\033[38;2;204;126;174m0\033[38;2;201;124;172m0\033[38;2;198;122;169m4\033[38;2;194;120;165m0\033[38;2;189;117;161m7\033[38;2;183;113;156m7\033[38;2;176;108;150m5 \033[0m'
+  $'\033[38;2;164;95;162m8\033[38;2;173;100;171m4\033[38;2;179;104;177m6\033[38;2;184;106;182m0\033[38;2;188;108;185m3\033[38;2;191;110;189m9\033[38;2;194;112;191m1\033[38;2;196;113;193m9\033[38;2;198;114;195m4\033[38;2;199;115;197m0\033[38;2;200;116;198m9\033[38;2;201;116;198m1\033[38;2;201;116;199m1\033[38;2;201;116;198m9\033[38;2;201;116;198m7\033[38;2;200;115;197m7\033[38;2;199;115;196m3\033[38;2;197;114;195m6\033[38;2;195;113;193m1\033[38;2;193;112;191m0\033[38;2;191;110;188m8\033[38;2;188;109;186m7\033[38;2;185;107;183m3\033[38;2;182;105;179m5\033[38;2;178;102;175m6\033[38;2;173;100;170m0\033[38;2;166;96;164m8\033[38;2;157;90;154m4\033[0m'
+  $'\033[38;2;151;86;177m3\033[38;2;159;91;187m6\033[38;2;165;94;193m8\033[38;2;169;96;198m6\033[38;2;172;98;202m5\033[38;2;175;100;205m7\033[38;2;177;101;208m9\033[38;2;179;102;210m3\033[38;2;181;103;212m8\033[38;2;182;104;214m6\033[38;2;183;104;215m4\033[38;2;184;105;216m6\033[38;2;184;105;216m9\033[38;2;184;105;216m7\033[38;2;184;105;215m5\033[38;2;183;104;215m9\033[38;2;182;104;213m2\033[38;2;181;103;212m6\033[38;2;179;102;210m1\033[38;2;177;101;208m8\033[38;2;175;100;206m6\033[38;2;173;98;203m0\033[38;2;170;97;199m7\033[38;2;167;95;196m7\033[38;2;163;93;191m0\033[38;2;159;90;186m4\033[38;2;153;87;180m0\033[38;2;146;83;172m7\033[0m'
+  $'\033[38;2;132;87;170m8\033[38;2;141;93;181m4\033[38;2;146;96;187m2\033[38;2;149;99;192m6\033[38;2;153;101;196m9\033[38;2;155;102;199m9\033[38;2;157;104;202m9\033[38;2;159;105;205m9\033[38;2;161;106;206m1\033[38;2;162;107;208m1\033[38;2;163;107;209m2\033[38;2;163;108;210m0\033[38;2;163;108;210m7\033[38;2;163;108;210m3\033[38;2;163;108;210m0\033[38;2;162;107;209m3\033[38;2;162;107;208m2\033[38;2;161;106;206m0\033[38;2;159;105;205m8\033[38;2;158;104;203m2\033[38;2;156;103;200m7\033[38;2;154;101;197m7\033[38;2;151;100;194m7\033[38;2;148;98;190m7\033[38;2;145;96;186m2\033[38;2;142;94;182m2\033[38;2;137;91;177m6\033[38;2;130;86;167m3\033[0m'
+  $' \033[38;2;121;93;171m9\033[38;2;126;97;179m1\033[38;2;130;100;184m9\033[38;2;133;102;189m0\033[38;2;135;104;192m0\033[38;2;137;105;195m6\033[38;2;139;107;197m4\033[38;2;140;108;199m4\033[38;2;141;108;201m3\033[38;2;142;109;202m1\033[38;2;143;109;202m9\033[38;2;143;110;203m4\033[38;2;143;110;203m4\033[38;2;143;110;203m1\033[38;2;142;109;202m0\033[38;2;142;109;201m5\033[38;2;141;108;200m3\033[38;2;140;107;198m1\033[38;2;138;106;196m3\033[38;2;136;105;193m5\033[38;2;134;103;191m4\033[38;2;133;102;188m1\033[38;2;131;100;185m6\033[38;2;128;98;182m1\033[38;2;125;96;177m9\033[38;2;120;92;170m9 \033[0m'
+  $'  \033[38;2;107;95;168m5\033[38;2;111;99;174m7\033[38;2;113;101;179m2\033[38;2;116;104;183m6\033[38;2;118;105;186m4\033[38;2;119;107;188m1\033[38;2;121;108;190m9\033[38;2;122;109;192m9\033[38;2;122;110;193m3\033[38;2;123;110;194m7\033[38;2;123;110;194m2\033[38;2;123;110;194m7\033[38;2;123;110;194m0\033[38;2;123;110;193m0\033[38;2;122;109;192m1\033[38;2;121;108;191m6\033[38;2;120;108;190m9\033[38;2;120;107;188m7\033[38;2;118;106;187m4\033[38;2;117;105;185m4\033[38;2;115;103;182m8\033[38;2;113;101;179m9\033[38;2;111;99;174m5\033[38;2;107;95;168m1  \033[0m'
+  $'   \033[38;2;91;96;161m5\033[38;2;95;100;169m4\033[38;2;98;103;173m8\033[38;2;100;105;177m8\033[38;2;101;106;179m2\033[38;2;102;108;181m9\033[38;2;103;109;183m5\033[38;2;104;109;184m5\033[38;2;105;110;185m1\033[38;2;105;110;186m2\033[38;2;105;110;186m8\033[38;2;105;110;186m0\033[38;2;105;110;186m0\033[38;2;105;110;185m1\033[38;2;104;109;184m3\033[38;2;103;109;183m5\033[38;2;102;108;181m2\033[38;2;101;106;179m0\033[38;2;100;105;177m4\033[38;2;98;103;173m0\033[38;2;95;100;169m0\033[38;2;91;96;161m7   \033[0m'
+  $'     \033[38;2;78;97;156m7\033[38;2;81;101;164m9\033[38;2;84;104;168m3\033[38;2;85;106;171m2\033[38;2;86;107;173m5\033[38;2;87;108;175m4\033[38;2;87;109;176m2\033[38;2;88;109;177m3\033[38;2;88;110;177m9\033[38;2;88;110;177m7\033[38;2;88;109;177m9\033[38;2;87;109;176m0\033[38;2;87;108;175m8\033[38;2;86;107;173m2\033[38;2;85;106;171m4\033[38;2;84;104;168m7\033[38;2;81;101;164m3\033[38;2;78;97;156m3     \033[0m'
+  $'         \033[38;2;66;99;154m4\033[38;2;68;102;158m2\033[38;2;69;104;161m0\033[38;2;70;104;162m3\033[38;2;70;105;163m3\033[38;2;70;105;163m1\033[38;2;70;104;162m9\033[38;2;69;104;161m2\033[38;2;68;102;158m9\033[38;2;66;99;154m0         \033[0m'
+)
+# END GENERATED NUMERIC PLANET
+
+print_installer_welcome() {
+  INSTALLER_WELCOME_SHOWN="1"
+  if installer_has_tty_output && [[ "${TERM:-}" != "dumb" ]] && installer_terminal_is_wide; then
+    local index=0
+    local center=$(( (${#HAPPIER_INSTALLER_ART_ROWS[@]} - 1) / 2 ))
+    local row_color=""
+    for ((index=0; index<${#HAPPIER_INSTALLER_ART_ROWS[@]}; index++)); do
+      case $(( index * 5 / ${#HAPPIER_INSTALLER_ART_ROWS[@]} )) in
+        0) row_color="${COLOR_ART_YELLOW}" ;;
+        1) row_color="${COLOR_ART_RED}" ;;
+        2) row_color="${COLOR_ART_MAGENTA}" ;;
+        3) row_color="${COLOR_ART_CYAN}" ;;
+        *) row_color="${COLOR_ART_BLUE}" ;;
+      esac
+      if supports_color && [[ "${COLORTERM:-}" == "truecolor" || "${COLORTERM:-}" == "24bit" ]]; then
+        printf '%s' "${HAPPIER_INSTALLER_ART_RGB_ROWS[index]}"
+      else
+        printf '%s%s%s' "${row_color}" "${HAPPIER_INSTALLER_ART_ROWS[index]}" "${COLOR_RESET}"
+      fi
+      if [[ "${index}" -eq $((center - 1)) ]]; then
+        printf '   %sHappier%s' "${COLOR_BOLD}" "${COLOR_RESET}"
+      elif [[ "${index}" -eq "${center}" ]]; then
+        printf '   Start coding anywhere. Continue anywhere.'
+      elif [[ "${index}" -eq $((center + 2)) ]]; then
+        printf '   Download -> Verify -> Install'
+      fi
+      printf '\n'
+    done
+  else
+    say "${COLOR_BOLD}Happier${COLOR_RESET}"
+    say "Start coding anywhere. Continue anywhere."
+    say "Download -> Verify -> Install"
+  fi
+  echo
+}
+
+installer_phase() {
+  say "${COLOR_BOLD}[$1]${COLOR_RESET}"
+}
+
 installer_step_pending_symbol() {
   printf '%s' "${COLOR_CYAN}..${COLOR_RESET}"
 }
@@ -105,7 +206,7 @@ run_installer_step() {
   local label="$1"
   shift
 
-  if ! installer_has_tty_output; then
+  if ! installer_should_animate; then
     local tmp_output=""
     if [[ -n "${TMP_DIR:-}" ]]; then
       tmp_output="${TMP_DIR}/installer-step.$$.log"
@@ -115,12 +216,15 @@ run_installer_step() {
 
     say "- [..] ${label}"
     if "$@" >"${tmp_output}" 2>&1; then
-      say "- [$(installer_step_success_symbol)] ${label}"
+      say "- [ok] ${label}"
+      if [[ "${VERBOSE_MODE}" == "1" ]] && [[ -s "${tmp_output}" ]]; then
+        cat "${tmp_output}"
+      fi
       rm -f "${tmp_output}" >/dev/null 2>&1 || true
       return 0
     fi
 
-    say "- [$(installer_step_failure_symbol)] ${label}"
+    say "- [x] ${label}"
     if [[ -s "${tmp_output}" ]]; then
       cat "${tmp_output}" >&2
     fi
@@ -147,10 +251,17 @@ run_installer_step() {
     sleep 0.12
   done
 
-  wait "${step_pid}"
-  local status=$?
+  local status=0
+  if wait "${step_pid}"; then
+    status=0
+  else
+    status=$?
+  fi
   if [[ "${status}" -eq 0 ]]; then
     printf '\r- [%s] %s\n' "$(installer_step_success_symbol)" "${label}" >&2
+    if [[ "${VERBOSE_MODE}" == "1" ]] && [[ -s "${tmp_output}" ]]; then
+      cat "${tmp_output}"
+    fi
     rm -f "${tmp_output}" >/dev/null 2>&1 || true
     return 0
   fi
@@ -178,15 +289,18 @@ capture_installer_step_output() {
     tmp_error="$(mktemp)"
   fi
 
-  if ! installer_has_tty_output; then
+  if ! installer_should_animate; then
     say "- [..] ${label}"
     if "$@" >"${tmp_output}" 2>"${tmp_error}"; then
-      say "- [$(installer_step_success_symbol)] ${label}"
+      say "- [ok] ${label}"
       printf -v "${__resultvar}" '%s' "$(cat "${tmp_output}")"
+      if [[ "${VERBOSE_MODE}" == "1" ]] && [[ -s "${tmp_error}" ]]; then
+        cat "${tmp_error}" >&2
+      fi
       rm -f "${tmp_output}" "${tmp_error}" >/dev/null 2>&1 || true
       return 0
     fi
-    say "- [$(installer_step_failure_symbol)] ${label}" >&2
+    say "- [x] ${label}" >&2
     cat "${tmp_error}" >&2
     rm -f "${tmp_output}" "${tmp_error}" >/dev/null 2>&1 || true
     return 1
@@ -208,6 +322,9 @@ capture_installer_step_output() {
   if wait "${step_pid}"; then
     printf '\r- [%s] %s\n' "$(installer_step_success_symbol)" "${label}" >&2
     printf -v "${__resultvar}" '%s' "$(cat "${tmp_output}")"
+    if [[ "${VERBOSE_MODE}" == "1" ]] && [[ -s "${tmp_error}" ]]; then
+      cat "${tmp_error}" >&2
+    fi
     rm -f "${tmp_output}" "${tmp_error}" >/dev/null 2>&1 || true
     return 0
   fi
@@ -1275,7 +1392,7 @@ run_background_service_install_compatibly() {
     install_output="$(cat "${tmp_output}" 2>/dev/null || true)"
   fi
 
-  printf '%s' "${install_output}" >&2
+  printf '%s\n' "${install_output}" >&2
   rm -f "${tmp_output}" >/dev/null 2>&1 || true
   return 1
 }
@@ -1353,6 +1470,37 @@ background_service_inventory_json_is_supported() {
 background_service_inventory_is_empty() {
   local services_json="$1"
   background_service_inventory_json_is_empty "${services_json}"
+}
+
+doctor_repair_report_is_expected_guided_setup_state() {
+  local services_json="$1"
+  background_service_inventory_is_empty "${services_json}" || return 1
+
+  local compact_json=""
+  compact_json="$(printf '%s' "${services_json}" | tr '\n' ' ')"
+  printf '%s' "${compact_json}" | grep -Eq '"report"[[:space:]]*:' || return 1
+  printf '%s' "${compact_json}" | grep -Eq '"findings"[[:space:]]*:' || return 1
+  printf '%s' "${compact_json}" | grep -Eq '"manualWarnings"[[:space:]]*:[[:space:]]*\[[[:space:]]*"' && return 1
+
+  local saw_guided_setup_finding="0"
+  local kind=""
+  local kinds=""
+  kinds="$(printf '%s' "${compact_json}" | grep -oE '"kind"[[:space:]]*:[[:space:]]*"[^"]+"' | sed -E 's/.*"([^"]+)"[[:space:]]*$/\1/' || true)"
+  while IFS= read -r kind; do
+    [[ -n "${kind}" ]] || continue
+    case "${kind}" in
+      no_active_stack_yet|no_servers_configured|auth_missing_for_profile|machine_not_registered_for_profile)
+        saw_guided_setup_finding="1"
+        ;;
+      automatic_startup_missing|run-setup|run-auth-login|register-machine|background-service-plan|install-default-following-service)
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+  done <<< "${kinds}"
+
+  [[ "${saw_guided_setup_finding}" == "1" ]]
 }
 
 background_service_inventory_json_is_empty() {
@@ -1474,9 +1622,8 @@ installer_has_controlling_tty() {
   if [[ ! -t 0 && ! -t 1 && ! -t 2 ]]; then
     return 1
   fi
-  if exec 3<>/dev/tty 2>/dev/null; then
-    exec 3>&-
-    exec 3<&-
+  # Keep the probe's descriptors and stderr redirection out of the parent shell.
+  if (exec 3<>/dev/tty) 2>/dev/null; then
     return 0
   fi
   return 1
@@ -2114,6 +2261,10 @@ run_post_install_action() {
     command_args+=("${args[@]}")
   fi
 
+  if [[ "${op}" == "setup" ]] && [[ "${INSTALLER_WELCOME_SHOWN}" == "1" ]]; then
+    HAPPIER_INSTALLER_WELCOME_SHOWN="1" invoke_installer_command_with_daemon_service_context "${cli_bin}" "${command_args[@]}"
+    return
+  fi
   invoke_installer_command_with_daemon_service_context "${cli_bin}" "${command_args[@]}"
 }
 
@@ -2175,7 +2326,9 @@ print_post_install_get_started() {
   if [[ "${POST_INSTALL_SETUP_IS_DONE}" != "1" ]]; then
     printf '  %-20s %s\n' "${cli_name} setup" "Connect this computer and sign in"
   fi
-  printf '  %-20s %s\n' "${cli_name}" "Start a session"
+  say "  In the app, browser or phone: New session"
+  say "  Choose this computer and a project. Keep this computer running."
+  printf '  %-20s %s\n' "${cli_name}" "Start from this terminal"
   printf '  %-20s %s\n' "${cli_name} status" "Check this computer's connection"
 }
 
@@ -2332,6 +2485,39 @@ write_minisign_public_key() {
   curl -fsSL "${MINISIGN_PUBKEY_URL}" -o "${target_path}"
 }
 
+verify_archive_checksum() {
+  local expected_sha=""
+  expected_sha="$(grep -E "  $(basename "${ASSET_SOURCE}")$" "${CHECKSUMS_PATH}" | awk '{print $1}' | head -n 1)"
+  if [[ -z "${expected_sha}" ]]; then
+    echo "Failed to resolve checksum for $(basename "${ASSET_SOURCE}")" >&2
+    return 1
+  fi
+
+  local actual_sha=""
+  actual_sha="$(sha256_file "${ARCHIVE_PATH}")"
+  printf 'Expected SHA-256: %s\n' "${expected_sha}"
+  printf 'Actual SHA-256:   %s\n' "${actual_sha}"
+  if [[ "${expected_sha}" != "${actual_sha}" ]]; then
+    echo "Checksum verification failed." >&2
+    return 1
+  fi
+}
+
+verify_release_signature() {
+  if ! ensure_minisign; then
+    echo "minisign is required for installer signature verification." >&2
+    echo "Install minisign manually and rerun, or set HAPPIER_MINISIGN_PUBKEY with a trusted key." >&2
+    return 1
+  fi
+
+  write_minisign_public_key "${PUBKEY_PATH}"
+  "${MINISIGN_BIN}" -Vm "${CHECKSUMS_PATH}" -x "${SIG_PATH}" -p "${PUBKEY_PATH}" >/dev/null
+  say "minisign verification passed."
+}
+
+PATH_CONFIG_UPDATED="0"
+PATH_RELOAD_FILE=""
+
 append_path_hint() {
   if [[ "${NO_PATH_UPDATE}" == "1" ]]; then
     return
@@ -2408,9 +2594,11 @@ append_path_hint() {
     zsh)
       rc_files+=("$HOME/.zshrc")
       rc_files+=("$HOME/.zprofile")
+      PATH_RELOAD_FILE="$HOME/.zshrc"
       ;;
     bash)
       rc_files+=("$HOME/.bashrc")
+      PATH_RELOAD_FILE="$HOME/.bashrc"
       if [[ -f "$HOME/.bash_profile" ]]; then
         rc_files+=("$HOME/.bash_profile")
       else
@@ -2419,6 +2607,7 @@ append_path_hint() {
       ;;
     *)
       rc_files+=("$HOME/.profile")
+      PATH_RELOAD_FILE="$HOME/.profile"
       ;;
   esac
 
@@ -2426,53 +2615,41 @@ append_path_hint() {
   for rc_file in "${rc_files[@]}"; do
     if [[ ! -f "${rc_file}" ]] || ! grep -Fq "${export_line}" "${rc_file}"; then
       printf '\n%s\n' "${export_line}" >> "${rc_file}"
-      info "Added ${BIN_DIR} to PATH in ${rc_file}"
       updated=1
     fi
     if [[ -n "${home_export_line}" ]]; then
       if [[ ! -f "${rc_file}" ]] || ! grep -Eq "^[[:space:]]*export[[:space:]]+HAPPIER_HOME_DIR=" "${rc_file}"; then
         printf '\n%s\n' "${home_export_line}" >> "${rc_file}"
-        info "Persisted HAPPIER_HOME_DIR=${INSTALL_DIR} in ${rc_file}"
         updated=1
       elif ! grep -Fxq "${home_export_line}" "${rc_file}" || [[ "$(grep -Ec "^[[:space:]]*export[[:space:]]+HAPPIER_HOME_DIR=" "${rc_file}")" -ne 1 ]]; then
         upsert_shell_export_line "${rc_file}" "HAPPIER_HOME_DIR" "${home_export_line}"
-        info "Persisted HAPPIER_HOME_DIR=${INSTALL_DIR} in ${rc_file}"
         updated=1
       fi
     elif [[ -f "${rc_file}" ]] && grep -Eq "^[[:space:]]*export[[:space:]]+HAPPIER_HOME_DIR=" "${rc_file}"; then
       remove_shell_export_line "${rc_file}" "HAPPIER_HOME_DIR"
-      info "Removed stale HAPPIER_HOME_DIR from ${rc_file}"
       updated=1
     fi
   done
 
-  if [[ ":${PATH}:" != *":${BIN_DIR}:"* ]]; then
-    echo
-    say "${COLOR_BOLD}Next steps${COLOR_RESET}"
-    say "To use ${EXE_NAME} in your current shell:"
-    say "  export PATH=\"${BIN_DIR}:\$PATH\""
-    if [[ -n "${home_export_line}" ]]; then
-      say "  export HAPPIER_HOME_DIR=${home_export_value}"
-    fi
-    if [[ "${shell_name}" == "bash" ]]; then
-      say "  source \"$HOME/.bashrc\""
-      if [[ -f "$HOME/.bash_profile" ]]; then
-        say "  source \"$HOME/.bash_profile\""
-      else
-        say "  source \"$HOME/.profile\""
-      fi
-    elif [[ "${shell_name}" == "zsh" ]]; then
-      say "  source \"$HOME/.zshrc\""
-    else
-      say "  source \"$HOME/.profile\""
-    fi
-    say "If your shell still can't find ${EXE_NAME}, run:"
-    shell_command_cache_hint
-    say "Or open a new terminal."
-  elif [[ "${updated}" == "1" ]]; then
-    echo
-    say "PATH is already configured in this shell."
+  PATH_CONFIG_UPDATED="${updated}"
+}
+
+print_path_guidance() {
+  if [[ "${NO_PATH_UPDATE}" == "1" ]]; then
+    section "PATH"
+    say "PATH updates were skipped. Run the installed command directly:"
+    say "  ${DISPLAY_SHIM_PATH}"
+    return
   fi
+
+  if [[ ":${PATH}:" == *":${BIN_DIR}:"* ]] && [[ "${PATH_CONFIG_UPDATED}" != "1" ]]; then
+    return
+  fi
+
+  section "PATH"
+  say "Reload this shell to use $(basename "${DISPLAY_SHIM_PATH}"):"
+  say "  source \"${PATH_RELOAD_FILE}\""
+  say "Or open a new terminal."
 }
 
 OS="$(detect_os)"
@@ -2530,6 +2707,9 @@ TAG="$(resolve_release_tag "${PRODUCT}" "${CHANNEL}")" || {
   echo "Unsupported product/channel combination: ${PRODUCT}/${CHANNEL}" >&2
   exit 1
 }
+
+print_installer_welcome
+installer_phase "Download"
 
 API_URL="https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${TAG}"
 curl_auth() {
@@ -2596,31 +2776,15 @@ CHECKSUMS_PATH="${TMP_DIR}/checksums.txt"
 stage_release_asset "Downloading release archive" "${ARCHIVE_PATH}" "${ASSET_SOURCE}"
 stage_release_asset "Downloading checksums" "${CHECKSUMS_PATH}" "${CHECKSUMS_SOURCE}"
 
-EXPECTED_SHA="$(grep -E "  $(basename "${ASSET_SOURCE}")$" "${CHECKSUMS_PATH}" | awk '{print $1}' | head -n 1)"
-if [[ -z "${EXPECTED_SHA}" ]]; then
-  echo "Failed to resolve checksum for $(basename "${ASSET_SOURCE}")" >&2
-  exit 1
-fi
-ACTUAL_SHA="$(sha256_file "${ARCHIVE_PATH}")"
-if [[ "${EXPECTED_SHA}" != "${ACTUAL_SHA}" ]]; then
-  echo "Checksum verification failed." >&2
-  exit 1
-fi
-success "Checksum verified."
-
-if ! ensure_minisign; then
-  echo "minisign is required for installer signature verification." >&2
-  echo "Install minisign manually and rerun, or set HAPPIER_MINISIGN_PUBKEY with a trusted key." >&2
-  exit 1
-fi
-
 PUBKEY_PATH="${TMP_DIR}/minisign.pub"
 SIG_PATH="${TMP_DIR}/checksums.txt.minisig"
-write_minisign_public_key "${PUBKEY_PATH}"
 stage_release_asset "Downloading minisign signature" "${SIG_PATH}" "${SIG_SOURCE}"
-"${MINISIGN_BIN}" -Vm "${CHECKSUMS_PATH}" -x "${SIG_PATH}" -p "${PUBKEY_PATH}" >/dev/null
-success "Signature verified."
 
+installer_phase "Verify"
+run_installer_step "Verifying archive checksum" verify_archive_checksum
+run_installer_step "Verifying release signature" verify_release_signature
+
+installer_phase "Install"
 EXTRACT_DIR="${TMP_DIR}/extract"
 mkdir -p "${EXTRACT_DIR}"
 run_installer_step "Extracting payload" tar_extract_gz "${ARCHIVE_PATH}" "${EXTRACT_DIR}"
@@ -2766,7 +2930,7 @@ if should_read_background_service_preflight; then
       DAEMON_RUNNING_FROM_PREFLIGHT="1"
     fi
   fi
-  if [[ "${NONINTERACTIVE}" != "1" ]]; then
+  if [[ "${NONINTERACTIVE}" != "1" ]] && ! doctor_repair_report_is_expected_guided_setup_state "${services_json}"; then
     print_background_service_report_text_if_supported "${DISPLAY_SHIM_PATH}"
   fi
 fi
@@ -2788,7 +2952,7 @@ if [[ "${PRODUCT}" == "cli" && "${WITH_DAEMON}" == "1" ]]; then
           repair_status=$?
           if [[ "${repair_status}" == "2" ]]; then
             info "Setting up automatic startup (user-mode)..."
-            if ! run_background_service_install_compatibly "${DISPLAY_SHIM_PATH}" >/dev/null 2>&1; then
+            if ! run_background_service_install_compatibly "${DISPLAY_SHIM_PATH}"; then
               echo "Warning: background service install failed. You can retry manually:" >&2
               echo "  ${install_command}" >&2
             fi
@@ -2804,7 +2968,7 @@ if [[ "${PRODUCT}" == "cli" && "${WITH_DAEMON}" == "1" ]]; then
         ;;
       add)
         info "Setting up automatic startup (additional service, user-mode)..."
-        if ! run_background_service_install_compatibly "${DISPLAY_SHIM_PATH}" >/dev/null 2>&1; then
+        if ! run_background_service_install_compatibly "${DISPLAY_SHIM_PATH}"; then
           echo "Warning: background service install failed. You can retry manually:" >&2
           echo "  ${install_command}" >&2
         fi
@@ -2839,7 +3003,7 @@ if [[ "${PRODUCT}" == "cli" && "${WITH_DAEMON}" == "1" ]]; then
         fi
         if [[ "${skip_background_service_install}" != "1" ]]; then
           info "Setting up automatic startup (user-mode)..."
-          if ! run_background_service_install_compatibly "${DISPLAY_SHIM_PATH}" >/dev/null 2>&1; then
+          if ! run_background_service_install_compatibly "${DISPLAY_SHIM_PATH}"; then
             echo "Warning: background service install failed. You can retry manually:" >&2
             echo "  ${install_command}" >&2
           fi
@@ -2853,12 +3017,13 @@ echo
 echo "${INSTALL_NAME} installed:"
 echo "  binary: ${DISPLAY_BINARY_PATH}"
 echo "  shim:   ${DISPLAY_SHIM_PATH}"
+echo "  version: ${VERSION}"
 echo
 if [[ "${NONINTERACTIVE}" != "1" ]]; then
   if [[ "${PRODUCT}" == "server" ]]; then
     "${DISPLAY_BINARY_PATH}" --help >/dev/null 2>&1 || true
   else
-    "${DISPLAY_BINARY_PATH}" --version || true
+    "${DISPLAY_BINARY_PATH}" --version >/dev/null 2>&1 || true
   fi
 fi
 
@@ -2887,6 +3052,8 @@ elif should_hand_off_to_guided_setup "${DISPLAY_SHIM_PATH}"; then
     POST_INSTALL_SETUP_IS_DONE="1"
   fi
 fi
+
+print_path_guidance
 
 if [[ "${PRODUCT}" == "cli" && "${ACTION}" == "install" ]]; then
   print_post_install_get_started "$(basename "${DISPLAY_SHIM_PATH}")"

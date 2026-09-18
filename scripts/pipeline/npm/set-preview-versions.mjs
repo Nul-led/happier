@@ -135,6 +135,7 @@ async function main() {
         baseVersion: base,
         explicitVersion: explicitVersions.cli,
         publishSurface: 'npm',
+        allowExistingExactVersion: Boolean(explicitVersions.cli),
         env: process.env,
       })
     ).version;
@@ -153,6 +154,7 @@ async function main() {
         baseVersion: base,
         explicitVersion: explicitVersions.stack,
         publishSurface: 'npm',
+        allowExistingExactVersion: Boolean(explicitVersions.stack),
         env: process.env,
       })
     ).version;
@@ -172,6 +174,7 @@ async function main() {
         baseVersion: base,
         explicitVersion: explicitVersions.server,
         publishSurface: 'npm',
+        allowExistingExactVersion: Boolean(explicitVersions.server),
         env: process.env,
       })
     ).version;
@@ -190,6 +193,7 @@ async function main() {
         baseVersion: base,
         explicitVersion: explicitVersions.support,
         publishSurface: 'npm',
+        allowExistingExactVersion: Boolean(explicitVersions.support),
         env: process.env,
       })
     ).version;
@@ -215,6 +219,7 @@ async function main() {
         baseVersion: base,
         explicitVersion: explicitVersions.pluginSdk,
         publishSurface: 'npm',
+        allowExistingExactVersion: Boolean(explicitVersions.pluginSdk),
         env: process.env,
       })
     ).version;
@@ -235,6 +240,7 @@ async function main() {
         baseVersion: base,
         explicitVersion: explicitVersions.sdk,
         publishSurface: 'npm',
+        allowExistingExactVersion: Boolean(explicitVersions.sdk),
         env: process.env,
       })
     ).version;
@@ -254,6 +260,7 @@ async function main() {
         baseVersion: base,
         explicitVersion: explicitVersions.channelsProtocol,
         publishSurface: 'npm',
+        allowExistingExactVersion: Boolean(explicitVersions.channelsProtocol),
         env: process.env,
       })
     ).version;

@@ -20,7 +20,7 @@ test('release-owned installer scripts enforce minisign verification defaults', a
   assert.match(installSh, /HAPPIER_MINISIGN_PUBKEY_URL/);
   assert.match(installSh, /HAPPIER_RELEASE_ASSETS_DIR/);
   assert.match(installSh, /https:\/\/happier\.dev\/happier-release\.pub/);
-  assert.match(installSh, /Signature verified\./);
+  assert.match(installSh, /verify_release_signature/);
   assert.doesNotMatch(installSh, /skipped signature verification/i);
   assert.ok(publicKeyPayload.length > 10);
   assert.ok(installSh.includes(publicKeyPayload), 'install.sh should embed the release minisign public key payload');
@@ -36,8 +36,14 @@ test('release-owned windows installer enforces minisign verification defaults', 
   assert.match(installPs1, /https:\/\/happier\.dev\/happier-release\.pub/);
   assert.match(installPs1, /Signature verified\./);
   assert.doesNotMatch(installPs1, /skip.*signature/i);
-  assert.match(installPs1, /&\s+\$exe\.FullName\s+--version\s+\*>\s+\$null/);
-  assert.match(installPs1, /winget\s+install\s+--id\s+jedisct1\.minisign\s+--accept-source-agreements\s+--accept-package-agreements/i);
+  assert.match(installPs1, /&\s+\$exe\.FullName\s+-v\s+\*>\s+\$null/);
+  assert.doesNotMatch(installPs1, /\$exe\.FullName\s+--version/);
+  assert.match(installPs1, /\$LASTEXITCODE\s+-ne\s+0/);
+  assert.match(installPs1, /RuntimeInformation\]::OSArchitecture/);
+  assert.match(installPs1, /"X64"\s*\{\s*"x86_64"\s*\}/);
+  assert.match(installPs1, /"Arm64"\s*\{\s*"aarch64"\s*\}/);
+  assert.doesNotMatch(installPs1, /Get-ChildItem\s+-Path\s+\$extractDir\s+-Filter\s+"minisign\.exe"\s+-Recurse\s*\|\s*Select-Object\s+-First\s+1/);
+  assert.match(installPs1, /winget\s+install\s+--id\s+jedisct1\.minisign\s+--source\s+winget\s+--accept-source-agreements\s+--accept-package-agreements/i);
   assert.match(installPs1, /Downloaded minisign binary is not compatible with this system/);
   assert.match(installPs1, /\$env:LOCALAPPDATA\)\s*\{\s*\$pathEntries \+= Join-Path \$env:LOCALAPPDATA "Microsoft\\WinGet\\Links"/);
   assert.match(installPs1, /\$pathEntries \+= Join-Path \$env:LOCALAPPDATA "Microsoft\\WinGet\\Packages"/);
@@ -51,7 +57,7 @@ test('release-owned windows installer enforces minisign verification defaults', 
   assert.match(installPs1, /Invoke-NativeCommandCapturingOutput\s+\{/);
   assert.match(
     installPs1,
-    /\$wingetInstallResult\.ExitCode -ne 0 -and \$wingetInstallResult\.Output[\s\S]*?\$wingetMinisign = Resolve-MinisignExecutablePath[\s\S]*?if \(\$wingetMinisign\) \{[\s\S]*?if \(\$wingetInstallResult\.ExitCode -ne 0\) \{[\s\S]*?throw "winget install failed\."/,
+    /\$wingetInstallResult\.ExitCode -ne 0 -and \$wingetInstallResult\.Output[\s\S]*?\$wingetMinisign = Resolve-MinisignExecutablePath[\s\S]*?\$wingetMinisignProbe = Invoke-NativeCommandCapturingOutput[\s\S]*?\$wingetMinisignProbe\.ExitCode -eq 0[\s\S]*?if \(\$wingetInstallResult\.ExitCode -ne 0\) \{[\s\S]*?throw "winget install failed\."/,
   );
   assert.match(installPs1, /minisign is not available and could not be installed automatically/);
   assert.match(installPs1, /Payload promotion is unsupported by this CLI build, falling back to legacy direct binary copy\./);

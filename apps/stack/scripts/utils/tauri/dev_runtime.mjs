@@ -36,6 +36,15 @@ function applyHtml5FileDragDropWindowPolicy(config) {
   return config;
 }
 
+function omitNativeReleaseEvidenceResources(resources) {
+  if (!isPlainObject(resources)) return resources;
+  return Object.fromEntries(
+    Object.entries(resources).filter(([sourcePath]) => (
+      !sourcePath.replaceAll('\\', '/').includes('/iroh-native/release-evidence/')
+    )),
+  );
+}
+
 export function resolveStackTauriDevUrl({ runtimeState, defaultPort = 8081, verifiedUiEndpoint = null } = {}) {
   if (verifiedUiEndpoint && typeof verifiedUiEndpoint === 'object') {
     const verifiedPort = Number(verifiedUiEndpoint.port);
@@ -73,6 +82,18 @@ export function buildStackTauriDevConfig({ baseConfig, overlayConfig, devUrl, en
     beforeDevCommand: '',
     beforeBuildCommand: '',
   };
+  if (isPlainObject(merged.bundle)) {
+    // Native notices and the SBOM are release-representation inputs generated
+    // by the release/build preparation owner. Tauri validates configured
+    // resource paths even for `tauri dev`, so retaining them here makes an
+    // ordinary source-driven development build depend on absent release
+    // evidence. Omit only those release inputs for development; release configs
+    // keep the base map and `tauri:prepare:build` still generates them.
+    merged.bundle = {
+      ...merged.bundle,
+      resources: omitNativeReleaseEvidenceResources(merged.bundle.resources),
+    };
+  }
   if (hasStackTauriOverride(env)) {
     applyStackTauriOverrides({ tauriConfig: merged, env, baseProductName: 'Happier' });
   }

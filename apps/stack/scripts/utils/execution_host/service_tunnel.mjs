@@ -253,17 +253,17 @@ function buildForwards(projection, workspace) {
 
 function pendingProjectedServices(projection) {
   const expoTargetName = String(
-    projection.runtime.placement?.expo
-    ?? projection.runtime.expo?.remoteTarget
+    projection.runtime.expo?.remoteTarget
+    ?? projection.runtime.placement?.expo
     ?? '',
   ).trim();
   if (!expoTargetName) return [];
   const expoTarget = projection.runtime.remoteTargets?.[expoTargetName];
   if (!expoTarget) return ['expo'];
-  return expoTarget.services?.expo === true
-    && expoTarget.serviceStatus?.expo === 'starting'
-    ? ['expo']
-    : [];
+  const expoReady = expoTarget.services?.expo === true
+    && expoTarget.serviceStatus?.expo === 'running'
+    && expoTarget.status === 'running';
+  return expoReady ? [] : ['expo'];
 }
 
 function workspaceStatePath(profile, env, workspaceId) {
@@ -718,8 +718,6 @@ async function ensureExecutionHostServiceTunnelUnlocked({
             })),
             sshArgs: [
               '-F', resolvedSsh.sshConfigFile,
-              '-o', 'ControlMaster=no',
-              '-o', 'ControlPath=none',
               '-o', `SetEnv=HAPPIER_STACK_EXECUTION_HOST_TUNNEL=${marker}`,
             ],
           },
@@ -892,17 +890,41 @@ export async function superviseExecutionHostServiceTunnel({
   const processBoundary = boundary ?? defaultBoundary();
   const workspace = requireWorkspace(profile, workspaceId);
   const cancelled = () => ({ changed: false, status: 'cancelled', workspaceId: workspace.id });
-  let result = await waitForExecutionHostServiceTunnel({
-    profile,
-    workspaceId: workspace.id,
-    stackName,
-    executor,
-    env,
-    boundary: processBoundary,
-    signal,
-    previousRuntimeStartedAt,
-    requireRuntimeStartedAt: true,
-  });
+  let result;
+  let initialRecoveryErrorMessage = '';
+  while (!signal?.aborted) {
+    try {
+      result = await waitForExecutionHostServiceTunnel({
+        profile,
+        workspaceId: workspace.id,
+        stackName,
+        executor,
+        env,
+        boundary: processBoundary,
+        signal,
+        previousRuntimeStartedAt,
+        requireRuntimeStartedAt: true,
+      });
+      if (initialRecoveryErrorMessage) {
+        processBoundary.reportWarning?.('[dev-vm] host service tunnel recovered after a transient initial reconciliation failure');
+      }
+      break;
+    } catch (error) {
+      if (signal?.aborted || error?.name === 'AbortError') return cancelled();
+      const message = String(error?.message ?? error);
+      if (message !== initialRecoveryErrorMessage) {
+        processBoundary.reportWarning?.(`[dev-vm] host service tunnel initial reconciliation failed; retrying: ${message}`);
+        initialRecoveryErrorMessage = message;
+      }
+      try {
+        await processBoundary.delay(SERVICE_TUNNEL_SUPERVISION_DELAY_MS, { signal });
+      } catch (delayError) {
+        if (signal?.aborted || delayError?.name === 'AbortError') return cancelled();
+        throw delayError;
+      }
+    }
+  }
+  if (!result) return cancelled();
   if (result.status !== 'running') return result;
   let recoveryErrorMessage = '';
 

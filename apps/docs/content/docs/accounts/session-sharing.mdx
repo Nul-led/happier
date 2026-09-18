@@ -5,21 +5,32 @@ description: Share sessions with teammates or through view-only public links, an
 
 Session sharing lets multiple people work from the same Happier session.
 
-You can share a session in two main ways:
+The released sharing workflow supports two paths:
 
 - **Direct sharing with a friend** inside Happier
 - **Public links** for read-only access
+
+The current 0.3 development channel also has a gated collaboration path for
+**Teams** and **Groups**. It is enabled by the `sessions.collaboration` server
+feature and depends on the normal session-sharing feature. The development path
+uses the same access authority as direct sharing, but it is not a stable-release
+availability claim until its upgrade and loaded-client validation are complete.
 
 ## Where shared sessions appear
 
 Shared sessions live in the **Sessions** tab, not in Inbox.
 
-In the sessions list, Happier places them into a dedicated **Shared sessions** subgroup inside the normal:
+Released 0.2 places them in a dedicated **Shared sessions** subgroup within
+the normal **Active** and **Inactive** sections. In the 0.3 development channel,
+there is no separate ownership group at all — shared sessions enter the same
+list as your own, and the selected session-list layout controls their placement:
 
-- **Active**
-- **Inactive**
+- **Projects** places shared sessions in their project groups.
+- **Recent activity** places shared sessions in its date groups.
+- **Active & inactive** places them in the groups of the matching status section.
 
-sections.
+Each row still shows who shared it, so nothing about the session's origin is
+hidden by dropping the separate group.
 
 That means shared sessions behave like regular sessions in the list:
 
@@ -33,7 +44,9 @@ Inbox does **not** list sessions just because they are shared with you.
 
 Direct sharing is the normal collaborator workflow.
 
-From a session’s sharing screen, you can choose a friend and assign an access level.
+Released 0.2 uses the session’s **Sharing** screen. In the 0.3 development
+channel, open **Collaboration → Access**; the old `/sharing` URL remains only as
+a compatibility deep link and opens that same Access view.
 
 ### Access levels
 
@@ -69,7 +82,8 @@ If this option is available, you can turn it on when adding the share or later f
 
 ## Managing existing direct shares
 
-From the session’s sharing UI, you can:
+From **Sharing** on released 0.2, or **Collaboration → Access** in the 0.3
+development channel, you can:
 
 - review everyone the session is shared with
 - change their access level
@@ -77,6 +91,123 @@ From the session’s sharing UI, you can:
 - stop sharing with that person
 
 Non-managers can still open the shared session itself, but they do not get the full sharing-management surface.
+
+## Team and Group access (0.3 development)
+
+When the collaboration feature is enabled, the access editor can grant a
+Session to a **Team** or a **Group** as well as to an individual Account. A
+member receives the Session capabilities supplied by the current grant and
+their active membership. Removing the last applicable direct, Team, or Group
+grant removes access; another surviving grant can keep the member's access.
+
+Team and Group visibility is separate from personal attention. Being able to
+browse a Session does not create an unread row, Follow, Inbox item, Activity
+entry, badge, local notification, or push event. Follow and assignment are
+personal choices with their own settings.
+
+### Session discussions (0.3 development)
+
+When both `sessions.collaboration` and `sessions.conversations` are enabled, a
+current Session reader can read its human discussions. People with edit access
+can start discussions and post messages; discussion creators can rename or
+archive their own active discussions while Session managers can also restore
+them. Archived discussions remain readable. The Conversations feature is off
+by default while its complete Plain/E2EE mounted journey remains under
+development; a declared client capability alone does not enable it.
+
+Discussion access always follows the Session's current direct, Team, or Group
+access. A mention does not grant access, and removing someone's final Session
+grant removes their discussion access as well. Unread position is private to
+each personally tracked Account; fetching a page does not mark it read.
+
+In E2EE mode, titles and message bodies are encrypted on the client. The sync
+service still sees the identifiers, ordering, authorship, mentioned Account
+IDs, timestamps, archive state, read cursor, and ciphertext size needed to
+synchronize and present the feature. The feature fails closed if the Session
+key is not ready or stored content does not match the Session's encryption
+mode.
+
+Human posts retain the authenticated Account that submitted them. Posts made
+through an Agent retain the actual admitted runtime Account plus explicit Agent
+provenance; asking an Agent to post does not make the requester the author or
+lend the Agent that person's private settings. An Agent's authority stays the
+principal its runtime was started with, whoever wrote the most recent message.
+Reading or posting does not by itself Follow the Session.
+
+Attribution is accountability, not containment. Knowing which Account or Agent
+wrote a discussion message says nothing about what that Agent can reach on disk:
+a discussion, a selected folder, or a Session boundary does not restrict an
+Agent's shell access. The OS and Agent sandbox configuration on the machine
+running the Session is the actual boundary, and sharing a Session does not narrow
+it. Share edit access only with people whose use of that machine you intend.
+
+Conversation drafts for an existing Session use the same Session encryption
+owner as its transcript. Retrying creation preserves the original creation and
+first-message identities so an uncertain response can rejoin instead of
+silently creating a second discussion. Linked Agent activity remains the
+canonical Run activity; the discussion does not copy or become another Agent
+transcript.
+
+The Team policy can propose or require an explicit Team grant for a Session
+created in that Team context. In the current development contract, both
+`team_default` and `team_required` start at **Can edit** without permission-
+approval delegation. A required grant cannot be removed or reduced below Can
+edit while that policy still applies. An explicitly stronger Can manage grant
+remains stronger and can later return to Can edit.
+
+The Session's primary Team can also restrict sharing outside that Team:
+
+- **Allowed** permits normal external Account, Team, Group, and public-link
+  changes.
+- **Team admins only** requires current Team policy-management authority before
+  external access is added or increased.
+- **Disabled** blocks new or increased external access and public-link
+  publication while still allowing access to be reduced or removed.
+
+Changing the primary Team can change which existing recipients count as
+external. Happier previews that consequence and asks for confirmation, then the
+Home rechecks the current policy when it commits the change. Tightening a Team
+policy does not pretend to recall content or keys that were already disclosed.
+
+### Assign responsibility (0.3 development)
+
+A Session can name one responsible person from its current readable audience.
+Responsibility is accountability, not access: assigning someone grants no new
+capability, and losing the final applicable access clears the assignment. A
+read-only collaborator can see the assignee but cannot change it unless their
+current Session capabilities allow assignment.
+
+Assignment can opt the assignee into Follow with important notifications through
+their own settings. An explicit per-Session Follow choice still wins, assigning
+yourself does not send a redundant self-notification, and choosing **No one**
+clears the assignment.
+
+### See who is viewing (0.3 development)
+
+Mounted Session surfaces share one live presence view. The Session header shows
+a compact facepile when other named viewers are present, including named guest
+Accounts, and the **Collaboration** surface shows the full **Viewing now** list.
+At compact widths the facepile remains a direct way to open Collaboration.
+
+Presence is deliberately temporary. Multiple qualified tabs or devices for one
+Account appear once, and **Typing…** appears only while that viewer currently has
+permission to submit input. A Session leaves the declaration when its last mounted
+surface closes, and backgrounding the app sends an empty declaration; typing also
+expires automatically.
+
+If the socket disconnects, the server does not support this protocol version, or
+a current snapshot has not arrived, Happier treats the viewer list as unknown.
+A previous observation may remain visible as stale context, but it is not an
+online/offline claim. A current empty list means only that no other authorized
+viewer is in the Session presence room at that moment.
+
+Viewing and typing do not mark a Session read, change unread state, Follow it,
+add it to My Work or Activity, suppress notifications, or create a badge. Human
+presence is negotiated independently of the `sessions.collaboration` feature.
+It is visible in the 0.3 development Collaboration host whenever normal Session
+sharing is available, while Team/Group grants and responsibility remain behind
+`sessions.collaboration`. Loaded web/native and clustered access-loss journeys
+are still validation gates, not stable-release availability claims.
 
 ## Public links
 
@@ -110,50 +241,107 @@ You can also:
 - regenerate it
 - delete it
 
+For a Session with a primary Team, enabling or widening a public link follows
+that Team's external-sharing policy. Disabling or deleting the link remains
+available to an otherwise authorized manager even when the policy prevents new
+external publication.
+
 ## Encryption and sharing readiness
 
-On encrypted deployments, a friend must be ready for secure sharing before you can share an encrypted session with them.
+On encrypted deployments, a direct, Team, or Group recipient must be ready for
+secure sharing before the recipient can read encrypted content. The trusted
+Happier app or CLI host opens the Session's existing data key and seals only that
+same key for a ready direct recipient; the public access Action stays key-free.
+This keeps encryption preparation separate from deciding who is allowed access.
 
-In practice, that means some friends may be temporarily unavailable for direct sharing until their account/device has the required sharing keys ready.
+In practice, a grant can become visible before its recipient envelope is ready.
+The Session then remains explicitly **preparing** or **locked** until the
+envelope is available; it never falls back to plaintext. Some recipients may be
+temporarily unavailable until their account or device has the required sharing
+keys ready.
+
+The current 0.3 development source also has the bounded Team/Group membership-
+history preparation resource and its client host. It reuses the same canonical
+recipient-envelope owner rather than creating Team or Group keys. This is source
+implementation, not a claim that native, large-corpus, or release validation has
+completed.
 
 On plaintext-storage deployments, sharing still works as a normal product feature. The difference is the storage mode behind the scenes, not the user-facing sharing model.
+
+A Session's storage mode does not describe how content reaches it. Content sent
+through the external Action API or SDK with an ordinary `hap_v1` API Token is
+readable by the Home relaying it, even when the Session it lands in is E2EE;
+sealing at rest does not seal ingress. Use a direct daemon endpoint, or the
+development encryption-capable `hapc_v1` credential that protects the whole
+request and result, when that transit matters. Details are in
+[SDK and Action API](/extending/sdk#server-relay-readability-and-revocation).
 
 For the storage model itself, see [Encryption model](/security/encryption).
 
 ## Shared sessions and other session features
 
-Shared sessions are still normal sessions.
+Shared sessions are still normal sessions, but access and attention are
+separate decisions.
 
 That means shared sessions can still have:
 
-- unread state and read-state actions when you have edit-style access
+- per-Account unread state and read-state actions when your Account is tracked
+  for the Session
 - permission or user-action prompts
 - pending messages
 - active/inactive status
 
 The important difference is where each kind of attention appears:
 
-- the session itself appears in the **Sessions** list under **Shared sessions**
+- the session itself appears in the **Sessions** list, grouped by the selected
+  session-list layout
 - urgent decisions and unread follow-up can still appear through the normal attention surfaces such as **Inbox**
+
+### Session-to-Session Follow context (0.3 development)
+
+An Agent Session can follow another authorized Session and receive bounded
+optional context from it during a normal turn. The source and destination keep
+their ordinary Session identities and access rules; Follow does not create a
+second Session type or grant access. Before each injection, Happier rechecks the
+current Follow edge and the source/destination audience relationship. It
+acknowledges only the exact update accepted by the Agent provider, so omitted
+context remains available for a later turn.
+
+The ordinary Account-backed daemon path is wired in current development source.
+The restricted temporary-computer Runner still depends on its separate scoped
+source-key delivery from the Runner and encryption owners, so that Runner path
+must remain unavailable until the composed flow is implemented and validated.
 
 For details, see [Session read and unread state](/organize/session-read-state).
 
 ## Typical workflows
 
-### Share a session with a teammate
+### Share a session directly with a teammate
 
 1. Open the session
-2. Open **Sharing**
-3. Choose **Share with**
-4. Pick a friend
-5. Choose **View only**, **Can edit**, or **Can manage**
-6. Optionally allow permission approvals for edit/admin recipients
+2. On released 0.2, open **Sharing**. In the 0.3 development channel, open
+   **Collaboration → Access**.
+3. Search for the person.
+4. Choose **View only**, **Can edit**, or **Can manage**.
+5. Optionally allow permission approvals for edit/admin recipients.
+
+### Grant Team or Group access (0.3 development)
+
+1. Open the Session's Collaboration surface.
+2. Open **Access** and search for a Team or Group.
+3. Choose the access level for that principal.
+4. Review any policy-required state and confirm the change.
+
+The Team or Group grant controls visibility and capability. It does not
+subscribe every member to personal notifications or create read state for
+members who have not started following the Session.
 
 ### Give someone read-only public access
 
 1. Open the session
-2. Open **Sharing**
-3. Open **Public link**
+2. On released 0.2, open **Sharing**. In the 0.3 development channel, open
+   **Collaboration → Access**.
+3. Open **Public link**.
 4. Choose the expiration, usage limit, and consent settings
 5. Create the link
 6. Share the URL or QR code
@@ -161,11 +349,12 @@ For details, see [Session read and unread state](/organize/session-read-state).
 ### Find sessions shared with you
 
 1. Open **Sessions**
-2. Look under **Active** or **Inactive**
-3. Open **Shared sessions**
-4. Open or pin the session you need
+2. Find the session in **Shared sessions** under **Active** or **Inactive** on
+   released 0.2; in the 0.3 development channel it sits in the ordinary group
+   supplied by your selected layout, or search for it by name
+3. Open or pin the session you need
 
-## Related docs
+## Related
 
 - [Inbox and approvals](/sessions/inbox-and-approvals)
 - [Friends](/accounts/friends)

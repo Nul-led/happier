@@ -109,12 +109,14 @@ test('resume resolution reuses only successful verified immutable candidates', (
       cli: '0.2.10-dev.73',
       stack: '',
       server: '',
+      runner: '',
       'ui-web': '',
     },
     requested: {
       cli: true,
       stack: false,
       server: true,
+      runner: false,
       'ui-web': false,
     },
   });

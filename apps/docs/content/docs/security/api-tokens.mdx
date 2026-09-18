@@ -12,6 +12,11 @@ separately from your signed-in sessions.
   Run the CLI examples with `hdev`, unless you have explicitly pointed the
   `happier` shim at the development lane with
   `happier self release-channel use dev`.
+
+  Ordinary and encryption-capable issuance, wrapping, and protected-call owners
+  exist in source and have focused automated coverage. A current loaded
+  UI/CLI/SDK journey through both direct-daemon and Home-relay origins has not
+  yet been certified.
 </Callout>
 
 ## What you need first
@@ -22,9 +27,12 @@ separately from your signed-in sessions.
 
 ## Create a token
 
-1. Open **Settings → Account → API Tokens**.
+1. Open **Settings → Account → Account Security → API Tokens**.
 2. Choose **Create token**, give it a label you will recognize, and select its
    expiry (30 days, 90 days, one year, or no expiry).
+   On an E2EE account, you can also enable **Encryption access** from a trusted
+   signed-in device. Happier verifies the current Account content key before it
+   creates the token; it never exports your recovery or signing key.
 3. Copy the token when it is shown and store it in your secret manager or the
    environment of the tool that needs it.
 
@@ -32,6 +40,14 @@ Happier shows the full secret once. The list keeps only a shortened, non-secret
 prefix such as `hap_v1_2c67deea…` plus metadata, so it cannot reveal the same
 secret later. A token is broad account automation
 in this first version; it does not have scopes.
+
+An encryption-capable credential begins with `hapc_v1`. In the development SDK,
+the extra local material protects the complete Action request and result from the
+configured Home while it relays them; this protected direct/relay journey remains
+an activation gate, not a shipped guarantee. Only the embedded bearer is sent for authentication.
+Keep the complete compound credential in your secret manager: it grants access
+to Account-encrypted content, and revocation cannot make already opened keys or
+data unknown again.
 
 ## Use a token from the CLI
 
@@ -49,6 +65,11 @@ HAPPIER_TOKEN='hap_v1_…' hdev list
 
 The flag takes precedence over `HAPPIER_TOKEN`. Neither form saves the token in
 your CLI profile; use your normal secret-management mechanism to provide it.
+
+The normal CLI can use an ordinary `hap_v1` token across its one-shot tmux
+continuation. It refuses a compound `hapc_v1` credential before starting a child
+process, so the local wrapping secret is never copied into a child environment.
+Use `hapc_v1` with the in-process Happier SDK instead.
 
 ## Choose what automation and plugins may do
 
@@ -124,6 +145,16 @@ or shipped.
 
 - If you did not save the secret, revoke that token and create another one; it
   cannot be revealed again.
+- If encrypted creation reports that Account material is unavailable or stale,
+  restore the selected Home's current E2EE material on this device, then retry.
+  Happier does not silently create an ordinary token instead.
+- If encryption-capable creation loses its final acknowledgement or returns an
+  inconsistent token identifier, Happier reveals no credential and does not
+  create again automatically. It checks the complete token list for the exact
+  identifier chosen before the request. If that row exists, inspect or revoke
+  only that row. If a successful refresh shows it is absent—including after
+  another client revoked it—the recovery state clears and you can deliberately
+  create a replacement.
 - If an operation returns `present_user_required`, complete it from the app
   while signed in rather than widening the token's authority.
 - If **External API & SDK** is **Off**, or is **Ask first** without a completed

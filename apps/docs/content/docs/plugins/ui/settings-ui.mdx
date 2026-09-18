@@ -54,6 +54,21 @@ meaning never depends on colour alone. Icons use the curated
 A complete two-surface example lives in
 `packages/plugin-sdk/examples/descriptor-only`.
 
+## Host Action requests in development
+
+The development declarative grammar also accepts `hostAction` on an `action`
+node. It names a canonical Happier Action and carries its input in `input`.
+Choose exactly one of contributed `action`, `hostAction`, or a Composer
+`effect` for each node.
+
+The declaration supplies data only. Static and Resource-backed documents use
+the mounted Host API for current caller authority, Action policy, and
+confirmation. An unavailable or inactive mount keeps the control disabled.
+Session-authored documents admit host Action requests but exclude plugin
+bindings and Composer effects; contributed transcript snapshots exclude these
+mounted host Action requests. This extension is development work and does not
+establish released or loaded-platform support.
+
 Invoked handlers read or update settings through
 `context.services.settings`. Secret values use the host-owned secrets service,
 not a plain settings or storage field. Agent-targeted configuration is declared

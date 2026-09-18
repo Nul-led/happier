@@ -16,6 +16,15 @@ opening the app.
 
 Find them at **Settings → Automations**.
 
+<Callout type="warn">
+  Multi-step Workflows are present only in current development source. They are
+  not yet a shipped stable or preview feature, and a registered Action does not
+  by itself prove that a connected daemon can execute it. A development client
+  still needs **Experiments** and **Automations** enabled, while the server must
+  enable both the `automations` and dependent `workflows` feature gates. Workflow
+  surfaces stay unavailable when either server gate is off.
+</Callout>
+
 Existing schedule automations created by released 0.2 clients remain readable
 and runnable in 0.3. The retained V2 schedule routes are a compatibility seam;
 new 0.3 authoring uses the current automation contract.
@@ -206,6 +215,53 @@ happier automation list --cursor <opaque>
 Pass `--idempotency-key` when the caller might retry — a repeated key will not
 run the automation twice.
 
+## Structured workflows (development source)
+
+A Workflow is a JSON-compatible program that can be started directly or frozen
+inside an Automation. A direct Run has its own Account-scoped identity and does
+not create a hidden Session or Automation. An Automation Run also keeps its
+immutable trigger cause. Editing or deleting a saved definition does not rewrite
+an admitted Run.
+
+Definitions can contain Session or detached-agent steps, parallel groups,
+conditions, and loops. References select declared inputs and earlier invocation
+results structurally. Happier does not interpolate `${...}`-style text or parse
+prose as control flow. Pass dynamic values as declared inputs or typed references.
+
+Parallel groups and item loops may include `maxConcurrent` as a positive integer.
+Omitting it means the Workflow adds no concurrency cap; the selected Session,
+provider, and machine still enforce their own real limits. A Session step may
+include `timeoutMs`. Omission adds no authored observation deadline. Expiry means
+the Run needs attention; it does not prove the agent stopped or cancel its work.
+
+The development CLI projects the canonical Actions directly:
+
+```bash
+hdev workflow validate --definition-json @workflow.json --json
+hdev workflow run start --run-id <uuid> --source-json '{"kind":"inline","definition":{...}}' --machine-id <machine-id> --json
+hdev workflow run get --run-id <uuid> --json
+hdev workflow run wait --run-id <uuid> --timeout-seconds 60 --json
+hdev workflow run invocations list --run-id <uuid> --cursor <opaque> --json
+```
+
+Keep the caller-generated `runId` when admission is uncertain. Repeating it with
+the same normalized request rejoins the Run; changing the definition, inputs,
+saved revision, or target conflicts. A new ID intentionally starts a new Run.
+Cursors are opaque and bound to the supplied filters, so return them unchanged.
+Page sizes are preferences: response-byte limits can yield a shorter page and a
+continuation cursor.
+
+Pause prevents later work from being admitted while accepted work settles.
+Cancel records durable intent but is not a receipt that an offline process
+stopped. Recovery may reattach an owner-supported execution or require an
+explicit same-conversation or fresh-agent continuation; ambiguous effects are
+never silently replayed.
+
+Saved definitions use Account Artifacts and whole-document revision checks. JSON
+import/export preserves portable authored content only. Local file handles, raw
+credentials, checkpoints, and provider resume state are not portable definition
+data. YAML is not supported.
+
 ## Concurrency and run history
 
 Each machine runs up to four automation Runs at once by default. Change that
@@ -231,6 +287,6 @@ frozen recipe and assignments and continues through the normal Run lifecycle.
 
 - [Starting a session](/sessions/new-session-shortcuts) — where scheduled sessions are created.
 - [Agent autonomy](/extending/agent-autonomy) — agents creating sessions themselves.
-- [Feature flags](/extras/feature-flags) — the `automations` gate.
+- [Feature flags](/extras/feature-flags) — the `automations` gate and its dependent `workflows` gate.
 - [Webhook ingress](/plugins/guides/webhooks) — declaring the events an automation can bind to.
 - [CLI](/apps/cli)

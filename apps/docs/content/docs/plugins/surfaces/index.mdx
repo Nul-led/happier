@@ -5,8 +5,9 @@ description: Optional terminal and external-session capabilities contributed by 
 
 Agent plugins can contribute two adjacent optional capability families:
 
-- `AgentRuntime.surfaces.terminal` resolves an Agent-specific terminal launch
-  plan.
+- the terminal surface resolves an Agent-specific terminal launch plan. A
+  `custom` runtime owns it as `AgentRuntime.surfaces.terminal`; a host-owned
+  runtime registers `agents.<id>.terminal` instead, and never both.
 - `agents.<id>.externalSessions` supplies the six-method External Sessions
   auxiliary for Agent-native sessions created outside Happier; generated
   activation performs the matching registration.

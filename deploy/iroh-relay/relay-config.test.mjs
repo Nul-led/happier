@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -65,6 +67,10 @@ test('uses standard public ports, persistent operator TLS, private metrics, and 
   assert.match(compose, /"7842:7842\/udp"/);
   assert.doesNotMatch(compose, /"9090:9090/);
   assert.ok(compose.includes('./certs:/etc/iroh/certs:ro'));
+  // The versioned image owns the matching configuration template. Mounting a
+  // second host copy can override its verified mode/content and make the
+  // non-root runtime depend on checkout filesystem permissions.
+  assert.doesNotMatch(compose, /relay\.toml:\/etc\/iroh\/relay\.toml/);
 });
 
 test('requires a non-empty image reference and operator-derived capacity inputs', () => {
@@ -84,6 +90,56 @@ test('requires a non-empty image reference and operator-derived capacity inputs'
   assert.doesNotMatch(compose, /HAPPIER_IROH_RELAY_IMAGE_DIGEST|imagetools|preflight/i);
 });
 
+test('accepts only decimal NonZeroU32 receive limits', () => {
+  const entrypoint = resolve(directory, 'configure-and-run.sh');
+  const fakeBin = mkdtempSync(resolve(tmpdir(), 'happier-iroh-relay-test-'));
+  const fakeSed = resolve(fakeBin, 'sed');
+  writeFileSync(fakeSed, [
+    '#!/bin/sh',
+    'for argument do',
+    '  case "$argument" in',
+    '    *0004294967295*|*0000000001*) exit 74 ;;',
+    '  esac',
+    'done',
+    'exit 73',
+    '',
+  ].join('\n'));
+  chmodSync(fakeSed, 0o700);
+
+  const run = ({ rate, burst = rate }) => spawnSync('/bin/sh', [entrypoint], {
+    env: {
+      PATH: fakeBin,
+      HAPPIER_IROH_RELAY_RX_BYTES_PER_SECOND: rate,
+      HAPPIER_IROH_RELAY_RX_MAX_BURST_BYTES: burst,
+    },
+    encoding: 'utf8',
+  });
+
+  try {
+    const zero = run({ rate: '0', burst: '1' });
+    assert.equal(zero.status, 64);
+    assert.match(zero.stderr, /1\.\.4294967295/);
+
+    // Reaching the fake sed proves both values passed entrypoint validation;
+    // status 73 also proves leading zeros were removed before TOML substitution.
+    assert.equal(run({ rate: '4294967295' }).status, 73);
+    assert.equal(run({ rate: '0004294967295', burst: '0000000001' }).status, 73);
+
+    for (const [rate, burst] of [
+      ['4294967296', '1'],
+      ['1', '4294967296'],
+      ['999999999999999999999999999999999999', '1'],
+      ['1', '999999999999999999999999999999999999'],
+    ]) {
+      const result = run({ rate, burst });
+      assert.equal(result.status, 64);
+      assert.match(result.stderr, /1\.\.4294967295/);
+    }
+  } finally {
+    rmSync(fakeBin, { recursive: true, force: true });
+  }
+});
+
 test('documents the immutable image reference as an operator obligation the deployment cannot check', () => {
   const surfaces = [
     ['deploy/iroh-relay/README.md', read('README.md')],
@@ -95,19 +151,13 @@ test('documents the immutable image reference as an operator obligation the depl
       ),
     ],
   ];
-  // Immutability is an operator obligation proven by the release publisher, not
-  // by this deployment. Claiming that Compose refuses a mutable tag or verifies
-  // a digest would require adding a real preflight owner and testing it first.
-  const unbackedEnforcementClaim =
-    /(refus\w+|reject\w+|validat\w+|verif\w+|enforc\w+)[^\n]{0,80}(mutable|@?sha256|digest)/i;
+  // The publisher now verifies its exact pushed digest. Compose still only
+  // checks presence and must not be described as parsing or enforcing it.
   for (const [name, text] of surfaces) {
     const flattened = text.replace(/\s+/g, ' ');
     assert.match(flattened, /registry\/repository@sha256:digest/, `${name} must state the immutable reference form`);
-    assert.doesNotMatch(
-      flattened,
-      unbackedEnforcementClaim,
-      `${name} must not claim the deployment enforces image immutability`,
-    );
+    assert.match(flattened, /Compose[^.]*only (requires|checks)[^.]*non-empty|Compose only checks[^.]*set/i);
+    assert.match(flattened, /mutable tag[^.]*start/i);
   }
 });
 
@@ -144,6 +194,28 @@ test('builds the exact locked native Iroh release from digest-pinned bases', () 
   assert.match(dockerfile, /FROM\s+debian:bookworm-slim@sha256:[a-f0-9]{64}/i);
   assert.doesNotMatch(dockerfile, /ghcr\.io\/n0-computer\/iroh-relay/i);
   assert.match(dockerfile, /THIRD-PARTY-NOTICES/);
+  assert.match(dockerfile, /^STOPSIGNAL\s+SIGINT$/m);
+});
+
+test('includes the selected upstream relay license and the additional BSD notice', () => {
+  const dockerfile = read('Dockerfile');
+  const license = read('LICENSE-MIT');
+  // Locked iroh-relay 1.1.0 records upstream commit
+  // fddf1a4ce29f92c6651eccff68fb366007b9be7d in .cargo_vcs_info.json.
+  assert.equal(
+    createHash('sha256').update(license).digest('hex'),
+    'f169adb8124d3b005416d8485d00777c9a7bdd9099982c52a4493f9732e6d050',
+  );
+  assert.match(license, /Copyright 2025 N0, INC\./);
+  assert.match(license, /Permission is hereby granted, free of charge/);
+  assert.match(dockerfile, /COPY\s+LICENSE-MIT\s+\/usr\/share\/doc\/iroh-relay\/LICENSE-MIT/);
+  assert.match(dockerfile, /COPY\s+--from=builder\s+\/licenses\/THIRD-PARTY-NOTICES\s+\/usr\/share\/doc\/iroh-relay\/THIRD-PARTY-NOTICES/);
+});
+
+test('makes the relay configuration readable by the non-root runtime user', () => {
+  const dockerfile = read('Dockerfile');
+  assert.match(dockerfile, /\binstall\s+-d\s+-m\s+0555\s+\/etc\/iroh/);
+  assert.match(dockerfile, /COPY\s+--chmod=0444\s+relay\.toml\s+\/etc\/iroh\/relay\.toml/);
 });
 
 test('documents the pinned admission header an external private callback must read', () => {
@@ -197,7 +269,7 @@ test('documents only effective pinned relay capacity controls and keeps QAD-only
     assert.match(text, /accept_conn_burst/);
     assert.match(text, /unimplemented/);
     assert.match(text, /no-effect/);
-    assert.match(text, /QAD-only[\s\S]{0,180}(tests|test)[\s\S]{0,180}(diagnostics|diagnostic)/i);
+    assert.match(text, /QAD-only[\s\S]{0,180}(planned|not been run)[\s\S]{0,180}(diagnostics|diagnostic)/i);
     assert.match(text, /not a\s+(supported )?production/i, `${name} must not present QAD-only as production`);
   }
 });

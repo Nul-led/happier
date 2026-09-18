@@ -39,20 +39,15 @@ For the exact routing behavior, see [Notification routing](/extras/notifications
 
 ## Richer notification details
 
-Permission and action-request notifications include more context than a generic “the app needs permission” alert.
+**Development builds:** request previews can include the requested command or file path and any supplied explanation. Question previews include the question text, answer options and their descriptions, and whether multiple selections or a custom answer are allowed. Happier formats supported request fields rather than sending raw tool-input JSON. Supported requests can also include a plan for approval, a history-import explanation, or a web URL or search query.
 
-In current builds, Happier tries to show:
+Remote request previews are on by default. Disable **Request previews** in notification settings to omit this content from push notifications. Each webhook destination has its own request-preview switch, and the shared attention privacy policy can also restrict previews. Device-local request previews have a separate preference and follow the local attention policy.
 
-- the **tool or request type** being asked for
-- a short **detail hint** when it is useful and safe to show
+These details may appear on the lock screen or be received by your webhook endpoint. Disable request previews to omit command and question content from the notification and webhook request details. See [Attention surfaces](/organize/attention-surfaces) for the shared privacy controls.
 
-Examples of detail hints include:
+Long push previews are shortened with an ellipsis to fit the outbound payload budget while preserving session and request routing. Open the session for the complete content. Expo also enforces its own [notification payload limits](https://docs.expo.dev/push-notifications/sending-notifications/).
 
-- a short file hint such as `src/file.ts`
-- a command hint such as `Command: npm`
-- a compact question count such as `1 question` or `3 questions`
-
-Happier does **not** try to dump full raw tool input into the push notification. The goal is to give you enough context to decide quickly without exposing unnecessary command arguments or request payloads on the lock screen.
+Older senders cannot honor the new preference and continue using their existing detail hints.
 
 Platform details:
 
@@ -72,6 +67,18 @@ Current settings include:
 - Live Activity remote update preferences when the selected server advertises support
 
 When you are already looking at a given session, Happier suppresses notifications for that same session to avoid duplicate noise while you are actively reading it.
+
+### Closed-app session alerts (in development)
+
+Sessions you collaborate on can also alert you while the Happier app is closed, without a daemon of your own running. Because your notification settings are end-to-end encrypted, this leg only works when you explicitly turn it on:
+
+- **Allow remote session alerts** (per account) publishes a limited, derived copy of your alert policy — event categories, quiet hours and time zone, preview limits, and sound choices — to that Home. Session content, titles, and encryption keys are never shared.
+- **Receive on this device** (per device) enrolls this device's push registration. It is stored on the exact registration row this device already uses, and it publishes only the quiet-hours, in-app behavior, preview ceiling, and volume semantics from your device overrides. Local-only switches, badges, widgets, and Live Activity settings stay on this device.
+- The device switch appears only on app builds that ship the native alert consumer, and enrollment is only offered by Homes that support it. Older Homes keep ordinary notifications and show remote alerts as unavailable.
+- The Home applies mute and quiet hours **before** sending, and it can only alert you while its stored copy matches your current settings version. Changing settings from a client that cannot publish the copy leaves the status as **Policy needs syncing** until a capable client republishes it.
+- Turning either switch off clears the enrollment at your next reconciliation. Alerts already sent cannot be recalled.
+
+This is development behavior: alert enrichment on the device is still being built, so a permitted alert can currently arrive with generic Happier copy.
 
 ## What you need to configure
 

@@ -101,6 +101,8 @@ CLI lane rule:
 - Do not add new inline `vi.mock(...)` families for `expo-router`, `@/text`, `@/modal`, `react-native`, `react-native-unistyles`, or `@/sync/domains/state/storage` when the UI testkit already owns that boundary. If a needed case is missing, extend the canonical UI testkit helper in the same change instead of inventing a file-local mock family.
 - If a one-off local UI override is truly unavoidable, keep it minimal, base it on the canonical factory where possible, and leave a short justification comment rather than turning it into a new reusable pattern.
 - Prefer typed fixtures/builders from the owning testkit over repeated inline object literals whenever the same state/session/theme/config shape is reused across tests.
+- When one boundary spy carries several event kinds, filter to the event owned by the contract before asserting. Total call counts are incidental and drift when unrelated valid events are added.
+- Extend the canonical boundary harness's default behavior for the exceptional event under test. Do not replace the whole boundary with a one-response stub that stops acknowledging neighboring protocol calls.
 - Keep package-specific fixtures near the owning package:
   - UI helpers in `apps/ui`
   - CLI helpers in `apps/cli`
@@ -112,20 +114,25 @@ CLI lane rule:
 - Click the real submit/confirm button after waiting for it to be enabled.
 - Do not rely on Enter-to-send or similar settings-sensitive shortcuts unless the test explicitly configures the setting first.
 - When a UI flow changes, update the corresponding Playwright spec in the same change.
+- Use `packages/tests/src/testkit/uiE2e/browserDiagnostics.ts` for browser console, page-error, failed-request, and error-response collection. Append diagnostics with its stack-preserving helper instead of replacing the original exception and callsite.
+- Label repeated lifecycle waits by phase. For cross-boundary scenarios, capture enough outcome state to identify the failing boundary before raising a timeout.
+- Configure the UI state the assertion actually needs. A plain or all-untracked workspace is empty in the repository tree's **Project** mode; select **All files** through the shared helper when that is the tested surface.
 
 ## Anti-Flake Process Rules
 
 - Keep only one active rerun per spec/lane.
 - If a runner hangs or is killed, inspect whether the failure is repo-owned, harness-owned, or environmental before retrying blindly.
 - When shared process helpers change, rerun a broader lane that can reveal leaked handles or child-process cleanup regressions.
+- Before starting Metro or Playwright in a shared development VM, inspect current compiler, Vitest, and Metro load. A bundle-fetch timeout under unrelated saturation is not valid RED evidence and must not become a larger repository timeout.
+- Preserve the original stack, phase label, browser diagnostics, and focused artifacts. Inspect artifact metadata before downloading a potentially huge diagnostics tree.
 - Keep only one monitor for an exclusive build, generated-output publisher, managed runtime resource, or other shared prerequisite. After healthy progress is established, park dependent validation until a completion/failure/material-change signal; do not launch another watcher or repeat the blocked command without new evidence.
 
 ## Live Validation Gates
 
 Host-test green alone is not shippable for user-visible behavior; this skill owns the lane-level live-validation rules.
 
-- Treat live gates (managed-stack browser QA, argent device QA) as ship gates for UI-visible changes; write or extend host tests from what the live loop taught, afterwards.
-- For daemon/session/provider/API behavior that depends on real process, transport, authentication, persistence, or provider semantics, run the named composed CLI/API/daemon recipe when the authorized environment is available. Corridor tests do not replace this gate.
+- Managed-stack browser QA and argent device QA are ship checks for UI-visible changes: run what the executor can reach now, and list the rest once as release checks owned by release automation and human QA. They are not per-lane or per-feature completion gates, and their absence does not authorize new gates, ledgers, or matrices. Write or extend host tests from what the live loop taught, afterwards.
+- For daemon/session/provider/API behavior that depends on real process, transport, authentication, persistence, or provider semantics, run the named composed CLI/API/daemon recipe when the authorized environment is available. Corridor tests do not replace this check; when the environment is unavailable, record it as a release check with its prerequisite rather than as a blocker on implementation completion.
 - Several source lanes may share one composed live session when that session reaches every material contract and records each scenario’s result; batching setup is not permission to omit a flow, state, failure, recovery, platform, or accessibility obligation.
 - If a defect family escapes host tests twice, stop adding host tests and switch to live-in-the-loop: fix → load and identify the updated build/bundle/module actually consumed → replay the exact failing recipe → verify live, closing each defect with a live PASS against that observed basis in the same session. Hot reload or a module probe is sufficient when it proves the changed source is loaded.
 - When a full-suite result is used as a release/ship gate, or shared-state leakage/order dependence is a material risk, run it twice back-to-back before calling it deterministic.

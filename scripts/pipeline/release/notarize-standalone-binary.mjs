@@ -320,6 +320,94 @@ export function resolveAdHocDarwinPayloadSigningCommands(machOCode) {
   };
 }
 
+/**
+ * Nested Mach-O code inside a macOS app bundle, deepest first.
+ *
+ * A hardened-runtime bundle seals its nested code, so everything below the main
+ * executable must already be signed when the bundle itself is signed. `--deep`
+ * is deliberately not used: it re-signs discovered code with the enclosing
+ * entitlements, which would either strip the Bun core's JIT entitlement or grant
+ * it to the outer shell.
+ */
+export function listDarwinAppBundleNestedCode(rawBundlePath, { mainExecutableName }) {
+  const bundlePath = path.resolve(requireValue(rawBundlePath, 'app bundle path'));
+  const mainRelativePath = `Contents/MacOS/${requireValue(mainExecutableName, 'main executable name')}`;
+  return listDarwinPayloadMachOCode(bundlePath)
+    .filter((entry) => entry.relativePath !== mainRelativePath)
+    .map((entry) => entry.path);
+}
+
+/**
+ * Signing, notarization and stapling plan for a complete macOS app bundle.
+ *
+ * Unlike the standalone payload plan above, the bundle is a container Apple can
+ * staple, so the shipped artifact carries its own ticket and first launch does
+ * not depend on Gatekeeper reaching Apple. The nested runtime keeps the JIT
+ * entitlement it needs; the outer shell must never carry it.
+ */
+export function resolveDarwinAppBundleNotarizationCommands({
+  bundlePath,
+  identity,
+  nestedCodePaths,
+  zipPath,
+  keyPath,
+  keyId,
+  issuerId,
+  submissionId,
+  logPath,
+  nestedEntitlementsPath = BUN_STANDALONE_ENTITLEMENTS_PATH,
+}) {
+  if (!isDeveloperIdApplicationSigningSelector(identity)) {
+    throw new Error('[release] macOS app bundle signing requires a Developer ID Application identity');
+  }
+  const authArgs = ['--key', keyPath, '--key-id', keyId, '--issuer', issuerId];
+  const sign = (target, entitlements) => ['codesign', [
+    '--force',
+    '--sign',
+    identity,
+    '--options',
+    'runtime',
+    '--timestamp',
+    ...(entitlements ? ['--entitlements', entitlements] : []),
+    target,
+  ]];
+  return {
+    codesign: [
+      ...nestedCodePaths.map((entryPath) => sign(entryPath, nestedEntitlementsPath)),
+      sign(bundlePath, null),
+    ],
+    verify: [
+      ...nestedCodePaths.map((entryPath) => ['codesign', [
+        '--verify',
+        '--strict=all',
+        '--verbose=2',
+        '-R',
+        JIT_ENTITLEMENT_REQUIREMENT,
+        entryPath,
+      ]]),
+      ['codesign', ['--verify', '--strict=all', '--verbose=2', bundlePath]],
+    ],
+    archive: ['ditto', ['-c', '-k', '--keepParent', bundlePath, zipPath]],
+    submit: ['xcrun', [
+      'notarytool',
+      'submit',
+      zipPath,
+      ...authArgs,
+      '--wait',
+      '--timeout',
+      '15m',
+      '--output-format',
+      'json',
+    ]],
+    log: ['xcrun', ['notarytool', 'log', submissionId, logPath, ...authArgs]],
+    staple: [['xcrun', ['stapler', 'staple', bundlePath]]],
+    validateStaple: [['xcrun', ['stapler', 'validate', bundlePath]]],
+    assess: [resolveGatekeeperAssessmentCommand(bundlePath)],
+    ticketDelivery: 'stapled',
+    stapled: true,
+  };
+}
+
 function run([command, args], options = {}) {
   return execFileSync(command, args, {
     encoding: 'utf8',
@@ -809,6 +897,143 @@ export function notarizeDarwinPayloadMain(
     githubOutput: String(values['github-output'] ?? '').trim(),
     finalizePayloadBeforeSnapshot,
   });
+}
+
+/**
+ * Sign, notarize and staple one complete macOS app bundle.
+ *
+ * The evidence is schema 3 and is discriminated by `payloadKind`. The released
+ * schema-2 standalone-payload evidence keeps its own online-ticket contract; a
+ * stapled bundle is a different trust fact and must not be verified by the
+ * helper that intentionally requires `stapled: false`.
+ */
+export function notarizeDarwinAppBundle({
+  bundlePath: rawBundlePath,
+  mainExecutableName,
+  identity,
+  outPath,
+  githubOutput = '',
+  environment = process.env,
+  runCommand = run,
+  logger = console,
+}) {
+  const bundlePath = path.resolve(requireValue(rawBundlePath, 'app bundle path'));
+  if (!fs.statSync(bundlePath, { throwIfNoEntry: false })?.isDirectory()) {
+    throw new Error(`[release] macOS app bundle does not exist: ${bundlePath}`);
+  }
+  const keyId = requireValue(environment.APPLE_API_KEY_ID, 'APPLE_API_KEY_ID');
+  const issuerId = requireValue(environment.APPLE_API_ISSUER_ID, 'APPLE_API_ISSUER_ID');
+  const privateKey = requireValue(environment.APPLE_API_PRIVATE_KEY, 'APPLE_API_PRIVATE_KEY');
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'happier-darwin-bundle-notary-'));
+  const keyPath = path.join(workDir, `AuthKey_${keyId}.p8`);
+  const zipPath = path.join(workDir, `${path.basename(bundlePath)}.zip`);
+  const logFileName = `${path.basename(outPath)}.notary-log.json`;
+  const logPath = path.join(path.dirname(outPath), logFileName);
+
+  try {
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+    writePrivateKey(keyPath, privateKey);
+    const nestedCodePaths = listDarwinAppBundleNestedCode(bundlePath, { mainExecutableName });
+    if (nestedCodePaths.length === 0) {
+      throw new Error(`[release] macOS app bundle contains no nested code to sign: ${bundlePath}`);
+    }
+    const plan = (submissionId) => resolveDarwinAppBundleNotarizationCommands({
+      bundlePath,
+      identity,
+      nestedCodePaths,
+      zipPath,
+      keyPath,
+      keyId,
+      issuerId,
+      submissionId,
+      logPath,
+    });
+    const provisional = plan('PENDING');
+    provisional.codesign.forEach((command) => runCommand(command));
+    provisional.verify.forEach((command) => runCommand(command));
+    runCommand(provisional.archive);
+    const archiveSha256 = fileSha256(zipPath);
+    const submission = JSON.parse(
+      runCommand(provisional.submit, { capture: true, timeoutMs: 30 * 60_000 }),
+    );
+    const submissionId = requireValue(submission.id, 'notarytool submission id');
+    const status = requireValue(submission.status, 'notarytool submission status');
+    const commands = plan(submissionId);
+    runCommand(commands.log, { timeoutMs: 10 * 60_000 });
+    if (status !== 'Accepted') {
+      throw new Error(`[release] Apple notarization was not accepted (${status}); log: ${logFileName}`);
+    }
+    // Stapling mutates the bundle, so the delivered bytes are snapshotted only
+    // after the ticket is attached and proven present.
+    commands.staple.forEach((command) => runCommand(command));
+    commands.validateStaple.forEach((command) => runCommand(command));
+    commands.assess.forEach((command) => runGatekeeperAssessment(command, { runCommand, logger }));
+
+    const evidence = {
+      schemaVersion: 3,
+      payloadKind: 'app-bundle',
+      payload: path.basename(bundlePath),
+      ...snapshotDarwinPayload(bundlePath),
+      signingIdentity: identity,
+      notarization: {
+        submissionId,
+        status,
+        archiveSha256,
+        ticketDelivery: commands.ticketDelivery,
+        stapled: commands.stapled,
+      },
+    };
+    fs.writeFileSync(outPath, `${JSON.stringify(evidence, null, 2)}\n`, 'utf8');
+    if (githubOutput) {
+      fs.appendFileSync(githubOutput, `submission_id=${submissionId}\nevidence_path=${outPath}\n`, 'utf8');
+    }
+    logger.log(JSON.stringify(evidence, null, 2));
+    return evidence;
+  } finally {
+    fs.rmSync(workDir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Verify a delivered stapled app bundle against its recorded evidence. Reuses
+ * the same payload snapshot and Gatekeeper assessment as the standalone owner
+ * and adds the bundle-aware staple check.
+ */
+export function verifyDarwinAppBundleNotarizationEvidence({
+  bundlePath: rawBundlePath,
+  evidencePath: rawEvidencePath,
+  verifyCode = (entryPath) => run(['codesign', ['--verify', '--strict=all', '--verbose=2', entryPath]]),
+  validateStaple = (entryPath) => run(['xcrun', ['stapler', 'validate', entryPath]]),
+  assessCode = (entryPath) => runGatekeeperAssessment(resolveGatekeeperAssessmentCommand(entryPath)),
+}) {
+  const bundlePath = path.resolve(requireValue(rawBundlePath, 'app bundle path'));
+  const evidencePath = path.resolve(requireValue(rawEvidencePath, 'notarization evidence path'));
+  if (!fs.statSync(bundlePath, { throwIfNoEntry: false })?.isDirectory()) {
+    throw new Error(`[release] macOS app bundle does not exist: ${bundlePath}`);
+  }
+  let evidence;
+  try {
+    evidence = JSON.parse(fs.readFileSync(evidencePath, 'utf8'));
+  } catch {
+    throw new Error('[release] macOS app bundle notarization evidence is not valid JSON');
+  }
+  if (
+    evidence?.schemaVersion !== 3
+    || evidence?.payloadKind !== 'app-bundle'
+    || evidence?.payload !== path.basename(bundlePath)
+    || !isDeveloperIdApplicationSigningSelector(evidence?.signingIdentity)
+    || !String(evidence?.notarization?.submissionId ?? '').trim()
+    || evidence?.notarization?.status !== 'Accepted'
+    || evidence?.notarization?.ticketDelivery !== 'stapled'
+    || evidence?.notarization?.stapled !== true
+  ) {
+    throw new Error('[release] macOS app bundle notarization evidence is invalid');
+  }
+  assertMatchingPayloadSnapshot(evidence, snapshotDarwinPayload(bundlePath));
+  verifyCode(bundlePath);
+  validateStaple(bundlePath);
+  assessCode(bundlePath);
+  return evidence;
 }
 
 const isEntrypoint = (() => {

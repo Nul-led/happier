@@ -224,7 +224,7 @@ test('managed Lima guest login-manager health leaves a responsive guest unchange
   assert.deepEqual(result, { repaired: false });
   assert.equal(executor.calls.length, 1);
   assert.equal(executor.calls[0].kind, 'capture');
-  assert.match(executor.calls[0].args.at(-1), /loginctl list-sessions/);
+  assert.match(executor.calls[0].args.at(-1), /timeout 10 loginctl list-sessions/);
 });
 
 test('managed Lima guest login-manager health repairs only a reproduced unresponsive logind', async () => {

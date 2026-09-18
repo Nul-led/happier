@@ -13,7 +13,7 @@ test('applyRuntimeServerLightSqliteEnv uses the bounded server-light pool by def
 
   assert.equal(
     env.DATABASE_URL,
-    'file:///tmp/happier-data/happier-server-light.sqlite?socket_timeout=30&connection_limit=4',
+    'file:/tmp/happier-data/happier-server-light.sqlite?socket_timeout=30&connection_limit=4',
   );
 });
 
@@ -28,7 +28,7 @@ test('applyRuntimeServerLightSqliteEnv applies sqlite URL params from env when g
 
   assert.equal(
     env.DATABASE_URL,
-    'file:///tmp/happier-data/happier-server-light.sqlite?socket_timeout=1&connection_limit=1',
+    'file:/tmp/happier-data/happier-server-light.sqlite?socket_timeout=1&connection_limit=1',
   );
 });
 

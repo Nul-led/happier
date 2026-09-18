@@ -37,6 +37,7 @@ import {
 import {
   mergeSelfHostServerEnvText,
   parseEnvText as parseEnvTextShared,
+  removeRuntimePayloadPath,
   renderSelfHostServerEnvText as renderSelfHostServerEnvTextShared,
   resolveSelfHostServerMigrationPlan,
 } from '@happier-dev/cli-common/firstPartyRuntime';
@@ -2429,12 +2430,12 @@ async function cmdUninstall({ channel, mode, argv, json }) {
     homeDir: homedir(),
     spec: serviceSpec,
     persistent: true,
-  }).catch(() => {});
+  });
 
-  await rm(config.serverBinaryPath, { force: true });
-  await rm(config.serverPreviousBinaryPath, { force: true });
-  await rm(join(config.binDir, config.serverBinaryName), { force: true });
-  await rm(config.statePath, { force: true });
+  await removeRuntimePayloadPath(config.serverBinaryPath, config.platform);
+  await removeRuntimePayloadPath(config.serverPreviousBinaryPath, config.platform);
+  await removeRuntimePayloadPath(join(config.binDir, config.serverBinaryName), config.platform);
+  await removeRuntimePayloadPath(config.statePath, config.platform);
 
   printResult({
     json,

@@ -8,10 +8,19 @@ another tab, and the errors that turn into issues sit in an observability tool
 none of the others know about. **PRs & Issues** gathers them into a single
 reviewable list, and lets you turn any entry into a session.
 
+<Callout type="info">
+  This guide describes the **Happier 0.3 development implementation**. It is
+  not a statement of availability in an earlier stable release.
+</Callout>
+
+To load entries and use source actions, you need a reachable machine running
+the Happier daemon, the relevant source plugin, and a configured source account
+and instance.
+
 ## Where entries come from
 
 Sources are contributed by plugins rather than built in, through a contribution
-point the PRs & Issues plugin declares. Happier ships six:
+point the PRs & Issues plugin declares. The development implementation includes:
 
 | Source | What it brings |
 | --- | --- |
@@ -51,11 +60,17 @@ what decides which actions apply:
 - **Pin it.** Pins are yours and sync with your account, so the entry you pinned on your laptop is pinned on your phone.
 - **Link it to a session.** The link is a durable relation, not a copied URL. Linked sessions are paged, so older relationships remain reachable, and a session opened from an entry stays associated with it.
 - **Attach it to a message.** The composer has a **PRs & Issues** attachment, so you can hand an agent the entry itself rather than pasting a link and hoping it fetches the right thing.
-- **Save a view.** Filters you use often become saved views, under **Saved views** in the plugin's settings.
+- **Save a view.** Use **Views** in the PRs & Issues list to save or select a query, filters, ordering and Smart preferences. Temporary changes mark the view as modified; they do not overwrite it until you choose **Update**. The same control lets you rename or delete a view.
 
 Your configured sources, pins, Session links, saved views, and action
 configuration sync with your account. Provider entries are not copied into a
 Happier database; they are read from their source when the list is refreshed.
+
+If the daemon becomes unreachable, an already-open list can retain its last
+window, marked stale, but source actions require reconnection. Your account's
+saved state remains available while the Happier server is reachable. Opening
+the page cold while offline does not restore a cached provider list, and
+another device does not inherit the first device's loaded window.
 
 ## Give an entry to an Agent
 

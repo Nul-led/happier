@@ -11,6 +11,7 @@ import {
   loadWorkspaceBundleLockModule,
   withCliDistBuildLock,
 } from './cliDistBuildLock.mjs';
+import { withWorkspaceBundleLock } from '../../../../../packages/cli-common/workspaceBundleLock.mjs';
 
 test('default CLI dist lock budget covers long current-byte workspace publishers', () => {
   assert.ok(
@@ -129,6 +130,84 @@ test('withCliDistBuildLock reclaims a fresh lock from a dead owner pid immediate
     );
 
     assert.equal(result, 'ok');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('workspace build lock reclaims a fresh authenticated owner from a prior boot of the same Linux machine', {
+  skip: process.platform !== 'linux',
+}, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hstack-cli-dist-lock-prior-boot-'));
+  const lockPath = join(root, 'cli-dist-build.lock');
+
+  try {
+    const machineId = (await readFile('/etc/machine-id', 'utf8')).trim();
+    const bootId = (await readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim();
+    await writeFile(
+      lockPath,
+      JSON.stringify({
+        pid: process.pid,
+        createdAtMs: Date.now(),
+        updatedAtMs: Date.now(),
+        token: 'owner-before-reboot',
+        processInstanceFingerprint: 'linux-proc:1',
+        processMachineId: machineId,
+        processBootId: `${bootId}-prior`,
+      }),
+      'utf8',
+    );
+
+    const result = await withWorkspaceBundleLock(
+      async () => 'reclaimed',
+      {
+        lockPath,
+        timeoutMs: 200,
+        pollIntervalMs: 10,
+        staleAfterMs: 120_000,
+      },
+    );
+
+    assert.equal(result, 'reclaimed');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('workspace build lock preserves a fresh authenticated owner from another Linux machine', {
+  skip: process.platform !== 'linux',
+}, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hstack-cli-dist-lock-other-machine-'));
+  const lockPath = join(root, 'cli-dist-build.lock');
+
+  try {
+    const bootId = (await readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim();
+    await writeFile(
+      lockPath,
+      JSON.stringify({
+        pid: process.pid,
+        createdAtMs: Date.now(),
+        updatedAtMs: Date.now(),
+        token: 'owner-on-another-machine',
+        processInstanceFingerprint: 'linux-proc:1',
+        processMachineId: 'another-linux-machine',
+        processBootId: `${bootId}-other`,
+      }),
+      'utf8',
+    );
+
+    await assert.rejects(
+      withWorkspaceBundleLock(
+        async () => 'must-not-run',
+        {
+          lockPath,
+          timeoutMs: 80,
+          pollIntervalMs: 10,
+          staleAfterMs: 120_000,
+        },
+      ),
+      (error) => error?.code === 'EWORKSPACEBUNDLELOCKTIMEOUT',
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

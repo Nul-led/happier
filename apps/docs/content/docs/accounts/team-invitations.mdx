@@ -1,0 +1,77 @@
+---
+title: Team invitations
+description: Invite somebody to a Team or open an invitation while preserving its exact Home and access intent.
+---
+
+Use a Team invitation to bring somebody into one Team on one Home, with the role
+and Session-history choice selected by a Team manager.
+
+<Callout>
+  **Developer Preview:** native Team invitations and their email delivery are
+  implemented in Happier's development source. They are not released or
+  publicly available yet. Real SMTP delivery, CID-QR scanning, browser refresh,
+  and native deep-link journeys remain unverified from the current source.
+</Callout>
+
+## What you need first
+
+- To send an invitation, you need permission to manage that Team.
+- For invitation email, the Home must have working email delivery. A
+  transferable link remains available when email delivery is not configured.
+- Keep the complete invitation URL together. It carries the one-time bearer and
+  a non-secret description of the exact Home that may receive it.
+
+## Send an invitation
+
+Open **Settings → Teams**, choose the Team, then open **Invitations** and create
+a new invitation.
+
+Choose a role and, when the Team permits it, whether existing Team Session
+history is included. Then choose one delivery:
+
+- **Invite by link** creates a transferable link. Copy or share it only with the
+  intended person.
+- **Invite by email** binds admission to the named mailbox and sends the link
+  from the Home. It is shown only when the Home reports that email delivery is
+  ready.
+
+The full link is revealed only when it is issued or reissued. The invitation
+list keeps status and masked delivery details, not the bearer. Reissuing retires
+the old link before presenting a replacement; revoking makes an outstanding
+link unusable.
+
+## Accept an invitation
+
+Open the complete link in Happier. The first screen identifies the Team and its
+Home before asking you to authenticate.
+
+- If you already use that Home, sign in with one of the methods it offers.
+- If you need a new Account, a current invitation can expose only the account
+  mode and sign-in action that its Home permits for this admission.
+- If an email-bound invitation names another address, Happier lets you switch
+  Account or explicitly continue with the current Account and prove control of
+  the invited mailbox. It never merges Accounts silently.
+
+After authentication, Happier rechecks the invitation and Team policy, accepts
+membership once, and continues to the intended Team. Signing in to the Home by
+itself does not prove Team membership.
+
+## When it goes wrong
+
+- An invalid, expired, revoked, or already-used link cannot admit an Account.
+  Ask a Team manager to reissue it when appropriate.
+- If Happier cannot identify the Home from the link, nothing is sent to a
+  guessed server. Ask for the complete link again.
+- If this device has not added the named Home, add that Home and reopen the
+  invitation afterwards.
+- If email delivery fails, the manager can retry delivery or reissue. An
+  email-bound invitation does not silently become a transferable link.
+- If Team authentication policy changes while you sign in, Happier preserves
+  valid Home authentication and asks for a currently allowed alternative. It
+  does not sign you out of unrelated personal work.
+
+## Related
+
+- [Account security](/accounts/account-security) — email verification, passwords, and E2EE recovery.
+- [Multiple relays](/accounts/multi-server) — keeping the invitation's Home distinct from the currently focused Home.
+- [Session sharing](/accounts/session-sharing) — sharing one Session without adding somebody to a Team.

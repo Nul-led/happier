@@ -11,6 +11,54 @@ Use the SDK or HTTP API to drive Happier Actions from a trusted developer tool.
   current workspace source with a development stack.
 </Callout>
 
+## Workflow Actions (development source)
+
+Current development source exposes Workflow operations through the same Action
+transport as every other SDK call. The fluent public SDK projects them under
+`client.actions.workflow`; dynamic callers can use generic Action execution.
+Plugins use the existing `ActionsService.execute`. There is no separate Workflow
+service or transport.
+
+```ts
+import { randomUUID } from 'node:crypto';
+import { connect } from '@happier-dev/sdk';
+
+const client = connect({ endpoint, token });
+const machine = client.machine(machineId);
+const runId = randomUUID();
+
+const admitted = await machine.actions.workflow.run.start({
+  runId,
+  source: { kind: 'inline', definition },
+});
+const observed = await machine.actions.workflow.run.get({ runId });
+```
+
+Retain `runId` across transport uncertainty. The same normalized request rejoins
+that Run; a changed request conflicts, and a new UUID means a new Run. Generated
+methods cover validate, Run list/get/wait/pause/resume/cancel, invocation
+list/get/retry, Run deletion, and saved-definition list/get/create/update/delete.
+
+`workflow.run.get` and `workflow.run.wait` expose the selected final value once
+under `result`; callers do not unwrap a second Workflow result envelope. Run
+`origin` is discriminated as `direct` or `automation`. The returned
+`acceptedContext` contains only the frozen source, inputs, machine, workspace,
+and direct-origin provenance needed to prepare an explicit new Run; it never
+returns the admitted authorization binding.
+
+List cursors are opaque strings and must be returned unchanged with the same
+filters. Revisions and exact counters retain their generated wire types; never
+coerce a decimal-string field to a JavaScript number. Optional `limit` values
+are page preferences rather than a fixed page size. Omitted `maxConcurrent`
+means no Workflow-imposed cap, and omitted step `timeoutMs` means no authored
+observation deadline.
+
+For E2EE Accounts, definitions, inputs, checkpoints, and results remain opaque to
+the server. An authorized client or daemon Action host holding Account material
+decrypts them; mode, key, and envelope mismatches fail closed. An older host that
+cannot execute the operation returns update-required or unavailable rather than
+downgrading a Workflow to a one-prompt Automation.
+
 The SDK, direct HTTP calls, CLI, MCP, and trusted plugins all reach the same
 Action contracts. The adapter changes how a caller connects; it does not create
 a second operation or permission model. Happier validates the Action at the
@@ -28,7 +76,9 @@ the same Action result to every external client.
 ## Supported environment
 
 The SDK requires Node.js 18.17 or newer and supports server-side Node.js
-programs. Direct HTTP clients may use any language that can send JSON over
+programs through its ESM root export. Use NodeNext (or an equivalent ESM-aware
+configuration); CommonJS `require()` and package deep imports are not public
+entry points. Direct HTTP clients may use any language that can send JSON over
 HTTPS. The Action API does not enable CORS, and no same-origin browser delivery
 is proven in this preview. Do not put an API Token in browser code or expect an
 arbitrary browser origin to call either Action endpoint.
@@ -52,6 +102,13 @@ Use the CLI for terminal and shell workflows, the fluent SDK when a Node.js
 program works primarily with Sessions, the raw SDK when it selects Action ids
 dynamically, and HTTP when Node.js is not the right client runtime. MCP and
 trusted plugins are additional capabilities over the same Action owner.
+Installed third-party plugins use the public Plugin SDK and retain the same
+trusted-host capabilities as built-in plugins; the PAT/API projection described
+here does not narrow either plugin kind.
+
+An SDK `token` is either an ordinary `hap_v1_…` bearer or an encryption-capable
+`hapc_v1_…` credential; see
+[Protect whole requests and results](#protect-whole-requests-and-results).
 
 ## First five minutes
 
@@ -65,7 +122,7 @@ connects with an explicit token and endpoint, creates a Session on the daemon's
 current machine, sends one message, reads the assistant response, stops the
 Session, and closes the client.
 
-1. In **Settings → Account → API Tokens**, create a token and copy it when
+1. In **Settings → Account → Account Security → API Tokens**, create a token and copy it when
    it is shown. The SDK does not load this token from a CLI profile or any other
    credential store.
 2. Start a signed-in daemon, then read its current HTTP port. The port is not
@@ -320,6 +377,78 @@ await existingSession.stop();
 `session.message.send` Action with `wait: true`. Use `input.localId` to safely
 retry an uncertain send and `input.timeoutSeconds` to bound only the
 observation; it does not make a second idle-wait call.
+
+### Talk to an execution run inside a Session
+
+<Callout type="warn">
+  Development preview. Targeted Session input needs the target-aware admission
+  path and interactive runtime support on the components you are calling.
+</Callout>
+
+Input addressed to a run inside a Session is ordinary Session input with one
+optional logical recipient, so it shares the admission, retry identity, and
+result contract of a main-Session send:
+
+```ts
+await happier.actions.session.message.send({
+  sessionId,
+  message: 'Focus on the parser failure.',
+  recipient: { kind: 'execution_run', runId },
+});
+```
+
+Start the run through the canonical Action, then bind the returned id. There is
+no SDK-local run starter, builder, or run state store:
+
+```ts
+const started = await happier.actions.execution.run.start({
+  sessionId,
+  backendTarget,
+  permissionMode,
+  intent: 'delegate',
+  runClass: 'long_lived',
+  retentionPolicy: 'resumable',
+  ioMode: 'streaming',
+});
+if (isHappierActionApprovalRequestCreated(started)) {
+  throw new Error(`Approval required: ${started.artifactId}`);
+}
+
+const run = happier.sessions.get(sessionId).runs.get(started.runId);
+await run.send('Inspect the authentication failure.');
+await run.sendAndWait('Fix it and summarize.', { localId: 'auth-followup-1' });
+const history = await run.history({ limit: 50 });
+await run.stop();
+const terminal = await run.wait({ timeoutSeconds: 300 });
+```
+
+- Physical `options.target` selects the executing machine or Session route;
+  logical `input.recipient` selects the run inside that Session. They are
+  separate axes and the SDK never converts one into the other.
+- `sendAndWait` settles on that exact admitted turn. It never substitutes
+  parent-Session idle, a run status read, polling, or a retry, and a lost
+  correlation returns the canonical `outcomeUnknown` result rather than a guess.
+- `wait()` observes a **terminal** run status, not conversational idle. A typed
+  observation timeout leaves the run running.
+- `history()` reads the run's own sidechain and never falls back to the main
+  transcript. A run without current correspondence rejects with the typed
+  `execution_run_correspondence_unavailable` code.
+- Bound `sessionId`, recipient, wait mode, and transcript scope are written
+  after your input, and every bound method validates its finished body against
+  the canonical public Action schema first: a host-only or unknown field
+  rejects locally as `invalid_parameters` instead of being transmitted.
+
+`actions.execution.run.send` remains available for a genuinely **detached** run
+(`sessionId: null`), which has no parent Session admission owner. The bound
+Session handle never calls it.
+
+Human discussions inside a Session use ordinary generated Actions. The public
+API Token and SDK surfaces expose `actions.session.discussion.list`, `.get`,
+`.read`, and `.post`; the inputs and results contain authored documents, not
+ciphertext. The daemon owns the Session cipher, so an external caller never
+handles Session keys. Interactive UI and CLI clients can also create and manage
+discussions, but those present-user-only operations stay off the API Token and
+SDK surface.
 
 ### Follow transcript and execution-run streams
 
@@ -762,12 +891,65 @@ machine. Snapshot Actions remain ordinary methods.
 
 ## Server relay, readability, and revocation
 
-The configured server deliberately can read requests and responses while it
-relays them to the exact target daemon. This is not direct-server E2EE. The
-server authenticates the API Token, validates the outer envelope, and proves
-placement; the selected daemon handles the Action using its configured Action
-settings.
+With an ordinary `hap_v1_…` bearer, the configured server deliberately can read
+requests and responses while it relays them to the exact target daemon. This is
+not direct-server E2EE. The server authenticates the API Token, validates the
+outer envelope, and proves placement; the selected daemon handles the Action
+using its configured Action settings.
 Use the daemon-local transport when you need direct local delivery.
+
+### Protect whole requests and results
+
+<Callout type="warn">
+  Development preview. Protected invocation needs an encryption-capable
+  credential issued by the configured Home and a component that supports it.
+  The implementation and focused HTTP tests exist, but the current loaded SDK
+  journey through both direct-daemon and Home-relay origins has not yet been
+  certified. Do not treat source availability as release activation.
+
+  Protected delivery to a restricted Temporary computer is not available.
+  That path stays fail-closed until Happier has an independently authenticated
+  proof for the Runner machine envelope; a Home-provided key cannot attest a
+  claim made by that same Home. Use an ordinary authorized Account daemon for
+  protected calls in this preview.
+</Callout>
+
+`connect({ endpoint, token })` also accepts a versioned encryption-capable
+`hapc_v1_…` credential in the same `token` argument. Selecting it protects the
+**whole** Action request and result — input, result, error code, conflict and
+deferred-approval content — before Home transit, for every generated and fluent
+call including id-only reads:
+
+```ts
+// Identical call sites; the credential selects the protection mode.
+const happier = connect({ endpoint, token: process.env.HAPPIER_TOKEN! });
+await happier.machine('machine-id').sessions.get(sessionId).send('Continue.');
+```
+
+What this does and does not promise:
+
+- There is no per-field `encrypt` option, no caller-supplied key, no encrypted
+  method tree, and no silent downgrade to plain transit. An unsupported peer is
+  an operation-scoped failure, not a reason to resend content in the clear.
+- Credential parsing is synchronous at `connect`. The private material is read
+  lazily once per client and shared by derived machine and Session handles;
+  cancelling one call does not cancel another handle's initialization, and
+  closing the client rejects a late one.
+- After the daemon opens a protected request, every outcome — validation,
+  authorization, disabled Action, approval, conflict, cancellation and
+  `outcomeUnknown` — returns inside the authenticated response with its
+  canonical code and correlation intact. A failure before the daemon could open
+  the request stays a redacted transport failure, because nothing vouched for it.
+- Bootstrap and routing metadata are **not** whole-Action protected: the
+  PAT-self wrapping record and `GET /v1/machines` send only the bearer and
+  return their existing metadata results.
+- Results are returned as their canonical types. Stored transcript ciphertext
+  stays byte-preserving; the SDK does not recursively decrypt nested content.
+- The credential grants Account-wide content-key access. Revocation cannot
+  recall keys or data already obtained. The protected transport keeps Happier's
+  active-Home trust boundary: a malicious configured Home can still issue a
+  separate permitted raw Action, so this is not a malicious-Home guarantee.
+  Keep the compound credential out of logs and child environments.
 
 Server-side token verification observes revocation on the next verification. A
 daemon-local positive validation cache can remain valid for at most 60 seconds;

@@ -5,6 +5,7 @@ import test from 'node:test';
 import { createTempFixture } from '../../testkit/core/temp_fixture.mjs';
 import {
   activateExecutionHostProfile,
+  configureExecutionHostCapacity,
   readExecutionHostProfile,
   resolveExecutionHostSetupConfiguration,
   resolveExecutionHostProfilePath,
@@ -185,6 +186,27 @@ test('named execution host profiles preserve two explicit workspace mappings', a
   await writeCandidateExecutionHostProfile(profile, env);
 
   assert.deepEqual(readExecutionHostProfile(env), profile);
+});
+
+test('active execution host profiles persist shared and dedicated managed Lima capacity', async (t) => {
+  const fixture = await createTempFixture(t, { prefix: 'execution-host-capacity-' });
+  const env = { HAPPIER_STACK_HOME_DIR: fixture.path('stack-home') };
+  await writeCandidateExecutionHostProfile(namedCandidate(), env);
+  await activateExecutionHostProfile(env);
+
+  const capacity = {
+    mode: 'shared',
+    shared: { cpus: 10, memoryGiB: 48 },
+    dedicated: { cpus: 14, memoryGiB: 72 },
+  };
+  const updated = await configureExecutionHostCapacity(capacity, env);
+
+  assert.deepEqual(updated.capacity, capacity);
+  assert.deepEqual(readExecutionHostProfile(env).capacity, capacity);
+  await assert.rejects(
+    configureExecutionHostCapacity({ ...capacity, shared: { cpus: 0, memoryGiB: 48 } }, env),
+    /cpus must be a positive integer/,
+  );
 });
 
 test('named execution host profiles reject ambiguous, unsafe, and relative workspace mappings', async () => {

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -227,8 +227,9 @@ test('dev-targets status, sync, and exec share the moving mirror with a pre-laun
       [
         '#!/bin/sh',
         'printf "mutagen|%s|%s\\n" "$MUTAGEN_DATA_DIRECTORY" "$*" >> "$DEV_TARGET_COMMAND_LOG"',
+        'if [ "$1 $2" = "sync flush" ] && [ -n "${DEV_TARGET_FLUSH_WAIT-}" ]; then : > "$DEV_TARGET_FLUSH_WAIT"; trap \'exit 0\' TERM; while [ ! -f "$DEV_TARGET_FLUSH_WAIT.release" ]; do sleep 0.02; done; fi',
         'if [ "$1 $2" = "sync list" ]; then',
-        '  printf \'[{"name":"happier-linux","paused":false,"status":"watching","successfulCycles":4}]\\n\'',
+        '  case "$*" in *json*) printf \'[{"name":"happier-linux","paused":false,"status":"watching","successfulCycles":4}]\\n\' ;; *) printf "happier-linux|Watching|4||false|0\\n" ;; esac',
         'fi',
         'exit 0',
         '',
@@ -239,6 +240,10 @@ test('dev-targets status, sync, and exec share the moving mirror with a pre-laun
       [
         '#!/bin/sh',
         'printf "ssh|%s\\n" "$*" >> "$DEV_TARGET_COMMAND_LOG"',
+        'case "$*" in',
+        '  *getconf*) printf "8 1 0.8 22000000 20 0 0 0 0 0 0 0 0 0 0 darwin\\n"; exit 0 ;;',
+        '  *command\\ -v*|*-MNf*|*-O\\ exit*) exit 0 ;;',
+        'esac',
         'exit "${DEV_TARGET_SSH_EXIT:-0}"',
         '',
       ].join('\n'),
@@ -260,6 +265,8 @@ test('dev-targets status, sync, and exec share the moving mirror with a pre-laun
     );
     const commandEnv = {
       PATH: `${binDir}:${process.env.PATH}`,
+      // This fixture starts a fresh caller, even when its test runner is remote.
+      HAPPIER_DEV_TARGET_EXECUTION: '',
       DEV_TARGET_COMMAND_LOG: logPath,
     };
 
@@ -290,8 +297,10 @@ test('dev-targets status, sync, and exec share the moving mirror with a pre-laun
     const executionLog = await readFile(logPath, 'utf8');
     assert.match(executionLog, /mutagen\|.*\/mutagen\/data\|sync list happier-linux/);
     assert.match(executionLog, /sync flush happier-linux/);
-    assert.ok(executionLog.indexOf('sync flush happier-linux') < executionLog.indexOf('ssh|'));
+    assert.equal(executionLog.match(/sync flush happier-linux/g)?.length, 1);
+    assert.ok(executionLog.indexOf('sync flush happier-linux') < executionLog.lastIndexOf('ssh|'));
     assert.match(executionLog, /ssh\|.*happier-stack-linux.*apps\/cli.*CI.*rg.*--json.*needle/);
+    assert.match(executionLog, /nice -n 10.*rg/);
     assert.doesNotMatch(executionLog, /remote_dependency_bootstrap\.mjs/);
 
     await writeFile(logPath, '');
@@ -336,12 +345,55 @@ test('dev-targets status, sync, and exec share the moving mirror with a pre-laun
     assert.equal(invalidEnvironment.code, 1);
     assert.match(invalidEnvironment.stderr, /--env requires KEY=VALUE/);
 
+    await writeFile(logPath, '');
+    const primaryOnly = await runRaw(
+      ['exec', 'linux', '--stack=repo-test', '--', 'git', 'status'],
+      root,
+      commandEnv,
+    );
+    assert.equal(primaryOnly.code, 1, 'explicit target execution must not move Git to the mirror');
+    assert.equal(await readFile(logPath, 'utf8'), '', 'reject Git before synchronization or transport');
+
     const failed = await runRaw(
       ['exec', 'linux', '--stack=repo-test', '--', 'false'],
       root,
       { ...commandEnv, DEV_TARGET_SSH_EXIT: '7' },
     );
     assert.equal(failed.code, 7, 'remote command exit status must be preserved');
+
+    const flushWait = join(root, 'flush-wait');
+    const cancelling = spawn(process.execPath, [script, 'exec', 'linux', '--stack=repo-test', '--', 'rg', 'cancel-probe'], {
+      env: {
+        ...process.env,
+        ...commandEnv,
+        HAPPIER_STACK_HOME_DIR: join(root, 'home'),
+        HAPPIER_STACK_STORAGE_DIR: root,
+        HAPPIER_STACK_REPO_DIR: '',
+        HAPPIER_STACK_ENV_FILE: '',
+        HAPPIER_STACK_DISABLE_STACK_ENV_AUTOLOAD: '1',
+        DEV_TARGET_FLUSH_WAIT: flushWait,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    cancelling.stdout.resume();
+    cancelling.stderr.resume();
+    const cancellationResult = new Promise((resolveExit) => cancelling.once('exit', (code, signal) => resolveExit({ code, signal })));
+    const cancellationClosed = new Promise((resolveClose) => cancelling.once('close', resolveClose));
+    try {
+      let reachedFlush = false;
+      for (let attempt = 0; attempt < 750; attempt += 1) {
+        try { await readFile(flushWait); reachedFlush = true; break; } catch {}
+        await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+      }
+      assert.equal(reachedFlush, true, 'the real named CLI must reach its pre-launch barrier');
+      cancelling.kill('SIGTERM');
+      assert.deepEqual(await cancellationResult, { code: 130, signal: null });
+    } finally {
+      await writeFile(`${flushWait}.release`, 'release');
+      if (cancelling.exitCode == null && cancelling.signalCode == null) cancelling.kill('SIGTERM');
+      await cancellationResult;
+      await cancellationClosed;
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -400,6 +452,64 @@ test('dev-targets status reports managed Lima lifecycle health alongside mirror 
     assert.equal(status.status.state, 'ready');
     assert.equal(status.managedRuntime.ok, true);
     assert.equal(status.managedRuntime.status, 'Running');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('dev-targets capacity stores per-target presets locally without restarting when selected resources already match', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hstack-dev-targets-capacity-'));
+  try {
+    const binDir = join(root, 'bin');
+    await mkdir(binDir, { recursive: true });
+    await writeFile(join(binDir, 'uname'), '#!/bin/sh\nprintf "Darwin\\n"\n');
+    await writeFile(join(binDir, 'limactl'), [
+      '#!/bin/sh',
+      'if [ "$1" = "--version" ]; then printf "limactl version 2.0.0\\n"; exit 0; fi',
+      'printf \'[{"status":"Stopped","vmType":"vz","arch":"aarch64","cpus":8,"memory":25769803776,"disk":171798691840,"config":{"mounts":[],"containerd":{"user":false,"system":false},"ssh":{"forwardAgent":false},"vmOpts":{"vz":{"diskImageFormat":"raw","rosetta":{"enabled":false,"binfmt":false}}},"portForwards":[{"guestIP":"0.0.0.0","guestIPMustBeZero":false,"proto":"any","ignore":true}]}}]\\n\'',
+      '',
+    ].join('\n'));
+    await Promise.all(['uname', 'limactl'].map((name) => chmod(join(binDir, name), 0o700)));
+    await run([
+      'add', 'linux', '--stack=repo-test', '--platform=posix', '--ssh=linux',
+      '--repo-dir=/repo', '--cli-home-dir=/home', '--lima-instance=worker',
+      `--lima-home=${join(root, 'lima')}`, '--lima-profile=worker-balanced',
+    ], root);
+
+    const changed = await run([
+      'capacity', 'set', 'linux', 'shared', '--stack=repo-test',
+      '--shared-cpus=8', '--shared-memory-gib=24',
+      '--dedicated-cpus=12', '--dedicated-memory-gib=32',
+    ], root, { PATH: `${binDir}:${process.env.PATH}` });
+
+    assert.equal(changed.target.managedRuntime.capacity.mode, 'shared');
+    assert.deepEqual(changed.target.managedRuntime.capacity.dedicated, {
+      cpus: 12,
+      memoryGiB: 32,
+    });
+    const shown = await run(['capacity', 'show', 'linux', '--stack=repo-test'], root);
+    assert.deepEqual(shown.capacity, changed.target.managedRuntime.capacity);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('dev-targets capacity rejects incomplete initial presets before changing config', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hstack-dev-targets-capacity-invalid-'));
+  try {
+    await run([
+      'add', 'linux', '--stack=repo-test', '--platform=posix', '--ssh=linux',
+      '--repo-dir=/repo', '--cli-home-dir=/home', '--lima-instance=worker',
+      `--lima-home=${join(root, 'lima')}`, '--lima-profile=worker-balanced',
+    ], root);
+    const result = await runRaw([
+      'capacity', 'set', 'linux', 'dedicated', '--stack=repo-test',
+      '--dedicated-cpus=12', '--dedicated-memory-gib=32',
+    ], root);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /shared-cpus.*shared-memory-gib/i);
+    const shown = await run(['show', 'linux', '--stack=repo-test'], root);
+    assert.equal(shown.target.managedRuntime.capacity, undefined);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

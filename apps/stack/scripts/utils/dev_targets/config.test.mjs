@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   parseDevTargetsConfig,
+  resolveManagedRuntimeCapacityResources,
   resolveDevTargetExecutionPolicy,
   resolveDevTargetsConfigPath,
   upgradeDevTargetsConfigToVersion3,
@@ -416,6 +417,69 @@ test('version 3 normalizes local and remote managed Lima runtimes without changi
   assert.equal(config.targets[1].managedRuntime.profile, 'worker-balanced');
   assert.equal(config.targets[1].managedRuntime.architecture, 'x86_64');
   assert.equal(config.targets[1].ssh, 'happier-remote-linux');
+});
+
+test('version 3 keeps per-target shared and dedicated capacity in the originating dev-target config', () => {
+  const config = parseDevTargetsConfig({
+    version: 3,
+    targets: [{
+      name: 'mac3-linux',
+      platform: 'posix',
+      ssh: 'happier-mac3-linux',
+      repoDir: '/home/dev/happier',
+      cliHomeDir: '/home/dev/.happier',
+      managedRuntime: {
+        kind: 'lima',
+        host: { kind: 'ssh', ssh: 'mac3', sshConfigFile: '/controller/mac3.conf' },
+        instance: 'happier-worker-mac3',
+        limaHome: '/Users/dev/.happier/lima',
+        profile: 'worker-balanced',
+        architecture: 'aarch64',
+        capacity: {
+          mode: 'DEDICATED',
+          shared: { cpus: 8, memoryGiB: 24 },
+          dedicated: { cpus: 12, memoryGiB: 32 },
+        },
+      },
+    }],
+  });
+
+  assert.deepEqual(config.targets[0].managedRuntime.capacity, {
+    mode: 'dedicated',
+    shared: { cpus: 8, memoryGiB: 24 },
+    dedicated: { cpus: 12, memoryGiB: 32 },
+  });
+  assert.deepEqual(resolveManagedRuntimeCapacityResources(config.targets[0].managedRuntime), {
+    cpus: 12,
+    memoryGiB: 32,
+  });
+});
+
+test('managed Lima capacity requires complete positive-integer presets and leaves legacy targets profile-owned', () => {
+  const base = {
+    name: 'linux', platform: 'posix', ssh: 'linux', repoDir: '/repo', cliHomeDir: '/home',
+    managedRuntime: {
+      kind: 'lima', host: { kind: 'local' }, instance: 'worker', limaHome: '/tmp/lima',
+      profile: 'worker-balanced', architecture: 'aarch64',
+    },
+  };
+  const legacy = parseDevTargetsConfig({ version: 3, targets: [base] });
+  assert.equal(legacy.targets[0].managedRuntime.capacity, undefined);
+  assert.equal(resolveManagedRuntimeCapacityResources(legacy.targets[0].managedRuntime), null);
+
+  for (const capacity of [
+    { mode: 'dedicated', shared: { cpus: 8 }, dedicated: { cpus: 12, memoryGiB: 32 } },
+    { mode: 'burst', shared: { cpus: 8, memoryGiB: 24 }, dedicated: { cpus: 12, memoryGiB: 32 } },
+    { mode: 'shared', shared: { cpus: 0, memoryGiB: 24 }, dedicated: { cpus: 12, memoryGiB: 32 } },
+  ]) {
+    assert.throws(
+      () => parseDevTargetsConfig({
+        version: 3,
+        targets: [{ ...base, managedRuntime: { ...base.managedRuntime, capacity } }],
+      }),
+      /capacity/i,
+    );
+  }
 });
 
 test('version 3 rejects legacy raw Lima fields and unsafe managed runtime combinations', () => {

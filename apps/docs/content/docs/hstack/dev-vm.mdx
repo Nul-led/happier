@@ -76,6 +76,40 @@ it also launches a non-blocking skill synchronization in the background. A
 repeated `start` while the guest is already running does not launch another
 synchronization.
 
+## Switch shared and dedicated capacity
+
+The main execution-host VM can keep separate shared and dedicated CPU/RAM
+presets in the machine-global execution-host profile. This uses the same
+managed Lima capacity owner as remote worker VMs, while allowing more host
+headroom because the main VM also runs Agents, the daemon, and Stack control
+processes.
+
+Configure both presets the first time. If the running VM already matches the
+selected preset, this records the policy without restarting it:
+
+```bash
+hstack dev-vm capacity set dedicated \
+  --shared-cpus=10 \
+  --shared-memory-gib=48 \
+  --dedicated-cpus=14 \
+  --dedicated-memory-gib=72
+```
+
+Inspect or switch the active preset with:
+
+```bash
+hstack dev-vm capacity show
+hstack dev-vm capacity set shared --force
+hstack dev-vm capacity set dedicated --force
+```
+
+When the selected CPU or RAM value differs from the retained VM, the command
+fails before changing either config or runtime unless `--force` is present.
+`--force` authorizes a graceful stop, Lima resource reconciliation, restart,
+workspace remount, and service-tunnel reconciliation for this execution host.
+It does not change the retained disk size. Existing processes cannot move
+between capacity modes without that VM restart.
+
 ## Synchronize Agent skills
 
 The development VM can mirror the current macOS user's Agent skill roots into

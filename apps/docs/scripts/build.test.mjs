@@ -21,7 +21,9 @@ test('makes explicit Fumadocs generation authoritative after Next route type gen
 
 test('writes the redirects file and typechecks before invoking the local Next build CLI', async () => {
   const calls = [];
+  const env = { NEXT_PUBLIC_POSTHOG_KEY: 'phc_test' };
   await runDocsBuild({
+    env,
     runContentChecksImpl: noContentProblems,
     packageRoot: '/repo/apps/docs',
     processExecPath: '/managed/node',
@@ -56,16 +58,40 @@ test('writes the redirects file and typechecks before invoking the local Next bu
       kind: 'next',
       command: '/managed/node',
       args: ['/repo/node_modules/next/dist/bin/next', 'build', '--webpack'],
-      options: { cwd: '/repo/apps/docs', env: process.env, stdio: 'inherit' },
+      options: { cwd: '/repo/apps/docs', env, stdio: 'inherit' },
     },
     // AFTER the build, not before: it rearranges what the export produced.
     { kind: 'relocate', options: { outDir: '/repo/apps/docs/out' } },
   ]);
 });
 
+test('refuses to build a production docs bundle without an explicit PostHog key', async () => {
+  const calls = [];
+
+  await assert.rejects(
+    () => runDocsBuild({
+      env: {},
+      runContentChecksImpl() {
+        calls.push('content');
+        return noContentProblems();
+      },
+      renderRedirectsImpl: () => '',
+      writeFileImpl() {},
+      relocateMdxSourcesImpl() {},
+      execYarnImpl() { calls.push('yarn'); },
+      resolveNextCliPathImpl: () => '/repo/node_modules/next/dist/bin/next',
+      spawnSyncImpl() { calls.push('next'); return { status: 0 }; },
+    }),
+    /NEXT_PUBLIC_POSTHOG_KEY is not set/,
+  );
+
+  assert.deepEqual(calls, []);
+});
+
 test('fails when the local Next CLI exits unsuccessfully', async () => {
   await assert.rejects(
     () => runDocsBuild({
+      env: { NEXT_PUBLIC_POSTHOG_KEY: 'phc_test' },
       runContentChecksImpl: noContentProblems,
       packageRoot: '/repo/apps/docs',
       renderRedirectsImpl: () => '',
@@ -84,6 +110,7 @@ test('refuses to build when a documented link or UI label is wrong', async () =>
 
   await assert.rejects(
     () => runDocsBuild({
+      env: { NEXT_PUBLIC_POSTHOG_KEY: 'phc_test' },
       packageRoot: '/repo/apps/docs',
       processExecPath: '/managed/node',
       runContentChecksImpl: () => ({

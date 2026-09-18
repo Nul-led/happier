@@ -96,6 +96,21 @@ dispatch authority is maintainer-owned; obtain its private bootstrap contract
 from an absolute checkout path with
 `hmaint release bootstrap --repo <absolute checkout> --json`.
 
+On the Mac host, resolve the existing conductor in this order: `hmaint` on
+`PATH`, then the configured maintainer-tools checkout's `bin/hmaint` wrapper.
+Prove it with `hmaint --help`; there is intentionally no required
+`hmaint --version` command. Do not invoke its internal JavaScript entry point
+or install a second conductor in the VM. From the managed Linux VM, route the
+same Mac command through the configured execution target:
+
+```bash
+apps/stack/bin/hstack-exec --target=mac-host --cwd=<repo-relative-dir> -- \
+  hmaint release bootstrap --repo <macOS-mounted-absolute-checkout> --json
+```
+
+Use the absolute checkout path reported by the actual execution host; similarly
+named host and VM paths are not interchangeable.
+
 For preview, the analyzed range starts at the currently promoted `preview`
 source; for production it starts at the current `main` source. This prevents
 an already validated preview change from repeatedly selecting heavy evidence
@@ -209,8 +224,9 @@ producing it, rather than depending on what a build image happens to contain.
   and the GitHub-hosted runners the local mode builds on. A build whose
   `HAPPIER_INSTALL_SCOPE` excludes `iroh-native` compiles no Rust and is skipped.
 - **Version parity.** `packages/iroh-native/scripts/verify-iroh-lock-parity.mjs`
-  proves the pinned Iroh version, source, and checksum describe one release
-  across the native lockfile, the Tauri lockfile, and the stock relay image. The
+  proves the pinned `iroh` and `iroh-relay` crate version, registry source, and
+  checksum match across the native and Tauri lockfiles, and that the stock
+  relay Docker build installs that exact locked relay version. The
   release plan runs it whenever the `iroh_transport` or `iroh_relay` component
   changes. It is a property of the source being released and never implies
   republishing the relay image; relay publication remains its own decision.
@@ -223,6 +239,16 @@ producing it, rather than depending on what a build image happens to contain.
   stages the same bytes into `vendor/iroh/`, where the existing exact-set asset
   verifier checks the staged files and records per-file digests, so a web output
   cannot be published without it.
+- **Relay image evidence.** The existing Docker publisher requests BuildKit
+  SBOM and provenance attestations, captures the immutable pushed digest, then
+  inspects that exact index for Linux AMD64, Linux ARM64, and per-platform
+  attestation manifests. This is image-content evidence; it is distinct from
+  the Cargo-graph CycloneDX files packaged with native and browser carriers.
+- **Performance evidence.** The reusable test workflow exposes
+  `run_workspace_sync_performance` for an explicit manual or release evidence
+  run. It enables the existing 1 GiB direct-and-relay fixture and records its
+  measurements without inventing an acceptance threshold. Ordinary pull
+  requests do not enable this mode.
 
 ### Local execution and phase recovery
 
@@ -256,10 +282,80 @@ attempt may reuse only individually verified immutable candidates from the
 named completed origin run. Release-output-affecting byte changes require new release outputs. One failed sibling product does not invalidate independently
 verified immutable candidates from successful products.
 
+Use the narrowest safe recovery:
+
+| Evidence | Recovery |
+| --- | --- |
+| Same control SHA; transient runner, download, read-only API, or safely recoverable external failure | `gh run rerun <run-id> --repo happier-dev/happier --failed` |
+| Corrected workflow control, tests, or validation; unchanged candidate bytes; terminal origin with verified candidates | `hmaint release resume` from the richest valid origin |
+| Changed source, package/build dependency, signing input, or immutable candidate bytes | Prepare a fresh release |
+| Ambiguous publication mutation | Inspect canonical remote state, then use the owning recovery-aware job; never blind-retry |
+
+The richest valid origin is the completed run with the most individually
+verified candidates and downstream evidence, not necessarily the newest run.
+Use the exact confirmation token supplied by the conductor:
+
+```bash
+hmaint release resume \
+  --repo <absolute-checkout> \
+  --operation-id <operation-id> \
+  --origin-run-id <completed-origin-run-id> \
+  --confirm "resume <operation-id> from run <completed-origin-run-id>" \
+  --json
+```
+
+Let independent jobs finish so one attempt exposes every reachable failure.
+Consumers that require a real signed artifact or external store state still
+remain behind that prerequisite. Poll builds, notarization, store submission,
+and publication every 5–20 minutes; elapsed time alone is not failure evidence.
+
+Use the existing manual test dispatcher rather than copying the CI graph. The
+default is GitHub-hosted runners:
+
+```bash
+gh workflow run tests-dispatch.yml \
+  --repo happier-dev/happier \
+  --ref dev \
+  -f profile=custom \
+  -f runner_pool=github \
+  -f custom_checks=release_contracts
+```
+
+This is corrected-SHA diagnostic evidence; canonical exact-SHA CI remains the
+final release source gate. Blacksmith is only an explicitly approved,
+budget-checked accelerator for the same non-secret Linux graph. It has no
+automatic fallback. Do not select it while included credits are exhausted.
+
+### Best-effort TestFlight distribution
+
+The native iOS build/submission and App Store processing/group attachment are
+separate phases. After the signed build is submitted, the mobile workflow hands
+its exact EAS build id or local IPA build identity to the existing
+`retry_testflight_distribution` action from the current trusted control
+checkout. The parent release therefore does not hold a runner or block required
+promotions while Apple processes the build.
+
+The reconciliation action validates source, environment, profile, app, and
+build identity before querying App Store Connect. A skipped fingerprint build
+is an explicit no-op. Retry only that reconciliation action after an Apple
+processing or group-attachment failure; do not start a second native build.
+
 Self-hosted relays upgrade independently. The release contract never holds a
 fleet at a barrier, coordinates a migration, or declares a global cutover. A
 specific released migration can still have its own documented operator
 procedure; that procedure remains the owner of its external writer/drain facts.
+
+### npm trusted-publishing identity
+
+npm validates the top-level calling workflow identity when a reusable workflow
+publishes with OIDC. On this release line the top-level public-release caller is
+`release.yml`, which must be trusted in the `release-shared` environment. Do not
+document or configure a second caller unless that workflow actually exists and
+invokes the same canonical publisher.
+Register the workflow filename without `.github/workflows/`; do not add a
+long-lived `NPM_TOKEN` fallback. A cluster of otherwise-authorized `ENEEDAUTH`
+publisher failures normally indicates a missing or mismatched top-level caller.
+Verify the package/version in the npm registry after publication.
 
 ### Reusing an exact CLI native candidate
 
@@ -372,7 +468,7 @@ each deployed server environment:
 1. Release validation must confirm the exact migration exists in the
    PostgreSQL, MySQL, and SQLite migration trees and that their final schemas
    agree.
-2. Refresh and record the current `../remote-dev` predecessor `HEAD`, dirty
+2. Refresh and record the current `../0.2` predecessor `HEAD`, dirty
    state, schema, readers, and writers. The supported predecessor cannot create
    rows under the activated schema or read novel rows with nullable legacy
    identity.
@@ -416,6 +512,35 @@ environment. After the deployed baseline contains the migration, the check
 does not require recurring approval; Prisma's existing `_prisma_migrations`
 history remains the sole applied-state record. Do not add a runtime feature
 flag, product setting, or second migration ledger for this boundary.
+
+### Account lifecycle activation (development)
+
+`20260905220000_add_team_home_governance` activates `Account.status` and
+contracts the old Account-disable RepeatKey namespace. It is independently a
+no-old-server boundary: a status-unaware server can re-admit inactive Accounts
+even if Qualified Connected Accounts V4 is absent. Before first deployment,
+refresh immutable server artifact/deploy provenance and the current `../0.2`
+Account readers/writers, verify provider migration parity/backfill, stop every
+old API and worker instance sharing the database, and keep them stopped through
+migration and status-aware startup. Teams feature disablement does not relax
+this Account authentication boundary, and no client update floor follows.
+
+The managed installer shares the existing irreversible-migration admission and
+rollback path for both boundaries. SQLite migration admission rejects an old
+updater before opening the database; on candidate failure the updater queries
+the candidate migration executable against the existing migration ledger and
+refuses previous-runtime restoration if any included boundary is applied or
+cannot be determined. Recovery remains with the existing updater owner; there
+is no shadow disable marker, dual writer, or extra activation ledger.
+
+The V4-specific hosted promotion approval above is not Account-status activation
+certification. The release owner must verify this lifecycle boundary against the
+actual deployment before dispatch. Docker, runner, and manual deployment
+operators must enforce quiescence themselves. Old binaries have no new startup
+refusal mechanism: manually starting one against the activated database is
+unsupported and unsafe. After failure, preserve the database/recovery artifacts,
+keep old server roles stopped, and use an approved forward recovery with a
+status-aware server rather than restarting the predecessor.
 
 ### MySQL Voice conversation grant-provenance rollout
 
@@ -474,8 +599,13 @@ database's migration ledger, effective schema/table grants visible to
 `SHOW GRANTS`, and the binary-logging/trusted-creator policy. It refuses the
 unsafe binary-log policy before the first `ALTER` unless the migration identity
 has provable global `SUPER` authority. After Prisma returns, it verifies the
-finished migration record and exact compatibility trigger/definer before the
-server can start.
+finished migration record and exact trigger shape/definer before the server can
+start. The same preflight and postflight cover every pending MySQL migration in
+the current tree that installs a trigger, including the Session Follow,
+provisioned-identity, and Workflow Run invariants. Those later migrations do not
+require the Voice maintenance-window approval above; the command derives their
+required table-scoped `TRIGGER` authority directly from the pending migration
+set.
 
 If migration or startup fails, keep old writers stopped. Do not restart an old
 API or worker against a schema where the columns may exist without the trigger.

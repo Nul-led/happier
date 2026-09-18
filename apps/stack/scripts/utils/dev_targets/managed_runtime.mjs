@@ -1,7 +1,8 @@
 import { createManagedLimaHostExecutor } from '../managed_lima/host_executor.mjs';
 import { getManagedLimaStatus, startManagedLimaInstance } from '../managed_lima/lifecycle.mjs';
-import { doctorManagedLimaInstance } from '../managed_lima/manager.mjs';
+import { doctorManagedLimaInstance, setupManagedLimaInstance } from '../managed_lima/manager.mjs';
 import { ensureManagedLimaGuestLoginManager } from '../managed_lima/provisioner.mjs';
+import { resolveManagedRuntimeCapacityResources } from './config.mjs';
 import { reconcileManagedLimaDevTargetSshPublication } from './managed_worker.mjs';
 
 export function createManagedDevTargetRuntimeExecutor(target, env = process.env) {
@@ -93,5 +94,66 @@ export async function doctorManagedDevTargetRuntime({ target, env = process.env 
     instance: target.managedRuntime.instance,
     profileName: target.managedRuntime.profile,
     architecture: target.managedRuntime.architecture,
+    resources: resolveManagedRuntimeCapacityResources(target.managedRuntime),
   });
+}
+
+export async function applyManagedDevTargetCapacity(
+  { target, force = false, env = process.env },
+  {
+    createExecutor = createManagedDevTargetRuntimeExecutor,
+    doctorRuntime = doctorManagedLimaInstance,
+    setupRuntime = setupManagedLimaInstance,
+    getRuntimeStatus = getManagedLimaStatus,
+    ensureGuestLoginManager = ensureManagedLimaGuestLoginManager,
+    reconcileSshPublication = reconcileManagedLimaDevTargetSshPublication,
+  } = {},
+) {
+  const runtime = target?.managedRuntime;
+  const resources = resolveManagedRuntimeCapacityResources(runtime);
+  if (!runtime || !resources) {
+    throw new Error(
+      `[dev-targets] target ${String(target?.name ?? 'unknown')} has no configured managed Lima capacity`,
+    );
+  }
+  const executor = createExecutor(target, env);
+  const desired = {
+    executor,
+    instance: runtime.instance,
+    profileName: runtime.profile,
+    architecture: runtime.architecture,
+    resources,
+  };
+  const diagnosis = await doctorRuntime(desired);
+  const requiresReconciliation = diagnosis.exists !== true
+    || (diagnosis.drift?.creation?.length ?? 0) > 0
+    || (diagnosis.drift?.resources?.length ?? 0) > 0;
+  if (!requiresReconciliation) {
+    return { changed: false, status: diagnosis.status };
+  }
+  if (!force) {
+    const error = new Error(
+      `[dev-targets] target ${target.name} capacity differs from its managed Lima VM; rerun with --force to restart and apply it`,
+    );
+    error.code = 'MANAGED_LIMA_CAPACITY_FORCE_REQUIRED';
+    throw error;
+  }
+  const lifecycle = await setupRuntime({ ...desired, allowInstall: false });
+  const current = await getRuntimeStatus({ executor, instance: runtime.instance });
+  if (!current.exists || String(current.status).toLowerCase() !== 'running') {
+    throw new Error(`[dev-targets] managed Lima guest is not running after capacity apply: ${String(current.status)}`);
+  }
+  const guestLoginManager = await ensureGuestLoginManager({ executor, instance: runtime.instance });
+  const sshPublication = await reconcileSshPublication({
+    target,
+    sshLocalPort: current.instance?.sshLocalPort ?? current.instance?.SSHLocalPort,
+    guestVerified: true,
+    env,
+  });
+  return {
+    ...lifecycle,
+    changed: true,
+    guestLoginManager,
+    sshPublication,
+  };
 }

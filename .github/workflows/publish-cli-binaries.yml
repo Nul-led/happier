@@ -558,11 +558,17 @@ jobs:
           yarn workspace @happier-dev/iroh-native build:native
           yarn workspace @happier-dev/iroh-native verify:native
           yarn workspace @happier-dev/iroh-native verify:native:bun
+          HAPPIER_IROH_REQUIRE_NODE_ADDON=1 yarn workspace @happier-dev/iroh-native verify:native:lifecycle
           IROH_COMPILED_SMOKE="${GITHUB_WORKSPACE}/dist/iroh-native-compiled-smoke${{ matrix.platform_key == 'windows-x64' && '.exe' || '' }}"
           bun build --compile --target "$BUN_TARGET" \
             packages/iroh-native/scripts/verify-node-addon-load.mjs \
             --outfile "$IROH_COMPILED_SMOKE"
           "$IROH_COMPILED_SMOKE" --package-root "$GITHUB_WORKSPACE/packages/iroh-native"
+
+      - name: Verify Windows endpoint-key security and active-stream shutdown
+        if: matrix.platform_key == 'windows-x64'
+        shell: bash
+        run: yarn workspace @happier-dev/iroh-native verify:native:windows
 
       - name: Run retained source conformance harness
         shell: bash
@@ -570,6 +576,13 @@ jobs:
         run: |
           set -euo pipefail
           go vet ./...
+          go test ./...
+
+      - name: Run native process-custody tests
+        shell: bash
+        working-directory: apps/cli/native/processcustody
+        run: |
+          set -euo pipefail
           go test ./...
 
       - name: Run Linux race and reachable vulnerability checks
@@ -697,6 +710,31 @@ jobs:
           HAPPIER_CLIPROXYAPI_EXECUTABLE="${PACKAGED_WRAPPER_PATH}" \
             HAPPIER_CLIPROXYAPI_WRAPPER_BUILD_VERSION="$RELEASE_VERSION" \
             go test ./conformance -run '^TestPackagedWrapper$' -count=1 -v
+
+      - name: Exercise packaged workspace confinement through the CLI owner
+        if: matrix.platform_os == 'macos' || matrix.platform_os == 'windows'
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          CLI_TARGET: ${{ matrix.cli_target }}
+          PLATFORM_KEY: ${{ matrix.platform_key }}
+          HAPPIER_RUN_NATIVE_CONFINED_WORKSPACE_SYNC_REAL_INTEGRATION: "1"
+        run: |
+          set -euo pipefail
+          PACKAGED_PAYLOAD_PATH="${RUNNER_TEMP}/packaged-${PLATFORM_KEY}/happier-v${RELEASE_VERSION}-${CLI_TARGET}"
+          CUSTODY_NAME="happier-process-custody"
+          if [ "${RUNNER_OS}" = "Windows" ]; then CUSTODY_NAME="${CUSTODY_NAME}.exe"; fi
+          PACKAGED_CUSTODY_PATH="$(find "${PACKAGED_PAYLOAD_PATH}" -type f -name "$CUSTODY_NAME" -print)"
+          test "$(printf '%s\n' "${PACKAGED_CUSTODY_PATH}" | sed '/^$/d' | wc -l | tr -d ' ')" = "1"
+          STAGED_CUSTODY_DIR="${GITHUB_WORKSPACE}/apps/cli/tools/unpacked"
+          STAGED_CUSTODY_PATH="${STAGED_CUSTODY_DIR}/${CUSTODY_NAME}"
+          mkdir -p "${STAGED_CUSTODY_DIR}"
+          cp "${PACKAGED_CUSTODY_PATH}" "${STAGED_CUSTODY_PATH}"
+          if [ "${RUNNER_OS}" != "Windows" ]; then chmod 755 "${STAGED_CUSTODY_PATH}"; fi
+          yarn workspace @happier-dev/cli vitest run \
+            --config vitest.config.ts \
+            src/workspaces/sync/workspaceSyncNativeConfinedFileSystem.test.ts \
+            -t 'uses the staged native helper for read, abort preservation, and committed deletion'
 
       - name: Upload exact unsigned native archive and provenance
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

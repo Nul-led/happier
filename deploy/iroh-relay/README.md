@@ -2,8 +2,8 @@
 
 This directory builds the stock `iroh-relay` 1.1.0 process and configures the
 first supported managed profile: open forwarding plus QUIC address
-discovery (QAD). Happier uses the pinned upstream QAD-only
-(forwarding-disabled) topology only for tests and diagnostics; it is not a
+discovery (QAD). A forwarding-disabled QAD-only run remains a planned
+development diagnostic; it has not been run as release evidence and is not a
 supported production deployment or managed-product profile.
 
 The relay remains a separate stateless process. It does not receive Happier
@@ -29,13 +29,26 @@ Mutagen/workspace sync remains excluded. The browser form is relay-only and
 reports `Secure relay`, never `Direct`; it adds no gateway, loopback emulation,
 JavaScript relay, or browser Mutagen runtime.
 
+## Point Happier at this relay
+
+Running the relay process alone does not connect any Home to it. A Happier
+server selects this relay through its own environment: `HAPPIER_IROH_RELAY_URLS`
+(comma-separated, unique, absolute HTTP(S) URLs of the deployed relay, for
+example `https://relay.example.com`) and `HAPPIER_IROH_RELAY_POLICY`
+(`automatic` by default, or `disabled` for direct-only). The server advertises
+exactly those URLs in its Home connection descriptor; an `automatic` policy with
+no relay URLs stays direct-only. The server-side contract, including validation
+rules and failure behavior, is in
+`apps/docs/content/docs/self-hosting/iroh-relay.mdx`.
+
 ## Build and run
 
 The repository's existing Docker publisher builds and pushes
 `deploy/iroh-relay/Dockerfile` as `happierdev/iroh-relay` and
 `ghcr.io/happier-dev/iroh-relay`, including BuildKit SBOM and provenance
-attestations. That publication is what establishes a trustworthy image: read
-the digest it pushed (for example with `docker buildx imagetools inspect`) and
+attestations. The publisher captures the pushed digest and inspects that exact
+multi-platform index for both Linux architectures and their attestations. Read
+that reported digest and
 set `HAPPIER_IROH_RELAY_IMAGE` to the immutable
 `registry/repository@sha256:digest` reference.
 
@@ -48,11 +61,21 @@ file can establish.
 
 Provision the relay certificate chain and private key as
 `certs/default.crt` and `certs/default.key`. They are persistent
-operator-managed TLS material mounted read-only. Configure:
+operator-managed TLS material mounted read-only. The relay runs as numeric
+UID/GID `65532:65532`; the certificate directory must be traversable and both
+files readable by that identity inside the container. Keep host permissions as
+restrictive as the deployment platform permits while satisfying that runtime
+access.
+
+The matching relay configuration template is versioned inside the image.
+Compose intentionally does not mount a second checkout copy over it; the
+entrypoint writes the effective configuration to the memory-only `/tmp` mount.
+Configure:
 
 - `HAPPIER_IROH_RELAY_RX_BYTES_PER_SECOND` and
-  `HAPPIER_IROH_RELAY_RX_MAX_BURST_BYTES`: positive upstream token-bucket
-  values derived from the deployed link and instance capacity.
+  `HAPPIER_IROH_RELAY_RX_MAX_BURST_BYTES`: upstream token-bucket values derived
+  from the deployed link and instance capacity. Each must be a decimal integer
+  from `1` through `4294967295`, matching the relay's `NonZeroU32` input.
 
 Pinned `iroh-relay` 1.1.0 also declares `accept_conn_limit` and
 `accept_conn_burst`, but upstream documents both as unimplemented and
@@ -97,7 +120,9 @@ aggregate metrics listen on container port 9090, which Compose deliberately
 does not publish; connect a private existing metrics network/collector when
 operational monitoring is configured.
 
-The runtime image includes the upstream license declaration and the
+The runtime image includes the selected upstream MIT license and the
 BSD-3-Clause notice for the Tailscale-derived portions of the relay. The
-publisher-owned SBOM records the full compiled dependency graph; no separate
-relay publication pipeline or in-container image self-digest check exists.
+BuildKit SBOM attestation describes the contents BuildKit observed in each
+published platform image. The publisher verifies the attestation manifests are
+attached to the exact pushed digest; no separate relay publication pipeline or
+in-container image self-digest check exists.

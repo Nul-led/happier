@@ -29,6 +29,7 @@ import {
   resolveWorkspaceBundleLockPath,
   withWorkspaceBundleLock,
 } from './workspaceBundleLock.mjs';
+import { createWorkspaceChildBuildEnv } from './workspaceChildBuildEnv.mjs';
 import { resolveWorkspacePackageBuildLockPath } from './workspacePackageBuildLock.mjs';
 
 test('CLI shared dependency publication reuses an exact current runtime closure before taking the build lock', async (t) => {
@@ -681,6 +682,80 @@ test('concurrent workspace package build waiters reuse the one published result'
   assert.equal(buildCalls, 1);
   assert.deepEqual([...firstResult.built, ...waiterResult.built], ['@happier-dev/waiter']);
   assert.equal(await readFile(join(packageDir, 'dist', 'index.js'), 'utf8'), 'export const published = true;\n');
+});
+
+test('workspace build reuses an inherited bundle publication lease', async (t) => {
+  const repoRoot = mkdtempSync(join(tmpdir(), 'happier-workspace-build-inherited-bundle-lock-'));
+  t.after(() => {
+    rmSync(repoRoot, { recursive: true, force: true });
+  });
+
+  writeFileSync(
+    join(repoRoot, 'package.json'),
+    JSON.stringify({ private: true, workspaces: ['packages/*'] }),
+    'utf8',
+  );
+  writeFileSync(join(repoRoot, 'yarn.lock'), '# fixture\n', 'utf8');
+  for (const appName of ['ui', 'cli', 'server']) {
+    const appDir = join(repoRoot, 'apps', appName);
+    mkdirSync(appDir, { recursive: true });
+    writeFileSync(
+      join(appDir, 'package.json'),
+      JSON.stringify({ name: `@fixture/${appName}`, private: true }),
+      'utf8',
+    );
+  }
+
+  const packageDir = join(repoRoot, 'packages', 'consumer');
+  mkdirSync(join(packageDir, 'src'), { recursive: true });
+  writeFileSync(join(packageDir, 'src', 'index.ts'), 'export const value = true;\n', 'utf8');
+  writeFileSync(
+    join(packageDir, 'package.json'),
+    JSON.stringify({
+      name: '@happier-dev/consumer',
+      main: './dist/index.js',
+      bundledDependencies: ['@happier-dev/dependency'],
+      scripts: { build: 'fixture-build' },
+    }),
+    'utf8',
+  );
+
+  const workspaceBundleLockPath = resolveWorkspaceBundleLockPath(repoRoot);
+  await withWorkspaceBundleLock(
+    async ({ heldLockValue }) => {
+      const inheritedEnv = createWorkspaceChildBuildEnv({
+        env: {
+          PATH: '/repo/bin',
+          HAPPIER_WORKSPACE_DIST_BUILD_LOCK_HELD: 'stale-parent-lease',
+          Happier_Workspace_Dist_Build_Lock_Held: 'mixed-case-stale-parent-lease',
+        },
+        heldLockValue,
+      });
+      const result = await ensureWorkspacePackagesBuiltByName(
+        repoRoot,
+        ['@happier-dev/consumer'],
+        {
+          env: inheritedEnv,
+          force: true,
+          quiet: true,
+          workspaceBuildBoundary: {
+            async prepareEnv(_packageDir, env) {
+              return { ...env };
+            },
+            async runPackageBuild(_packageDir, { env }) {
+              assert.equal(env.HAPPIER_WORKSPACE_DIST_BUILD_LOCK_HELD, heldLockValue);
+              await writeFile(
+                join(env.HAPPIER_WORKSPACE_DIST_OUTPUT_DIR, 'index.js'),
+                'export const value = true;\n',
+              );
+            },
+          },
+        },
+      );
+      assert.deepEqual(result.built, ['@happier-dev/consumer']);
+    },
+    { lockPath: workspaceBundleLockPath },
+  );
 });
 
 test('workspace build refreshes a consumer bundled dependency after the dependency publishes', async (t) => {

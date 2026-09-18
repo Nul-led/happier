@@ -43,6 +43,7 @@ function fixture({ missingRolling = false } = {}) {
   const archivePlatform = process.platform === 'darwin' ? 'darwin' : 'linux';
   const archiveArch = process.arch === 'arm64' ? 'arm64' : 'x64';
   const archiveName = `happier-v1.2.3-preview.4-${archivePlatform}-${archiveArch}.tar.gz`;
+  const aliasName = `happier-${archivePlatform}-${archiveArch}.tar.gz`;
   const archiveStem = archiveName.slice(0, -'.tar.gz'.length);
   const archiveStage = join(root, 'archive-stage');
   const archiveRoot = join(archiveStage, archiveStem);
@@ -81,6 +82,7 @@ function fixture({ missingRolling = false } = {}) {
   const release77Tag = join(root, 'release-77-tag');
   const rollingReadFailureMarker = join(root, 'rolling-read-failure-marker');
   const deleteConfirmFailureMarker = join(root, 'delete-confirm-failure-marker');
+  const assetDownloadFailureMarker = join(root, 'asset-download-failure-marker');
   writeFileSync(log, '');
   writeFileSync(uploadCounter, '0');
   if (missingRolling) {
@@ -235,6 +237,12 @@ if [ "$1" = "api" ]; then
       ;;
     *"repos/test/test/releases/assets/"*)
       asset="\${2##*/}"
+      if [ "\${HAPPIER_TEST_RESET_FIRST_ASSET_DOWNLOAD:-0}" = "1" ] && [ ! -f ${JSON.stringify(assetDownloadFailureMarker)} ]; then
+        : > ${JSON.stringify(assetDownloadFailureMarker)}
+        printf 'partial-bytes'
+        echo 'read: connection reset by peer' >&2
+        exit 1
+      fi
       case "$asset" in
         77-*) cat ${JSON.stringify(staging)}/"\${asset#77-}" ;;
         1-*) cat ${JSON.stringify(rolling)}/"\${asset#1-}" ;;
@@ -342,6 +350,7 @@ exit 2
     root,
     bin,
     archiveName,
+    aliasName,
     log,
     rolling,
     staging,
@@ -399,6 +408,26 @@ test('rolling promotion removes an abandoned staging draft from an older target 
     const log = readFileSync(testFixture.log, 'utf8');
     assert.match(log, /-X DELETE repos\/test\/test\/releases\/88/);
     assert.match(log, /-X DELETE repos\/test\/test\/git\/refs\/tags\/happier-rolling-staging-cli-preview-b+/);
+  } finally {
+    rmSync(testFixture.root, { recursive: true, force: true });
+  }
+});
+
+test('rolling promotion retries a read-only asset audit without retaining partial bytes', () => {
+  const testFixture = fixture();
+  try {
+    const result = spawnSync(process.execPath, args(), {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        PATH: `${testFixture.bin}:${process.env.PATH ?? ''}`,
+        HAPPIER_TEST_RESET_FIRST_ASSET_DOWNLOAD: '1',
+        HAPPIER_PIPELINE_GH_ASSET_READ_RETRY_DELAY_MS: '0',
+      },
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, String(result.stderr));
+    assert.match(String(result.stderr), /retrying GitHub release asset read/i);
   } finally {
     rmSync(testFixture.root, { recursive: true, force: true });
   }
@@ -472,13 +501,14 @@ test('existing rolling replacement stages privately, restores after publish fail
       [
         'checksums-happier-v1.2.3-preview.4.txt',
         'checksums-happier-v1.2.3-preview.4.txt.minisig',
-        testFixture.archiveName,
+        testFixture.aliasName,
       ],
     );
     for (const name of readdirSync(testFixture.staging)) {
+      const sourceName = name === testFixture.aliasName ? testFixture.archiveName : name;
       assert.deepEqual(
         readFileSync(join(testFixture.staging, name)),
-        readFileSync(join(testFixture.root, 'source', basename(name))),
+        readFileSync(join(testFixture.root, 'source', basename(sourceName))),
       );
     }
 

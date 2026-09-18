@@ -333,7 +333,12 @@ async function main() {
     productName: mergedConfig.productName,
     ...(mergedConfig.app?.windows?.length ? { app: { windows: mergedConfig.app.windows } } : {}),
     ...(mergedConfig.bundle && typeof mergedConfig.bundle === 'object'
-      ? { bundle: { createUpdaterArtifacts: mergedConfig.bundle.createUpdaterArtifacts ?? false } }
+      ? {
+          bundle: {
+            createUpdaterArtifacts: mergedConfig.bundle.createUpdaterArtifacts ?? false,
+            resources: mergedConfig.bundle.resources ?? [],
+          },
+        }
       : {}),
     build: {
       beforeDevCommand: '',

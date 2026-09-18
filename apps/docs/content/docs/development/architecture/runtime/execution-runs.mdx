@@ -1,11 +1,19 @@
 ---
-title: Execution-runs
-description: Task-like AI execution on the same backend path as sessions — the five states a run can end in, and the two different ways it can stop early.
+title: Execution runs
+description: Understand bounded jobs and retained interactive runs on the same host-owned Agent runtime path as Sessions.
 ---
 
-An execution-run is a host-owned product run backed by backend execution: a
-bounded piece of AI work that is not a conversation. Commit-message generation
-is the everyday example.
+An Execution Run is host-owned Agent work attached to a Happier Session or,
+for the explicitly detached form, to no Session. A Run can be a bounded job
+such as commit-message generation, or a retained interactive side conversation
+that accepts several turns without becoming another Session.
+
+<Callout>
+  **Development Preview:** retained interactive Runs and target-aware Session
+  input are implemented in the current development source. They are not a
+  stable-release availability claim, and their composed desktop, mobile,
+  reconnect, and mixed-version journeys remain validation gates.
+</Callout>
 
 The bridge is `apps/cli/src/agent/runtime/bridges/executionRun/ExecutionRunHostBridge.ts`.
 
@@ -48,15 +56,73 @@ Terminal transitions are claimed once. The bridge checks that a run is still
 `running` before finalizing it, so a late completion arriving after a
 cancellation does not overwrite the terminal state.
 
-## Session-backed execution-runs
+## Session-backed execution runs
 
 When an execution-run can be served by a session runtime, use the shared adapter
 from the plugin SDK rather than writing a parallel path. Convergence is the
 whole value here: a behaviour fixed for sessions should not need fixing again
 for runs.
 
+### Temporary-computer readiness happens before Session creation
+
+The default-off Temporary computer implementation can review a Team credential before its Session
+exists. The reviewed binding fixes the resource, exact broker Machine, resource revision, Provider
+application, and source/catalog revision. The chosen model, prompt, attachments, permission mode,
+and other authoring remain in the creator-reviewed sealed launch manifest; the readiness exchange
+cannot replace them.
+
+This exchange is deliberately non-inference. It projects eligible models and proves that the exact
+broker application is reachable without creating a fake Session, making a paid Provider request,
+exporting credential material, or retaining a broker/service lease. Its signed native-carrier
+witness binds the activation and manifest commitment to both Iroh endpoint identities. The broker
+compares the initiator with the authenticated transport peer and the target with its current native
+endpoint before forwarding the content-free check.
+
+Materialization then rereads the reviewed selection and current resource, source revision, broker
+Machine/endpoint, Agent installation, and consent before it creates the real Machine and Session.
+A changed fact fails with a typed unavailable or conflict state instead of silently choosing another
+source, model, or Machine. This is current development architecture, not released availability; the
+Temporary computer and Team credential features remain explicitly gated while composed live and
+compatibility validation is open.
+
+### Retained interaction uses Session input admission
+
+A message for an attached interactive Run is ordinary Session input with a
+logical recipient. The existing Pending owner keeps custody, encryption,
+retry identity, requested delivery action, and transcript settlement. A null
+target still means the main Session; an exact Run target is isolated from the
+main queue and from sibling Runs.
+
+The daemon's one live Run registry is the correspondence authority. The server
+stores an inert target id but does not maintain a second Run mirror. If current
+components cannot prove target-aware admission, the operation fails with an
+update-required result before creating a target row. A rejected, terminal, or
+wrong-Session target never falls back to the main transcript.
+
+After reconnect, the parent Session client observes Pending changes and asks
+that same registry to classify exact target rows. A proven resumable Run can be
+restored, a proven permanently unavailable target is blocked, and an unknown
+target remains queued. This is finite recovery from durable Pending state, not
+a poller or automatic replay of an ambiguous provider effect.
+
+### Turn completion and Run completion differ
+
+`sendAndWait` observes the exact accepted input turn. Parent idle, sibling
+activity, and the Run's eventual terminal status cannot complete that wait. If
+the accepted turn can no longer be correlated, the caller receives
+`outcomeUnknown` with its retry identity rather than guessed success.
+
+Run `wait`, by contrast, observes one of the terminal states above. A retained
+interactive Run may complete many turns before it becomes terminal.
+
+The effective interaction projection determines whether a Run can accept more
+input, steer, resume, use attachments, or expose a durable composer. Bounded
+jobs remain bounded; reconstructing a transcript does not grant live runtime
+authority.
+
 ## Related
 
 - [Session loop](/development/architecture/runtime/session-loop) — the same seam, for conversations.
 - [Agent runtime registry](/development/architecture/runtime/engine-registry) — how the backend is resolved.
-- [Execution-runs](/plugins/agent-runtimes/execution-runs) — implementing `AgentExecutionRunRuntime` as a plugin author.
+- [Execution runs](/plugins/agent-runtimes/execution-runs) — implementing `AgentExecutionRunRuntime` as a plugin author.
+- [Pending delivery](/sessions/pending-queue) — user-facing queue and recovery behavior.

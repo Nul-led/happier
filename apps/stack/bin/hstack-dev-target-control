@@ -1,0 +1,177 @@
+#!/bin/sh
+
+# Canonical native owner for dev-target control placement and fresh-sync
+# coalescing. It stays native because every preferred-execution command crosses
+# this boundary, including commands used while the JavaScript runtime is busy.
+
+case "$0" in
+  /*) control_path=$0 ;;
+  */*) control_path="$PWD/${0#./}" ;;
+  *) control_path=$(command -v -- "$0") || exit 1 ;;
+esac
+control_dir=${control_path%/*}
+[ "$control_dir" != "$control_path" ] || control_dir=.
+control_path=$(CDPATH= cd -- "$control_dir" && pwd -P)/${control_path##*/}
+
+usage() {
+  printf '%s\n' 'usage: hstack-dev-target-control [--sync-flush SESSION] -- COMMAND [ARG...]' >&2
+  exit 64
+}
+
+sync_control_state_dir() {
+  if [ -n "${HAPPIER_DEV_TARGET_CONTROL_STATE_DIR-}" ]; then
+    printf '%s\n' "$HAPPIER_DEV_TARGET_CONTROL_STATE_DIR"
+    return
+  fi
+  printf '%s\n' "${MUTAGEN_DATA_DIRECTORY%/data}/hstack-control"
+}
+
+run_control_command() {
+  [ "$#" -gt 0 ] || usage
+
+  case "$(sed -n 's/^0:://p' /proc/self/cgroup 2>/dev/null)" in
+    *'/happier-critical.slice/'*) exec "$@" ;;
+  esac
+
+  if [ -n "${DBUS_SESSION_BUS_ADDRESS-}" ] \
+    && command -v systemd-run >/dev/null 2>&1 \
+    && command -v systemctl >/dev/null 2>&1 \
+    && systemctl --user show-environment >/dev/null 2>&1; then
+    uid=$(id -u)
+    critical_dir="/sys/fs/cgroup/user.slice/user-$uid.slice/user@$uid.service/happier.slice/happier-critical.slice"
+    critical_ready=0
+    if [ "$(cat "$critical_dir/memory.low" 2>/dev/null)" = 4294967296 ]; then
+      critical_ready=1
+    elif command -v systemctl >/dev/null 2>&1; then
+      if command -v timeout >/dev/null 2>&1; then
+        critical_properties=$(timeout 1 systemctl --user show happier-critical.slice \
+          --property=LoadState --property=MemoryLow 2>/dev/null || true)
+      else
+        critical_properties=$(systemctl --user show happier-critical.slice \
+          --property=LoadState --property=MemoryLow 2>/dev/null || true)
+      fi
+      case "$critical_properties" in
+        *'LoadState=loaded'*'MemoryLow=4294967296'*|*'MemoryLow=4294967296'*'LoadState=loaded'*)
+          critical_ready=1
+          ;;
+      esac
+    fi
+    if [ "$critical_ready" = 1 ]; then
+      control_nice=$(ps -o ni= -p $$ 2>/dev/null | tr -d ' ')
+      case "$control_nice" in
+        -[0-9]*) renice -n 0 -p $$ >/dev/null 2>&1 || true ;;
+        [1-9]*|+[1-9]*)
+          if command -v sudo >/dev/null 2>&1; then
+            sudo -n renice -n 0 -p $$ >/dev/null 2>&1 || true
+          fi
+          ;;
+      esac
+      control_nice=$(ps -o ni= -p $$ 2>/dev/null | tr -d ' ')
+      case "$control_nice" in
+        0|+0|-0) control_nice_argument=--nice=0 ;;
+        *) control_nice_argument= ;;
+      esac
+      exec systemd-run --user --scope --quiet \
+        ${control_nice_argument:+"$control_nice_argument"} \
+        --slice=happier-critical.slice \
+        --property=MemoryLow=268435456 \
+        --property=CPUWeight=200 \
+        --property=IOWeight=200 \
+        -- "$@"
+    fi
+  fi
+
+  exec "$@"
+}
+
+locked_sync_flush() {
+  session_name=$1
+  request_marker=$2
+  shift 2
+  [ "${1-}" = -- ] || usage
+  shift
+  completion_marker="$(sync_control_state_dir)/$session_name.completed"
+
+  if [ -e "$completion_marker" ] && [ "$completion_marker" -nt "$request_marker" ]; then
+    rm -f -- "$request_marker"
+    exit 0
+  fi
+
+  control_child=''
+  cancel_locked_flush() {
+    trap - HUP INT TERM
+    if [ -n "$control_child" ]; then
+      kill -TERM "$control_child" 2>/dev/null || true
+      wait "$control_child" 2>/dev/null || true
+    fi
+    rm -f -- "$request_marker"
+    exit 130
+  }
+  trap 'cancel_locked_flush' HUP INT TERM
+  "$control_path" -- "$@" &
+  control_child=$!
+  wait "$control_child"
+  status=$?
+  control_child=''
+  trap - HUP INT TERM
+  if [ "$status" -eq 0 ]; then
+    completion_temporary="$completion_marker.$$.tmp"
+    : > "$completion_temporary" && mv -f -- "$completion_temporary" "$completion_marker"
+  fi
+  rm -f -- "$request_marker"
+  exit "$status"
+}
+
+case "${1-}" in
+  --locked-sync-flush)
+    [ "$#" -ge 5 ] || usage
+    session_name=$2
+    request_marker=$3
+    shift 3
+    locked_sync_flush "$session_name" "$request_marker" "$@"
+    ;;
+  --sync-flush)
+    [ "$#" -ge 5 ] || usage
+    session_name=$2
+    case "$session_name" in ''|*[!A-Za-z0-9._-]*) usage ;; esac
+    shift 2
+    [ "${1-}" = -- ] || usage
+    [ -n "${MUTAGEN_DATA_DIRECTORY-}" ] || {
+      printf '%s\n' 'hstack-dev-target-control: MUTAGEN_DATA_DIRECTORY is required for sync flush' >&2
+      exit 64
+    }
+    lock_dir=$(sync_control_state_dir)
+    mkdir -p -- "$lock_dir" || exit 1
+    if command -v flock >/dev/null 2>&1; then
+      request_marker="$lock_dir/$session_name.request.$$"
+      : > "$request_marker" || exit 1
+      lock_child=''
+      cancel_lock_wait() {
+        trap - HUP INT TERM
+        if [ -n "$lock_child" ]; then
+          kill -TERM "$lock_child" 2>/dev/null || true
+          wait "$lock_child" 2>/dev/null || true
+        fi
+        rm -f -- "$request_marker"
+        exit 130
+      }
+      trap 'cancel_lock_wait' HUP INT TERM
+      flock --exclusive --no-fork "$lock_dir/$session_name.lock" \
+        "$control_path" --locked-sync-flush "$session_name" "$request_marker" "$@" &
+      lock_child=$!
+      wait "$lock_child"
+      status=$?
+      lock_child=''
+      trap - HUP INT TERM
+      rm -f -- "$request_marker"
+      exit "$status"
+    fi
+    shift
+    run_control_command "$@"
+    ;;
+  --)
+    shift
+    run_control_command "$@"
+    ;;
+  *) usage ;;
+esac

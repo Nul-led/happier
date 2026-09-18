@@ -6,6 +6,10 @@ import {
   normalizeManagedLimaArchitecture,
   resolveManagedLimaProfile,
 } from '../managed_lima/profiles.mjs';
+import {
+  normalizeManagedLimaCapacity,
+  resolveManagedLimaCapacityResources,
+} from '../managed_lima/capacity.mjs';
 
 const TARGET_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,31}$/;
 const SSH_TARGET_RE = /^(?:[A-Za-z0-9._-]+@)?[A-Za-z0-9._-]+$/;
@@ -35,6 +39,17 @@ function normalizeRemotePath(raw, platform, name) {
     if (!normalized.includes(path)) normalized.push(path);
   }
   return normalized;
+}
+
+function normalizeManagedRuntimeCapacity(raw, name) {
+  return normalizeManagedLimaCapacity(raw, {
+    subject: `target ${name}: managedRuntime capacity`,
+    errorPrefix: '[dev-targets]',
+  });
+}
+
+export function resolveManagedRuntimeCapacityResources(runtime) {
+  return resolveManagedLimaCapacityResources(runtime?.capacity);
 }
 
 function normalizeManagedRuntime(raw, { name, platform }) {
@@ -90,7 +105,16 @@ function normalizeManagedRuntime(raw, { name, platform }) {
   } else {
     throw new Error(`[dev-targets] target ${name}: managedRuntime host kind must be "local" or "ssh"`);
   }
-  return { kind, host, instance, limaHome, profile, architecture };
+  const capacity = normalizeManagedRuntimeCapacity(raw.capacity, name);
+  return {
+    kind,
+    host,
+    instance,
+    limaHome,
+    profile,
+    architecture,
+    ...(capacity ? { capacity } : {}),
+  };
 }
 
 function normalizeTarget(raw, index, version) {

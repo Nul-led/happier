@@ -157,6 +157,68 @@ hdev list --archived
 hdev list --resumable
 ```
 
+### Operational awareness
+
+<Callout>
+  **Developer Preview:** `--awareness` is implemented in the current development
+  source and is not released yet.
+</Callout>
+
+Filtered listing in the development source returns separate ordinary and
+attention continuation fields. When `attentionHasNext` is true, pass
+`attentionNextCursor` as `--attention-cursor` and repeat the same filters:
+
+```bash
+happier session list --scope my_work --attention-cursor '<attentionNextCursor>' --json
+```
+
+Use `--cursor` for `nextCursor`. Send only one cursor per request; an exhausted
+ordinary page (`hasNext: false`) does not mean attention paging has finished.
+
+`--awareness` asks for the structured operational view of each session instead
+of the default summary:
+
+```bash
+happier session list --awareness --json
+```
+
+The response is explicitly marked so a script can tell it apart from a summary:
+
+```json
+{
+  "view": "awareness",
+  "projectionVersion": 1,
+  "sessions": [
+    {
+      "v": 1,
+      "sessionId": "...",
+      "lifecycle": "active",
+      "runtime": "working",
+      "freshness": "live",
+      "operational": { "primary": "permission_required", "reasons": ["permission_required", "working"] },
+      "encryption": "plain",
+      "availability": "complete"
+    }
+  ],
+  "nextCursor": null,
+  "hasNext": false
+}
+```
+
+Notes:
+
+- The states are structured facts, not display strings. `unknown`, `stale`,
+  `offline`, and `locked` are truthful answers and never collapse to “idle”.
+- `operational.primary` is the one state a compact row shows; concurrent facts
+  stay in `operational.reasons`.
+- Fields whose content this account cannot read — a title or work headline in a
+  session you have no key for — are omitted rather than guessed, and
+  `availability` says so.
+- Awareness never reads transcripts. The `session.list` action rejects it
+  combined with `includeLastMessagePreview` rather than fetching messages.
+- If the Home answering the request is older than this view, the command fails
+  with `awareness_view_unsupported` instead of silently returning a summary.
+
 ## Status
 
 ```bash
@@ -168,6 +230,12 @@ Live status (when supported):
 ```bash
 happier session status <session-id-or-prefix-or-tag> --live
 ```
+
+`--json` returns the same `awareness` object documented under
+[Operational awareness](#operational-awareness) beside the session summary, so a
+script reads one session and a list of sessions through the same states. With
+`--live`, runtime evidence observed over the socket is folded in before the
+states are decided rather than patched onto them afterwards.
 
 ## Messaging
 
@@ -192,7 +260,7 @@ hdev wait <session-id-or-prefix-or-tag> --timeout 60
 Notes:
 
 - `send` targets active sessions. For inactive sessions, use `hdev list --resumable` and `happier resume <session-id-or-prefix-or-tag>` first.
-- `--wait` can time out if the Agent is offline/busy or its Agent runtime does not emit an “idle” signal.
+- `--wait` on a main-session send waits for that session to become idle, so it can time out if the Agent is offline or busy, or if its Agent runtime does not emit an “idle” signal. With `--run`, it instead waits for that one run turn — see [Execution runs](#execution-runs).
 - `--permission-mode` lets you override the permission intent for a single send.
 - `--model` lets you target a specific model for that message when the selected Agent supports it.
 - `--json` + explicit timeouts are recommended for scripts.
@@ -218,6 +286,50 @@ therefore also work with `--api-token` or `HAPPIER_TOKEN`, subject to the same
 account-automation restrictions as every other API Token invocation.
 
 See [Delegated work](/extending/subagents) for lifecycle and result details.
+
+## Discussions
+
+<Callout>
+  **Developer Preview:** Session Discussions and their CLI commands are implemented
+  in the current development source and are not released yet. The Session
+  Conversations feature must be enabled on the selected Home.
+</Callout>
+
+List Discussions for one exact Session, then inspect metadata or read messages:
+
+```bash
+happier session discussions list <session-id-or-prefix-or-tag> --json
+happier session discussions show <session-id-or-prefix-or-tag> <discussion-id> --json
+happier session discussions read <session-id-or-prefix-or-tag> <discussion-id> --json
+```
+
+Create a Discussion and post another message:
+
+```bash
+happier session discussions create <session-id-or-prefix-or-tag> "Release notes" "Draft the highlights"
+happier session discussions post <session-id-or-prefix-or-tag> <discussion-id> "I added the migration note"
+```
+
+Use `--mentioned-account-ids <account-id>` more than once, or pass a
+comma-separated list, to attach explicit Account mentions. For a safe retry
+after an ambiguous response, reuse the original identities with
+`--creation-local-id` and `--message-local-id` on `create`, or `--local-id` on
+`post`; do not generate a new id for the retry.
+
+Manage the Discussion through the same Action-backed command family:
+
+```bash
+happier session discussions rename <session-id-or-prefix-or-tag> <discussion-id> "Updated title"
+happier session discussions archive <session-id-or-prefix-or-tag> <discussion-id>
+happier session discussions restore <session-id-or-prefix-or-tag> <discussion-id>
+happier session discussions read-state <session-id-or-prefix-or-tag> <discussion-id> <last-read-seq>
+```
+
+Create, rename, archive, restore, and read-state mutation require an interactive
+signed-in user. Discussion reads and deliberate Agent posts retain their normal
+runtime authorization. Use `--server-id <saved-home>` when the same Session
+selector could exist on more than one configured Home; the command keeps that
+Home's identity, credentials, and endpoint together for the whole operation.
 
 ## History
 
@@ -424,10 +536,18 @@ Execution runs are the structured “run” layer for multi-step flows (review /
 happier session run start <session-id-or-prefix-or-tag> --intent <intent> --agent <agent-id> --json
 happier session run list <session-id-or-prefix-or-tag> --json
 happier session run get <session-id-or-prefix-or-tag> <run-id> --json
-happier session run send <session-id-or-prefix-or-tag> <run-id> "message" --json
+happier send <session-id-or-prefix-or-tag> "message" --run <run-id> --json
 happier session run stop <session-id-or-prefix-or-tag> <run-id> --json
 happier session run wait <session-id-or-prefix-or-tag> <run-id> --timeout 300 --json
 ```
+
+The one-shot lifecycle commands above, plus bounded stream start/read/cancel,
+are compiled from the canonical `execution.run.*` Action declarations. Use
+`--agent` to select the Agent; there is no separate CLI-only backend flag or
+second hand-written run parser. An ID, unambiguous prefix, or tag is resolved to
+one exact Session before execution. Ambiguous and missing selectors retain their
+typed JSON error and candidate details rather than falling back to another
+Session or Home.
 
 Advanced run control:
 
@@ -437,3 +557,41 @@ happier session run stream-start <session-id-or-prefix-or-tag> <run-id> "message
 happier session run stream-read <session-id-or-prefix-or-tag> <run-id> <stream-id> --cursor 0 --json
 happier session run stream-cancel <session-id-or-prefix-or-tag> <run-id> <stream-id> --json
 ```
+
+Input to a session-owned run is ordinary session input with one explicit
+destination, so it shares the session send command, its pending admission and its
+`--local-id` retry identity:
+
+- `happier send <session-id> "message" --run <run-id>` — canonical spelling.
+- `happier session send <session-id> "message" --run <run-id>` — same command.
+- `happier session run send <session-id> <run-id> "message"` — deprecated
+  compatibility alias for the same operation, keeping its `session_run_send`
+  JSON envelope. It no longer accepts `--resume`.
+
+When the target run cannot accept input, the canonical session-input owner
+returns its typed refusal, and `--json` reports it in `error.code`. The CLI never
+strips `--run` and retries the message into the parent session.
+
+- `session_input_target_update_required` — this Home, the run's exact machine, or
+  the targeted-input route cannot carry a destination yet. Nothing was queued, and
+  ordinary main-session sends keep working.
+- `session_input_target_unavailable` — the destination itself cannot accept input:
+  it belongs to another session, has finished, or is not an interactive run. The
+  message stays visible in that run's queue as blocked, with the normal retry and
+  discard actions.
+
+A run whose state is still unknown — not yet loaded, or being resumed — is neither
+of those. Its messages simply stay queued for that run until it is ready.
+
+Adding `--wait` to a `--run` send observes only the turn that message started. A
+sibling run finishing, the parent session going idle, or the run reaching a
+terminal state does not satisfy it, and the timeout ends the observation without
+cancelling or resending the message. If the correlation is lost, the result is
+`outcomeUnknown` and keeps the message's local ID, so reuse that same
+`--local-id` to reconcile instead of sending a fresh message.
+
+`execution.run.send` is a different Action for a genuinely detached Run and
+requires `sessionId: null`. Do not use it for a Run that belongs to a Session;
+Session-owned input must stay on `session.message.send --run <run-id>` so it
+retains the Session's Pending queue, permissions, encryption, and exact-target
+failure behavior.

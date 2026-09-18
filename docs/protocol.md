@@ -24,6 +24,51 @@ If a new protocol field or event is proposed, it should answer: does this create
 ## Authentication
 Most endpoints require `Authorization: Bearer <token>`. The same token is also used in the Socket.IO handshake. Full auth flows and endpoints are documented in `api.md`.
 
+## Session awareness (development)
+
+The development implementation in `packages/protocol/src/sessions/awareness` owns
+the derived operational meaning of Session lifecycle, runtime activity, freshness,
+pending input, work state, and content availability. Host adapters normalize existing
+authorized Session facts and content-opening results into its pure projector. The
+projection is not persisted and does not own unread state, following, personal
+attention, or notification decisions.
+
+The `session.list` Action keeps its default summary response. An explicit
+`view: 'awareness'` request requires a response carrying both `view: 'awareness'`
+and `projectionVersion: 1`; an unmarked response from a host that ignores the option
+produces `awareness_view_unsupported`. Awareness reads do not fetch transcript
+previews. A request containing the strict `query` input requires `queryVersion: 1`
+on either summary or awareness output; a passthrough predecessor that silently ignores
+the query produces the operation-scoped `session_list_query_update_required` failure.
+Filtered lists retain the server's ordinary and attention continuation fields
+separately, and a marked awareness result may carry both paired continuation families.
+The optional summary-preview path remains separate. The existing
+`session.activity.get` Action adapts the same projector to its compatibility result.
+That adapter derives its operational booleans from awareness and passes host-observed
+ancillary facts through verbatim. Ancillary facts the responding host cannot observe —
+retained-window message counts, and permission request identities on a host that reads
+pending counts only — are omitted rather than reported as an empty or zero value.
+It accepts the same `view` selector in its canonical form hints: omitting it keeps that
+released digest, while `view: 'awareness'` answers with the canonical projection itself.
+The projection's own `v: 1` is the marker there, so a host that ignores the option and
+returns its digest produces `awareness_view_unsupported` instead of a false success.
+`view: 'awareness'` cannot be combined with `windowSeconds`, which only narrows the
+released retained-window counts that awareness does not carry.
+CLI Session status retains its existing Session and Agent-state fields and adds
+optional awareness. Its live adapter includes freshly decoded pending-request
+evidence before projection; it does not introduce a separate awareness endpoint.
+
+Session identifiers in these results are Home-local. Multi-Home consumers retain
+the selected Home through the existing qualified Session address. Server access and
+recipient projection precede host awareness projection; missing content-opening
+evidence must not turn encrypted content into plaintext or imply key delivery is in
+progress. The existing projection preserves access pending, recipient setup required,
+repair required, and content unavailable when the content owner supplies those facts.
+Absent availability stays unknown; cached metadata does not establish readiness.
+`preparing` requires actual preparation in progress. Private title, work, lineage,
+and workspace fields remain absent unless content is plain or known ready.
+These development contracts do not establish released availability.
+
 ## WebSocket connection
 ### Handshake
 Connect with Socket.IO using:
@@ -212,6 +257,67 @@ See `api.md` for the full HTTP endpoint catalog and auth flows.
 - `UpdatePayload.seq` is the per-user update sequence (monotonic) used for sync ordering.
 - Sessions, machines, and artifacts have their own `seq` fields used by clients for ordering.
 - Versioned fields (metadata, agentState, daemonState, artifact header/body, access keys, KV) use optimistic concurrency with `expectedVersion` and return a version-mismatch response containing the current version/data.
+
+### Personal Machine Pool changes (0.3 development)
+
+`machinePool` is an additive known `AccountChange.kind`. Each committed Pool
+definition mutation advances the existing Account change cursor with the Pool ID
+as `entityId`; the event is an invalidation, not a second copy of the aggregate.
+Current clients refresh that exact Home's Pool repository through the six
+`machines.pools.*` Actions. Initial load and reconnect also fetch the canonical
+projection. Ordinary Machine updates can change observed member availability
+without changing the saved Pool revision.
+
+The current client declaration is stored-content protocol `4`, which includes the
+additive `machinePool` kind. The server withholds this kind from missing, malformed,
+and pre-v4 declarations while still advancing through the raw Account-change page.
+This preserves older clients' ability to consume the open-ended change feed without
+teaching them Pool semantics.
+
+The Pool wire schemas live in `packages/protocol/src/machines/pools/v1.ts`. A
+`MachinePoolViewV1` separates the saved definition from observed availability.
+Member state can be `connected`, `offline`, `revoked`, `replaced`, `temporary`, or
+`unknown`; an unavailable observation is not rewritten as offline. Pool-level
+availability is the separate `{ state: 'known', connectedCount, enabledCount }` or
+`{ state: 'unknown' }` union, so a Home that could not read its Machine sockets
+reports unknown rather than a false zero. Resolution selects the lowest numeric
+tier holding an enabled, connected member and orders equal-tier candidates by a
+deterministic hash of `[requestKey, machineId]` with the Machine ID as the final
+total-order tie-break; it returns only a Home-local Machine ID and tier (or the
+typed `empty` / `no_available_machine` / `presence_unavailable` result). The
+consuming client combines it with its captured `serverId` and uses the existing exact
+`SessionExecutionTargetV1` contract. Supporting current components may also carry
+the strict informational origin `{ kind: 'machine_pool', poolId }` through the
+versioned Machine authoring arm and optional `placementOrigin`. It contains no name,
+membership, request key, candidate list, or authority, and is omitted before first
+dispatch when the negotiated Machine-operation compatibility projection does not
+positively support it. The exact target remains authoritative; Pool selection policy
+does not enter the daemon/session spawn protocol.
+
+The corresponding user intents are exactly `machines.pools.list`,
+`machines.pools.get`, `machines.pools.create`, `machines.pools.update`,
+`machines.pools.delete`, and `machines.pools.resolve`. They form one Action family
+over the authenticated Home-local routes. Create carries a caller-minted Pool UUID
+for response-loss replay; update and delete carry the loaded aggregate revision.
+There is no per-member Action, Pool-shaped execution target, persisted selection,
+or portable retry target.
+
+Feature skew is additive. A client calls this family only when the exact Home
+positively publishes `machines.pools`; missing or malformed support disables the
+family while leaving exact-Machine authoring and spawning intact. Stored-content
+protocol v4 peers can receive `machinePool` invalidations. Older peers advance the
+same Account-change cursor without receiving that known kind and reconstruct no
+Pool state from it.
+
+`connected_pool` in the Team credential source schema means a Connected Service
+Pool. It is not a `MachinePoolViewV1` and cannot be used as an execution destination.
+Credential-resource placement is the closed exact-Machine or `machine_pool` union.
+For a genuinely new Pool-backed open, the source-owning daemon reports content-free
+eligibility across the currently available candidates, the Home applies the same
+canonical Pool selector once, and the existing broker path pins the resulting exact
+Machine before signing route authority. Ordinary Sessions, Resource Test/catalog,
+and restricted Runner activation consume this path in current 0.3 source. It remains
+development-only, with integrated package and loaded-Provider validation open.
 
 ## Authentication and content-key ownership
 

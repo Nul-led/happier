@@ -1,0 +1,51 @@
+---
+title: FX (experimental)
+description: Install FX and use its ACP sessions, models, modes, MCP tools, resume, execution runs, and interactive terminal in Happier.
+---
+
+Happier runs the locally installed FX CLI through `fx acp` for managed sessions
+and execution runs. FX remains experimental upstream, so verify its behavior on
+the version installed on your Agent machine.
+
+## Requirements
+
+Install FX with its vendor installer, ensure `fx` is on `PATH`, then sign in:
+
+```bash
+curl -fsSL https://fx.sh/setup.sh | bash
+fx login
+```
+
+The installer places `fx` in `~/.local/bin`. You can launch the same login flow
+from **Settings → Agents → FX**. Happier detects the system CLI; it does not run
+a package manager on your behalf.
+
+FX publishes macOS and Linux builds only (x86_64 and arm64), so Happier offers
+no Windows install recipe for it.
+
+## Sessions and controls
+
+Start a session with `happier fx`. Happier projects the models, modes, and other
+configuration options advertised by FX's ACP server instead of keeping a
+separate model list. New sessions, resume, cancellation, follow-up prompts, and
+execution runs use the shared ACP lifecycle.
+
+FX receives selected Happier tools as per-session ACP MCP descriptors. Project
+and user MCP configuration remains owned by FX.
+
+## Interactive terminal
+
+The terminal action launches ordinary `fx` through Happier's existing terminal
+host. It is an auxiliary interactive surface; it does not create a second
+Happier session runtime or promise that terminal and ACP session IDs match.
+
+## Troubleshooting
+
+- Run `fx --version` on the Agent machine if FX is not detected.
+- Run `fx login` again if FX reports an authentication error.
+- If a model or mode is missing, check what the installed `fx acp` advertises.
+
+## Related
+
+- [Agent authentication](/agents/provider-authentication)
+- [MCP servers](/extending/mcp-servers)

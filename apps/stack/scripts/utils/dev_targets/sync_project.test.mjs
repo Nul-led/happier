@@ -90,7 +90,7 @@ test('runs a future independent Mutagen daemon control launch in the protected c
   assert.equal(result.code, 0);
   assert.match(
     await readFile(systemdRunLog, 'utf8'),
-    /--user --scope --quiet --slice=happier-critical\.slice --property=MemoryLow=268435456 --property=CPUWeight=200 --property=IOWeight=200 -- mutagen version/,
+    /--user --scope --quiet --nice=0 --slice=happier-critical\.slice --property=MemoryLow=268435456 --property=CPUWeight=200 --property=IOWeight=200 -- mutagen version/,
   );
 });
 
@@ -120,7 +120,7 @@ test('runs Stack outbound SSH control launches in the protected critical user sl
   assert.equal(result.code, 0);
   assert.match(
     await readFile(systemdRunLog, 'utf8'),
-    /--user --scope --quiet --slice=happier-critical\.slice --property=MemoryLow=268435456 --property=CPUWeight=200 --property=IOWeight=200 -- ssh guest true/,
+    /--user --scope --quiet --nice=0 --slice=happier-critical\.slice --property=MemoryLow=268435456 --property=CPUWeight=200 --property=IOWeight=200 -- ssh guest true/,
   );
 });
 

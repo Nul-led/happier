@@ -21,6 +21,10 @@ on:
         required: false
         default: ''
         type: string
+      candidate_runner_version:
+        required: false
+        default: ''
+        type: string
       candidate_ui_web_version:
         required: false
         default: ''
@@ -32,6 +36,8 @@ on:
         value: ${{ jobs.verify.outputs.stack_verified }}
       server_verified:
         value: ${{ jobs.verify.outputs.server_verified }}
+      runner_verified:
+        value: ${{ jobs.verify.outputs.runner_verified }}
       ui_web_verified:
         value: ${{ jobs.verify.outputs.ui_web_verified }}
 
@@ -46,6 +52,7 @@ jobs:
       cli_verified: ${{ steps.outputs.outputs.cli_verified }}
       stack_verified: ${{ steps.outputs.outputs.stack_verified }}
       server_verified: ${{ steps.outputs.outputs.server_verified }}
+      runner_verified: ${{ steps.outputs.outputs.runner_verified }}
       ui_web_verified: ${{ steps.outputs.outputs.ui_web_verified }}
     steps:
       - name: Checkout trusted workflow control bytes
@@ -61,7 +68,7 @@ jobs:
         with:
           node-version: 22.x
       - name: Install minisign from trusted control bytes
-        if: ${{ inputs.candidate_cli_version != '' || inputs.candidate_stack_version != '' || inputs.candidate_server_version != '' || inputs.candidate_ui_web_version != '' }}
+        if: ${{ inputs.candidate_cli_version != '' || inputs.candidate_stack_version != '' || inputs.candidate_server_version != '' || inputs.candidate_runner_version != '' || inputs.candidate_ui_web_version != '' }}
         uses: ./.release-control/.github/actions/bootstrap-minisign
       - name: Verify CLI candidate
         id: verify_cli
@@ -96,6 +103,17 @@ jobs:
           candidate_source_sha: ${{ inputs.candidate_source_sha }}
           product: server
           version: ${{ inputs.candidate_server_version }}
+      - name: Verify Runner candidate
+        id: verify_runner
+        if: ${{ always() && inputs.candidate_runner_version != '' }}
+        continue-on-error: true
+        uses: ./.release-control/.github/actions/verify-immutable-release-candidate
+        with:
+          repository: ${{ github.repository }}
+          channel: ${{ inputs.channel }}
+          candidate_source_sha: ${{ inputs.candidate_source_sha }}
+          product: runner
+          version: ${{ inputs.candidate_runner_version }}
       - name: Verify UI-web candidate
         id: verify_ui_web
         if: ${{ always() && inputs.candidate_ui_web_version != '' }}
@@ -117,6 +135,8 @@ jobs:
           STACK_OUTCOME: ${{ steps.verify_stack.outcome }}
           SERVER_REQUESTED: ${{ inputs.candidate_server_version != '' }}
           SERVER_OUTCOME: ${{ steps.verify_server.outcome }}
+          RUNNER_REQUESTED: ${{ inputs.candidate_runner_version != '' }}
+          RUNNER_OUTCOME: ${{ steps.verify_runner.outcome }}
           UI_WEB_REQUESTED: ${{ inputs.candidate_ui_web_version != '' }}
           UI_WEB_OUTCOME: ${{ steps.verify_ui_web.outcome }}
         shell: bash
@@ -135,4 +155,5 @@ jobs:
           emit_result cli "$CLI_REQUESTED" "$CLI_OUTCOME"
           emit_result stack "$STACK_REQUESTED" "$STACK_OUTCOME"
           emit_result server "$SERVER_REQUESTED" "$SERVER_OUTCOME"
+          emit_result runner "$RUNNER_REQUESTED" "$RUNNER_OUTCOME"
           emit_result ui_web "$UI_WEB_REQUESTED" "$UI_WEB_OUTCOME"

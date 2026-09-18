@@ -33,6 +33,7 @@ import {
 } from './runtime_artifact_identity.mjs';
 import { resolveRuntimeBuildRequestIdentity } from './runtime_build_request_identity.mjs';
 import { withWorkspaceBundleLock } from '@happier-dev/cli-common/workspaceBundleLock';
+import * as componentArtifacts from '@happier-dev/cli-common/componentArtifacts';
 import { inspectActiveRuntimeSnapshot } from '../runtime/launch/inspectActiveRuntimeSnapshot.mjs';
 import {
   captureRuntimeBuildStoreState,
@@ -194,11 +195,17 @@ export async function buildRuntimeArtifactComponents({
   resolveRuntimeBuildRequestIdentityImpl = resolveRuntimeBuildRequestIdentity,
   buildSelectedStackArtifactsImpl = buildSelectedStackArtifacts,
   buildComponentArtifactWithIdentityLockImpl = buildComponentArtifactWithIdentityLock,
+  prepareCliBinaryArtifactWorkspacePublicationImpl = componentArtifacts.prepareCliBinaryArtifactWorkspacePublication,
   withWorkspaceBundleLockImpl = withWorkspaceBundleLock,
   pruneComponentArtifactsImpl = pruneComponentArtifacts,
 }) {
   assertSelectedBuildPrerequisitesImpl({ selection, env });
   const initialSourceMetadata = await collectBuildSourceMetadataImpl({ rootDir, env });
+  if (selection.components.daemon) {
+    await prepareCliBinaryArtifactWorkspacePublicationImpl({
+      repoRoot: initialSourceMetadata.repoDir,
+    });
+  }
   const buildRequest = await resolveRuntimeBuildRequestIdentityImpl({
     rootDir,
     producerStackBaseDir: stackBaseDir,
@@ -277,7 +284,10 @@ export async function resolveRepositoryRuntimePublicationComponents({
   const currentSnapshotId = inspection.valid ? inspection.snapshot?.snapshotId ?? null : null;
   if (components.length === 0) return { components, currentSnapshotId };
 
-  const selection = createRuntimePublicationSelection(components);
+  const identityComponents = components.filter((component) => component !== 'daemon');
+  if (identityComponents.length === 0) return { components, currentSnapshotId };
+
+  const selection = createRuntimePublicationSelection(identityComponents);
   const buildRequest = await resolveRuntimeBuildRequestIdentityImpl({
     rootDir,
     producerStackBaseDir: authority.producerStackBaseDir,
@@ -285,7 +295,7 @@ export async function resolveRepositoryRuntimePublicationComponents({
     env,
   });
   return {
-    components: components.filter((component) => (
+    components: components.filter((component) => component === 'daemon' || (
       String(inspection.manifest?.components?.[component]?.artifactFingerprint ?? '').trim()
       !== String(buildRequest.artifactFingerprints?.[component] ?? '').trim()
     )),

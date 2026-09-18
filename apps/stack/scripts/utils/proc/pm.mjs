@@ -1,6 +1,6 @@
 import { homedir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { existsSync } from 'node:fs';
 import { chmod, cp, mkdir, readFile, realpath, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 
@@ -921,6 +921,7 @@ export async function ensureWorkspacePackagesBuiltForComponent(componentDir, opt
 
 export async function syncSharedDepsForSourceDev(repoRoot, {
   cliDir = join(repoRoot, 'apps', 'cli'),
+  platform = process.platform,
   env,
   heldLockValue,
   lockPath,
@@ -942,14 +943,26 @@ export async function syncSharedDepsForSourceDev(repoRoot, {
   const normalizedWorkspaceNames = [...new Set((workspaceNames ?? [])
     .map((value) => String(value ?? '').trim().replace(/^@happier-dev\//, ''))
     .filter(Boolean))];
-  const args = [
+  const sourceDevSyncArgs = [
     sourceDevSyncEntrypoint,
     '--json',
     ...(!includeRuntimeDependencies ? ['--no-runtime-dependencies'] : []),
     ...normalizedWorkspaceNames,
   ];
+  // Source-dev dependency publication is CPU/filesystem-heavy. On Linux, reuse
+  // the canonical protected local-dispatch path so a rescue-priority Stack
+  // owner cannot leak its scheduling priority into the publisher and its
+  // compiler children. This startup-critical publication must keep progressing
+  // under load, so it intentionally does not enter the heavyweight wait queue.
+  const command = platform === 'linux'
+    ? fileURLToPath(new URL('../../../bin/hstack-exec', import.meta.url))
+    : process.execPath;
+  const args = platform === 'linux'
+    ? ['--local', '--', process.execPath, ...sourceDevSyncArgs]
+    : sourceDevSyncArgs;
   const childEnv = {
     ...(env ?? process.env),
+    ...(platform === 'linux' ? { HAPPIER_HSTACK_DISPATCH_CONTROL: '1' } : {}),
     ...(heldLockValue ? { HAPPIER_WORKSPACE_DIST_BUILD_LOCK_HELD: heldLockValue } : {}),
     ...(lockPath ? { HAPPIER_SOURCE_DEV_SHARED_DEPS_LOCK_PATH: lockPath } : {}),
   };
@@ -959,7 +972,7 @@ export async function syncSharedDepsForSourceDev(repoRoot, {
   let diagnosticErr = '';
   let failureDiagnosticTruncated = false;
   const resultPrefix = '__HAPPIER_SOURCE_DEV_SYNC_RESULT__=';
-  const child = spawnProcImpl('local', process.execPath, args, childEnv, {
+  const child = spawnProcImpl('local', command, args, childEnv, {
     cwd: repoRoot,
     silent: Boolean(quiet),
     lineFilter: ({ stream, line }) => {

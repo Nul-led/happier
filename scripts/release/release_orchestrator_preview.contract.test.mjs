@@ -52,7 +52,7 @@ test('release workflow only promotes and publishes the exact prepared candidate 
   assert.match(raw, /VERSIONED_CLI_CHANGED:\s*\$\{\{\s*steps\.versioned_plan\.outputs\.changed_cli\s*\}\}/);
 });
 
-test('unified release records qualified V4 activation admission before branch promotion', async () => {
+test('unified release records irreversible server migration admission before branch promotion', async () => {
   const raw = await loadWorkflow('release.yml');
   const admission = raw.indexOf('qualified-connected-accounts-v4-activation-admission.mjs');
   const previewPromotion = raw.indexOf('\n  promote_preview:');
@@ -61,7 +61,7 @@ test('unified release records qualified V4 activation admission before branch pr
   assert.ok(admission >= 0, 'release planning must run the qualified V4 activation admission check');
   assert.ok(previewPromotion > admission, 'activation admission must precede preview branch promotion');
   assert.ok(productionPromotion > admission, 'activation admission must precede production branch promotion');
-  assert.match(raw, /qualified_v4_activation_approval:\s*\n\s*description: "Qualified V4 activation — explicit irreversible-migration approval only:/);
+  assert.match(raw, /qualified_v4_activation_approval:\s*\n\s*description: "Irreversible server migrations — explicit approval only:/);
   assert.match(raw, /QUALIFIED_V4_ACTIVATION_APPROVAL:\s*\$\{\{ inputs\.qualified_v4_activation_approval \}\}/);
   assert.match(raw, /--approval-kind explicit-checkbox/);
   assert.doesNotMatch(raw, /--approval-kind release-confirm/);
@@ -69,6 +69,7 @@ test('unified release records qualified V4 activation admission before branch pr
   assert.match(raw, /backup\/restore readiness/i);
   assert.match(raw, /old-server or old-daemon rollback/i);
   assert.match(raw, /old API and worker writers are stopped/i);
+  assert.match(raw, /legacy read-state writers/i);
   assert.match(raw, /remain stopped if migration fails/i);
   assert.doesNotMatch(
     raw,
@@ -310,7 +311,7 @@ test('release-npm derives unique preview prerelease versions from base versions'
   assert.doesNotMatch(raw, /version_bump_cli/);
   assert.doesNotMatch(raw, /version_bump_stack/);
   assert.doesNotMatch(raw, /function bumpBase\(base, bump\)/);
-  assert.match(raw, /node scripts\/pipeline\/npm\/resolve-release-metadata\.mjs/);
+  assert.match(raw, /trusted-control\/scripts\/pipeline\/npm\/resolve-release-metadata\.mjs/);
   assert.doesNotMatch(raw, /node scripts\/pipeline\/run\.mjs npm-set-preview-versions/);
   assert.doesNotMatch(raw, /function setPreviewVersion\(pkgPath\)/);
   assert.doesNotMatch(raw, /\$\{base\}-preview\.\$\{run\}\.\$\{attempt\}/);

@@ -97,6 +97,14 @@ the server retains a digest-backed record, while the full token is shown only to
 its creator. They authenticate automation, not a present user, so they cannot
 approve requests or loosen the security controls that limit them.
 
+On an E2EE account, a trusted current device can optionally create a compound
+credential whose token-bound wrapper opens only the Account content key. The
+Home still sees only the embedded bearer during authentication. The SDK uses the
+opened key to protect the complete Action request and result; an unsupported or
+invalid protected path fails instead of falling back to plaintext. Revocation
+prevents later authorized retrieval but cannot recall material already opened by
+the client.
+
 The **External API & SDK** setting starts **Allowed** for API-eligible Actions,
 so Action Settings do not add an approval prompt by default. Before sharing a
 token, open each needed Action under **Settings → Actions**, then review

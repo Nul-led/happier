@@ -18,7 +18,7 @@ test('promote-server delegates deploy branch promotion to pipeline script', asyn
   assert.doesNotMatch(raw, /Wait for deploy workflow/i);
 });
 
-test('server promotion admits the irreversible qualified V4 activation before deploy-branch mutation', async () => {
+test('server promotion admits irreversible server migrations before deploy-branch mutation', async () => {
   const raw = await loadWorkflow('promote-server.yml');
   const admission = raw.indexOf('qualified-connected-accounts-v4-activation-admission.mjs');
   const promotion = raw.indexOf('node scripts/pipeline/github/promote-deploy-branch.mjs');
@@ -29,5 +29,6 @@ test('server promotion admits the irreversible qualified V4 activation before de
   assert.match(raw, /backup\/restore readiness/i);
   assert.match(raw, /old-server or old-daemon rollback/i);
   assert.match(raw, /old API and worker writers are stopped/i);
+  assert.match(raw, /legacy read-state writers/i);
   assert.match(raw, /remain stopped if migration fails/i);
 });

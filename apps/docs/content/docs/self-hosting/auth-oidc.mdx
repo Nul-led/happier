@@ -22,6 +22,23 @@ You can configure providers via either:
 - `AUTH_PROVIDERS_CONFIG_PATH` (recommended): path to a JSON file on the server
 - `AUTH_PROVIDERS_CONFIG_JSON`: a JSON string (useful for simple deployments)
 
+A non-empty `AUTH_PROVIDERS_CONFIG_PATH` takes precedence. If that file cannot be
+read or parsed, the server does not fall back to `AUTH_PROVIDERS_CONFIG_JSON`.
+
+In 0.3 development source, an invalid entry is excluded while unrelated valid
+entries remain available. Duplicate IDs are compared after trimming and
+lowercasing; every entry with that duplicate ID is excluded. IDs reserved by
+built-in authentication methods cannot be used for OIDC instances. A malformed
+whole document disables the configured OIDC source, while built-in GitHub remains
+independently available. These isolation changes are not a claim of stable or
+preview availability.
+
+Provider instances are resolved from current configuration for each operation. If a
+provider is removed or its security-relevant configuration changes after an OAuth
+attempt starts, callback or finalization rejects that attempt with
+`auth_provider_configuration_changed`. Presentation-only changes such as
+`displayName` and `ui` hints do not invalidate it.
+
 ## JSON schema (v1)
 
 The config must be a JSON array. Each entry defines one provider instance:
@@ -72,9 +89,42 @@ Notes:
   - `emailDomains`: allows `user@domain` only if `domain` matches.
   - `groupsAny`: user must be in *at least one* group.
   - `groupsAll`: user must be in *all* groups.
+  - `allow` must be an object, and each supplied allowlist field must be an array of
+    strings. A malformed field excludes that provider instance while other valid
+    instances remain available.
 - `fetchUserInfo` (default `false`): if enabled, the server fetches `/userinfo` and merges it into the identity profile.
 - `storeRefreshToken` (default `false`): if enabled, the server stores an **encrypted refresh token** and uses refresh flows for periodic eligibility re-checks (offboarding) without requiring users to reconnect.
 - `ui` provides optional UI hints only (no security impact).
+
+## Outbound OIDC requests
+
+In 0.3 development source, discovery, token exchange, signing-key retrieval,
+refresh, and UserInfo requests use one bounded outbound transport. It rejects
+redirects, limits response headers and decoded bodies, applies the configured
+timeout through DNS resolution and response reading, and connects only to an IP
+address returned and validated for that request. When DNS returns several valid
+addresses, Happier can try the next validated address if the first connection
+fails. The original issuer hostname remains the authority for TLS certificate
+validation.
+
+File- and environment-configured providers remain deployment-operator trusted.
+Their issuer may resolve to a private address and may use any configured port,
+preserving existing private IdP deployments. Plaintext HTTP remains limited to an
+explicit loopback hostname. These deployment-configured providers keep their
+existing network policy.
+
+Database-managed OIDC in 0.3 development source uses a separate Home-controlled
+policy through the same outbound transport. Its default permits public HTTPS
+endpoints on port 443. A self-hosted deployment must explicitly set
+`HAPPIER_FEATURE_AUTH_MANAGED_IDENTITY__PRIVATE_NETWORK_ENABLED=true` before a Home
+administrator can permit exact private hostnames, CIDRs, and ports. A Team
+administrator cannot widen that policy, and managed providers never permit
+plaintext HTTP. Changing the effective network policy or the Team connection
+invalidates an older bound OAuth attempt.
+
+Managed provider administration and its composed sign-in validation are still in
+progress. This describes the development contract, not stable or preview
+availability.
 
 ## Group overage / external claims
 
@@ -158,7 +208,9 @@ AUTH_ANONYMOUS_SIGNUP_ENABLED=0
    - Web (required unless you use `https://app.happier.dev`): set `HAPPIER_WEBAPP_URL` (or `HAPPIER_WEBAPP_OAUTH_RETURN_URL_BASE`)
    - Mobile deep link: set `HAPPIER_WEBAPP_OAUTH_RETURN_URL_BASE` and allow the scheme via `HAPPIER_OAUTH_RETURN_ALLOWED_SCHEMES` (e.g. `myapp`)
 6. Validate:
-   - Restart the server (so it picks up env / config changes).
+   - Restart or redeploy the server after changing its environment. If
+     `AUTH_PROVIDERS_CONFIG_PATH` already points to a file, edits to that file are
+     read by the next provider lookup and do not require a provider-cache refresh.
    - Open the Happier app and confirm the new sign-in option appears on the welcome/login screen.
    - If it doesn’t, double-check the redirect URL, issuer URL, and that `AUTH_SIGNUP_PROVIDERS` / `AUTH_REQUIRED_LOGIN_PROVIDERS` reference the same provider id. (For troubleshooting, you can also inspect `GET /v1/features`.)
 
@@ -173,3 +225,9 @@ Troubleshooting:
 
 At the moment, “custom providers” are supported via **OIDC configuration** (no plugin system for arbitrary protocols).
 If you need a non-OIDC provider, it must be implemented as a new provider module in the server and UI (similar to the built-in GitHub provider).
+
+## Related
+
+- [Enterprise identity](/self-hosting/auth-enterprise-identity) — database-managed providers a Home administrator adds in the app, WorkOS, and directory sync.
+- [Auth overview](/self-hosting/auth) — the policy model this provider plugs into.
+- [Custom auth providers](/self-hosting/auth-custom-providers) — the source-level extension point.

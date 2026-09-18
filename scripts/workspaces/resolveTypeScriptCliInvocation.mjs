@@ -4,6 +4,13 @@ import { dirname, resolve } from 'node:path';
 
 const NATIVE_TYPESCRIPT_PACKAGE_JSON = '@typescript/native/package.json';
 
+export function shouldRouteTypeScriptCliThroughHstack(params) {
+  if (!params.args.includes('--noEmit')) return false;
+  if (params.env.HAPPIER_DEV_TARGET_EXECUTION === '1') return false;
+  if (params.env.HAPPIER_HSTACK_EXECUTION === '1') return false;
+  return true;
+}
+
 export function resolveTypeScriptCliInvocation(params) {
   const processExecPath = params.processExecPath ?? process.execPath;
   const requireResolve = params.requireResolve ?? createRequire(import.meta.url).resolve;

@@ -2,7 +2,7 @@ import { join, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 
 import {
-  readCliNodeWorkspaceRuntimeIdentity,
+  readCliNodeWorkspaceRuntimeIdentityAsync,
 } from '@happier-dev/cli-common/componentArtifacts/copyCliNodeRuntimePayload';
 
 import { ensureCliBuilt, syncSharedDepsForSourceDev } from '../proc/pm.mjs';
@@ -81,14 +81,23 @@ export function createHappyCliWorkspacePreparationExecutor({
 }, {
   syncSharedDepsForSourceDevImpl = syncSharedDepsForSourceDev,
 } = {}) {
+  let inFlightBuild = null;
   return {
     target: 'daemon',
-    async build() {
-      return await syncSharedDepsForSourceDevImpl(repoRoot, {
-        cliDir,
-        env,
-        quiet: true,
+    build() {
+      if (inFlightBuild) return inFlightBuild;
+      const build = Promise.resolve().then(async () => (
+        await syncSharedDepsForSourceDevImpl(repoRoot, {
+          cliDir,
+          env,
+          quiet: true,
+        })
+      ));
+      const settledBuild = build.finally(() => {
+        if (inFlightBuild === settledBuild) inFlightBuild = null;
       });
+      inFlightBuild = settledBuild;
+      return settledBuild;
     },
     async restart() {
       return { skipped: true, reason: 'preparation-only' };
@@ -311,7 +320,7 @@ export function createHappyCliReloadExecutor({
   existsSyncImpl = existsSync,
   probeCliDistRuntimeImportImpl = probeCliDistRuntimeImport,
   readCliRuntimeInputFreshnessImpl = readHappyCliRuntimeInputFreshness,
-  readCliWorkspaceRuntimeIdentityImpl = readCliNodeWorkspaceRuntimeIdentity,
+  readCliWorkspaceRuntimeIdentityImpl = readCliNodeWorkspaceRuntimeIdentityAsync,
   sleepImpl = sleepMs,
   logger = console,
 } = {}) {
@@ -320,11 +329,11 @@ export function createHappyCliReloadExecutor({
   let successorActivationMayOutliveGeneration = false;
   let successorWorkspaceRuntimeIdentity = null;
   let activeDistClosureFingerprint = null;
-  const assertSuccessorWorkspaceRuntimeStillCurrent = () => {
+  const assertSuccessorWorkspaceRuntimeStillCurrent = async () => {
     if (!successorWorkspaceRuntimeIdentity) return;
     let currentWorkspaceRuntimeIdentity;
     try {
-      currentWorkspaceRuntimeIdentity = readCliWorkspaceRuntimeIdentityImpl({
+      currentWorkspaceRuntimeIdentity = await readCliWorkspaceRuntimeIdentityImpl({
         repoRoot: resolve(cliDir, '..', '..'),
       });
     } catch (cause) {
@@ -387,7 +396,7 @@ export function createHappyCliReloadExecutor({
             || publishedInputFingerprint !== currentInputFingerprint
           );
           try {
-            assertSuccessorWorkspaceRuntimeStillCurrent();
+            await assertSuccessorWorkspaceRuntimeStillCurrent();
           } catch (error) {
             if (error?.code !== CLI_WORKSPACE_RUNTIME_ADVANCED_ERROR_CODE) throw error;
             successorDistClosureFingerprint = null;
@@ -513,7 +522,7 @@ export function createHappyCliReloadExecutor({
               'while the existing reload coordinator builds the trailing latest generation.'
           );
         }
-        assertSuccessorWorkspaceRuntimeStillCurrent();
+        await assertSuccessorWorkspaceRuntimeStillCurrent();
         await startLocalDaemonWithAuthImpl({
           cliBin,
           cliHomeDir,
@@ -578,7 +587,7 @@ export function createHappyCliReloadExecutor({
         if (!successorActivationMayOutliveGeneration && !await generationIsCurrent()) {
           return { skipped: true, reason: 'stale-generation' };
         }
-        assertSuccessorWorkspaceRuntimeStillCurrent();
+        await assertSuccessorWorkspaceRuntimeStillCurrent();
         try {
           const replacement = await restartDaemonViaControlServerImpl({
             cliHomeDir,

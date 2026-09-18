@@ -7,6 +7,8 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  ACCOUNT_SESSION_READ_STATE_BACKFILL_MIGRATION,
+  ACCOUNT_SESSION_READ_STATE_BACKFILL_PATHS,
   QUALIFIED_CONNECTED_ACCOUNTS_V4_ACTIVATION_MIGRATION,
   QUALIFIED_CONNECTED_ACCOUNTS_V4_ACTIVATION_PATHS,
   QUALIFIED_CONNECTED_ACCOUNTS_V4_ROLLBACK_SUPPORT,
@@ -471,4 +473,57 @@ test('qualified V4 activation CLI reads the exact pending migration set from Git
     postActivationPayloadDenied.stderr,
     /candidate payload.+qualifiedAccountsV4.+old-daemon rollback.+prohibited/i,
   );
+});
+
+test('server migration admission rejects the read-state owner backfill until legacy API writers are drained', async (t) => {
+  const gitRoot = await mkdtemp(join(tmpdir(), 'read-state-release-admission-'));
+  t.after(async () => rm(gitRoot, { recursive: true, force: true }));
+  const runGit = (...args) => {
+    const result = spawnSync('git', args, { cwd: gitRoot, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    return String(result.stdout).trim();
+  };
+
+  runGit('init', '--quiet');
+  runGit('config', 'user.email', 'release-contract@example.invalid');
+  runGit('config', 'user.name', 'Release Contract');
+  await writeFile(join(gitRoot, 'README.md'), 'baseline\n');
+  runGit('add', 'README.md');
+  runGit('commit', '--quiet', '-m', 'baseline');
+  const baseline = runGit('rev-parse', 'HEAD');
+
+  for (const { path } of ACCOUNT_SESSION_READ_STATE_BACKFILL_PATHS) {
+    const migrationPath = join(gitRoot, path);
+    await mkdir(dirname(migrationPath), { recursive: true });
+    await writeFile(migrationPath, '-- owner-only read-state backfill\n');
+  }
+  runGit('add', 'apps/server/prisma');
+  runGit('commit', '--quiet', '-m', 'add read-state owner backfill');
+  const candidate = runGit('rev-parse', 'HEAD');
+
+  const denied = spawnSync(process.execPath, [
+    checkerPath,
+    '--repo-root', gitRoot,
+    '--baseline-ref', baseline,
+    '--candidate-ref', candidate,
+    '--approval-kind', 'explicit-checkbox',
+    '--approval-value', 'false',
+  ], { encoding: 'utf8' });
+
+  assert.equal(denied.status, 1);
+  assert.match(denied.stderr, /read-state.+backfill.+legacy API read-state writers are drained/i);
+  assert.match(denied.stderr, new RegExp(ACCOUNT_SESSION_READ_STATE_BACKFILL_MIGRATION));
+
+  const admitted = spawnSync(process.execPath, [
+    checkerPath,
+    '--repo-root', gitRoot,
+    '--baseline-ref', baseline,
+    '--candidate-ref', candidate,
+    '--approval-kind', 'explicit-checkbox',
+    '--approval-value', 'true',
+  ], { encoding: 'utf8' });
+
+  assert.equal(admitted.status, 0, admitted.stderr);
+  assert.match(admitted.stdout, /AccountSessionReadState backfill admission/);
+  assert.match(admitted.stdout, /legacy API read-state writers drained before backfill: `required`/);
 });

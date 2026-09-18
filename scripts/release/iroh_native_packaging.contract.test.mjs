@@ -8,11 +8,21 @@ async function read(relativePath) {
   return readFile(new URL(relativePath, repoRoot), 'utf8');
 }
 
+test('the Iroh package owns one pinned Rust command and existing CI consumes it', async () => {
+  const packageJson = JSON.parse(await read('packages/iroh-native/package.json'));
+  const workflow = await read('.github/workflows/tests.yml');
+  assert.match(packageJson.scripts['test:rust:local'], /cargo test --locked[\s\S]*--workspace --all-targets/u);
+  assert.match(packageJson.scripts['test:rust:local'], /verify-browser-iroh-wasm\.mjs/u);
+  assert.match(workflow, /cargo install wasm-bindgen-cli[\s\S]*Run the canonical pinned Rust suite[\s\S]*yarn workspace @happier-dev\/iroh-native test:rust/u);
+});
+
 test('CLI native release matrix builds and loads the Iroh addon from the packaged payload', async () => {
-  const [workflow, builder] = await Promise.all([
+  const [workflow, builder, packageJsonSource] = await Promise.all([
     read('.github/workflows/publish-cli-binaries.yml'),
     read('scripts/pipeline/release/build-cli-binaries.mjs'),
+    read('packages/iroh-native/package.json'),
   ]);
+  const packageJson = JSON.parse(packageJsonSource);
 
   assert.match(workflow, /rustup toolchain install 1\.94\.1 --profile minimal/u);
   assert.match(workflow, /rustup default 1\.94\.1/u);
@@ -21,6 +31,13 @@ test('CLI native release matrix builds and loads the Iroh addon from the package
     /yarn workspace @happier-dev\/iroh-native build:native[\s\S]*?yarn workspace @happier-dev\/iroh-native verify:native/u,
   );
   assert.match(workflow, /verify:native:bun/u);
+  assert.match(workflow, /verify:native:lifecycle/u);
+  assert.match(
+    workflow,
+    /if: matrix\.platform_key == 'windows-x64'[\s\S]*?verify:native:windows/u,
+  );
+  assert.match(packageJson.scripts['verify:native:lifecycle'], /nodeNativeLifecycle\.test\.ts/u);
+  assert.match(packageJson.scripts['verify:native:windows'], /windows_key_[\s\S]*stopping_acceptor_joins_an_active/u);
   assert.match(workflow, /bun build --compile --target "\$BUN_TARGET"/u);
   assert.match(workflow, /platform_key: windows-x64[\s\S]*?iroh_addon_target: win32-x64/u);
   assert.match(workflow, /happier-iroh-native-lifecycle\.\$\{IROH_ADDON_TARGET\}\.node/u);
@@ -37,13 +54,19 @@ test('the addon smoke accepts an explicit package root for packaged hosts', asyn
   const smoke = await read('packages/iroh-native/scripts/verify-node-addon-load.mjs');
   assert.match(smoke, /--package-root/u);
   assert.match(smoke, /loadIrohNodeNative/u);
+  assert.match(smoke, /addonBytes/u);
+  assert.match(smoke, /addonLoadMilliseconds/u);
+  assert.match(smoke, /endpointStartupMilliseconds/u);
+  assert.doesNotMatch(smoke, /MAX_(?:ADDON_BYTES|STARTUP_MILLISECONDS)/u);
 });
 
 test('server release builds and loads one native Iroh leaf on each supported target', async () => {
-  const [workflow, builder] = await Promise.all([
+  const [workflow, builder, packageJsonSource] = await Promise.all([
     read('.github/workflows/publish-server-runtime.yml'),
     read('scripts/pipeline/release/build-server-binaries.mjs'),
+    read('packages/iroh-native/package.json'),
   ]);
+  const packageJson = JSON.parse(packageJsonSource);
 
   for (const [platformKey, runner, serverTarget, bunTarget, addonTarget] of [
     ['linux-x64', 'ubuntu-24.04', 'linux-x64', 'bun-linux-x64-baseline', 'linux-x64'],
@@ -67,6 +90,13 @@ test('server release builds and loads one native Iroh leaf on each supported tar
     workflow,
     /yarn workspace @happier-dev\/iroh-native build[\s\S]*?yarn workspace @happier-dev\/iroh-native build:native[\s\S]*?yarn workspace @happier-dev\/iroh-native verify:native/u,
   );
+  assert.match(workflow, /verify:native:lifecycle/u);
+  assert.match(
+    workflow,
+    /if: matrix\.platform_key == 'windows-x64'[\s\S]*?verify:native:windows/u,
+  );
+  assert.match(packageJson.scripts['verify:native:lifecycle'], /nodeNativeLifecycle\.test\.ts/u);
+  assert.match(packageJson.scripts['verify:native:windows'], /windows_key_[\s\S]*stopping_acceptor_joins_an_active/u);
   assert.match(workflow, /--targets "\$SERVER_TARGET"/u);
   assert.match(workflow, /PACKAGED_IROH_ROOT="\$\{PACKAGED_PAYLOAD_PATH\}\/node_modules\/@happier-dev\/iroh-native"/u);
   assert.match(workflow, /happier-iroh-native-lifecycle\.\$\{IROH_ADDON_TARGET\}\.node/u);

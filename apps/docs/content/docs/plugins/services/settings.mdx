@@ -39,6 +39,23 @@ Use `{ kind: 'daemon' }` only for fields declared with daemon scope.
 its owning activation or runtime stops. A watcher is a live observation, not a
 history API.
 
+## Account changes during a write
+
+In the current development source, an Account-scoped Settings operation keeps
+the same Account context for its read, conditional write, and any readback.
+Switching Accounts cannot redirect an in-progress write to the new Account.
+
+After a write has been dispatched, a valid acknowledgement still settles that
+operation; retirement does not turn an applied write into a cancellation. The
+host does not publish its retired Settings snapshot into the new Account's
+view. A lost or invalid acknowledgement remains an unknown outcome, so reread
+the original Account's settings before deciding whether another write is safe.
+
+The same settlement rule covers Account-secret bindings. When the initiating
+Account has retired or its Settings projection has advanced, a successful
+secret write can return its acknowledged revision without a snapshot. A known
+conflict stays a conflict even when no current snapshot can be disclosed.
+
 ## Design rules
 
 - Keep display metadata in descriptors.

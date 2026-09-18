@@ -22,6 +22,7 @@ test('candidate verification derives refs, tags, and manifests from one script-o
       cli: '1.2.3',
       stack: '',
       server: '2.3.4',
+      runner: '1.2.3',
       'ui-web': '',
     },
     verifyDeploy: {
@@ -34,6 +35,7 @@ test('candidate verification derives refs, tags, and manifests from one script-o
       cli: true,
       stack: false,
       server: true,
+      runner: true,
       'ui-web': true,
     },
   }), {
@@ -43,18 +45,19 @@ test('candidate verification derives refs, tags, and manifests from one script-o
       'heads/deploy/production/server',
       'heads/deploy/production/docs',
     ],
-    tags: ['cli-v1.2.3', 'server-v2.3.4', 'ui-web-stable'],
+    tags: ['cli-v1.2.3', 'server-v2.3.4', 'runner-v1.2.3', 'ui-web-stable'],
     manifests: [
       { product: 'happier', channel: 'stable', tag: 'cli-v1.2.3' },
       { product: 'happier-server', channel: 'stable', tag: 'server-v2.3.4' },
+      { product: 'happier-runner', channel: 'stable', tag: 'runner-v1.2.3' },
     ],
   });
 
   assert.deepEqual(resolveCandidateVerificationTargets({
     channel: 'dev',
-    versions: { cli: '', stack: '0.2.10-dev.14.2', server: '', 'ui-web': '' },
+    versions: { cli: '', stack: '0.2.10-dev.14.2', server: '', runner: '', 'ui-web': '' },
     verifyDeploy: { ui: false, server: false, website: false, docs: false },
-    verifyRelease: { cli: true, stack: true, server: false, 'ui-web': false },
+    verifyRelease: { cli: true, stack: true, server: false, runner: false, 'ui-web': false },
   }), {
     refs: ['heads/dev'],
     tags: ['cli-dev', 'stack-v0.2.10-dev.14.2'],
@@ -72,6 +75,7 @@ test('candidate verification accepts only canonical exact release versions', () 
       cli: '0.2.10-dev.57',
       stack: '0.2.10-dev.14.2',
       server: '0.2.10-dev.52',
+      runner: '',
       'ui-web': '',
     },
   }), {
@@ -80,6 +84,7 @@ test('candidate verification accepts only canonical exact release versions', () 
       cli: '0.2.10-dev.57',
       stack: '0.2.10-dev.14.2',
       server: '0.2.10-dev.52',
+      runner: '',
       'ui-web': '',
     },
   });

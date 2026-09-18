@@ -18,3 +18,10 @@ test('manual tests dispatch exposes all supported installer smoke channels', asy
   assert.match(raw, /-\s*preview/, 'tests-dispatch.yml should allow preview installer smoke');
   assert.match(raw, /-\s*dev/, 'tests-dispatch.yml should allow dev installer smoke');
 });
+
+test('manual installer diagnostics exercise the checked-out source instead of an older published installer', async () => {
+  const raw = await readFile(join(repoRoot, '.github', 'workflows', 'tests-dispatch.yml'), 'utf8');
+
+  assert.match(raw, /installers_source:\s*local-build/, 'manual installer smoke should validate the checked-out installer source');
+  assert.match(raw, /installers_ref:\s*\./, 'manual installer smoke should validate the current checkout');
+});

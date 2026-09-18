@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import YAML from 'yaml';
 
 const repoRoot = path.resolve(import.meta.dirname, '..', '..');
 
@@ -41,6 +42,71 @@ test('build-ui-mobile-local exposes immutable APK retry recovery as a workflow i
   assert.match(src, /pipeline\/expo\/publish-apk-release\.mjs/);
   assert.match(src, /--retry-version\s+"\$RETRY_VERSION"/);
   assert.match(src, /--target-sha\s+"\$AUTHORIZED_SHA"/);
+});
+
+test('build-ui-mobile-local defers and can resume exact TestFlight distribution without rebuilding', () => {
+  const src = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'build-ui-mobile-local.yml'), 'utf8');
+  assert.match(src, /- retry_testflight_distribution/);
+  assert.match(src, /retry_testflight_eas_build_id:/);
+  assert.match(src, /retry_testflight_build_number:/);
+  assert.match(src, /retry_testflight_app_version:/);
+
+  const iosJob = src.slice(src.indexOf('  build_ios:'), src.indexOf('  ota_update:'));
+  assert.match(iosJob, /Checkout trusted deferred TestFlight control bytes/);
+  assert.match(iosJob, /HAPPIER_PIPELINE_REPO_ROOT:\s*\$\{\{ github\.workspace \}\}/);
+  assert.match(iosJob, /--testflight-distribution-mode deferred/);
+  assert.match(iosJob, /dispatch-testflight-reconciliation\.mjs/);
+  assert.match(iosJob, /actions: write/);
+
+  const retryJob = src.slice(src.indexOf('  retry_testflight_distribution:'), src.indexOf('  ota_update:'));
+  assert.match(retryJob, /if:.*inputs\.action == 'retry_testflight_distribution'/);
+  assert.match(retryJob, /runs-on: ubuntu-latest/);
+  assert.match(retryJob, /--eas-build-id "\$RETRY_TESTFLIGHT_EAS_BUILD_ID"/);
+  assert.match(retryJob, /--build-number "\$RETRY_TESTFLIGHT_BUILD_NUMBER"/);
+  assert.match(retryJob, /--app-version "\$RETRY_TESTFLIGHT_APP_VERSION"/);
+  assert.doesNotMatch(retryJob, /Install dependencies|native-build\.mjs|ui-mobile-release/);
+});
+
+test('production APK publishing reuses an existing exact-source immutable release before rebuilding', () => {
+  const src = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'build-ui-mobile-local.yml'), 'utf8');
+  const workflow = YAML.parse(src);
+  const resolveExisting = workflow.jobs?.resolve_existing_apk;
+  const build = workflow.jobs?.build_android;
+  const promoteExisting = workflow.jobs?.promote_existing_apk;
+
+  assert.ok(resolveExisting);
+  assert.deepEqual(resolveExisting.needs, ['release_actor_guard']);
+  assert.equal(resolveExisting.permissions?.contents, 'read');
+  assert.equal(resolveExisting.outputs?.retry_version, '${{ steps.existing.outputs.retry_version }}');
+
+  const applicability = resolveExisting.steps.find((step) => step.id === 'applicable');
+  assert.equal(applicability?.env?.RELEASE_ENVIRONMENT, '${{ inputs.environment }}');
+  assert.equal(applicability?.env?.PUBLISH_APK_RELEASE, '${{ inputs.publish_apk_release }}');
+  assert.equal(applicability?.env?.RETRY_VERSION, '${{ inputs.retry_version }}');
+  assert.match(applicability?.run ?? '', /RELEASE_ENVIRONMENT.*production/s);
+  assert.match(applicability?.run ?? '', /PUBLISH_APK_RELEASE.*true/s);
+
+  const candidateCheckout = resolveExisting.steps.find((step) => step.name === 'Checkout exact APK candidate source');
+  assert.equal(candidateCheckout?.if, "steps.applicable.outputs.resolve == 'true'");
+  assert.equal(candidateCheckout?.with?.ref, '${{ inputs.source_ref != \'\' && inputs.source_ref || github.sha }}');
+  assert.equal(candidateCheckout?.with?.path, 'candidate');
+  assert.equal(candidateCheckout?.with?.['persist-credentials'], false);
+
+  const existing = resolveExisting.steps.find((step) => step.id === 'existing');
+  assert.match(existing?.run ?? '', /git -C candidate ls-remote origin/);
+  assert.match(existing?.run ?? '', /ui-mobile-v\$\{app_version\}/);
+  assert.match(existing?.run ?? '', /tag_sha.*candidate_sha|candidate_sha.*tag_sha/s);
+  assert.match(existing?.run ?? '', /gh release view/);
+
+  assert.ok(build.needs.includes('resolve_existing_apk'));
+  assert.match(build.if, /needs\.resolve_existing_apk\.outputs\.retry_version == ''/);
+  assert.deepEqual(promoteExisting.needs, ['release_actor_guard', 'resolve_existing_apk']);
+  assert.match(promoteExisting.if, /needs\.resolve_existing_apk\.outputs\.retry_version != ''/);
+  assert.ok(
+    promoteExisting.steps
+      .flatMap((step) => Object.values(step.env ?? {}))
+      .some((value) => String(value).includes('resolve_existing_apk.outputs.retry_version')),
+  );
 });
 
 test('build-ui-mobile-local passes approved release notes and projects exact retry-candidate notes', () => {

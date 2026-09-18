@@ -229,6 +229,30 @@ test('managed Lima start and stop are idempotent and never imply create or delet
   assert.equal(executor.calls.some((call) => call.args.includes('create') || call.args.includes('delete')), false);
 });
 
+test('managed Lima forced stop delegates the emergency stop contract to Lima', async () => {
+  const executor = fakeExecutor({
+    'limactl list --all-fields --format=json happier-agent-primary': {
+      exitCode: 0,
+      out: `${JSON.stringify(compatibleInstance())}\n`,
+      err: '',
+    },
+  });
+
+  assert.deepEqual(await stopManagedLimaInstance({
+    executor,
+    instance: 'happier-agent-primary',
+    force: true,
+  }), {
+    changed: true,
+    status: 'Stopped',
+  });
+  assert.deepEqual(executor.calls.at(-1), {
+    kind: 'run',
+    command: 'limactl',
+    args: ['stop', '--force', 'happier-agent-primary'],
+  });
+});
+
 test('managed Lima status reports an absent retained instance without creating it', async () => {
   const executor = fakeExecutor({
     'limactl list --all-fields --format=json happier-agent-primary': { exitCode: 0, out: '', err: '' },

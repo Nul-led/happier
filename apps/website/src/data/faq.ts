@@ -188,7 +188,7 @@ export const FAQ_ITEMS: ReadonlyArray<FaqItem> = [
         a: [
             'Your code stays on your computer. The agent reads and writes files locally; what syncs is the conversation and the session state needed to show you the same session on another device.',
             'That sync is end-to-end encrypted by default: content is encrypted on your device and the server stores ciphertext it cannot read. Message ids, timestamps, device ids and session ids are metadata and are not encrypted. There is also an explicit plaintext mode for people who want server-readable content — it is opt-in, it is labelled, and it is not the default.',
-            'In the 0.3 development preview, `happier home create` creates a Personal Home on your computer (or `--ssh user@host` on a trusted remote computer), so the whole path stays on infrastructure you control. Stable 0.2 keeps the released self-hosted Relay workflow.',
+            'In the current unreleased 0.3 checkout, `happier home create` creates a Personal Home on your computer (or `--ssh user@host` on a trusted remote computer), so the Home data stays on infrastructure you control. Stable 0.2 keeps the released self-hosted Relay workflow.',
         ],
     },
     {
@@ -210,8 +210,8 @@ export const FAQ_ITEMS: ReadonlyArray<FaqItem> = [
         id: 'server',
         q: 'Do I need a server?',
         a: [
-            'You need a Home, but you do not need to operate one yourself. `happier setup` connects this computer to a Home discovered through your selected Account Service by default, then asks you to approve sign-in interactively.',
-            'In the 0.3 development preview, `happier home create` creates a Personal Home locally or over SSH. It can be reachable through Iroh without a public address. Stable 0.2 keeps the released Relay-oriented setup; `happier relay host install`, Docker, public ingress and direct HTTPS remain advanced operator options.',
+            'You need a Home, but you do not need to operate one yourself. The Home hosts your Account and synchronises conversation and session state; every coding agent still runs beside your repository on the computer you selected. In the current unreleased 0.3 checkout, first setup offers to find linked Homes through your selected sign-in service, connect directly to an existing Home, or create a Personal Home on this computer.',
+            'Local creation uses the same flow as `happier home create`. Switching Homes selects another Home and its Account; it does not migrate your Account or data. Stable 0.2 keeps the released Relay-oriented setup, while generic self-hosting remains an advanced option that needs a network address every client can actually reach.',
         ],
     },
     {
@@ -346,7 +346,7 @@ export const FAQ_ITEMS: ReadonlyArray<FaqItem> = [
         id: 'workComputer',
         q: 'Can I use it on a work computer?',
         a: [
-            'Technically, easily: it is MIT-licensed source you can read before you run it, session content is end-to-end encrypted by default, and the 0.3 development preview can create a Personal Home inside your own network with `happier home create`. Stable 0.2 retains the released self-hosted Relay workflow. That covers much of what a security review asks.',
+            'Technically, easily: it is MIT-licensed source you can read before you run it, session content is end-to-end encrypted by default, and the current unreleased 0.3 checkout can create a Personal Home inside your own network with `happier home create`. Stable 0.2 retains the released self-hosted Relay workflow. That covers much of what a security review asks.',
             'Organisationally, ask first. Your employer may have rules about what runs on the endpoint, and your provider agreement may have rules about connecting a work account to third-party tooling. Neither of those is a question a marketing page can answer for you — check them before you connect a work account, not after.',
         ],
     },

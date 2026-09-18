@@ -1,9 +1,12 @@
 ---
-title: Custom Auth Providers
-description: How to add custom login providers (including enterprise forks) without duplicating core auth logic.
+title: Custom auth providers
+description: How authentication providers and methods compose in 0.3 development source, including extension points for enterprise forks.
 ---
 
-Happier’s server supports a **provider-module registry** so new authentication mechanisms can be added without rewriting core route wiring or `/v1/features` advertising.
+In 0.3 development source, Happier composes built-in and deployment-configured
+authentication providers through one catalog. This page is a contributor reference
+for enterprise forks; it does not describe a released plugin API for authentication
+providers.
 
 Key idea:
 
@@ -11,15 +14,35 @@ Key idea:
 - A method can support multiple **actions** (for example: `login`, `provision`, `connect`).
 - The server advertises methods centrally via `capabilities.auth.methods[]`.
 
-## Provider modules (server)
+## Provider composition (server)
 
 Provider modules live under:
 
 - `apps/server/sources/app/auth/providers/*`
 
-The registry is assembled in:
+`providerModules.ts` builds a deployment snapshot containing the built-in GitHub
+module, valid OIDC modules, configuration errors, and an opaque runtime reference for
+each included provider. It does not keep a live registry or provider cache. Invalid,
+duplicate, or reserved OIDC entries are excluded without removing unrelated valid
+providers.
+
+The snapshot is composed in:
 
 - `apps/server/sources/app/auth/providers/providerModules.ts`
+
+Live OAuth, identity, eligibility, and profile-presentation lookups go through:
+
+- `apps/server/sources/app/auth/providers/identityProviderCatalog.ts`
+
+Each live lookup resolves the requested facet together with its runtime reference.
+OAuth attempts retain that reference, so removing a provider or changing its
+security-relevant configuration prevents an already-started attempt from completing
+against a different runtime. The catalog resolves from current configuration for each
+operation; there is no invalidation bus or static provider-instance cache.
+
+The synchronous `/v1/features` projection cannot call the asynchronous catalog, so
+`deploymentProviderFeatures.ts` projects from the same deployment snapshot. It owns
+no separate provider instances or policy decisions.
 
 Each module can contribute one or more **facets**:
 
@@ -31,6 +54,23 @@ Non-OAuth auth methods (like mTLS) are registered separately via the **auth-meth
 
 - `apps/server/sources/app/auth/methods/registry.ts`
 - `apps/server/sources/app/auth/methods/modules/*`
+
+## Adding a static provider module (enterprise fork)
+
+Provider modules are the source-level extension point for OAuth-based identity
+providers that cannot be expressed through OIDC deployment configuration.
+
+1. Implement a `ProviderModule` with the `oauth`, `identity`, and `auth` facets its
+   flow needs under `apps/server/sources/app/auth/providers/`.
+2. Add it to `staticProviderModules` in
+   `apps/server/sources/app/auth/providers/providerModules.ts`.
+3. Add the matching client flow and presentation. Server registration alone does not
+   create a usable sign-in experience.
+
+The provider ID must not collide with another static provider, a core auth method, or
+the compatibility `anonymous` method. Keep provider execution behind the identity
+provider catalog so route behavior and feature advertising resolve from the same
+composition.
 
 ## Adding a custom auth method (enterprise fork)
 
@@ -61,4 +101,10 @@ The built-in mTLS flow is implemented as:
 - Web: `POST /v1/auth/mtls`
 - Mobile handoff: `/v1/auth/mtls/start` → `/v1/auth/mtls/complete` → `POST /v1/auth/mtls/claim`
 
-Enterprise forks can implement custom UI flows similarly, while still using the shared login-provider registration and feature advertising from core.
+Enterprise forks can implement custom UI flows similarly while retaining the shared
+auth-method registration and feature advertising from core.
+
+## Related
+
+- [OIDC auth](/self-hosting/auth-oidc)
+- [Server auth](/self-hosting/auth)

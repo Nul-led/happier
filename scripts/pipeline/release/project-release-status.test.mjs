@@ -22,6 +22,31 @@ test('nightly status preserves an independently verified sibling after grouped f
   assert.equal(status.terminal, 'failed');
 });
 
+test('nightly status records the verified Runner candidate and rolling dev release', () => {
+  const status = projectReleaseStatus('nightly', {
+    RELEASE_RUN: '46',
+    RELEASE_RUN_URL: 'https://github.com/happier-dev/happier/actions/runs/46',
+    RELEASE_RUN_NAME: 'NIGHTLY — Dev Releases',
+    SOURCE_SHA: 'e'.repeat(40),
+    CANDIDATE_RESULT: 'success',
+    IMMUTABLE_VERIFICATION_RESULT: 'success',
+    POST_PROMOTION_RESULT: 'success',
+    RUNNER_CANDIDATE_RESULT: 'success',
+    RUNNER_CANDIDATE_VERSION: '1.2.3-dev.4',
+    RUNNER_RESULT: 'success',
+  });
+
+  const candidate = status.surfaces.find((surface) => surface.id === 'runner-immutable-candidate');
+  assert.equal(candidate?.state, 'complete');
+  assert.deepEqual(candidate?.identity, {
+    sourceSha: 'e'.repeat(40),
+    verified: true,
+    product: 'runner',
+    version: '1.2.3-dev.4',
+  });
+  assert.equal(status.surfaces.find((surface) => surface.id === 'runner_rolling_release')?.state, 'complete');
+});
+
 test('standard status keeps unrequested surfaces out of failure admission', () => {
   const status = projectReleaseStatus('standard', {
     RELEASE_RUN: '43',
@@ -35,6 +60,57 @@ test('standard status keeps unrequested surfaces out of failure admission', () =
     RELEASE_VERIFY_RESULT: 'success',
   });
   assert.equal(status.surfaces.find((surface) => surface.id === 'docker')?.state, 'not_requested');
+  assert.equal(status.surfaces.find((surface) => surface.id === 'runner-immutable-candidate')?.state, 'not_requested');
+  assert.equal(status.terminal, 'complete');
+});
+
+test('standard status projects a requested relay-only Docker publication failure as terminal failure', () => {
+  const status = projectReleaseStatus('standard', {
+    RELEASE_RUN: '47',
+    RELEASE_RUN_URL: 'https://github.com/happier-dev/happier/actions/runs/47',
+    RELEASE_RUN_NAME: 'RELEASE — Publish (rel_abcdefgh)',
+    HMAINT_OPERATION_ID: 'rel_abcdefgh',
+    RELEASE_CHANNEL: 'preview',
+    SOURCE_SHA: 'f'.repeat(40),
+    CANDIDATE_RESULT: 'success',
+    IMMUTABLE_VERIFICATION_RESULT: 'success',
+    RELEASE_VERIFY_RESULT: 'failure',
+    REQUEST_DOCKER: 'true',
+    DOCKER_RESULT: 'failure',
+  });
+
+  const docker = status.surfaces.find((surface) => surface.id === 'docker');
+  assert.equal(docker?.requested, true);
+  assert.equal(docker?.state, 'failed');
+  assert.equal(docker?.result, 'failed');
+  assert.equal(status.terminal, 'failed');
+});
+
+test('standard status records a verified Runner candidate and promoted release as one product', () => {
+  const status = projectReleaseStatus('standard', {
+    RELEASE_RUN: '45',
+    RELEASE_RUN_URL: 'https://github.com/happier-dev/happier/actions/runs/45',
+    RELEASE_RUN_NAME: 'RELEASE — Publish (rel_abcdefgh)',
+    HMAINT_OPERATION_ID: 'rel_abcdefgh',
+    RELEASE_CHANNEL: 'preview',
+    SOURCE_SHA: 'd'.repeat(40),
+    CANDIDATE_RESULT: 'success',
+    IMMUTABLE_VERIFICATION_RESULT: 'success',
+    RELEASE_VERIFY_RESULT: 'success',
+    REQUEST_RUNNER: 'true',
+    RUNNER_CANDIDATE_RESULT: 'success',
+    RUNNER_VERSION: '1.2.3-preview.4',
+    RUNNER_RESULT: 'success',
+  });
+  const candidate = status.surfaces.find((surface) => surface.id === 'runner-immutable-candidate');
+  assert.equal(candidate?.state, 'complete');
+  assert.deepEqual(candidate?.identity, {
+    sourceSha: 'd'.repeat(40),
+    verified: true,
+    product: 'runner',
+    version: '1.2.3-preview.4',
+  });
+  assert.equal(status.surfaces.find((surface) => surface.id === 'runner_rolling_release')?.state, 'complete');
   assert.equal(status.terminal, 'complete');
 });
 

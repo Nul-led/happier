@@ -335,6 +335,29 @@ ID. Successful connection promotes the staged configuration to the producer's
 returned exact account; reconnect and established operations use the canonical
 account target.
 
+### Quota recovery credits
+
+In the 0.3 development line, a service that can consume quota-reset credits
+declares `recoveryCredits: { supported: true }` and implements the optional
+runtime `recoveryCredits.read` and `recoveryCredits.consume` methods. This
+declaration does not enable automatic spending: the host also requires the
+automatic-reset feature and the account pool's explicit opt-in.
+
+The host selects an available, unexpired credit from the inventory, or uses
+the available aggregate count when the service exposes no individual credit
+IDs. Consumption receives a host-owned idempotency key and the selected credit
+ID, if any. Both methods use the exact established account context and its
+credential revision; network requests still require the plugin's existing
+HostAccess authority. A successful reset must be followed by a fresh quota
+observation before the host treats the account as recovered.
+
+If a consume result is lost or malformed after the operation starts, the
+daemon retains an uncertain receipt and prevents further automatic spending
+for that account during the current coordinator lifetime, even after a newer
+quota observation. This is not a cross-restart exactly-once guarantee. The
+facet does not add a manual reset control to the connected-account or session
+UI.
+
 Public producer descriptors do not declare host adapters, origins,
 permissions, purposes, or HostAccess IDs. Network calls use
 `context.services.http` only when the plugin's existing `network` HostAccess

@@ -308,7 +308,7 @@ case "$(uname -m)" in
     export PLAYWRIGHT_BROWSERS_PATH
     COREPACK_ENABLE_PROJECT_SPEC=0 corepack npm exec --yes \
       --package="playwright@${PLAYWRIGHT_VERSION}" -- \
-      playwright install chromium-headless-shell
+      playwright install --with-deps chromium-headless-shell
     AGENT_BROWSER_EXECUTABLE="$(find "${PLAYWRIGHT_BROWSERS_PATH}" \
       -type f -path '*/chrome-linux/headless_shell' -print -quit)"
     if [[ -z "${AGENT_BROWSER_EXECUTABLE}" || ! -x "${AGENT_BROWSER_EXECUTABLE}" ]]; then

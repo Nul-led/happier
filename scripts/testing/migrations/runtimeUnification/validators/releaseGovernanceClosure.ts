@@ -48,6 +48,8 @@ const SCAN_ROOTS = Object.freeze([
   'apps/ui/sources/components/browser',
   'apps/ui/sources/sync/domains/browser',
   'packages/protocol/src/browser',
+  'packages/protocol/src/devices/simulator',
+  'packages/protocol/src/features/payload/capabilities',
   'packages/protocol/src/local/services/preview',
   'packages/protocol/src/plugins/contributions/ui',
   'packages/protocol/src/plugins/ui',

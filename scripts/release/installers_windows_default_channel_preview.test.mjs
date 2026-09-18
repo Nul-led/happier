@@ -11,7 +11,7 @@ test('install.ps1 defaults to stable channel when HAPPIER_CHANNEL is unset', asy
   const path = join(repoRoot, 'scripts', 'release', 'installers', 'install.ps1');
   const raw = await readFile(path, 'utf8');
   const trimmed = raw.replace(/^\uFEFF?/, '').trimStart();
-  assert.match(trimmed, /^(?:(?:#[^\r\n]*(?:\r?\n|$))|\s)*(?:\[CmdletBinding\([^\]]*\)\]\s*)?param\s*\(/i);
+  assert.match(trimmed, /^(?:(?:<#[\s\S]*?#>)|(?:#[^\r\n]*(?:\r?\n|$))|\s)*(?:\[CmdletBinding\([^\]]*\)\]\s*)?param\s*\(/i);
   assert.match(
     trimmed,
     /\[string\]\s+\$Channel\s*=\s*\$\(if\s*\(\$env:HAPPIER_CHANNEL\)\s*\{\s*\$env:HAPPIER_CHANNEL\s*\}\s*else\s*\{\s*"stable"\s*\}\)/i,

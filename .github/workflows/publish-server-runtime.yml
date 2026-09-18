@@ -381,12 +381,17 @@ jobs:
           yarn workspace @happier-dev/iroh-native build:native
           yarn workspace @happier-dev/iroh-native verify:native
           yarn workspace @happier-dev/iroh-native verify:native:bun
+          HAPPIER_IROH_REQUIRE_NODE_ADDON=1 yarn workspace @happier-dev/iroh-native verify:native:lifecycle
           IROH_COMPILED_SMOKE="${GITHUB_WORKSPACE}/dist/iroh-native-server-compiled-smoke${IROH_SMOKE_SUFFIX}"
           mkdir -p "$(dirname "$IROH_COMPILED_SMOKE")"
           bun build --compile --target "$BUN_TARGET" \
             packages/iroh-native/scripts/verify-node-addon-load.mjs \
             --outfile "$IROH_COMPILED_SMOKE"
           "$IROH_COMPILED_SMOKE" --package-root "$GITHUB_WORKSPACE/packages/iroh-native"
+      - name: Verify Windows endpoint-key security and active-stream shutdown
+        if: matrix.platform_key == 'windows-x64'
+        shell: bash
+        run: yarn workspace @happier-dev/iroh-native verify:native:windows
       - name: Build exact native server archive
         shell: bash
         env:

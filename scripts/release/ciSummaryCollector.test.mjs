@@ -1,0 +1,146 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import test from 'node:test';
+import YAML from 'yaml';
+
+import {
+  collectCiSummary,
+  jobsForSelectedInputs,
+  SELECTOR_JOBS,
+} from './ciSummaryCollector.mjs';
+
+test('every run selector resolves to its complete job set', () => {
+  assert.deepEqual(SELECTOR_JOBS.run_ui, ['ui-unit', 'ui-integration', 'ui', 'shared-packages-unit']);
+  assert.deepEqual(SELECTOR_JOBS.run_installers_smoke, [
+    'installers-smoke-linux',
+    'installers-smoke-macos',
+    'installers-smoke-windows',
+  ]);
+  assert.deepEqual(SELECTOR_JOBS.run_providers, ['release_actor_guard', 'providers']);
+  assert.deepEqual(SELECTOR_JOBS.run_workspace_sync_real, ['workspace-sync-real']);
+  assert.deepEqual(SELECTOR_JOBS.run_workspace_sync_performance, ['workspace-sync-real']);
+  assert.ok(Object.keys(SELECTOR_JOBS).length > 20, 'the collector must cover the workflow, not one special lane');
+  const workflow = readFileSync(new URL('../../.github/workflows/tests.yml', import.meta.url), 'utf8');
+  const declaredSelectors = [...workflow.matchAll(/^      (run_[a-z0-9_]+):$/gmu)].map((match) => match[1]);
+  assert.deepEqual(Object.keys(SELECTOR_JOBS).sort(), [...new Set(declaredSelectors)].sort());
+
+  const jobs = YAML.parse(workflow)?.jobs ?? {};
+  for (const [selector, selectedJobs] of Object.entries(SELECTOR_JOBS)) {
+    const selectorPattern = new RegExp(`inputs\\.${selector}(?![a-z0-9_])`, 'u');
+    const jobsUsingSelector = Object.entries(jobs)
+      .filter(([, definition]) => selectorPattern.test(String(definition?.if ?? '')))
+      .map(([id]) => id)
+      .sort();
+    assert.deepEqual(
+      [...selectedJobs].sort(),
+      jobsUsingSelector,
+      `${selector} must be derived from every job whose actual if expression consumes it`,
+    );
+  }
+});
+
+test('explicit selection requires every selected job while leaving unrelated skipped jobs optional', () => {
+  const required = jobsForSelectedInputs({
+    inputs: { select_jobs_explicitly: true, run_ui: true, run_workspace_sync_real: false },
+    eventName: 'workflow_call',
+  });
+  assert.deepEqual([...required].sort(), [
+    'cliproxyapi-managed-runtime',
+    'shared-packages-unit',
+    'trusted_ref_guard',
+    'ui',
+    'ui-integration',
+    'ui-unit',
+  ]);
+
+  const summary = collectCiSummary({
+    needs: {
+      ui: { result: 'skipped' },
+      'ui-unit': { result: 'success' },
+      'ui-integration': { result: 'success' },
+      'shared-packages-unit': { result: 'success' },
+      'workspace-sync-real': { result: 'skipped' },
+      trusted_ref_guard: { result: 'success' },
+      'cliproxyapi-managed-runtime': { result: 'success' },
+    },
+    requiredJobs: required,
+  });
+  assert.deepEqual(summary.failures.map(({ id }) => id), ['ui']);
+});
+
+test('selected jobs fail closed for missing and non-success conclusions', () => {
+  for (const result of [undefined, null, 'skipped', 'cancelled', 'timed_out']) {
+    const summary = collectCiSummary({
+      needs: { cli: result === undefined ? undefined : { result } },
+      requiredJobs: new Set(['cli']),
+    });
+    assert.deepEqual(summary.failures.map(({ id }) => id), ['cli']);
+  }
+});
+
+test('a selected path-filtered job cannot report success without executing its command', () => {
+  const summary = collectCiSummary({
+    needs: {
+      'ui-e2e': { result: 'success', outputs: { command_executed: 'false' } },
+    },
+    requiredJobs: new Set(['ui-e2e']),
+  });
+  assert.deepEqual(summary.failures.map(({ id }) => id), ['ui-e2e']);
+});
+
+test('every path-filtered job publishes whether its guarded command actually executed', () => {
+  const workflow = YAML.parse(readFileSync(new URL('../../.github/workflows/tests.yml', import.meta.url), 'utf8'));
+  const pathFilteredJobs = Object.entries(workflow?.jobs ?? {})
+    .filter(([, job]) => (job?.steps ?? []).some((step) => String(step?.uses ?? '').includes('dorny/paths-filter')));
+  assert.deepEqual(pathFilteredJobs.map(([id]) => id).sort(), ['ui-e2e', 'workspace-sync-real']);
+  for (const [id, job] of pathFilteredJobs) {
+    assert.match(
+      String(job?.outputs?.command_executed ?? ''),
+      /steps\.changes\.outputs\./u,
+      `${id} must expose command execution to the generic summary collector`,
+    );
+  }
+});
+
+test('ordinary CI requires non-filtered default lanes but leaves path-filtered defaults outcome-driven', () => {
+  const required = jobsForSelectedInputs({ inputs: {}, eventName: 'pull_request' });
+  assert.equal(required.has('cli'), true);
+  assert.equal(required.has('ui-e2e'), false);
+  assert.equal(required.has('workspace-sync-real'), false);
+  assert.equal(required.has('mobile-e2e-android'), false);
+  assert.equal(required.has('stress'), false);
+});
+
+test('ordinary path filtering accepts an irrelevant success but still reports a real lane failure', () => {
+  const required = new Set([...jobsForSelectedInputs({ inputs: {}, eventName: 'pull_request' })]
+    .filter((id) => id === 'workspace-sync-real'));
+  const irrelevant = collectCiSummary({
+    needs: {
+      'workspace-sync-real': { result: 'success', outputs: { command_executed: 'false' } },
+    },
+    requiredJobs: required,
+  });
+  assert.deepEqual(irrelevant.failures, []);
+
+  const failed = collectCiSummary({
+    needs: {
+      'workspace-sync-real': { result: 'failure', outputs: { command_executed: 'true' } },
+    },
+    requiredJobs: required,
+  });
+  assert.deepEqual(failed.failures.map(({ id }) => id), ['workspace-sync-real']);
+});
+
+test('an explicitly selected path-filtered lane must execute its guarded command', () => {
+  const required = new Set([...jobsForSelectedInputs({
+    inputs: { select_jobs_explicitly: true, run_workspace_sync_real: true },
+    eventName: 'workflow_call',
+  })].filter((id) => id === 'workspace-sync-real'));
+  const summary = collectCiSummary({
+    needs: {
+      'workspace-sync-real': { result: 'success', outputs: { command_executed: 'false' } },
+    },
+    requiredJobs: required,
+  });
+  assert.deepEqual(summary.failures.map(({ id }) => id), ['workspace-sync-real']);
+});

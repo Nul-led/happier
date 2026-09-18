@@ -28,7 +28,13 @@ Two distinctions matter:
 
 ### Shared sessions are not listed in Inbox just because they are shared
 
-Shared sessions now live in the **Sessions** tab, inside a dedicated **Shared sessions** subgroup within the normal **Active** and **Inactive** sections.
+Shared sessions live in the **Sessions** tab. Released 0.2 shows them in a
+dedicated **Shared sessions** subgroup within the normal **Active** and
+**Inactive** sections. In the 0.3 development channel there is no separate
+ownership group: shared sessions join the same list as everything else, and the
+selected session-list layout decides where those rows appear — **Projects** and
+**Active & inactive** place them in their project or date groups, and **Recent
+activity** places them in its date groups. Each row still shows who shared it.
 
 That keeps shared sessions feeling native to the main session list instead of turning Inbox into a second session browser.
 
@@ -102,9 +108,24 @@ Typical statuses include:
 
 - open
 - approved
+- executing
 - rejected
 - executed
 - failed
+
+In the current development approval contract, **approved** records the user's
+decision and **executing** means one executor has durably claimed the effect.
+While an item is executing, Happier does not offer another approval or retry
+that could perform the same effect twice. If the effect may have completed but
+the final result could not be saved, the item stays executing and reports an
+unknown outcome instead of guessing or replaying it.
+
+Historical approval items remain readable. Older items that do not contain the
+original execution authority cannot be executed by a current client; Happier
+reports that the approval is stale and asks you to start the operation again.
+The person who approves an item authorizes the decision but does not become the
+operation's identity: Happier rechecks the original Account, Home, runtime,
+target, Action policy, and resource access before the effect runs.
 
 ### Why Happier uses approvals
 
@@ -215,9 +236,10 @@ For push behavior, see [Notifications](/extras/notifications-setup) and [Notific
 ### Find a shared session
 
 1. Open **Sessions**
-2. Look under **Active** or **Inactive**
-3. Open the **Shared sessions** subgroup
-4. Open or pin the session there
+2. Find the session in **Shared sessions** under **Active** or **Inactive** on
+   released 0.2; in the 0.3 development channel it sits in the ordinary group
+   supplied by your selected layout, or search for it by name
+3. Open or pin the session
 
 ## Related docs
 

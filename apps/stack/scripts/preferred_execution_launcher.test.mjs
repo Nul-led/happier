@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
@@ -20,6 +20,10 @@ const executionNeutralEnv = Object.fromEntries(
     'HAPPIER_HEAVYWEIGHT_ADMISSION_TOKEN',
     'HAPPIER_HEAVYWEIGHT_ADMISSION_ROOT',
     'HAPPIER_HEAVYWEIGHT_ADMISSION_MACHINE',
+    'HAPPIER_HSTACK_DISPATCH_CONTROL',
+    'HAPPIER_HSTACK_EXECUTION',
+    'HAPPIER_STACK_CLI_HOME_DIR',
+    'HAPPIER_HOME_DIR',
   ].includes(key)),
 );
 
@@ -49,6 +53,7 @@ test('native launcher bypasses Node when no repository target configuration can 
     env: {
       ...executionNeutralEnv,
       HOME: root,
+      XDG_RUNTIME_DIR: root,
       HAPPIER_STACK_STORAGE_DIR: storageDir,
       PATH: `${binDir}:/usr/bin:/bin`,
     },
@@ -76,6 +81,7 @@ test('automatic local execution does not pin descendant commands to the local ho
     env: {
       ...executionNeutralEnv,
       HOME: root,
+      XDG_RUNTIME_DIR: root,
       HAPPIER_STACK_STORAGE_DIR: storageDir,
       PATH: `${binDir}:/usr/bin:/bin`,
     },
@@ -93,7 +99,10 @@ test('explicit local execution is selected per invocation without consulting tar
   await mkdir(binDir, { recursive: true });
   await mkdir(storageDir, { recursive: true });
   await executable(join(binDir, 'node'), '#!/bin/sh\nexit 97\n');
-  await executable(join(binDir, 'probe-command'), '#!/bin/sh\nprintf "local:%s\\n" "$1"\n');
+  await executable(
+    join(binDir, 'probe-command'),
+    '#!/bin/sh\nprintf "local:%s:routed=%s\\n" "$1" "${HAPPIER_HSTACK_EXECUTION-unset}"\n',
+  );
 
   const result = spawnSync('/bin/sh', [launcher, '--local', '--', 'probe-command', 'ok'], {
     cwd: repoRoot,
@@ -107,7 +116,226 @@ test('explicit local execution is selected per invocation without consulting tar
   });
 
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, 'local:ok\n');
+  assert.equal(result.stdout, 'local:ok:routed=1\n');
+  assert.match(
+    result.stderr,
+    /explicit --local bypasses automatic load distribution/u,
+  );
+
+  const protectedResult = spawnSync('/bin/sh', [launcher, '--local', '--', 'probe-command', 'internal'], {
+    cwd: repoRoot,
+    env: {
+      ...executionNeutralEnv,
+      HOME: root,
+      HAPPIER_HSTACK_DISPATCH_CONTROL: '1',
+      HAPPIER_STACK_STORAGE_DIR: storageDir,
+      PATH: `${binDir}:/usr/bin:/bin`,
+    },
+    encoding: 'utf8',
+  });
+
+  assert.equal(protectedResult.status, 0, protectedResult.stderr);
+  assert.equal(protectedResult.stdout, 'local:internal:routed=1\n');
+  assert.doesNotMatch(
+    protectedResult.stderr,
+    /explicit --local bypasses automatic load distribution/u,
+  );
+});
+
+test('explicit local execution preserves placement while applying the adaptive nested-worker budget', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'happier-preferred-launcher-explicit-local-budget-'));
+  const binDir = join(root, 'bin');
+  const storageDir = join(root, 'stacks');
+  t.after(async () => await rm(root, { recursive: true, force: true }));
+  await mkdir(binDir, { recursive: true });
+  await mkdir(storageDir, { recursive: true });
+  await executable(join(binDir, 'uname'), '#!/bin/sh\nprintf "Linux\\n"\n');
+  await executable(join(binDir, 'getconf'), '#!/bin/sh\nprintf "8\\n"\n');
+  await executable(join(binDir, 'flock'), '#!/bin/sh\nexit 0\n');
+  await executable(join(binDir, 'systemctl'), '#!/bin/sh\nexit 1\n');
+  await executable(join(binDir, 'awk'), [
+    '#!/bin/sh',
+    'case "$*" in',
+    '  */proc/loadavg*) printf "24\\n" ;;',
+    '  */proc/pressure/cpu*) printf "0\\n" ;;',
+    '  */proc/pressure/memory*) printf "0\\n" ;;',
+    '  */proc/meminfo*) printf "48000000 72000000\\n" ;;',
+    '  *) exec /usr/bin/awk "$@" ;;',
+    'esac',
+    '',
+  ].join('\n'));
+  await executable(join(binDir, 'vitest'), [
+    '#!/bin/sh',
+    'printf "workers:%s:%s:%s:%s\\n" "${VITEST_MAX_THREADS-}" "${VITEST_MIN_THREADS-}" "${VITEST_MAX_FORKS-}" "${VITEST_MIN_FORKS-}"',
+    'printf "args:%s\\n" "$*"',
+    '',
+  ].join('\n'));
+
+  const result = spawnSync('/bin/sh', [launcher, '--local', '--', 'vitest', 'run', 'fixture.test.ts'], {
+    cwd: repoRoot,
+    env: {
+      ...executionNeutralEnv,
+      HOME: root,
+      HAPPIER_STACK_STORAGE_DIR: storageDir,
+      PATH: `${binDir}:/usr/bin:/bin`,
+      TMPDIR: root,
+    },
+    encoding: 'utf8',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /explicit --local bypasses automatic load distribution/u);
+  assert.match(result.stdout, /workers:2:1:2:1/);
+  assert.match(result.stdout, /args:run fixture\.test\.ts --maxWorkers=2 --minWorkers=1/);
+});
+
+test('automatic dispatch protects control work while keeping a selected local payload in the jobs slice', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'happier-preferred-launcher-dispatch-control-'));
+  const binDir = join(root, 'bin');
+  const stackDir = join(root, 'stack');
+  const configPath = join(stackDir, 'dev-targets.json');
+  const scopeLog = join(root, 'systemd-run.log');
+  t.after(async () => await rm(root, { recursive: true, force: true }));
+  await mkdir(binDir, { recursive: true });
+  await mkdir(join(stackDir, 'mutagen', 'data'), { recursive: true });
+  await writeFile(configPath, '{}\n', 'utf8');
+  await writeFile(join(stackDir, 'dev-target-exec-v1.sh'), [
+    "HSTACK_EXEC_PROJECTION_VERSION='2'",
+    `projection_repo_root='${repoRoot}'`,
+    "command_mode='auto'",
+    "include_local='1'",
+    "fallback_mode='local'",
+    "load_ttl_seconds='0'",
+    "unavailable_ttl_seconds='0'",
+    "target_count='1'",
+    "target_1_name='remote'",
+    "target_1_ssh='remote-host'",
+    "target_1_ssh_config=''",
+    "target_1_repo_dir='/remote/repo'",
+    "target_1_cli_home='/remote/home'",
+    "target_1_remote_path='/usr/bin:/bin'",
+    '',
+  ].join('\n'));
+  await executable(join(binDir, 'node'), '#!/bin/sh\nexit 97\n');
+  await executable(join(binDir, 'mutagen'), [
+    '#!/bin/sh',
+    'if [ "$2" = list ]; then printf "%s|Watching|7||false|0\\n" "$3"; fi',
+    'exit 0',
+    '',
+  ].join('\n'));
+  await executable(join(binDir, 'ssh'), '#!/bin/sh\nexit 255\n');
+  await executable(join(binDir, 'getconf'), '#!/bin/sh\nprintf "4\\n"\n');
+  await executable(join(binDir, 'sysctl'), '#!/bin/sh\nprintf "{ 0.1 0.1 0.1 }\\n"\n');
+  await executable(join(binDir, 'memory_pressure'), '#!/bin/sh\nprintf "System-wide memory free percentage: 80%%\\n"\n');
+  await executable(join(binDir, 'uname'), '#!/bin/sh\nprintf "Linux\\n"\n');
+  await executable(join(binDir, 'probe-command'), '#!/bin/sh\nprintf "payload:%s\\n" "$1"\n');
+  await executable(join(binDir, 'systemctl'), [
+    '#!/bin/sh',
+    'case "$*" in',
+    '  *show-environment*) exit 0 ;;',
+    '  *happier-critical.slice*) printf "LoadState=loaded\\nMemoryLow=4294967296\\n" ;;',
+    '  *happier-jobs.slice*) printf "loaded\\n" ;;',
+    '  *) exit 1 ;;',
+    'esac',
+    '',
+  ].join('\n'));
+  await executable(join(binDir, 'systemd-run'), [
+    '#!/bin/sh',
+    'printf "%s\\n" "$*" >> "$SCOPE_LOG"',
+    'while [ "$#" -gt 0 ]; do',
+    '  [ "$1" = -- ] && { shift; break; }',
+    '  shift',
+    'done',
+    'exec "$@"',
+    '',
+  ].join('\n'));
+
+  const result = spawnSync('/bin/sh', [launcher, '--', 'probe-command', 'ok'], {
+    cwd: repoRoot,
+    env: {
+      ...executionNeutralEnv,
+      HOME: root,
+      HAPPIER_EXEC_CONFIG_PATH: configPath,
+      HAPPIER_STACK_STORAGE_DIR: join(root, 'stacks'),
+      DBUS_SESSION_BUS_ADDRESS: 'test-user-bus',
+      PATH: `${binDir}:/usr/bin:/bin`,
+      SCOPE_LOG: scopeLog,
+      TMPDIR: root,
+    },
+    encoding: 'utf8',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'payload:ok\n');
+  const scopes = await readFile(scopeLog, 'utf8');
+  assert.match(scopes, /--slice=happier-critical\.slice .*hstack-exec.*probe-command ok/);
+  assert.match(scopes, /--slice=happier-jobs\.slice --nice=10 -- probe-command ok/);
+});
+
+test('Yarn workspace validation receives the remote workload governor', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'happier-preferred-launcher-workspace-validation-'));
+  const binDir = join(root, 'bin');
+  const stackDir = join(root, 'stack');
+  const configPath = join(stackDir, 'dev-targets.json');
+  t.after(async () => await rm(root, { recursive: true, force: true }));
+  await mkdir(binDir, { recursive: true });
+  await mkdir(join(stackDir, 'mutagen', 'data'), { recursive: true });
+  await writeFile(configPath, '{}\n', 'utf8');
+  await writeFile(join(stackDir, 'dev-target-exec-v1.sh'), [
+    "HSTACK_EXEC_PROJECTION_VERSION='2'",
+    "dependency_direct_commands='node npm npx pnpm tsc vitest yarn'",
+    "dependency_corepack_subcommands='npm pnpm yarn'",
+    "validation_direct_commands='tsc vitest'",
+    "validation_script_families='build check lint test typecheck vitest'",
+    `projection_repo_root='${repoRoot}'`,
+    "command_mode='auto'",
+    "include_local='0'",
+    "fallback_mode='error'",
+    "load_ttl_seconds='0'",
+    "unavailable_ttl_seconds='0'",
+    "target_count='1'",
+    "target_1_name='linux'",
+    "target_1_ssh='linux-host'",
+    "target_1_ssh_config=''",
+    "target_1_repo_dir='/remote/repo'",
+    "target_1_cli_home='/remote/home'",
+    "target_1_remote_path='/usr/bin:/bin'",
+    '',
+  ].join('\n'));
+  await executable(join(binDir, 'node'), '#!/bin/sh\nexit 97\n');
+  await executable(join(binDir, 'mutagen'), '#!/bin/sh\nprintf "%s|Watching|7||false|0\\n" "$3"\n');
+  await executable(join(binDir, 'ssh'), [
+    '#!/bin/sh',
+    'case "$*" in',
+    '  *getconf*) printf "14 360 0.8 22000000 20 420 48000000 72000000 0 0 90 0 0 0 0 linux\\n" ;;',
+    '  *"&& command -v "*) exit 0 ;;',
+    '  *-MNf*|*-O\\ exit*) exit 0 ;;',
+    '  *) remote_command=; for ssh_argument in "$@"; do remote_command=$ssh_argument; done; printf "remote:%s\\n" "$remote_command" ;;',
+    'esac',
+    '',
+  ].join('\n'));
+
+  const result = spawnSync('/bin/sh', [launcher, '--', 'yarn', 'workspace', '@happier-dev/app', 'test', 'fixture.test.ts'], {
+    cwd: repoRoot,
+    env: {
+      ...executionNeutralEnv,
+      HOME: root,
+      HAPPIER_EXEC_CONFIG_PATH: configPath,
+      HAPPIER_STACK_STORAGE_DIR: join(root, 'stacks'),
+      PATH: `${binDir}:/usr/bin:/bin`,
+      TMPDIR: root,
+    },
+    encoding: 'utf8',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /VITEST_MAX_THREADS=.*1/);
+  assert.match(result.stdout, /VITEST_MIN_THREADS=.*1/);
+  assert.match(result.stdout, /nice -n 10/);
+  for (const argument of ['yarn', 'workspace', '@happier-dev/app', 'test', 'fixture.test.ts']) {
+    assert.match(result.stdout, new RegExp(argument.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  }
+  assert.doesNotMatch(result.stdout, /--maxWorkers=1|--minWorkers=1/);
 });
 
 test('native launcher keeps Git commands on the authoritative checkout without probing a replica', async () => {
@@ -220,9 +448,11 @@ test('native launcher discovers the matching repository projection when its dire
   await executable(join(binDir, 'mutagen'), '#!/bin/sh\nprintf "happier-linux|Watching|7||false|0\\n"\n');
   await executable(join(binDir, 'ssh'), [
     '#!/bin/sh',
+    'last_argument=; for argument in "$@"; do last_argument=$argument; done',
+    '[ "$last_argument" = : ] && exit 0',
     'case "$*" in',
-    '  *getconf*) printf "8 1 0.5 22000000 10\\n" ;;',
-    '  *command\\ -v*) exit 0 ;;',
+    '  *getconf*) case "$*" in *ControlPath=none*) printf "8 1 0.5 22000000 10\\n" ;; *) exit 255 ;; esac ;;',
+    '  *command\\ -v*) case "$*" in *ControlPath=none*) exit 0 ;; *) exit 255 ;; esac ;;',
     '  *) printf "remote:%s\\n" "$*" ;;',
     'esac',
     '',
@@ -233,6 +463,7 @@ test('native launcher discovers the matching repository projection when its dire
     env: {
       ...executionNeutralEnv,
       HOME: root,
+      XDG_RUNTIME_DIR: root,
       HAPPIER_STACK_STORAGE_DIR: storageDir,
       PATH: `${binDir}:/usr/bin:/bin`,
       TMPDIR: root,
@@ -401,7 +632,15 @@ test('native launcher reuses one bounded SSH master across sequential commands f
     '',
   ].join('\n'));
   await executable(join(binDir, 'node'), '#!/bin/sh\nexit 97\n');
-  await executable(join(binDir, 'mutagen'), '#!/bin/sh\nprintf "%s|Watching|7||false|0\\n" "$3"\n');
+  await executable(join(binDir, 'mutagen'), [
+    '#!/bin/sh',
+    'case "$2" in',
+    '  list) printf "%s|Watching|7||false|0\\n" "$3" ;;',
+    '  flush) exit 0 ;;',
+    '  *) exit 92 ;;',
+    'esac',
+    '',
+  ].join('\n'));
   await executable(join(binDir, 'probe-command'), [
     '#!/bin/sh',
     'if [ "$1" = hold ]; then',
@@ -492,7 +731,86 @@ test('native launcher reuses one bounded SSH master across sequential commands f
   assert.equal(heldOutput.stdout, 'remote:hold\n');
 });
 
-test('native launcher waits for worker heavyweight capacity before opening a command transport', async (t) => {
+test('native launcher uses its private temporary SSH control root when XDG_RUNTIME_DIR is read-only', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'happier-preferred-launcher-readonly-runtime-'));
+  const binDir = join(root, 'bin');
+  const stackDir = join(root, 'stack');
+  const configPath = join(stackDir, 'dev-targets.json');
+  const runtimeDir = join(root, 'runtime');
+  const masterPath = join(root, 'master-path');
+  t.after(async () => {
+    await chmod(runtimeDir, 0o755).catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  });
+  await mkdir(binDir, { recursive: true });
+  await mkdir(join(stackDir, 'mutagen', 'data'), { recursive: true });
+  await mkdir(runtimeDir, { recursive: true });
+  await writeFile(configPath, '{}\n', 'utf8');
+  await writeFile(join(stackDir, 'dev-target-exec-v1.sh'), [
+    "HSTACK_EXEC_PROJECTION_VERSION='2'",
+    `projection_repo_root='${repoRoot}'`,
+    "command_mode='auto'",
+    "include_local='0'",
+    "fallback_mode='error'",
+    "load_ttl_seconds='300'",
+    "unavailable_ttl_seconds='120'",
+    "target_count='1'",
+    "target_1_name='linux'",
+    "target_1_ssh='linux-host'",
+    "target_1_ssh_config=''",
+    `target_1_repo_dir='${repoRoot}'`,
+    `target_1_cli_home='${join(root, 'machine-home')}'`,
+    `target_1_remote_path='${binDir}:/usr/bin:/bin'`,
+    '',
+  ].join('\n'));
+  await executable(join(binDir, 'node'), '#!/bin/sh\nexit 97\n');
+  await executable(join(binDir, 'mutagen'), [
+    '#!/bin/sh',
+    'if [ "$2" = list ]; then printf "%s|Watching|7||false|0\\n" "$3"; fi',
+    'exit 0',
+    '',
+  ].join('\n'));
+  await executable(join(binDir, 'probe-command'), '#!/bin/sh\nprintf "remote:%s\\n" "$1"\n');
+  await executable(join(binDir, 'ssh'), [
+    '#!/bin/sh',
+    'control_path=',
+    'previous=',
+    'for argument in "$@"; do',
+    '  if [ "$previous" = -S ]; then control_path=$argument; fi',
+    '  previous=$argument',
+    'done',
+    'case "$*" in',
+    '  *getconf*) printf "8 0.5 0.8 22000000 20 0 18000000 25000000 0 0 0 0 0 0 0 linux\\n" ;;',
+    '  *"&& command -v "*) exit 0 ;;',
+    '  *-O\\ check*) [ -f "$control_path" ] ;;',
+    '  *-MNf*) mkdir -p "${control_path%/*}"; : > "$control_path"; printf "%s\\n" "$control_path" > "$MASTER_PATH" ;;',
+    '  *) remote_command=; for ssh_argument in "$@"; do remote_command=$ssh_argument; done; /bin/sh -c "$remote_command" ;;',
+    'esac',
+    '',
+  ].join('\n'));
+  await chmod(runtimeDir, 0o555);
+
+  const result = spawnSync('/bin/sh', [launcher, '--target=linux', '--', 'probe-command', 'ok'], {
+    cwd: repoRoot,
+    env: {
+      ...executionNeutralEnv,
+      HOME: root,
+      HAPPIER_EXEC_CONFIG_PATH: configPath,
+      HAPPIER_STACK_STORAGE_DIR: join(root, 'stacks'),
+      PATH: `${binDir}:/usr/bin:/bin`,
+      TMPDIR: root,
+      XDG_RUNTIME_DIR: runtimeDir,
+      MASTER_PATH: masterPath,
+    },
+    encoding: 'utf8',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'remote:ok\n');
+  assert.match(await readFile(masterPath, 'utf8'), new RegExp(`^${root}/happier-ssh-${process.getuid()}/`));
+});
+
+test('native launcher admits another remote heavyweight command while the worker has healthy pressure', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'happier-preferred-launcher-pretransport-admission-'));
   const binDir = join(root, 'bin');
   const stackDir = join(root, 'stack');
@@ -545,9 +863,28 @@ test('native launcher waits for worker heavyweight capacity before opening a com
     await writeFile(join(cacheDir, `linux.active.${owner.pid}`), `${owner.pid}\nvalidation\nexisting\n`, 'utf8');
   }
   await executable(join(binDir, 'node'), '#!/bin/sh\nexit 0\n');
+  await executable(join(binDir, 'flock'), [
+    '#!/bin/sh',
+    '# Reservation fixtures model locks held by another dispatcher.',
+    '[ "${1-}" = -n ] && [ "${3-}" = -c ] && exit 1',
+    'exec /usr/bin/flock "$@"',
+    '',
+  ].join('\n'));
   await executable(join(binDir, 'uname'), '#!/bin/sh\nprintf "Darwin\\n"\n');
-  await executable(join(binDir, 'mutagen'), '#!/bin/sh\nprintf "%s|Watching|7||false|0\\n" "$3"\n');
-  await executable(join(binDir, 'tsc'), '#!/bin/sh\nprintf "remote-tsc\\n"\n');
+  await executable(join(binDir, 'mutagen'), [
+    '#!/bin/sh',
+    'case "$2" in',
+    '  list) printf "%s|Watching|7||false|0\\n" "$3" ;;',
+    '  flush) exit 0 ;;',
+    '  *) exit 92 ;;',
+    'esac',
+    '',
+  ].join('\n'));
+  await executable(join(binDir, 'vitest'), [
+    '#!/bin/sh',
+    'if [ "${REMOTE_MARKER-}" = 1 ]; then printf "remote\\n"; else printf "local\\n"; fi',
+    '',
+  ].join('\n'));
   await executable(join(binDir, 'ssh'), [
     '#!/bin/sh',
     'control_path=',
@@ -560,7 +897,7 @@ test('native launcher waits for worker heavyweight capacity before opening a com
     '  *"&& command -v "*) exit 0 ;;',
     '  *-O\\ check*) [ -f "$control_path" ] ;;',
     '  *-MNf*) mkdir -p "${control_path%/*}"; : > "$control_path"; : > "$MASTER_STARTED" ;;',
-    '  *) remote_command=; for ssh_argument in "$@"; do remote_command=$ssh_argument; done; /bin/sh -c "$remote_command" ;;',
+    '  *) remote_command=; for ssh_argument in "$@"; do remote_command=$ssh_argument; done; REMOTE_MARKER=1 /bin/sh -c "$remote_command" ;;',
     'esac',
     '',
   ].join('\n'));
@@ -574,7 +911,7 @@ test('native launcher waits for worker heavyweight capacity before opening a com
     XDG_RUNTIME_DIR: runtimeDir,
     MASTER_STARTED: masterStarted,
   };
-  const child = spawn('/bin/sh', [launcher, '--', 'tsc', '--version'], {
+  const child = spawn('/bin/sh', [launcher, '--', 'vitest', '--version'], {
     cwd: repoRoot,
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -583,15 +920,9 @@ test('native launcher waits for worker heavyweight capacity before opening a com
   child.stdout.on('data', (chunk) => { output.stdout += chunk; });
   child.stderr.on('data', (chunk) => { output.stderr += chunk; });
   try {
-    for (let attempt = 0; attempt < 200 && !/waiting for heavyweight capacity/.test(output.stderr); attempt += 1) {
-      await new Promise((resolveWait) => setTimeout(resolveWait, 20));
-    }
-    assert.match(output.stderr, /waiting for heavyweight capacity/);
-    await assert.rejects(readFile(masterStarted), { code: 'ENOENT' });
-    await rm(join(cacheDir, `linux.active.${owners[0].pid}`));
     const exitCode = child.exitCode ?? await new Promise((resolveExit) => child.once('exit', resolveExit));
     assert.equal(exitCode, 0, output.stderr);
-    assert.equal(output.stdout, 'remote-tsc\n');
+    assert.equal(output.stdout, 'remote\n');
     await readFile(masterStarted);
   } finally {
     if (child.exitCode == null) child.kill('SIGTERM');
@@ -721,6 +1052,8 @@ test('native launcher automatic placement remains compatible with GNU awk local 
     env: {
       ...executionNeutralEnv,
       HOME: root,
+      XDG_RUNTIME_DIR: root,
+      DBUS_SESSION_BUS_ADDRESS: '',
       HAPPIER_STACK_STORAGE_DIR: storageDir,
       PATH: `${binDir}:/usr/bin:/bin`,
       TMPDIR: root,
@@ -792,6 +1125,8 @@ test('native launcher governs nested Vitest workers when automatic placement sel
     env: {
       ...executionNeutralEnv,
       HOME: root,
+      XDG_RUNTIME_DIR: root,
+      DBUS_SESSION_BUS_ADDRESS: '',
       HAPPIER_STACK_STORAGE_DIR: storageDir,
       PATH: `${binDir}:/usr/bin:/bin`,
       TMPDIR: root,
@@ -839,12 +1174,17 @@ test('native launcher governs nested Vitest workers when automatic placement sel
   assert.match(packageScript.stdout, /^args:yarn -s test:migration:bundled-plugin-projections$/m);
 });
 
-test('native launcher exact target maps the repository-relative cwd and allocates a requested TTY on only the named healthy target', async () => {
+test('native launcher exact target preserves remote-only cwd, environment, and TTY on only the named healthy target', async () => {
   const root = await mkdtemp(join(tmpdir(), 'happier-preferred-launcher-exact-target-'));
   const binDir = join(root, 'bin');
   const storageDir = join(root, 'stacks');
   const stackDir = join(storageDir, `repo-${repoToken}-native`);
+  const remoteRepo = join(root, 'remote-repo');
+  const remoteHome = join(root, 'remote-home');
+  const sshLog = join(root, 'ssh.log');
+  const environmentValue = "a 'quoted' $value $(exit 99)\n\n";
   await mkdir(binDir, { recursive: true });
+  await mkdir(join(remoteRepo, 'apps/cli/dist'), { recursive: true });
   await mkdir(join(stackDir, 'mutagen', 'data'), { recursive: true });
   await writeFile(join(stackDir, 'dev-targets.json'), '{}\n');
   await writeFile(join(stackDir, 'dev-target-exec-v1.sh'), [
@@ -859,9 +1199,9 @@ test('native launcher exact target maps the repository-relative cwd and allocate
     "target_1_name='mac-host'",
     "target_1_ssh='mac-host'",
     "target_1_ssh_config=''",
-    "target_1_repo_dir='/remote/mac-repo'",
-    "target_1_cli_home='/remote/mac-home'",
-    "target_1_remote_path='/usr/bin:/bin'",
+    `target_1_repo_dir='${remoteRepo}'`,
+    `target_1_cli_home='${remoteHome}'`,
+    `target_1_remote_path='${binDir}:/usr/bin:/bin'`,
     "target_2_name='linux'",
     "target_2_ssh='linux-host'",
     "target_2_ssh_config=''",
@@ -871,23 +1211,25 @@ test('native launcher exact target maps the repository-relative cwd and allocate
     '',
   ].join('\n'));
   await executable(join(binDir, 'node'), '#!/bin/sh\nexit 97\n');
+  await executable(join(binDir, 'probe-command'), '#!/bin/sh\nprintf "value<%s>empty<%s>arg<%s>\\n" "$PROBE_VALUE" "$PROBE_EMPTY" "$1"\nprintf "remote-error\\n" >&2\nexit 23\n');
   await executable(
     join(binDir, 'mutagen'),
     '#!/bin/sh\n[ "$3" = "happier-mac--host" ] || exit 0\nprintf "%s|Watching|7||false|0\\n" "$3"\n',
   );
   await executable(join(binDir, 'ssh'), [
     '#!/bin/sh',
+    'printf "called\\n" >> "$PROBE_SSH_LOG"',
     'case "$*" in',
     '  *getconf*) case "$*" in *mac-host*) printf "8 6 0.5 22000000 10\\n" ;; *) printf "8 0.1 0.9 22000000 10\\n" ;; esac ;;',
     '  *command\\ -v*) exit 0 ;;',
-    '  *probe-command*) printf "remote:mac:%s\\n" "$*"; printf "remote-error\\n" >&2; exit 23 ;;',
+    '  *probe-command*) printf "remote:mac:%s\\n" "$*"; for argument in "$@"; do remote_command=$argument; done; eval "set -- $remote_command"; exec /bin/bash -c "$3" ;;',
     '  *mac-host*) printf "remote:mac:%s\\n" "$*" ;;',
     '  *linux-host*) printf "wrong-target:linux\\n" ;;',
     'esac',
     '',
   ].join('\n'));
 
-  const result = spawnSync('/bin/sh', [launcher, '--target=mac-host', '--tty', '--', 'probe-command', 'ok'], {
+  const result = spawnSync('/bin/sh', [launcher, '--target=mac-host', '--tty', '--cwd=apps/cli/dist', `--env=PROBE_VALUE=${environmentValue}`, '--env=PROBE_EMPTY=', '--', 'probe-command', "ok'\n"], {
     cwd: join(repoRoot, 'apps', 'stack'),
     env: {
       ...executionNeutralEnv,
@@ -895,6 +1237,7 @@ test('native launcher exact target maps the repository-relative cwd and allocate
       HAPPIER_STACK_STORAGE_DIR: storageDir,
       PATH: `${binDir}:/usr/bin:/bin`,
       TMPDIR: root,
+      PROBE_SSH_LOG: sshLog,
     },
     encoding: 'utf8',
   });
@@ -904,9 +1247,28 @@ test('native launcher exact target maps the repository-relative cwd and allocate
   assert.match(result.stderr, /remote-error/);
   assert.match(result.stdout, /remote:mac:/);
   assert.match(result.stdout, /-tt -S/);
-  assert.match(result.stdout, /\/remote\/mac-repo\/apps\/stack/);
+  assert.ok(result.stdout.includes(`${remoteRepo}/apps/cli/dist`));
+  assert.match(result.stdout, /export PROBE_VALUE=/);
+  assert.ok(result.stdout.includes(`value<${environmentValue}>empty<>arg<ok'\n>`), result.stdout);
   assert.doesNotMatch(result.stdout, new RegExp(repoRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.doesNotMatch(result.stdout, /wrong-target:linux/);
+  const transportBeforeInvalidOptions = await readFile(sshLog, 'utf8');
+  for (const option of ['--env=BAD-KEY=value', '--cwd=apps/../../outside']) {
+    const rejected = spawnSync('/bin/sh', [launcher, '--target=mac-host', option, '--', 'probe-command'], {
+      cwd: repoRoot,
+      env: {
+        ...executionNeutralEnv,
+        HOME: root,
+        HAPPIER_STACK_STORAGE_DIR: storageDir,
+        PATH: `${binDir}:/usr/bin:/bin`,
+        TMPDIR: root,
+        PROBE_SSH_LOG: sshLog,
+      },
+      encoding: 'utf8',
+    });
+    assert.equal(rejected.status, 1, rejected.stderr);
+  }
+  assert.equal(await readFile(sshLog, 'utf8'), transportBeforeInvalidOptions);
 });
 
 test('native launcher exact target fails closed when its command connection is rejected', async () => {
@@ -1022,6 +1384,8 @@ test('native launcher preserves a successful remote command when the login shell
   await executable(join(binDir, 'mutagen'), '#!/bin/sh\nprintf "%s|Watching|7||false|0\\n" "$3"\n');
   await executable(join(binDir, 'ssh'), [
     '#!/bin/sh',
+    'last_argument=; for argument in "$@"; do last_argument=$argument; done',
+    '[ "$last_argument" = : ] && exit 0',
     'case "$*" in',
     '  *getconf*) printf "8 1 0.5 22000000 10\\n" ;;',
     '  *command\\ -v*) exit 0 ;;',
@@ -1335,6 +1699,101 @@ test('native launcher excludes a target without enough repository scratch space'
   assert.doesNotMatch(result.stdout, /wrong-target:mac2/);
 });
 
+test('native launcher keeps remote execution available when sandboxing makes stack command state read-only', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'happier-preferred-launcher-readonly-state-'));
+  const binDir = join(root, 'bin');
+  const storageDir = join(root, 'stacks');
+  const stackDir = join(storageDir, `repo-${repoToken}-native`);
+  const runtimeDir = join(root, 'runtime');
+  t.after(async () => {
+    await chmod(stackDir, 0o755).catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  });
+  await mkdir(binDir, { recursive: true });
+  await mkdir(runtimeDir, { recursive: true });
+  await mkdir(join(stackDir, 'mutagen', 'data'), { recursive: true });
+  await writeFile(join(stackDir, 'dev-targets.json'), '{}\n');
+  await writeFile(join(stackDir, 'dev-target-exec-v1.sh'), [
+    "HSTACK_EXEC_PROJECTION_VERSION='2'",
+    `projection_repo_root='${repoRoot}'`,
+    "command_mode='auto'",
+    "include_local='0'",
+    "fallback_mode='error'",
+    "load_ttl_seconds='15'",
+    "unavailable_ttl_seconds='120'",
+    "target_count='1'",
+    "target_1_name='mac'",
+    "target_1_ssh='mac-host'",
+    "target_1_ssh_config=''",
+    `target_1_repo_dir='${repoRoot}'`,
+    `target_1_cli_home='${join(root, 'machine-home')}'`,
+    `target_1_remote_path='${binDir}:/usr/bin:/bin'`,
+    '',
+  ].join('\n'));
+  await executable(
+    join(binDir, 'probe-command'),
+    '#!/bin/sh\nprintf "execution:%s\\n" "${HAPPIER_DEV_TARGET_EXECUTION-local}"\n',
+  );
+  await executable(
+    join(binDir, 'mutagen'),
+    '#!/bin/sh\nprintf "%s|Watching|7||false|0\\n" "$3"\n',
+  );
+  await executable(join(binDir, 'ssh'), [
+    '#!/bin/sh',
+    'control_path=',
+    'previous=',
+    'for argument in "$@"; do',
+    '  if [ "$previous" = -S ]; then control_path=$argument; fi',
+    '  previous=$argument',
+    'done',
+    'case "$*" in',
+    '  *getconf*) printf "8 0.5 0.8 22000000 20 0 18000000 25000000 0 0 0 0 0 0 0 linux\\n" ;;',
+    '  *"&& command -v "*) exit 0 ;;',
+    '  *-O\\ check*) [ -S "$control_path" ] || [ -f "$control_path" ] ;;',
+    '  *-MNf*) mkdir -p "${control_path%/*}"; : > "$control_path" ;;',
+    '  *)',
+    '    remote_command=',
+    '    for ssh_argument in "$@"; do remote_command=$ssh_argument; done',
+    '    /bin/sh -c "$remote_command"',
+    '    ;;',
+    'esac',
+    '',
+  ].join('\n'));
+  await chmod(stackDir, 0o555);
+
+  const runSandboxedSession = (sessionId) => spawnSync('/bin/sh', [launcher, '--', 'probe-command', sessionId], {
+    cwd: repoRoot,
+    env: {
+      ...executionNeutralEnv,
+      HOME: root,
+      CODEX_SESSION_ID: sessionId,
+      HAPPIER_STACK_STORAGE_DIR: storageDir,
+      PATH: `${binDir}:/usr/bin:/bin`,
+      TMPDIR: root,
+      XDG_RUNTIME_DIR: runtimeDir,
+    },
+    encoding: 'utf8',
+  });
+
+  const result = runSandboxedSession('first-session');
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /selected mac /);
+  assert.match(result.stdout, /execution:1/);
+  assert.doesNotMatch(result.stdout, /execution:local/);
+
+  const secondResult = runSandboxedSession('second-session');
+  assert.equal(secondResult.status, 0, secondResult.stderr);
+  assert.match(secondResult.stderr, /selected mac /);
+
+  const fallbackCacheRoot = join(root, `happier-preferred-execution-${process.getuid()}`);
+  assert.equal(
+    (await readdir(fallbackCacheRoot)).length,
+    1,
+    'sandboxed sessions for one Stack must share load samples and active dispatch reservations',
+  );
+});
+
 test('native launcher admits APFS targets that round capacity to 100 percent with useful free space', async () => {
   const root = await mkdtemp(join(tmpdir(), 'happier-preferred-launcher-apfs-free-'));
   const binDir = join(root, 'bin');
@@ -1507,6 +1966,7 @@ test('native launcher retries another target when the selected host is unreachab
     env: {
       ...executionNeutralEnv,
       HOME: root,
+      XDG_RUNTIME_DIR: root,
       HAPPIER_STACK_STORAGE_DIR: storageDir,
       PATH: `${binDir}:/usr/bin:/bin`,
       TMPDIR: root,
@@ -1520,7 +1980,275 @@ test('native launcher retries another target when the selected host is unreachab
   assert.match(result.stdout, /remote:mac2:.*probe-command.*ok/);
 });
 
-test('native launcher accounts for an in-flight dispatch before routing another command', async () => {
+test('native launcher retries another target when a live control master refuses the authoritative session channel', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'happier-preferred-launcher-mux-session-refused-'));
+  const binDir = join(root, 'bin');
+  const storageDir = join(root, 'stacks');
+  const stackDir = join(storageDir, `repo-${repoToken}-native`);
+  const warmedMarker = join(root, 'mac-master-warmed');
+  await mkdir(binDir, { recursive: true });
+  await mkdir(join(stackDir, 'mutagen', 'data'), { recursive: true });
+  await writeFile(join(stackDir, 'dev-targets.json'), '{}\n');
+  await writeFile(join(stackDir, 'dev-target-exec-v1.sh'), [
+    "HSTACK_EXEC_PROJECTION_VERSION='2'",
+    `projection_repo_root='${repoRoot}'`,
+    "command_mode='auto'",
+    "include_local='0'",
+    "fallback_mode='local'",
+    "load_ttl_seconds='15'",
+    "unavailable_ttl_seconds='120'",
+    "target_count='2'",
+    "target_1_name='mac'",
+    "target_1_ssh='mac-host'",
+    "target_1_ssh_config=''",
+    "target_1_repo_dir='/remote/repo'",
+    "target_1_cli_home='/remote/home'",
+    "target_1_remote_path='/usr/bin:/bin'",
+    "target_2_name='mac2'",
+    "target_2_ssh='mac2-host'",
+    "target_2_ssh_config=''",
+    "target_2_repo_dir='/remote/repo'",
+    "target_2_cli_home='/remote/home'",
+    "target_2_remote_path='/usr/bin:/bin'",
+    '',
+  ].join('\n'));
+  await executable(join(binDir, 'node'), '#!/bin/sh\nexit 97\n');
+  await executable(join(binDir, 'mutagen'), '#!/bin/sh\nprintf "%s|Watching|7||false|0\\n" "$3"\n');
+  await executable(join(binDir, 'probe-command'), '#!/bin/sh\nprintf "wrong-local\\n"\n');
+  await executable(join(binDir, 'ssh'), [
+    '#!/bin/sh',
+    'control_path=',
+    'debug_log=',
+    'previous=',
+    'for argument in "$@"; do',
+    '  if [ "$previous" = -S ]; then control_path=$argument; fi',
+    '  if [ "$previous" = -E ]; then debug_log=$argument; fi',
+    '  previous=$argument',
+    '  last_argument=$argument',
+    'done',
+    'case "$*" in',
+    '  *getconf*) case "$*" in *mac2-host*) printf "8 4 0.5\\n" ;; *) printf "8 1 0.5\\n" ;; esac ;;',
+    '  *command\\ -v*) exit 0 ;;',
+    '  *-O\\ check*) [ -f "$control_path" ] ;;',
+    '  *-MNf*) mkdir -p "${control_path%/*}"; : > "$control_path" ;;',
+    '  *mac-host*)',
+    '    if [ "$last_argument" = : ]; then',
+    '      if [ -e "$WARMED_MARKER" ]; then',
+    '        printf "mux_client_request_session: session request failed: Session open refused by peer\\n" >&2',
+    '        exit 255',
+    '      fi',
+    '      exit 0',
+    '    fi',
+    '    if [ -e "$WARMED_MARKER" ]; then',
+    '      [ -z "$debug_log" ] || printf "mux_client_request_session: session request failed: Session open refused by peer\\n" > "$debug_log"',
+      '      printf "mux_client_request_session: session request failed: Session open refused by peer\\n" >&2',
+    '      exit 255',
+    '    fi',
+    '    : > "$WARMED_MARKER"',
+    '    printf "remote:mac:warm\\n"',
+    '    ;;',
+    '  *mac2-host*) printf "remote:mac2:%s\\n" "$*" ;;',
+    'esac',
+    '',
+  ].join('\n'));
+
+  const invocation = {
+    cwd: repoRoot,
+    env: {
+      ...executionNeutralEnv,
+      HOME: root,
+      XDG_RUNTIME_DIR: root,
+      HAPPIER_STACK_STORAGE_DIR: storageDir,
+      PATH: `${binDir}:/usr/bin:/bin`,
+      TMPDIR: root,
+      WARMED_MARKER: warmedMarker,
+    },
+    encoding: 'utf8',
+  };
+
+  const warm = spawnSync('/bin/sh', [launcher, '--target=mac', '--', 'probe-command', 'warm'], invocation);
+  assert.equal(warm.status, 0, warm.stderr);
+  assert.match(warm.stdout, /remote:mac:warm/);
+
+  const result = spawnSync('/bin/sh', [launcher, '--', 'probe-command', 'ok'], invocation);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /selected mac /);
+  assert.match(result.stderr, /selected mac2 /);
+  assert.match(result.stdout, /remote:mac2:.*probe-command.*ok/);
+  assert.doesNotMatch(result.stdout, /wrong-local/);
+});
+
+test('native launcher retries the same target without multiplexing when the authoritative mux session is refused before remote execution starts', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'happier-preferred-launcher-authoritative-mux-refused-'));
+  const binDir = join(root, 'bin');
+  const storageDir = join(root, 'stacks');
+  const stackDir = join(storageDir, `repo-${repoToken}-native`);
+  await mkdir(binDir, { recursive: true });
+  await mkdir(join(stackDir, 'mutagen', 'data'), { recursive: true });
+  await writeFile(join(stackDir, 'dev-targets.json'), '{}\n');
+  await writeFile(join(stackDir, 'dev-target-exec-v1.sh'), [
+    "HSTACK_EXEC_PROJECTION_VERSION='2'",
+    `projection_repo_root='${repoRoot}'`,
+    "command_mode='auto'",
+    "include_local='0'",
+    "fallback_mode='local'",
+    "load_ttl_seconds='15'",
+    "unavailable_ttl_seconds='120'",
+    "target_count='2'",
+    "target_1_name='mac'",
+    "target_1_ssh='mac-host'",
+    "target_1_ssh_config=''",
+    "target_1_repo_dir='/remote/repo'",
+    "target_1_cli_home='/remote/home'",
+    "target_1_remote_path='/usr/bin:/bin'",
+    "target_2_name='mac2'",
+    "target_2_ssh='mac2-host'",
+    "target_2_ssh_config=''",
+    "target_2_repo_dir='/remote/repo'",
+    "target_2_cli_home='/remote/home'",
+    "target_2_remote_path='/usr/bin:/bin'",
+    '',
+  ].join('\n'));
+  await executable(join(binDir, 'node'), '#!/bin/sh\nexit 97\n');
+  await executable(join(binDir, 'mutagen'), '#!/bin/sh\nprintf "%s|Watching|7||false|0\\n" "$3"\n');
+  await executable(join(binDir, 'probe-command'), '#!/bin/sh\nprintf "wrong-local\\n"\n');
+  await executable(join(binDir, 'ssh'), [
+    '#!/bin/sh',
+    'debug_log=',
+    'previous=',
+    'last_argument=',
+    'for argument in "$@"; do',
+    '  if [ "$previous" = -E ]; then debug_log=$argument; fi',
+    '  previous=$argument',
+    '  last_argument=$argument',
+    'done',
+    'case "$*" in',
+    '  *getconf*) case "$*" in *mac2-host*) printf "8 4 0.5\\n" ;; *) printf "8 1 0.5\\n" ;; esac ;;',
+    '  *command\\ -v*|*-O\\ check*|*-MNf*) exit 0 ;;',
+    '  *mac-host*)',
+    '    [ "$last_argument" = : ] && exit 0',
+    '    case "$*" in *ControlPath=none*) printf "remote:mac:dedicated:%s\\n" "$*"; exit 0 ;; esac',
+    '    [ -z "$debug_log" ] || printf "mux_client_request_session: session request failed: Session open refused by peer\\n" > "$debug_log"',
+    '    printf "mux_client_request_session: session request failed: Session open refused by peer\\n" >&2',
+    '    exit 255',
+    '    ;;',
+    '  *mac2-host*)',
+    '    [ "$last_argument" = : ] && exit 0',
+    '    [ -z "$debug_log" ] || printf "debug2: mux_client_request_session: master session id: 7\\n" > "$debug_log"',
+    '    printf "remote:mac2:%s\\n" "$*"',
+    '    ;;',
+    'esac',
+    '',
+  ].join('\n'));
+
+  const invocation = {
+    cwd: repoRoot,
+    env: {
+      ...executionNeutralEnv,
+      HOME: root,
+      XDG_RUNTIME_DIR: root,
+      HAPPIER_STACK_STORAGE_DIR: storageDir,
+      PATH: `${binDir}:/usr/bin:/bin`,
+      TMPDIR: root,
+    },
+    encoding: 'utf8',
+  };
+
+  const exact = spawnSync('/bin/sh', [launcher, '--target=mac', '--', 'probe-command', 'exact'], invocation);
+  assert.equal(exact.status, 0, exact.stderr);
+  assert.match(exact.stderr, /mac.*dedicated SSH connection/i);
+  assert.match(exact.stdout, /remote:mac:dedicated:.*ControlPath=none.*probe-command.*exact/);
+  assert.doesNotMatch(exact.stdout, /remote:mac2|wrong-local/);
+
+  const result = spawnSync('/bin/sh', [launcher, '--', 'probe-command', 'ok'], invocation);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /selected mac /);
+  assert.match(result.stderr, /mac.*dedicated SSH connection/i);
+  assert.match(result.stdout, /remote:mac:dedicated:.*ControlPath=none.*probe-command.*ok/);
+  assert.doesNotMatch(result.stderr, /selected mac2 /);
+  assert.doesNotMatch(result.stdout, /wrong-local/);
+});
+
+test('native launcher never replays an authoritative remote command that starts and exits 255', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'happier-preferred-launcher-authoritative-255-'));
+  const binDir = join(root, 'bin');
+  const storageDir = join(root, 'stacks');
+  const stackDir = join(storageDir, `repo-${repoToken}-native`);
+  await mkdir(binDir, { recursive: true });
+  await mkdir(join(stackDir, 'mutagen', 'data'), { recursive: true });
+  await writeFile(join(stackDir, 'dev-targets.json'), '{}\n');
+  await writeFile(join(stackDir, 'dev-target-exec-v1.sh'), [
+    "HSTACK_EXEC_PROJECTION_VERSION='2'",
+    `projection_repo_root='${repoRoot}'`,
+    "command_mode='auto'",
+    "include_local='0'",
+    "fallback_mode='local'",
+    "load_ttl_seconds='15'",
+    "unavailable_ttl_seconds='120'",
+    "target_count='2'",
+    "target_1_name='mac'",
+    "target_1_ssh='mac-host'",
+    "target_1_ssh_config=''",
+    "target_1_repo_dir='/remote/repo'",
+    "target_1_cli_home='/remote/home'",
+    "target_1_remote_path='/usr/bin:/bin'",
+    "target_2_name='mac2'",
+    "target_2_ssh='mac2-host'",
+    "target_2_ssh_config=''",
+    "target_2_repo_dir='/remote/repo'",
+    "target_2_cli_home='/remote/home'",
+    "target_2_remote_path='/usr/bin:/bin'",
+    '',
+  ].join('\n'));
+  await executable(join(binDir, 'node'), '#!/bin/sh\nexit 97\n');
+  await executable(join(binDir, 'mutagen'), '#!/bin/sh\nprintf "%s|Watching|7||false|0\\n" "$3"\n');
+  await executable(join(binDir, 'probe-command'), '#!/bin/sh\nprintf "wrong-local\\n"\n');
+  await executable(join(binDir, 'ssh'), [
+    '#!/bin/sh',
+    'debug_log=',
+    'previous=',
+    'last_argument=',
+    'for argument in "$@"; do',
+    '  if [ "$previous" = -E ]; then debug_log=$argument; fi',
+    '  previous=$argument',
+    '  last_argument=$argument',
+    'done',
+    'case "$*" in',
+    '  *getconf*) case "$*" in *mac2-host*) printf "8 4 0.5\\n" ;; *) printf "8 1 0.5\\n" ;; esac ;;',
+    '  *command\\ -v*|*-O\\ check*|*-MNf*) exit 0 ;;',
+    '  *mac-host*)',
+    '    [ "$last_argument" = : ] && exit 0',
+    '    [ -z "$debug_log" ] || printf "debug2: mux_client_request_session: master session id: 9\\n" > "$debug_log"',
+    '    printf "authoritative-command-started\\n"',
+    '    exit 255',
+    '    ;;',
+    '  *mac2-host*) printf "wrong-target:mac2\\n"; exit 0 ;;',
+    'esac',
+    '',
+  ].join('\n'));
+
+  const result = spawnSync('/bin/sh', [launcher, '--', 'probe-command', 'ok'], {
+    cwd: repoRoot,
+    env: {
+      ...executionNeutralEnv,
+      HOME: root,
+      XDG_RUNTIME_DIR: root,
+      HAPPIER_STACK_STORAGE_DIR: storageDir,
+      PATH: `${binDir}:/usr/bin:/bin`,
+      TMPDIR: root,
+    },
+    encoding: 'utf8',
+  });
+
+  assert.equal(result.status, 255, result.stderr);
+  assert.match(result.stdout, /authoritative-command-started/);
+  assert.doesNotMatch(result.stdout, /wrong-target:mac2|wrong-local/);
+  assert.doesNotMatch(result.stderr, /selected mac2 /);
+});
+
+test('native launcher accounts for an in-flight dispatch from another sandboxed session', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'happier-preferred-launcher-in-flight-'));
   const binDir = join(root, 'bin');
   const storageDir = join(root, 'stacks');
@@ -1528,6 +2256,10 @@ test('native launcher accounts for an in-flight dispatch before routing another 
   const holdMarker = join(root, 'first-started');
   const releaseMarker = join(root, 'release-first');
   const collisionMarker = join(root, 'second-selected-busy-target');
+  t.after(async () => {
+    await chmod(stackDir, 0o755).catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  });
   await mkdir(binDir, { recursive: true });
   await mkdir(join(stackDir, 'mutagen', 'data'), { recursive: true });
   await writeFile(join(stackDir, 'dev-targets.json'), '{}\n');
@@ -1561,6 +2293,8 @@ test('native launcher accounts for an in-flight dispatch before routing another 
   );
   await executable(join(binDir, 'ssh'), [
     '#!/bin/sh',
+    'last_argument=; for argument in "$@"; do last_argument=$argument; done',
+    '[ "$last_argument" = : ] && exit 0',
     'case "$*" in',
     '  *getconf*) case "$*" in *mac2-host*) printf "2 0.25 0.5\\n" ;; *) printf "8 2.4 0.5\\n" ;; esac ;;',
     '  *command\\ -v*) exit 0 ;;',
@@ -1585,10 +2319,11 @@ test('native launcher accounts for an in-flight dispatch before routing another 
     RELEASE_MARKER: releaseMarker,
     COLLISION_MARKER: collisionMarker,
   };
+  await chmod(stackDir, 0o555);
 
   const first = spawn('/bin/sh', [launcher, '--', 'probe-command', 'first'], {
     cwd: repoRoot,
-    env,
+    env: { ...env, CODEX_SESSION_ID: 'first-sandboxed-session' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   const firstOutput = { stdout: '', stderr: '' };
@@ -1608,7 +2343,7 @@ test('native launcher accounts for an in-flight dispatch before routing another 
     await readFile(holdMarker);
     second = spawnSync('/bin/sh', [launcher, '--', 'probe-command', 'second'], {
       cwd: repoRoot,
-      env,
+      env: { ...env, CODEX_SESSION_ID: 'second-sandboxed-session' },
       encoding: 'utf8',
     });
   } catch (error) {
@@ -1678,6 +2413,8 @@ test('native launcher passively waits for a contended dispatch reservation, canc
   ].join('\n'));
   await executable(join(binDir, 'ssh'), [
     '#!/bin/sh',
+    'last_argument=; for argument in "$@"; do last_argument=$argument; done',
+    '[ "$last_argument" = : ] && exit 0',
     'case "$*" in',
     '  *getconf*) printf "8 1 0.5\\n" ;;',
     '  *command\\ -v*) exit 0 ;;',
@@ -1689,6 +2426,8 @@ test('native launcher passively waits for a contended dispatch reservation, canc
   const env = {
     ...executionNeutralEnv,
     HOME: root,
+    XDG_RUNTIME_DIR: root,
+    DBUS_SESSION_BUS_ADDRESS: '',
     HAPPIER_STACK_STORAGE_DIR: storageDir,
     DISPATCH_SLEEP_ATTEMPTS: sleepAttempts,
     PATH: `${binDir}:/usr/bin:/bin`,
@@ -1748,7 +2487,91 @@ test('native launcher passively waits for a contended dispatch reservation, canc
   }
 });
 
-test('native launcher keeps Linux control commands preferred and adapts recognized worker tools to pressure', async () => {
+test('native launcher cache writes and reservations survive reused sandbox process ids', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'happier-preferred-launcher-pid-namespace-'));
+  const binDir = join(root, 'bin');
+  const storageDir = join(root, 'stacks');
+  const stackDir = join(storageDir, `repo-${repoToken}-native`);
+  const cacheDir = join(stackDir, 'dev-target-command-load-native');
+  const staleReservation = join(cacheDir, 'remote.active.reused-namespace-pid');
+  const wrapper = join(root, 'launch-with-reused-pid');
+  t.after(async () => await rm(root, { recursive: true, force: true }));
+
+  await mkdir(binDir, { recursive: true });
+  await mkdir(join(stackDir, 'mutagen', 'data'), { recursive: true });
+  await mkdir(cacheDir, { recursive: true });
+  await writeFile(join(stackDir, 'dev-targets.json'), '{}\n');
+  const cachedAt = Math.floor(Date.now() / 1_000);
+  await writeFile(join(cacheDir, 'remote.cache'), `${cachedAt} 1 0.125000 8\n`);
+  await writeFile(join(cacheDir, 'remote.command.2560848116.cache'), `${cachedAt} 1\n`);
+  await writeFile(join(stackDir, 'dev-target-exec-v1.sh'), [
+    "HSTACK_EXEC_PROJECTION_VERSION='2'",
+    `projection_repo_root='${repoRoot}'`,
+    "command_mode='auto'",
+    "include_local='0'",
+    "fallback_mode='error'",
+    "load_ttl_seconds='15'",
+    "unavailable_ttl_seconds='120'",
+    "target_count='1'",
+    "target_1_name='remote'",
+    "target_1_ssh='remote-host'",
+    "target_1_ssh_config=''",
+    "target_1_sync_name='named-remote-sync'",
+    "target_1_repo_dir='/remote/repo'",
+    "target_1_cli_home='/remote/home'",
+    "target_1_remote_path='/usr/bin:/bin'",
+    '',
+  ].join('\n'));
+  await executable(join(binDir, 'node'), '#!/bin/sh\nexit 97\n');
+  await executable(join(binDir, 'mutagen'), '#!/bin/sh\nexit 0\n');
+  await executable(join(binDir, 'ssh'), [
+    '#!/bin/sh',
+    'last_argument=; for argument in "$@"; do last_argument=$argument; done',
+    '[ "$last_argument" = : ] && exit 0',
+    'case "$*" in',
+    '  *-MNf*|*-O*) exit 0 ;;',
+    '  *) printf "remote:reused-pid\\n" ;;',
+    'esac',
+    '',
+  ].join('\n'));
+  await executable(wrapper, [
+    '#!/bin/sh',
+    `printf '%s\\nvalidation\\nstale-execution\\n' "$$" > '${staleReservation}'`,
+    `mkdir '${cacheDir}/remote.active.'"$$"'.'"$$"'.tmp'`,
+    `exec /bin/sh '${launcher}' -- probe-command status`,
+    '',
+  ].join('\n'));
+
+  const result = spawnSync('/bin/sh', [wrapper], {
+    cwd: repoRoot,
+    env: {
+      ...executionNeutralEnv,
+      HOME: root,
+      XDG_RUNTIME_DIR: root,
+      DBUS_SESSION_BUS_ADDRESS: '',
+      HAPPIER_STACK_STORAGE_DIR: storageDir,
+      PATH: `${binDir}:/usr/bin:/bin`,
+      TMPDIR: root,
+    },
+    encoding: 'utf8',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /remote:reused-pid/);
+  assert.doesNotMatch(result.stderr, /reservation failed|cannot create|cannot stat/i);
+  const hasFlock = spawnSync('/bin/sh', ['-c', 'command -v flock'], {
+    env: { PATH: `${binDir}:/usr/bin:/bin` },
+    stdio: 'ignore',
+  }).status === 0;
+  if (hasFlock) {
+    await assert.rejects(readFile(staleReservation), { code: 'ENOENT' });
+  } else {
+    t.diagnostic('flock unavailable; PID-namespace stale-reservation reclamation is Linux-only');
+  }
+});
+
+for (const platform of ['linux', 'darwin']) {
+test(`native launcher keeps ${platform} control commands preferred and adapts recognized worker tools to pressure`, async () => {
   const root = await mkdtemp(join(tmpdir(), 'happier-preferred-launcher-resource-governor-'));
   const binDir = join(root, 'bin');
   const storageDir = join(root, 'stacks');
@@ -1778,6 +2601,13 @@ test('native launcher keeps Linux control commands preferred and adapts recogniz
     '',
   ].join('\n'));
   await executable(join(binDir, 'node'), '#!/bin/sh\nexit 97\n');
+  await executable(join(binDir, 'flock'), [
+    '#!/bin/sh',
+    '# Reservation fixtures model locks held by another dispatcher.',
+    '[ "${1-}" = -n ] && [ "${3-}" = -c ] && exit 1',
+    'exec /usr/bin/flock "$@"',
+    '',
+  ].join('\n'));
   await executable(
     join(binDir, 'mutagen'),
     '#!/bin/sh\nprintf "%s|Watching|7||false|0\\n" "$3"\n',
@@ -1785,7 +2615,7 @@ test('native launcher keeps Linux control commands preferred and adapts recogniz
   await executable(join(binDir, 'ssh'), [
     '#!/bin/sh',
     'case "$*" in',
-    '  *getconf*) case "${GOVERNOR_PRESSURE-}" in quiet) printf "14 1 0.8 22000000 20 2 48000000 72000000 0 0 0 0 0 0 0 linux\\n" ;; *) printf "14 360 0.8 22000000 20 420 48000000 72000000 0 0 90 0 0 0 0 linux\\n" ;; esac ;;',
+    '  *getconf*) if [ "$GOVERNOR_PLATFORM" = darwin ]; then printf "14 1 0.8 22000000 20 0 0 0 0 0 0 0 0 0 0 darwin\\n"; else case "${GOVERNOR_PRESSURE-}" in quiet) printf "14 1 0.8 22000000 20 2 48000000 72000000 0 0 0 0 0 0 0 linux\\n" ;; *) printf "14 360 0.8 22000000 20 420 48000000 72000000 0 0 90 0 0 0 0 linux\\n" ;; esac; fi ;;',
     '  *"&& command -v "*) exit 0 ;;',
     '  *-MNf*|*-O\\ exit*) exit 0 ;;',
     '  *) remote_command=; for ssh_argument in "$@"; do remote_command=$ssh_argument; done; eval "set -- $remote_command"; /bin/bash -n -c "$3" || exit $?; printf "remote:%s\\n" "$*" ;;',
@@ -1798,7 +2628,23 @@ test('native launcher keeps Linux control commands preferred and adapts recogniz
     HAPPIER_STACK_STORAGE_DIR: storageDir,
     PATH: `${binDir}:/usr/bin:/bin`,
     TMPDIR: root,
+    GOVERNOR_PLATFORM: platform,
   };
+
+  // Darwin has no Linux PSI/run-queue sample. Existing live dispatch
+  // reservations still share its CPU capacity between nested workers. Linux
+  // must use observed pressure instead of treating waiting reservations as CPU.
+  const reservations = [];
+  if (platform === 'darwin' || platform === 'linux') {
+    const cacheDir = join(stackDir, 'dev-target-command-load-native');
+    await mkdir(cacheDir, { recursive: true });
+    const reservationCount = platform === 'darwin' ? 13 : 7;
+    for (let index = 0; index < reservationCount; index += 1) {
+      const path = join(cacheDir, `linux.active.fixture-${index}`);
+      await writeFile(path, `${process.pid}\nvalidation\n`);
+      reservations.push(path);
+    }
+  }
 
   const control = spawnSync('/bin/sh', [launcher, '--', 'probe-command', 'status'], {
     cwd: repoRoot,
@@ -1840,11 +2686,6 @@ test('native launcher keeps Linux control commands preferred and adapts recogniz
     env,
     encoding: 'utf8',
   });
-  const quietVitest = spawnSync('/bin/sh', [launcher, '--', 'vitest', 'run', 'fixture.test.ts'], {
-    cwd: repoRoot,
-    env: { ...env, GOVERNOR_PRESSURE: 'quiet' },
-    encoding: 'utf8',
-  });
   const explicitVitestWorkers = spawnSync('/bin/sh', [launcher, '--', 'vitest', 'run', '--maxWorkers=6'], {
     cwd: repoRoot,
     env,
@@ -1860,11 +2701,27 @@ test('native launcher keeps Linux control commands preferred and adapts recogniz
     env: { ...env, VITEST_MAX_THREADS: '7' },
     encoding: 'utf8',
   });
+  const explicitRemoteVitestEnvironment = spawnSync('/bin/sh', [launcher, '--target=linux', '--env=VITEST_MAX_FORKS=3', '--', 'vitest', 'run'], {
+    cwd: repoRoot,
+    env: { ...env, VITEST_MAX_FORKS: '7' },
+    encoding: 'utf8',
+  });
   const explicitTypeScriptEnvironment = spawnSync('/bin/sh', [launcher, '--', 'node', 'scripts/workspaces/runTypeScriptCli.mjs', '--noEmit'], {
     cwd: repoRoot,
     env: { ...env, GOMAXPROCS: '7' },
     encoding: 'utf8',
   });
+  if (platform === 'darwin') {
+    for (const path of reservations) await rm(path);
+  }
+  const quietVitest = spawnSync('/bin/sh', [launcher, '--', 'vitest', 'run', 'fixture.test.ts'], {
+    cwd: repoRoot,
+    env: { ...env, GOVERNOR_PRESSURE: 'quiet' },
+    encoding: 'utf8',
+  });
+  if (platform === 'linux') {
+    for (const path of reservations) await rm(path);
+  }
 
   for (const result of [
     control,
@@ -1879,6 +2736,7 @@ test('native launcher keeps Linux control commands preferred and adapts recogniz
     explicitVitestWorkers,
     explicitVitestPoolWorkers,
     explicitVitestEnvironment,
+    explicitRemoteVitestEnvironment,
     explicitTypeScriptEnvironment,
   ]) {
     assert.equal(result.status, 0, result.stderr);
@@ -1912,9 +2770,17 @@ test('native launcher keeps Linux control commands preferred and adapts recogniz
   assert.doesNotMatch(explicitVitestPoolWorkers.stdout, /VITEST_MAX_THREADS=1|VITEST_MAX_FORKS=1/);
   assert.match(explicitVitestEnvironment.stdout, /VITEST_MAX_THREADS=.*7/s);
   assert.doesNotMatch(explicitVitestEnvironment.stdout, /VITEST_MAX_THREADS=1|VITEST_MAX_FORKS=1/);
+  assert.match(explicitRemoteVitestEnvironment.stdout, /VITEST_MAX_FORKS=.*7.*VITEST_MAX_FORKS=.*3/s);
+  assert.doesNotMatch(explicitRemoteVitestEnvironment.stdout, /--maxWorkers=1|VITEST_MAX_FORKS=1/);
   assert.match(explicitTypeScriptEnvironment.stdout, /GOMAXPROCS=.*7/s);
   assert.doesNotMatch(explicitTypeScriptEnvironment.stdout, /GOMAXPROCS=1/);
+  if (platform === 'darwin') {
+    for (const result of [vitest, scriptedVitest, typecheck, search]) {
+      assert.doesNotMatch(result.stdout, /--heavyweight-admission|systemd-run|\/proc\//);
+    }
+  }
 });
+}
 
 test('native launcher excludes a low-load target that cannot launch the requested command', async () => {
   const root = await mkdtemp(join(tmpdir(), 'happier-preferred-launcher-command-capability-'));
@@ -2014,11 +2880,14 @@ test('native launcher bootstraps Yarn commands before dispatching them and leave
   );
   await executable(join(binDir, 'ssh'), [
     '#!/bin/sh',
+    'last_argument=; for argument in "$@"; do last_argument=$argument; done',
+    '[ "$last_argument" = : ] && exit 0',
     'case "$*" in',
     '  *getconf*) printf "8 1 0.5 22000000 20 2 12000000 24000000 1000 8000000 0.1 0.2 0.3 4 5 linux\\n" ;;',
     '  *command\\ -v*) exit 0 ;;',
     '  *-MNf*|*-O\\ exit*) exit 0 ;;',
     '  *remote_dependency_bootstrap.mjs*remote_validation_preparation.mjs*run-vitest-with-heartbeat.mjs*) printf "vitest-after-preparation:%s\\n" "$*" ;;',
+    '  *remote_dependency_bootstrap.mjs*remote_validation_preparation.mjs*corepack*yarn*--cwd*apps/ui*vitest*) printf "cwd-vitest-after-preparation:%s\\n" "$*" ;;',
     '  *remote_dependency_bootstrap.mjs*remote_validation_preparation.mjs*typecheck:local*) printf "typed-after-preparation:%s\\n" "$*" ;;',
     '  *remote_dependency_bootstrap.mjs*typecheck:local*) printf "typed-after-bootstrap:%s\\n" "$*" ;;',
     '  *typecheck:local*) printf "typed-without-bootstrap\\n"; exit 42 ;;',
@@ -2080,6 +2949,25 @@ test('native launcher bootstraps Yarn commands before dispatching them and leave
   assert.match(composedVitest.stdout, /--component-relative-dir=packages\/tests/);
   assert.match(composedVitest.stdout, /run-vitest-with-heartbeat\.mjs.*--maxWorkers=[1-9][0-9]*.*--minWorkers=1/s);
 
+  const cwdVitest = spawnSync('/bin/sh', [
+    launcher,
+    '--',
+    'corepack',
+    'yarn',
+    '--cwd',
+    'apps/ui',
+    'vitest',
+    'run',
+    'sources/example.test.ts',
+  ], {
+    cwd: repoRoot,
+    env,
+    encoding: 'utf8',
+  });
+  assert.equal(cwdVitest.status, 0, cwdVitest.stderr);
+  assert.match(cwdVitest.stdout, /cwd-vitest-after-preparation/);
+  assert.match(cwdVitest.stdout, /--component-relative-dir=apps\/ui/);
+
   const raw = spawnSync('/bin/sh', [launcher, '--', 'rg', '-n', 'needle'], {
     cwd: repoRoot,
     env,
@@ -2096,8 +2984,14 @@ test('native launcher bootstraps Yarn commands before dispatching them and leave
   const admittedClasses = provenanceLines
     .filter((entry) => entry.phase === 'admitted')
     .map((entry) => entry.commandClass);
-  assert.deepEqual(admittedClasses, ['full-validation', 'targeted-validation', 'targeted-validation', 'source-search']);
-  assert.equal(provenanceLines.filter((entry) => entry.phase === 'completed').length, 4);
+  assert.deepEqual(admittedClasses, [
+    'full-validation',
+    'targeted-validation',
+    'targeted-validation',
+    'targeted-validation',
+    'source-search',
+  ]);
+  assert.equal(provenanceLines.filter((entry) => entry.phase === 'completed').length, 5);
   assert.equal(provenanceLines.every((entry) => entry.schemaVersion === 1), true);
   assert.equal(provenanceLines.every((entry) => !('commandArgs' in entry)), true);
   assert.equal(provenanceLines.every((entry) => (
@@ -2171,6 +3065,8 @@ test('native launcher keeps an unprepared dependency target out of automatic rou
     env: {
       ...executionNeutralEnv,
       HOME: root,
+      XDG_RUNTIME_DIR: root,
+      DBUS_SESSION_BUS_ADDRESS: '',
       HAPPIER_STACK_STORAGE_DIR: storageDir,
       PATH: `${binDir}:/usr/bin:/bin`,
       TMPDIR: root,
@@ -2221,6 +3117,8 @@ test('native launcher falls back locally instead of queueing behind a remote dep
   );
   await executable(join(binDir, 'ssh'), [
     '#!/bin/sh',
+    'last_argument=; for argument in "$@"; do last_argument=$argument; done',
+    '[ "$last_argument" = : ] && exit 0',
     'case "$*" in',
     '  *getconf*) printf "8 1 0.5\\n" ;;',
     `  *dependency-install.lock*) [ -f "${dependencyStaleMarker}" ] && case "$*" in *kill\\ -0*) exit 0 ;; esac; [ -f "${dependencyBusyMarker}" ] && exit 75; exit 0 ;;`,
@@ -2237,6 +3135,8 @@ test('native launcher falls back locally instead of queueing behind a remote dep
     env: {
       ...executionNeutralEnv,
       HOME: root,
+      XDG_RUNTIME_DIR: root,
+      DBUS_SESSION_BUS_ADDRESS: '',
       HAPPIER_STACK_STORAGE_DIR: storageDir,
       PATH: `${binDir}:/usr/bin:/bin`,
       TMPDIR: root,
@@ -2267,6 +3167,8 @@ test('native launcher falls back locally instead of queueing behind a remote dep
     env: {
       ...executionNeutralEnv,
       HOME: root,
+      XDG_RUNTIME_DIR: root,
+      DBUS_SESSION_BUS_ADDRESS: '',
       HAPPIER_STACK_STORAGE_DIR: storageDir,
       PATH: `${binDir}:/usr/bin:/bin`,
       TMPDIR: root,
@@ -2279,10 +3181,132 @@ test('native launcher falls back locally instead of queueing behind a remote dep
   assert.match(recovered.stdout, /remote-node:/);
 });
 
-test('native launcher cancellation verifies the recorded process identity before terminating it', async () => {
-  const source = await readFile(launcher, 'utf8');
-  assert.ok(source.includes('ps -p \\"\\$pid\\" -o command='));
-  assert.ok(source.includes('case \\"\\$command\\" in *\\"\\$execution_id\\"*'));
+test('native launcher cancellation terminates a remote descendant that ignores SIGTERM', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'happier-preferred-launcher-remote-cancel-'));
+  const binDir = join(root, 'bin');
+  const stackDir = join(root, 'stack');
+  const machineHome = join(root, 'machine-home');
+  const configPath = join(stackDir, 'dev-targets.json');
+  const startedMarker = join(root, 'remote-started');
+  const childPidPath = join(root, 'remote-child.pid');
+  const runtimeDir = join(root, 'runtime');
+  let remoteChildPid = null;
+  t.after(async () => {
+    if (remoteChildPid) {
+      try { process.kill(remoteChildPid, 'SIGKILL'); } catch {}
+    }
+    await rm(root, { recursive: true, force: true });
+  });
+  await mkdir(binDir, { recursive: true });
+  await mkdir(join(stackDir, 'mutagen', 'data'), { recursive: true });
+  await mkdir(runtimeDir, { recursive: true });
+  await writeFile(configPath, '{}\n', 'utf8');
+  await writeFile(join(stackDir, 'dev-target-exec-v1.sh'), [
+    "HSTACK_EXEC_PROJECTION_VERSION='2'",
+    `projection_repo_root='${repoRoot}'`,
+    "command_mode='auto'",
+    "include_local='0'",
+    "fallback_mode='error'",
+    "load_ttl_seconds='0'",
+    "unavailable_ttl_seconds='120'",
+    "target_count='1'",
+    "target_1_name='linux'",
+    "target_1_ssh='linux-host'",
+    "target_1_ssh_config=''",
+    `target_1_repo_dir='${repoRoot}'`,
+    `target_1_cli_home='${machineHome}'`,
+    `target_1_remote_path='${binDir}:/usr/bin:/bin'`,
+    '',
+  ].join('\n'));
+  await executable(join(binDir, 'node'), '#!/bin/sh\nexit 97\n');
+  await executable(join(binDir, 'mutagen'), [
+    '#!/bin/sh',
+    'case "$2" in',
+    '  list) printf "%s|Watching|7||false|0\\n" "$3" ;;',
+    '  flush) exit 0 ;;',
+    '  *) exit 92 ;;',
+    'esac',
+    '',
+  ].join('\n'));
+  await executable(join(binDir, 'remote-ignore-term'), [
+    '#!/bin/sh',
+    "trap '' TERM",
+    'printf "%s\\n" "$$" > "$REMOTE_CHILD_PID_PATH"',
+    ': > "$REMOTE_STARTED_MARKER"',
+    'while :; do sleep 1; done',
+    '',
+  ].join('\n'));
+  await executable(join(binDir, 'ssh'), [
+    '#!/bin/sh',
+    'control_path=',
+    'previous=',
+    'for argument in "$@"; do',
+    '  if [ "$previous" = -S ]; then control_path=$argument; fi',
+    '  previous=$argument',
+    'done',
+    'case "$*" in',
+    '  *getconf*) printf "8 0.1 0.8 22000000 20 0 18000000 25000000 0 0 0 0 0 0 0 linux\\n" ;;',
+    '  *"&& command -v "*) exit 0 ;;',
+    '  *-O\\ check*) [ -f "$control_path" ] ;;',
+    '  *-MNf*) mkdir -p "${control_path%/*}"; : > "$control_path" ;;',
+    '  *)',
+    '    remote_command=',
+    '    for ssh_argument in "$@"; do remote_command=$ssh_argument; done',
+    '    /bin/sh -c "$remote_command"',
+    '    ;;',
+    'esac',
+    '',
+  ].join('\n'));
+
+  const child = spawn('/bin/sh', [launcher, '--', 'remote-ignore-term'], {
+    cwd: repoRoot,
+    env: {
+      ...executionNeutralEnv,
+      HOME: root,
+      HAPPIER_EXEC_CONFIG_PATH: configPath,
+      HAPPIER_STACK_STORAGE_DIR: join(root, 'stacks'),
+      PATH: `${binDir}:/usr/bin:/bin`,
+      REMOTE_CHILD_PID_PATH: childPidPath,
+      REMOTE_STARTED_MARKER: startedMarker,
+      TMPDIR: root,
+      XDG_RUNTIME_DIR: runtimeDir,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stderr = '';
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+  try {
+    for (let attempt = 0; attempt < 250; attempt += 1) {
+      try {
+        await readFile(startedMarker);
+        break;
+      } catch {
+        await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+      }
+    }
+    await readFile(startedMarker);
+    remoteChildPid = Number((await readFile(childPidPath, 'utf8')).trim());
+    assert.ok(Number.isInteger(remoteChildPid) && remoteChildPid > 0);
+
+    child.kill('SIGTERM');
+    const exitCode = child.exitCode ?? await new Promise((resolveExit) => child.once('exit', resolveExit));
+    assert.equal(exitCode, 130, stderr);
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      try {
+        process.kill(remoteChildPid, 0);
+        await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+      } catch (error) {
+        if (error?.code === 'ESRCH') {
+          remoteChildPid = null;
+          break;
+        }
+        throw error;
+      }
+    }
+    assert.equal(remoteChildPid, null, 'remote descendant survived launcher cancellation');
+  } finally {
+    if (child.exitCode == null) child.kill('SIGKILL');
+  }
 });
 
 test('native launcher executes locally when configured command targets are not POSIX', async () => {
@@ -2319,7 +3343,7 @@ test('native launcher executes locally when configured command targets are not P
   assert.equal(result.stdout, 'local:ok\n');
 });
 
-test('native launcher ordinary automatic dispatch uses the ready moving mirror without flushing', async (t) => {
+test('native launcher flushes an automatically selected mirror and retries another target after a flush failure', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'happier-preferred-launcher-moving-mirror-'));
   const binDir = join(root, 'bin');
   const storageDir = join(root, 'stacks');
@@ -2328,6 +3352,7 @@ test('native launcher ordinary automatic dispatch uses the ready moving mirror w
   const remoteMarker = join(root, 'remote-command-ran');
   const localMarker = join(root, 'local-command-ran');
   const flushMarker = join(root, 'mutagen-flush-ran');
+  const freshMarker = `${remoteMarker}.fresh`;
   t.after(async () => await rm(root, { recursive: true, force: true }));
 
   await mkdir(binDir, { recursive: true });
@@ -2338,6 +3363,8 @@ test('native launcher ordinary automatic dispatch uses the ready moving mirror w
   const cachedAt = Math.floor(Date.now() / 1_000);
   await writeFile(join(cacheDir, 'linux.cache'), `${cachedAt} 1 0.000000 4\n`);
   await writeFile(join(cacheDir, 'linux.command.2560848116.cache'), `${cachedAt} 1\n`);
+  await writeFile(join(cacheDir, 'mac2.cache'), `${cachedAt} 1 0.500000 4\n`);
+  await writeFile(join(cacheDir, 'mac2.command.2560848116.cache'), `${cachedAt} 1\n`);
   await writeFile(join(stackDir, 'dev-target-exec-v1.sh'), [
     "HSTACK_EXEC_PROJECTION_VERSION='2'",
     `projection_repo_root='${repoRoot}'`,
@@ -2346,7 +3373,7 @@ test('native launcher ordinary automatic dispatch uses the ready moving mirror w
     "fallback_mode='error'",
     "load_ttl_seconds='15'",
     "unavailable_ttl_seconds='120'",
-    "target_count='1'",
+    "target_count='2'",
     "target_1_name='linux'",
     "target_1_ssh='linux-host'",
     "target_1_ssh_config=''",
@@ -2354,13 +3381,28 @@ test('native launcher ordinary automatic dispatch uses the ready moving mirror w
     "target_1_repo_dir='/remote/repo'",
     "target_1_cli_home='/remote/home'",
     "target_1_remote_path='/usr/bin:/bin'",
+    "target_2_name='mac2'",
+    "target_2_ssh='mac2-host'",
+    "target_2_ssh_config=''",
+    "target_2_sync_name='named-mac2-sync'",
+    "target_2_repo_dir='/remote/repo'",
+    "target_2_cli_home='/remote/home'",
+    "target_2_remote_path='/usr/bin:/bin'",
     '',
   ].join('\n'));
   await executable(join(binDir, 'node'), '#!/bin/sh\nexit 97\n');
   await executable(join(binDir, 'probe-command'), `#!/bin/sh\n: > "${localMarker}"\nprintf 'local:%s\\n' "$*"\n`);
-  await executable(join(binDir, 'mutagen'), `#!/bin/sh\n[ "$2" != flush ] || { : > "${flushMarker}"; exit 73; }\nexit 92\n`);
+  await executable(join(binDir, 'mutagen'), [
+    '#!/bin/sh',
+    `printf '%s\\n' "$3" >> "${flushMarker}"`,
+    '[ "$3" != named-linux-sync ] || exit 73',
+    `: > "${freshMarker}"`,
+    'exit 0',
+    '',
+  ].join('\n'));
   await executable(join(binDir, 'ssh'), [
     '#!/bin/sh',
+    `if [ ! -e "${freshMarker}" ]; then printf '%s\\n' 'remote dispatch attempted before sync flush' >&2; exit 74; fi`,
     'case "$*" in',
     '  *-MNf*|*-O\\ exit*) exit 0 ;;',
     `  *) : > "${remoteMarker}"; printf 'remote:%s\\n' "$*" ;;`,
@@ -2373,6 +3415,7 @@ test('native launcher ordinary automatic dispatch uses the ready moving mirror w
     env: {
       ...executionNeutralEnv,
       HOME: root,
+      XDG_RUNTIME_DIR: root,
       HAPPIER_STACK_STORAGE_DIR: storageDir,
       PATH: `${binDir}:/usr/bin:/bin`,
       TMPDIR: root,
@@ -2382,10 +3425,14 @@ test('native launcher ordinary automatic dispatch uses the ready moving mirror w
 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stderr, /selected linux /);
+  assert.match(result.stderr, /selected mac2 /);
   assert.match(result.stdout, /remote:.*probe-command.*ok/);
+  assert.deepEqual((await readFile(flushMarker, 'utf8')).trim().split('\n'), [
+    'named-linux-sync',
+    'named-mac2-sync',
+  ]);
   await readFile(remoteMarker);
   await assert.rejects(readFile(localMarker), { code: 'ENOENT' });
-  await assert.rejects(readFile(flushMarker), { code: 'ENOENT' });
 });
 
 test('native launcher exact target flushes the selected Mutagen session before remote dispatch and fails closed after a flush failure', async (t) => {
@@ -2457,6 +3504,7 @@ test('native launcher exact target flushes the selected Mutagen session before r
   const env = {
     ...executionNeutralEnv,
     HOME: root,
+    XDG_RUNTIME_DIR: root,
     HAPPIER_STACK_STORAGE_DIR: storageDir,
     PATH: `${binDir}:/usr/bin:/bin`,
     TMPDIR: root,
@@ -2547,7 +3595,7 @@ test('native launcher admits heavyweight local and remote jobs, reclaims stale o
   const storageDir = join(root, 'stacks');
   const stackDir = join(storageDir, `repo-${repoToken}-native`);
   const machineHome = join(root, 'machine-home');
-  const admissionRoot = join(root, '.happier', 'heavyweight-admission-v1');
+  const admissionRoot = join(machineHome, 'heavyweight-admission-v1');
   const holdMarker = join(root, 'first-started');
   const releaseMarker = join(root, 'release-first');
   const cancelledMarker = join(root, 'cancelled-command-ran');
@@ -2555,14 +3603,14 @@ test('native launcher admits heavyweight local and remote jobs, reclaims stale o
   const terminatedMarker = join(root, 'running-command-terminated');
   const collisionMarker = join(root, 'remote-command-ran-before-admission');
   const scopeMarker = join(root, 'systemd-scope-invocations');
-  const staleOwner = join(admissionRoot, 'owners', '999999-stale');
-  const staleWaiter = join(admissionRoot, 'waiters', '999998-stale');
+  const staleOwner = join(admissionRoot, 'owners', '99999999-stale');
+  const staleWaiter = join(admissionRoot, 'waiters', '99999998-stale');
   t.after(async () => await rm(root, { recursive: true, force: true }));
 
   await mkdir(binDir, { recursive: true });
   await mkdir(join(stackDir, 'mutagen', 'data'), { recursive: true });
   await mkdir(staleOwner, { recursive: true });
-  await writeFile(join(staleOwner, 'process'), '999999 stale\n', 'utf8');
+  await writeFile(join(staleOwner, 'process'), '99999999 stale\n', 'utf8');
   await writeFile(join(stackDir, 'dev-targets.json'), '{}\n');
   await writeFile(join(stackDir, 'dev-target-exec-v1.sh'), [
     "HSTACK_EXEC_PROJECTION_VERSION='2'",
@@ -2605,9 +3653,9 @@ test('native launcher admits heavyweight local and remote jobs, reclaims stale o
   await executable(join(binDir, 'awk'), [
     '#!/bin/sh',
     'case "$*" in',
-    '  */proc/loadavg*) printf "0\\n" ;;',
+    '  */proc/loadavg*) if [ -e "$HOLD_MARKER" ] && [ ! -e "$RELEASE_MARKER" ]; then printf "5\\n"; else printf "0\\n"; fi ;;',
     '  */proc/meminfo*) case "$1" in *MemAvailable*) printf "48000000 72000000\\n" ;; *) printf "72000000\\n" ;; esac ;;',
-    '  */proc/pressure/memory*) printf "0\\n" ;;',
+    '  */proc/pressure/memory*) if [ -e "$HOLD_MARKER" ] && [ ! -e "$RELEASE_MARKER" ]; then printf "11\\n"; else printf "0\\n"; fi ;;',
     '  *) exec /usr/bin/awk "$@" ;;',
     'esac',
     '',
@@ -2740,7 +3788,7 @@ test('native launcher admits heavyweight local and remote jobs, reclaims stale o
       }
     }, 'the first heavyweight job');
     await assert.rejects(readdir(staleOwner), { code: 'ENOENT' });
-    await writeFile(staleWaiter, '999998 stale\n', 'utf8');
+    await writeFile(staleWaiter, '99999998 stale\n', 'utf8');
 
     nodeVitest = spawn('/bin/sh', [launcher, '--', 'node', 'node_modules/vitest/vitest.mjs', 'remote-node-vitest.test.ts'], {
       cwd: join(repoRoot, 'apps', 'stack'),
@@ -2790,7 +3838,6 @@ test('native launcher admits heavyweight local and remote jobs, reclaims stale o
     });
     const cancelledOutput = collect(cancelled);
     await waitFor(() => /waiting for heavyweight admission/.test(cancelledOutput.stderr), 'a cancellable local admission wait');
-    await readFile(staleWaiter);
     cancelled.kill('SIGTERM');
     assert.equal(await waitForExit(cancelled), 130, cancelledOutput.stderr);
     await assert.rejects(readFile(cancelledMarker), { code: 'ENOENT' });
@@ -2906,7 +3953,129 @@ test('native launcher admits heavyweight local and remote jobs, reclaims stale o
   }
 });
 
-test('native launcher derives two heavyweight admission slots from an 8 CPU, 24 GiB Linux worker profile', async (t) => {
+test('Linux heavyweight admission waits for corroborated severe CPU pressure while memory is healthy', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'happier-preferred-launcher-cpu-saturation-'));
+  const binDir = join(root, 'bin');
+  const admissionRoot = join(root, 'admission');
+  const admittedMarker = join(root, 'admitted');
+  const pressureReleasedMarker = join(root, 'pressure-released');
+  t.after(async () => await rm(root, { recursive: true, force: true }));
+  await mkdir(binDir, { recursive: true });
+  await executable(join(binDir, 'uname'), '#!/bin/sh\nprintf "Linux\\n"\n');
+  await executable(join(binDir, 'getconf'), '#!/bin/sh\nprintf "4\\n"\n');
+  await executable(join(binDir, 'flock'), '#!/bin/sh\nexit 0\n');
+  await executable(join(binDir, 'awk'), [
+    '#!/bin/sh',
+    'case "$*" in',
+    `  */proc/loadavg*) if [ -e ${JSON.stringify(pressureReleasedMarker)} ]; then printf "1\\n"; else printf "12\\n"; fi ;;`,
+    '  */proc/meminfo*) printf "48000000 72000000\\n" ;;',
+    `  */proc/pressure/cpu*) if [ -e ${JSON.stringify(pressureReleasedMarker)} ]; then printf "0\\n"; else printf "75\\n"; fi ;;`,
+    '  */proc/pressure/memory*) printf "0\\n" ;;',
+    '  *) exec /usr/bin/awk "$@" ;;',
+    'esac',
+    '',
+  ].join('\n'));
+  await executable(join(binDir, 'vitest'), `#!/bin/sh\nprintf admitted > ${JSON.stringify(admittedMarker)}\n`);
+
+  const child = spawn('/bin/sh', [
+    launcher,
+    '--heavyweight-admission',
+    `--admission-root=${admissionRoot}`,
+    '--class=targeted-validation',
+    '--machine=dedicated-worker',
+    '--',
+    'vitest',
+    'run',
+    'focused.test.ts',
+  ], {
+    cwd: repoRoot,
+    env: {
+      ...executionNeutralEnv,
+      HOME: root,
+      PATH: `${binDir}:/usr/bin:/bin`,
+      TMPDIR: root,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stderr = '';
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+  try {
+    for (let attempt = 0; attempt < 250 && !/cpu-pressure=75/.test(stderr); attempt += 1) {
+      await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+    }
+    assert.match(stderr, /cpu-pressure=75/, 'expected the severe CPU-pressure admission wait');
+    await assert.rejects(access(admittedMarker), { code: 'ENOENT' });
+    await writeFile(pressureReleasedMarker, '', 'utf8');
+    assert.equal(await new Promise((resolveExit) => child.once('exit', resolveExit)), 0, stderr);
+    await access(admittedMarker);
+  } finally {
+    if (child.exitCode == null) child.kill('SIGTERM');
+  }
+});
+
+test('native launcher uses the explicit CLI home for heavyweight admission before HOME and otherwise defaults to HOME', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'happier-preferred-launcher-heavyweight-cli-home-'));
+  const binDir = join(root, 'bin');
+  const cliHome = join(root, 'stack-cli-home');
+  const expectedAdmissionRoot = join(cliHome, 'heavyweight-admission-v1');
+  const accidentalHomeAdmissionRoot = join(root, '.happier', 'heavyweight-admission-v1');
+  const readonlyCliHome = join(root, 'readonly-cli-home');
+  t.after(async () => await rm(root, { recursive: true, force: true }));
+
+  await mkdir(binDir, { recursive: true });
+  await executable(join(binDir, 'uname'), '#!/bin/sh\nprintf "Linux\\n"\n');
+  await executable(join(binDir, 'getconf'), '#!/bin/sh\nprintf "4\\n"\n');
+  await executable(join(binDir, 'awk'), [
+    '#!/bin/sh',
+    'case "$*" in',
+    '  */proc/loadavg*) printf "0\\n" ;;',
+    '  */proc/meminfo*) case "$1" in *MemAvailable*) printf "48000000 72000000\\n" ;; *) printf "72000000\\n" ;; esac ;;',
+    '  */proc/pressure/memory*) printf "0\\n" ;;',
+    '  *) exec /usr/bin/awk "$@" ;;',
+    'esac',
+    '',
+  ].join('\n'));
+  const runAdmission = (extraEnv, machine) => spawnSync('/bin/sh', [
+    launcher,
+    '--heavyweight-admission',
+    '--class=validation',
+    `--machine=${machine}`,
+    '--',
+    '/usr/bin/true',
+  ], {
+    cwd: repoRoot,
+    env: {
+      ...executionNeutralEnv,
+      HOME: root,
+      PATH: `${binDir}:/usr/bin:/bin`,
+      TMPDIR: root,
+      ...extraEnv,
+    },
+    encoding: 'utf8',
+  });
+
+  const result = runAdmission({ HAPPIER_STACK_CLI_HOME_DIR: cliHome }, 'cli-home-precedence');
+
+  assert.equal(result.status, 0, result.stderr);
+  await access(expectedAdmissionRoot);
+  await assert.rejects(access(accidentalHomeAdmissionRoot), { code: 'ENOENT' });
+
+  const defaultResult = runAdmission({}, 'home-default');
+  assert.equal(defaultResult.status, 0, defaultResult.stderr);
+  await access(accidentalHomeAdmissionRoot);
+
+  await mkdir(readonlyCliHome);
+  await chmod(readonlyCliHome, 0o555);
+  const sandboxedResult = runAdmission({
+    HAPPIER_STACK_CLI_HOME_DIR: readonlyCliHome,
+    CODEX_SESSION_ID: 'sandboxed-heavyweight-test',
+  }, 'sandboxed-cli-home');
+  assert.equal(sandboxedResult.status, 0, sandboxedResult.stderr);
+  await assert.rejects(access(join(readonlyCliHome, 'heavyweight-admission-v1')), { code: 'ENOENT' });
+});
+
+test('native launcher does not derive a fixed heavyweight job count from the worker profile', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'happier-preferred-launcher-heavyweight-profile-'));
   const binDir = join(root, 'bin');
   const firstMarker = join(root, 'first-admitted');
@@ -2922,7 +4091,8 @@ test('native launcher derives two heavyweight admission slots from an 8 CPU, 24 
     '#!/bin/sh',
     'case "$*" in',
     '  */proc/loadavg*) case "$1" in *split*) printf "0\\n" ;; *) printf "0.1\\n" ;; esac ;;',
-    '  */proc/meminfo*) case "$1" in *MemAvailable*) printf "16777216 25165824\\n" ;; *) printf "25165824\\n" ;; esac ;;',
+    // A VM configured with 24 GiB exposes less than 24 GiB as MemTotal after kernel overhead.
+    '  */proc/meminfo*) case "$1" in *MemAvailable*) printf "16777216 24557560\\n" ;; *) printf "24557560\\n" ;; esac ;;',
     '  */proc/pressure/memory*) printf "1.4\\n" ;;',
     '  *) exec /usr/bin/awk "$@" ;;',
     'esac',
@@ -2989,12 +4159,8 @@ test('native launcher derives two heavyweight admission slots from an 8 CPU, 24 
     await waitForFile(secondMarker, 'the second worker-profile admission');
     third = run(thirdMarker);
     third.stderr.on('data', (chunk) => { thirdStderr += chunk; });
-    for (let attempt = 0; attempt < 250; attempt += 1) {
-      if (/waiting for heavyweight admission.*active=2\/2/.test(thirdStderr)) break;
-      await new Promise((resolveWait) => setTimeout(resolveWait, 20));
-    }
-    assert.match(thirdStderr, /waiting for heavyweight admission.*active=2\/2/);
-    await assert.rejects(readFile(thirdMarker), { code: 'ENOENT' });
+    await waitForFile(thirdMarker, 'the third worker-profile admission');
+    assert.doesNotMatch(thirdStderr, /active=2\/2/);
     await writeFile(releaseMarker, '', 'utf8');
     assert.equal(await waitForExit(first), 0);
     assert.equal(await waitForExit(second), 0);
@@ -3004,6 +4170,72 @@ test('native launcher derives two heavyweight admission slots from an 8 CPU, 24 
     for (const child of [first, second, third]) {
       if (child && child.exitCode == null) child.kill('SIGTERM');
     }
+  }
+});
+
+test('native launcher does not admit a newer heavyweight waiter ahead of an older live waiter', {
+  skip: process.platform !== 'linux',
+}, async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'happier-preferred-launcher-heavyweight-fairness-'));
+  const binDir = join(root, 'bin');
+  const admissionRoot = join(root, 'admission');
+  const marker = join(root, 'admitted');
+  t.after(async () => await rm(root, { recursive: true, force: true }));
+
+  await mkdir(binDir, { recursive: true });
+  await mkdir(join(admissionRoot, 'waiters'), { recursive: true });
+  await executable(join(binDir, 'uname'), '#!/bin/sh\nprintf "Linux\\n"\n');
+  await executable(join(binDir, 'getconf'), '#!/bin/sh\nprintf "4\\n"\n');
+  await executable(join(binDir, 'awk'), [
+    '#!/bin/sh',
+    'case "$*" in',
+    '  */proc/loadavg*) printf "0\\n" ;;',
+    '  */proc/meminfo*) case "$1" in *MemAvailable*) printf "16777216 25165824\\n" ;; *) printf "25165824\\n" ;; esac ;;',
+    '  */proc/pressure/memory*) printf "0\\n" ;;',
+    '  *) exec /usr/bin/awk "$@" ;;',
+    'esac',
+    '',
+  ].join('\n'));
+  await executable(join(binDir, 'systemctl'), '#!/bin/sh\nexit 1\n');
+  await executable(join(binDir, 'record'), '#!/bin/sh\n: > "$ADMITTED_MARKER"\n');
+
+  const stat = await readFile(`/proc/${process.pid}/stat`, 'utf8');
+  const processStartToken = stat.slice(stat.lastIndexOf(') ') + 2).trim().split(/\s+/)[19];
+  const olderWaiter = join(admissionRoot, 'waiters', `${process.pid}-${processStartToken}`);
+  await writeFile(olderWaiter, `${process.pid} ${processStartToken} 1\n`, 'utf8');
+
+  const child = spawn('/bin/sh', [
+    launcher,
+    '--heavyweight-admission',
+    `--admission-root=${admissionRoot}`,
+    '--class=validation',
+    '--machine=fair-worker',
+    '--',
+    'record',
+  ], {
+    cwd: repoRoot,
+    env: {
+      ...executionNeutralEnv,
+      HOME: root,
+      PATH: `${binDir}:/usr/bin:/bin`,
+      TMPDIR: root,
+      ADMITTED_MARKER: marker,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stderr = '';
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+  try {
+    await new Promise((resolveWait) => setTimeout(resolveWait, 500));
+    assert.equal(child.exitCode, null, stderr);
+    await assert.rejects(readFile(marker), { code: 'ENOENT' });
+
+    await rm(olderWaiter);
+    const exitCode = await new Promise((resolveExit) => child.once('exit', resolveExit));
+    assert.equal(exitCode, 0, stderr);
+    await readFile(marker);
+  } finally {
+    if (child.exitCode == null) child.kill('SIGTERM');
   }
 });
 
@@ -3073,7 +4305,9 @@ test('native launcher reuses a validated parent heavyweight reservation only for
     '--class=validation',
     `--machine=${machine}`,
     '--',
-    '/usr/bin/true',
+    '/bin/sh',
+    '-c',
+    'printf "%s\\n" "$HAPPIER_HEAVYWEIGHT_ADMISSION_TOKEN"',
   ], {
     cwd: repoRoot,
     env: {
@@ -3112,33 +4346,30 @@ test('native launcher reuses a validated parent heavyweight reservation only for
       machine: 'machine-a',
       token: `${ownerPid}:0`,
     });
-    for (let attempt = 0; attempt < 250; attempt += 1) {
-      if ((await readdir(join(admissionRoot, 'waiters'))).length >= 1) break;
-      await new Promise((resolveWait) => setTimeout(resolveWait, 20));
-    }
-    const staleWaiterCount = (await readdir(join(admissionRoot, 'waiters'))).length;
-    assert.ok(staleWaiterCount >= 1, 'stale process token must not bypass the active reservation');
+    let staleStdout = '';
+    stale.stdout.on('data', (chunk) => { staleStdout += chunk; });
+    assert.equal(await waitForExit(stale), 0);
+    assert.notEqual(staleStdout.trim(), `${ownerPid}:${ownerToken}`);
     crossMachine = runAdmission({
       rootPath: admissionRoot,
       machine: 'machine-b',
       token: `${ownerPid}:${ownerToken}`,
       inheritedMachine: 'machine-b',
     });
-    for (let attempt = 0; attempt < 250; attempt += 1) {
-      if ((await readdir(join(admissionRoot, 'waiters'))).length >= staleWaiterCount + 1) break;
-      await new Promise((resolveWait) => setTimeout(resolveWait, 20));
-    }
-    assert.ok(
-      (await readdir(join(admissionRoot, 'waiters'))).length >= staleWaiterCount + 1,
-      'a different machine must follow ordinary capacity admission',
-    );
+    let crossMachineStdout = '';
+    crossMachine.stdout.on('data', (chunk) => { crossMachineStdout += chunk; });
+    assert.equal(await waitForExit(crossMachine), 0);
+    assert.notEqual(crossMachineStdout.trim(), `${ownerPid}:${ownerToken}`);
     crossRoot = runAdmission({
       rootPath: otherAdmissionRoot,
       machine: 'machine-a',
       token: `${ownerPid}:${ownerToken}`,
       inheritedRoot: otherAdmissionRoot,
     });
+    let crossRootStdout = '';
+    crossRoot.stdout.on('data', (chunk) => { crossRootStdout += chunk; });
     assert.equal(await waitForExit(crossRoot), 0);
+    assert.notEqual(crossRootStdout.trim(), `${ownerPid}:${ownerToken}`);
     assert.equal(outer.exitCode, null);
     assert.equal(await readdir(join(admissionRoot, 'owners')).then((entries) => entries.length), 1);
 

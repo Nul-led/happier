@@ -11,6 +11,12 @@ For provider-specific setup guides, see:
 - [mTLS auth](/self-hosting/auth-mtls)
 - [Custom auth providers](/self-hosting/auth-custom-providers)
 
+The env vars on this page configure the whole deployment. The 0.3 development branch also
+has database-managed providers a Home administrator adds in the app, WorkOS SSO, and Team
+sign-in connections with directory sync — see
+[Enterprise identity](/self-hosting/auth-enterprise-identity) for how those relate to the
+policy model below.
+
 ## Choosing an auth setup (private vs public servers)
 
 What you should configure depends mostly on **who can reach your server**.
@@ -87,11 +93,183 @@ the persisted representation of an existing row are separate facts.
 
 Server operators control which role(s) are enabled via `/v1/features` (policy + feature env vars). Clients should not guess.
 
+## Native email and password (0.3 development)
+
+:::caution Activation status
+The source owners and focused automated checks exist, but native email/password
+remains default-off and unreleased. Current certification has not exercised a
+real SMTP provider or the complete web, desktop, iOS, Android, and mixed-version
+journeys. Treat the configuration below as the development activation contract,
+not proof that a production deployment is ready to enable it.
+:::
+
+Native email/password authentication is an optional Home method. Enable login with
+`HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED=1`; enable new-Account provisioning
+separately with `HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__PROVISION_ENABLED=1`.
+The Home's effective authentication policy remains authoritative, so enabling the
+feature does not by itself make every action or Account mode available.
+
+Verification, password reset, sign-in email changes, and authentication-change
+notices require SMTP delivery. At minimum configure:
+
+```bash
+HAPPIER_AUTH_EMAIL_SMTP_HOST=smtp.example.com
+HAPPIER_AUTH_EMAIL_FROM_ADDRESS=happier@example.com
+```
+
+Optional transport settings are `HAPPIER_AUTH_EMAIL_SMTP_PORT`,
+`HAPPIER_AUTH_EMAIL_SMTP_SECURE`, `HAPPIER_AUTH_EMAIL_SMTP_USERNAME`,
+`HAPPIER_AUTH_EMAIL_SMTP_PASSWORD`, and `HAPPIER_AUTH_EMAIL_FROM_NAME`. When SMTP
+is not configured, mail-dependent actions are reported as unavailable while other
+authentication methods continue to work.
+
+Bearer emails also require a published Home connection descriptor and an application
+origin. Configure the Home's public HTTPS ingress (or its supported Iroh endpoint), then
+either set `HAPPIER_WEBAPP_URL` or serve the bundled UI from the configured public server
+URL. Happier puts that portable Home target beside the one-time bearer. SMTP configuration
+alone is not enough. If the Home cannot publish that target, verification and reset
+requests remain existence-neutral but no operation or email is created.
+
+The UI keeps the journeys distinct: login authenticates an existing Account;
+provisioning verifies an email before creating an Account; enrollment/change/removal
+belong to Account Security; and password reset is recovery for a plain Account.
+An E2EE password cannot replace the Account recovery key or approval from a device
+that still holds the required Account material.
+
+First password enrollment on an existing Account may send its own verification
+email when that Account has no current evidence for the submitted mailbox. This is
+separate from public Account provisioning: its link is bound to the exact signed-in
+Account and can only be consumed by the atomic Account Security enrollment. Likewise,
+a transferable Team invitation requests mailbox verification in the exact invitation
+context; an invalid or no-longer-current invitation sends no mail even though the
+public request response remains intentionally neutral.
+
+For a Plain Account with a linked OAuth or mTLS identity, the exact prepared target credential,
+canonical mutation digest, and provider-bound external proof stay only in current-process memory.
+`TokenStorage`, browser local storage, and native secure storage reject the
+`accountPasswordEnrollment` record. The OAuth callback claims the exact Account, Home, provider,
+pending value, and request digest once, preserving it in memory only across callback-to-Settings
+navigation; its return target uses the exact Home server ID. Reload, replay, expiry, cancellation,
+abandonment, or substitution requires fresh salted preparation and proof. mTLS completes directly
+in the same process. E2EE proof audiences bind the resolved Home's stable server identity and
+canonical server URL, not a device-local alias or transport endpoint.
+
+Trusted interactive CLI hosts expose the same journeys through the shared
+Account Security Actions with `present_user` authority and direct confirmation.
+Password and recovery-key operations never leave the host and stay unavailable
+to agents, MCP, generic API, and the public plugin SDK.
+The safe `happier auth security get` projection can also use an authenticated
+API token; password and sign-in-email mutations still reject API-token callers.
+
+```bash
+# Plain Account sign-in and creation on the selected Home (--server/--server-url select the exact Home)
+happier auth email login --email ada@example.com # prompts without echo
+happier auth email provision --email ada@example.com  # requests mailbox verification first
+happier auth email provision --email ada@example.com --mode plain # use stdin below for mailbox bearer automation
+
+# Account Security (requires the selected Home's stored interactive login)
+happier auth security get
+happier auth password enroll-email-request --email ada@example.com
+happier auth password enroll --email ada@example.com --yes # prompts for password and uses stdin for mailbox bearer automation
+happier auth password change # prompts for both passwords and confirmation
+happier auth password remove # prompts for the current password and confirmation
+happier auth email connect --email ada@example.com --yes # prompts for password
+happier auth email change-request --email new@example.com
+happier auth email change-complete --verification-token <token>
+
+# E2EE Account Security reuses the recovery secret already held by this CLI
+happier auth password change --yes # prompts for the new password
+happier auth password change --recover --yes # prompts for the new password
+happier auth password remove --yes
+
+# Mailbox and recovery helpers (existence-neutral; secrets never leave the host)
+happier auth email verify-request --email ada@example.com
+happier auth email reset-request --email ada@example.com
+happier auth email reset-submit # prompts are unavailable for the bearer; use the stdin document below
+happier auth recovery-key validate # prompts for the recovery key
+```
+
+For noninteractive automation, keep secrets out of process arguments by passing
+one bounded strict stdin document. The accepted envelope is
+`{"v":1,"secrets":{...}}`; supported fields include `password`,
+`currentPassword`, `newPassword`, `recoveryKey`, `invitationToken`,
+`verificationToken`, `resetToken`, and `reauthProofJson`.
+
+```bash
+happier auth password change --yes --secrets-json-stdin <<'JSON'
+{"v":1,"secrets":{"currentPassword":"...","newPassword":"..."}}
+JSON
+```
+
+Secret-bearing argv spellings remain compatibility inputs but are redacted from
+CLI command context, logs, Doctor output, and remote diagnostics. Prefer the
+no-echo prompt or stdin document because operating-system process listings may
+observe argv before the CLI starts.
+
+For an E2EE Account, the CLI derives the password wrapping material locally and
+uses a Home-issued challenge bound to the exact Account, credential operation,
+and Home identity. Enrollment, change, recovery change, and removal reuse the
+Account recovery secret already held by the signed-in CLI; they do not rotate
+the Account signing identity or content key. If this CLI has only device-local
+data-key material, sign in with the password or recovery key first. Keep
+recovery keys private.
+
+`--yes` records the CLI's direct confirmation for that exact Account Security
+Action. A Home or Account setting that explicitly requires an approval still
+wins; the CLI does not use a generic approval bypass.
+
+Email verification and password-reset links contain one-time bearer capabilities.
+For first password enrollment on an Account without a verified sign-in email,
+`enroll-email-request` sends the dedicated authenticated enrollment intent; pass
+the resulting bearer only to `auth password enroll --verification-token`. This
+request is bound to the selected Home and cannot be made with an API token.
+Opening a link performs a read-only preview; an explicit user action consumes it.
+Do not copy these URLs into logs, analytics, or support tickets. The standalone
+web document declares `no-referrer` before its first subresource, and the bundled
+server adds `Referrer-Policy: no-referrer` on capability-bearing routes. If you
+host the web app separately, preserve the document policy and add the same HTTP
+response policy for `/auth/email/verify/*`, `/auth/password/reset/*`, and
+`/join/*` as defense in depth.
+
+## Optional Account Service recommendation
+
+These settings are part of the 0.3 development implementation. They are not a configuration contract for released 0.2 servers.
+
+Homes do not recommend an Account Service by default. Configure one explicitly when clients should offer account-based Home discovery alongside the Home's own authentication methods:
+
+```bash
+# Default: offer no Account Service from this Home.
+HAPPIER_AUTH_SIGN_IN_SERVICE_MODE=disabled
+```
+
+Use `self` only when this same server is configured as an Account Directory. It does not start another process:
+
+```bash
+HAPPIER_AUTH_SIGN_IN_SERVICE_MODE=self
+HAPPIER_ACCOUNT_SERVICE_DISPLAY_NAME=Acme
+```
+
+Or refer clients to a separate HTTPS Account Service (loopback HTTP is accepted only for local development):
+
+```bash
+HAPPIER_AUTH_SIGN_IN_SERVICE_MODE=external
+HAPPIER_AUTH_SIGN_IN_SERVICE_URL=https://accounts.example.com
+# Optional identity pin discovered from that service:
+HAPPIER_AUTH_SIGN_IN_SERVICE_SERVER_IDENTITY_ID=srv_accounts
+```
+
+The recommendation is discovery policy, not authorization: it does not link an Account or allow that service to issue Home credentials without the normal verified enrollment flow.
+
 ## Auth methods (discovery)
 
-Clients should treat `GET /v1/features` as the source of truth for “what auth flows are available”.
+The current 0.2 client path discovers authentication methods through `GET /v1/features`.
+In the 0.3 development implementation, clients instead request the exact current
+Home actions from `POST /v1/auth/entry`. They use the legacy feature response only
+when that endpoint returns HTTP 404, 405, or 501. Network failures, other error
+statuses, malformed JSON, and incompatible response shapes do not cause a legacy
+downgrade.
 
-Happier advertises auth entrypoints via:
+The legacy feature response advertises auth entrypoints via:
 
 - `capabilities.auth.methods[]` (preferred; method + action + mode)
 - plus legacy surfaces like `capabilities.auth.signup.methods[]` for older clients
@@ -240,6 +418,13 @@ Otherwise, users will be redirected to the wrong place (or the redirect may be r
 Use these env vars to control who can create accounts and whether provider identity is enforced for ongoing access.
 
 ### Signup / login policy
+
+The following four recommendation and presentation settings require the 0.3 development implementation:
+
+- `HAPPIER_AUTH_SIGN_IN_SERVICE_MODE` (`disabled`, `self`, or `external`; default `disabled`)
+- `HAPPIER_AUTH_SIGN_IN_SERVICE_URL` (required only for `external`)
+- `HAPPIER_AUTH_SIGN_IN_SERVICE_SERVER_IDENTITY_ID` (optional identity pin for `external`)
+- `HAPPIER_ACCOUNT_SERVICE_DISPLAY_NAME` (optional bounded name emitted only by an Account Directory)
 
 - `AUTH_ANONYMOUS_SIGNUP_ENABLED` (default `true`)
   - If `false`, anonymous account creation is disabled (`POST /v1/auth` will return `403 signup-disabled` for new users).

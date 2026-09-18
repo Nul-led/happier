@@ -220,6 +220,39 @@ GitHub App mode avoids relying on user OAuth tokens and keeps org enforcement wo
 Installation id tips:
 - After installing the app, click **Configure** on the installation; the URL usually contains `installations/<id>`.
 
+### Managed GitHub Apps (development branch)
+
+The development branch also contains a Home- and Team-managed GitHub App flow. It is not in
+a released Happier version yet. This flow stores each App registration and verified
+organization installation in Happier instead of reading the single deployment-wide
+`AUTH_GITHUB_APP_*` configuration above.
+
+For GitHub.com, an administrator starts the manifest-assisted setup in Happier and submits
+the returned one-time browser URL. Happier's handoff page submits the manifest to GitHub, so
+web, desktop, and mobile clients only need to open a URL. GitHub redirects its one-time
+manifest code to
+`https://YOUR_SERVER/v1/oauth/github/callback`; Happier converts that code once and stores the
+App's private key and client secret encrypted. For GitHub Enterprise Server, create the App
+on the approved enterprise host and enter its App id, client id, private key, and optional
+secrets through the manual setup path. Credentials are write-only after submission.
+
+Next, install the App on the organization and verify the installation in Happier. Verification
+opens a fresh GitHub authorization so Happier can prove that the signed-in GitHub user
+administers the exact organization. Happier also checks the installation identity,
+permissions, suspension state, and host before making it eligible for a managed identity
+connection. The App needs **Organization permissions → Members: Read**.
+
+After creating the managed identity-provider instance, add its exact user OAuth callback to
+the GitHub App:
+
+```text
+https://YOUR_SERVER/v1/oauth/PROVIDER_INSTANCE_ID/callback
+```
+
+The manifest setup redirect is used once while GitHub creates the App. The provider instance
+callback is the callback you retain in the App settings for user OAuth. Managed GitHub App
+repository access is not available on the development branch yet.
+
 ## Org enforcement via user OAuth tokens (alternative)
 
 If you can’t use GitHub App mode, you can verify org membership using the user’s OAuth token:
@@ -273,3 +306,8 @@ AUTH_GITHUB_APP_ID=...
 AUTH_GITHUB_APP_PRIVATE_KEY=...
 AUTH_GITHUB_APP_INSTALLATION_ID_BY_ORG=acme=123
 ```
+
+## Related
+
+- [Enterprise identity](/self-hosting/auth-enterprise-identity) — how managed GitHub Apps relate to Home providers, Team sign-in and directory sync, and what verifying an installation does not grant.
+- [Auth overview](/self-hosting/auth) — the policy model these settings plug into.

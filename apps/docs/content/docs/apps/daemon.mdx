@@ -15,6 +15,83 @@ It also helps the CLI:
 - reconnect to and manage existing sessions
 - support remote control / orchestration features without requiring your terminal to stay open
 
+## Machine Pools in the development build
+
+<Callout type="info">
+  **Developer Preview:** personal Machine Pools are part of the current unreleased
+  0.3 source. They are not yet a released Happier contract and still require
+  integrated live validation.
+</Callout>
+
+A Machine Pool is a named group of your own persistent Machines on one Home. In
+**Settings → Machines**, you can create a Pool, give it an optional description,
+enable or disable members, and place members in priority tiers. Offline Machines can
+stay in a Pool so you can configure or repair it before they reconnect.
+
+Each save replaces the whole definition together: its details, enabled members, and
+tiers share one revision. If another device saved the Pool first, Happier reports the
+conflict and keeps your unsaved form so you can reload the current definition. Empty
+Pools are valid, and deleting a Pool affects only future selections; it does not
+delete Machines or stop Sessions already running on one of them.
+
+Pool names, descriptions, membership, and priority settings are administration data
+that the Home can read, including when your Account uses end-to-end encryption. Do
+not put secrets in a Pool name or description. Machine and Session content keeps its
+existing encryption behavior.
+
+In **New Session**, a Pool appears in the same **Run on** picker you already use to
+choose a specific machine. Happier asks that Home to choose an available member from the
+first eligible priority tier, then starts the session on the returned exact Machine.
+Machines in the same tier are spread deterministically across separate session
+requests.
+
+Availability is an observation, not stored capacity. A Pool can therefore remain
+visible while its Home is signed out, loading, or temporarily unable to observe
+Machine presence, but it is unavailable for a new selection until that Home has a
+current projection. A failed request keeps the definition or draft available for
+recovery. Refresh the Home, choose a specific Machine, or deliberately choose the
+Pool again; Happier does not silently rotate an existing exact target.
+
+The background service receives that exact Machine target and, when compatibility is
+negotiated, a small informational Pool origin. Older services receive only the exact
+target. The service does not monitor the Pool or automatically move, retry, or fail
+over the session if the chosen Machine becomes unavailable. Pool availability means a
+member is generically connected; the usual Agent, Provider, folder, permission, and
+launch checks still apply before a session can start.
+
+Machine Pool support is decided separately for each Home. A current client hides
+Pool controls for a Home that does not advertise the preview feature, while ordinary
+exact-Machine session creation continues to work there. Saves notify your other
+connected clients through the Account change feed; the notification carries only
+the Pool identity, and each client reloads the definition from that same Home.
+
+On a self-hosted Home the switch is `HAPPIER_FEATURE_MACHINES_POOLS__ENABLED`,
+which is on unless an operator turns it off — see [feature environment
+variables](/self-hosting/feature-env).
+
+The preview also exposes six generated Actions for listing, reading, creating,
+updating, deleting, and resolving personal Machine Pools. They use the same
+authenticated Home and Account permissions as the UI. They do not make Pool
+membership a permission grant.
+
+<Callout type="warning">
+  A **Machine Pool** chooses where work runs. A **Connected Service Pool** groups
+  credential sources. They are separate features even where both appear near a
+  Session workflow. Choosing a Machine Pool never grants connected-service access.
+
+  In the current preview, a Team credential resource can use a personal Machine Pool
+  as its broker location. For a new broker connection, the source-owning Machines
+  report whether that credential source is usable without returning credentials or
+  settings; the Home selects one eligible exact Machine, and the ordinary broker path
+  continues there. The integrated, loaded-Provider journey still needs validation.
+  Capacity-aware admission, Machine sharing, and Team-owned Pools are deferred
+  extensions, not part of this preview.
+</Callout>
+
+For the surrounding launch flow, see [Start a new session](/sessions/start-a-session).
+When starting from a project or an existing Session, also see [New session
+shortcuts](/sessions/new-session-shortcuts).
+
 ## Embedded terminal support
 
 The in-app embedded terminal also depends on the background service.

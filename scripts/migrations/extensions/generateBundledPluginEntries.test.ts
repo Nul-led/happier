@@ -14,6 +14,7 @@ import {
   computePluginUiArtifactFileSetSha256DigestV1,
   computePluginUiArtifactSha256DigestV1,
 } from '@happier-dev/protocol/plugins/ui';
+import { ingestPluginManifestV2 } from '@happier-dev/protocol/plugins/manifest';
 import {
   resolveWorkspaceBundleLockPath,
   withWorkspaceBundleLock,
@@ -507,6 +508,101 @@ function assertNoExecutableUiProjectionImports(
   assert.doesNotMatch(output, /@\/agents\/providers\/(?:codex|claude|opencode|gemini|pi|ohMyPi|kiro|auggie|kimi|kilo|copilot|cursor)\//);
   assert.doesNotMatch(output, /from '\.\/bundled\/(?:codex|claude|opencode|gemini|pi|ohMyPi|kiro|auggie|kimi|kilo|copilot|cursor)\//);
 }
+
+test('compiler-input bootstrap does not require stale committed manifests to satisfy the current schema', async () => {
+  const repoRoot = mkdtempSync(resolve(tmpdir(), 'happy-bundled-generator-compiler-bootstrap-'));
+  const packageRoot = resolve(repoRoot, 'packages/plugins/bootstrap');
+  const manifestSourcePath = resolve(packageRoot, 'src/manifest.ts');
+  const installedManifestPath = resolve(packageRoot, '.happier-plugin/plugin.json');
+  const validActionContributions = `{
+    actions: [{
+      id: "inspect",
+      title: "Inspect",
+      scopes: ["global"],
+      surfaces: ["plugin"],
+      execution: { target: "daemon" },
+      dangerLevel: "safe",
+      inputSchema: {
+        type: "object",
+        properties: { query: { type: "string", maxLength: 256 } },
+        required: ["query"],
+        additionalProperties: false,
+      },
+    }],
+  }`;
+  const validManifestSource = pluginManifestSource({
+    id: 'happier.fixture.bootstrap',
+    daemon: false,
+    contributes: validActionContributions,
+  });
+  const staleManifest = {
+    schemaVersion: 2,
+    id: 'happier.fixture.bootstrap',
+    version: '0.0.0',
+    displayName: 'happier.fixture.bootstrap',
+    description: 'Test plugin manifest.',
+    engines: { happier: '^0.0.0' },
+    runtime: { apiVersion: 1 },
+    hostAccess: { required: [], optional: [] },
+    contributes: {
+      actions: [{
+        id: 'inspect',
+        title: 'Inspect',
+        scopes: ['global'],
+        surfaces: ['plugin'],
+        execution: { target: 'daemon' },
+        dangerLevel: 'safe',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: {
+              type: 'string',
+              'x-happier-trim': {
+                type: 'string',
+                'x-happier-max-code-units': 256,
+              },
+            },
+          },
+          required: ['query'],
+          additionalProperties: false,
+        },
+      }],
+    },
+  };
+
+  try {
+    writeJson(resolve(packageRoot, 'package.json'), {
+      name: '@happier-dev/plugins-bootstrap',
+      version: '0.0.0',
+    });
+    mkdirSync(resolve(packageRoot, 'src'), { recursive: true });
+    writeFileSync(manifestSourcePath, validManifestSource, 'utf8');
+    writeJson(installedManifestPath, staleManifest);
+    writeGeneratorOutputScaffold(repoRoot);
+
+    assert.equal(
+      ingestPluginManifestV2(staleManifest).ok,
+      false,
+      'the retired Action schema extension must remain rejected by current Protocol ingress',
+    );
+
+    await generateBundledPluginEntries([
+      '--root',
+      repoRoot,
+      '--mode',
+      'write',
+      '--compiler-inputs',
+    ]);
+
+    assert.deepEqual(
+      JSON.parse(readFileSync(installedManifestPath, 'utf8')),
+      staleManifest,
+      'the compiler-input prepass must not mutate runtime manifest artifacts',
+    );
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
 
 test('serializes generator discovery, check, and writes through the workspace bundle lock', async () => {
   const repoRoot = mkdtempSync(resolve(tmpdir(), 'happy-bundled-generator-lock-'));
@@ -4326,11 +4422,7 @@ test('generateBundledPluginEntries writes deterministic bundled plugin contribut
   assert.doesNotMatch(uiOut, /maintained in-place/);
   assert.match(uiOut, /This file is emitted by:/);
   assert.match(uiOut, /BUNDLED_CANONICAL_AGENTS_CORE/);
-  assert.match(uiOut, /BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES/);
-  assert.match(
-    uiOut,
-    /ohMyPi:\s*Object\.freeze\(\{\s*pluginId:\s*"happier\.agent\.ohmypi",\s*localId:\s*"ohmypi",/,
-  );
+  assert.doesNotMatch(uiOut, /BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES/);
   assertNoExecutableUiProjectionImports(uiOut);
   assert.doesNotMatch(uiOut, /@\/agents\/providers\/auggie\/core/);
   assert.doesNotMatch(uiOut, /@\/agents\/providers\/auggie\/ui/);
@@ -4433,6 +4525,9 @@ test('generateBundledPluginEntries writes deterministic bundled plugin contribut
   assert.match(agentIdsOut, /export type BundledAgentId = \(typeof AGENT_IDS\)\[number\];/);
   assert.match(agentIdsOut, /export type AgentId = BundledAgentId \| \(string & \{\}\);/);
   assert.match(agentIdsOut, /export function isBundledAgentId/);
+  assert.match(agentIdsOut, /export const BUNDLED_AGENT_CONTRIBUTION_IDENTITIES/);
+  assert.match(agentIdsOut, /claude:\s*Object\.freeze\(\{\s*pluginId:\s*'happier\.agent\.claude',\s*localId:\s*'claude'/s);
+  assert.match(agentIdsOut, /ohMyPi:\s*Object\.freeze\(\{\s*pluginId:\s*'happier\.agent\.ohmypi',\s*localId:\s*'ohmypi'/s);
   const agentIds = readGeneratedStringArray(agentIdsOut, 'AGENT_IDS');
   assert.ok(agentIds.includes('gemini'));
   assert.ok(agentIds.includes('auggie'));

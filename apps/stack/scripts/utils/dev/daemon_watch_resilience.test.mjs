@@ -151,6 +151,40 @@ test('workspace preparation executor refreshes generated plugin inputs without o
   }]);
 });
 
+test('workspace preparation executor coalesces concurrent publications and permits a later refresh', async () => {
+  let releaseFirstBuild;
+  const firstBuild = new Promise((resolve) => {
+    releaseFirstBuild = resolve;
+  });
+  let calls = 0;
+  const executor = createHappyCliWorkspacePreparationExecutor(
+    {
+      repoRoot: '/repo',
+      cliDir: '/repo/apps/cli',
+    },
+    {
+      syncSharedDepsForSourceDevImpl: async () => {
+        calls += 1;
+        if (calls === 1) return await firstBuild;
+        return { synced: true, reason: 'refreshed' };
+      },
+    },
+  );
+
+  const optimisticPreparation = executor.build();
+  const supervisorPreparation = executor.build();
+  await Promise.resolve();
+  assert.equal(calls, 1);
+
+  releaseFirstBuild({ synced: true, reason: 'completed' });
+  assert.deepEqual(await Promise.all([optimisticPreparation, supervisorPreparation]), [
+    { synced: true, reason: 'completed' },
+    { synced: true, reason: 'completed' },
+  ]);
+  assert.deepEqual(await executor.build(), { synced: true, reason: 'refreshed' });
+  assert.equal(calls, 2);
+});
+
 test('reload executor immediately adopts an external superseded CLI publication before requesting the trailing build', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'hs-daemon-external-publication-'));
   t.after(async () => rm(root, { recursive: true, force: true }));
@@ -947,7 +981,7 @@ test('reload executor retries before daemon mutation when the admitted workspace
     },
     {
       ensureCliBuiltImpl: async () => ({ built: true, current: true, reason: 'test' }),
-      readCliWorkspaceRuntimeIdentityImpl: () => ({
+      readCliWorkspaceRuntimeIdentityImpl: async () => ({
         fingerprint: 'b'.repeat(64),
         packageCount: 1,
         packageNames: ['@happier-dev/protocol'],

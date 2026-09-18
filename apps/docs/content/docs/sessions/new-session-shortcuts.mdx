@@ -62,6 +62,23 @@ That can include:
 
 The shortcut does not send a prompt by itself. It only prepares the new-session screen.
 
+In the current unreleased 0.3 Machine Pools preview, a shortcut also keeps the source
+session's exact Home and Machine. It does not remember the Pool as a new placement
+request or ask the Pool to choose again. This makes **New session with same setup** and
+project **+** predictable even if Pool membership or availability has changed since
+the source session started. To choose from the Pool again, explicitly select that
+Pool in the Machine picker.
+
+The shortcut seeds the exact Home and Machine only. It does not copy the Pool
+origin into the new draft, so the new-session screen shows a specific machine
+rather than the Pool it came from. The source session keeps its own record: its
+**Session info** screen still shows the Pool it was chosen from, because that
+origin belongs to that session and is informational rather than a live placement.
+
+If that exact Machine is now unavailable, the shortcut does not resolve the old
+Pool, choose a fallback member, or retry on another Machine. Review the target and
+explicitly pick a Machine or Machine Pool instead.
+
 ## What does not get reused
 
 Shortcuts intentionally do not continue the source conversation.

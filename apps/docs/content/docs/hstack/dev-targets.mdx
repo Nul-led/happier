@@ -147,6 +147,44 @@ hstack dev-targets add linux \
 When both Lima options are present, Stack runs `limactl start` before SSH preparation. It does not
 stop the VM when the TUI exits, so target-local dependency and build caches remain warm.
 
+### Set shared and dedicated capacity for a managed Lima target
+
+Managed Lima targets can keep two CPU and memory presets in this stack's `dev-targets.json`. The
+editing stack is the configuration authority: it resolves the selected preset and applies it to the
+target's Lima host through the managed connection. Nothing inside the worker VM owns or rewrites
+this policy.
+
+Configure both presets the first time and select the mode that should be active:
+
+```bash
+hstack dev-targets capacity set mac3-linux dedicated \
+  --shared-cpus=8 \
+  --shared-memory-gib=24 \
+  --dedicated-cpus=12 \
+  --dedicated-memory-gib=32 \
+  --force \
+  --stack=repo-dev
+```
+
+After both presets exist, switching modes only needs the target, mode, and `--force`:
+
+```bash
+hstack dev-targets capacity set mac3-linux shared --force --stack=repo-dev
+hstack dev-targets capacity set mac3-linux dedicated --force --stack=repo-dev
+hstack dev-targets capacity show mac3-linux --stack=repo-dev
+```
+
+`--force` authorizes the exact managed worker VM to stop, apply its selected CPU and RAM values,
+restart, and refresh its generated SSH endpoint. Other targets and the editing VM keep running. If
+the selected resources differ and `--force` is absent, the command leaves both the VM and config
+unchanged and tells you to rerun with `--force`. A matching preset can be stored without a restart.
+
+Capacity does not change the target's disk size, architecture, VM type, or provisioning policy;
+those remain owned by its managed Lima profile. This makes it safe to give machines different
+shared and dedicated CPU/RAM values without silently growing a retained worker disk. Run
+`hstack dev-targets status <name>` afterward to verify the target is synchronized, running, and has
+no managed-runtime drift.
+
 Adding a target with an existing name replaces that target's configuration. Remove one with:
 
 ```bash
@@ -168,14 +206,15 @@ The repo-local wrapper selects that checkout's Stack automatically.
 
 ## Choose where work runs
 
-New placement settings are version 2 of the stack-scoped target configuration. Use the command
-owner instead of editing JSON:
+Placement settings are supported by the stack-scoped target configuration. Managed Lima ownership
+and per-target capacity use its current version 3 shape. Use the command owner instead of editing
+JSON:
 
 ```bash
 # Keep the server and daemon local, but run Expo/Metro on the Mac target.
 node ./apps/stack/scripts/repo_local.mjs dev-targets placement set expo mac
 
-# Route common commands across the least-loaded healthy Mac.
+# Route common commands across the least-loaded healthy targets.
 node ./apps/stack/scripts/repo_local.mjs dev-targets placement set commands auto --targets=mac,mac2 --fallback=local
 
 # Optional capabilities; keep the server local until its persistence is target-ready.
@@ -195,6 +234,23 @@ Runtime surfaces accept `local` or one configured target name. `commands` additi
 | `expo` | Metro/Expo watch, bundle, and restart work | TUI, Mutagen, stable Expo port/tunnel |
 | `daemon` | CLI build/watch and daemon process | TUI, Mutagen, server tunnel |
 | `server` | Server watch/build/restart and its selected database | TUI, Mutagen, stable server port/tunnel |
+
+A synchronized target does not have to participate in automatic command
+execution. For example, a `mac-host` target can remain configured as the
+Mutagen mirror and macOS service-placement endpoint while the automatic pool
+uses only Linux workers plus local fallback:
+
+```bash
+node ./apps/stack/scripts/repo_local.mjs dev-targets placement set commands auto \
+  --targets=mac2-linux,mac3-linux \
+  --include-local \
+  --fallback=local
+```
+
+An exact `dev-targets exec mac-host` remains available when a command genuinely
+requires macOS. Omitting it from `--targets` only removes it from automatic
+selection; it does not remove the target, synchronization, or service
+placement.
 
 Setting any placement upgrades the existing version 1 file without losing configured targets.
 The old version 1 behavior is local server + local Expo + local daemon, with an additional daemon
@@ -237,7 +293,10 @@ because the remote worker is connected.
 When the server or Expo is remote, SSH local forwards preserve the selected local ports. When the
 server stays local but Expo or a daemon is remote, an SSH reverse forward gives the remote process
 the same server endpoint. Browsers, local tools, and installed development clients therefore keep
-using the local URL. For phones, the tunnel's LAN bind accepts both IPv4 and IPv6 connections and
+using the local URL. A remotely placed server is launched with the originating stack's canonical
+server origin, so the audience it signs for key-challenge authentication stays the origin URL those
+clients already use instead of one derived from the target's own stack name and port. For phones,
+the tunnel's LAN bind accepts both IPv4 and IPv6 connections and
 Expo advertises a LAN-reachable URL. Set `HAPPIER_STACK_LAN_IP` to the machine's Tailscale IPv4
 address when a phone should connect through Tailscale instead of the selected LAN interface.
 
@@ -280,8 +339,21 @@ corepack yarn --cwd packages/plugins/claude -s typecheck
 corepack yarn --cwd apps/server -s vitest run sources/example.spec.ts
 ```
 
+For a focused Vitest file, use that package's routed `vitest` command. Do not
+append the file or `-t` filter to an aggregate `test` or `test:unit` command
+unless its script explicitly supports forwarding: a compound aggregate can
+start its complete test suite before the appended filter reaches its last
+child command.
+
 Do not invoke a `*:local` script directly. Those scripts are implementation targets for
 `hstack-exec`, which owns target selection and local fallback.
+
+Automatic selection synchronizes the chosen checkout before executing the
+command remotely. If no configured remote is usable, `fallback=local` runs the
+command through the same launcher in the editing VM; forcing `--local` is
+reserved for commands that genuinely require that machine. Capacity presets
+do not impose a fixed job-count limit: normal load and health observations
+continue to choose among local and remote executors.
 
 The repository root and every internal workspace route their ordinary `test`, `test:unit`,
 `typecheck`, and `vitest` entry points when present. Their `*:local` counterparts are the canonical
@@ -326,6 +398,14 @@ queue, less than 10% available memory, or memory PSI `avg10` of 10 or higher, an
 interrupted command's slot for the next waiter. Searches and ordinary control commands keep their
 normal dispatch path.
 
+In the current development checkout, automatic routing and named POSIX-target execution from a
+macOS or Linux computer use the same dispatcher. Recognized searches and validation commands run at
+background priority on Linux and macOS targets. Their Vitest, ripgrep, and native TypeScript worker
+budgets share the target's CPU capacity with active dispatches; Linux also contributes runnable and
+pressure measurements. Explicit worker overrides are preserved. These are per-command hints, not a
+global memory limit: an unreserved macOS target can still give its first job the full CPU budget,
+and already-running jobs are not resized. Linux admission remains Linux-only.
+
 When a Linux target has a ready systemd user manager and a loaded `happier-jobs.slice`, an admitted
 job runs in a transient user scope in that slice at nice level 10. The launcher does not create or
 configure the slice; targets without that prepared boundary run the same admitted command directly.
@@ -354,7 +434,9 @@ command cannot oscillate between machines.
 
 Everything after `--` belongs to the remote command, so child flags such as `--json` are preserved.
 `--cwd` is relative to the synchronized repository root and cannot escape it. `--env=KEY=VALUE` can
-be repeated; local environment variables are not forwarded implicitly. The remote command's exit
+be repeated; unrelated local environment variables are not forwarded implicitly. Explicit Vitest
+worker settings and `GOMAXPROCS` are inherited by the native dispatcher, and a supplied `--env`
+assignment takes precedence. The remote command's exit
 status is returned by `hstack`. On `Ctrl-C`/termination, `hstack` cancels the execution-scoped remote
 process tree and then stops its local SSH client. Use `--tty` only for a command that genuinely needs
 an interactive terminal.
@@ -383,6 +465,12 @@ a dedicated target can use all of its CPU and memory. The invoked tools may stil
 own package locks, generated directories, ports, databases, simulators, or other exclusive
 resources. Partition agent lanes by package or output ownership when those resources overlap; file
 sync itself is not a command scheduler.
+
+Capacity changes affect new work; they do not migrate commands that are already running. The
+editing VM also continues to host Agent sessions and Stack control processes, while a freshly
+restarted worker begins with no retained process load. A temporarily lower worker load therefore
+does not by itself mean dispatch is bypassing it. Use the TUI execution-fabric pane or its retained
+provenance to compare recent admissions, and inspect long-running local work separately.
 
 The remote repository is an execution mirror, not a second authoring checkout. Keep source edits,
 formatting, source-generating codemods, Git mutations, and commits on the authoritative computer.

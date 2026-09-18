@@ -110,16 +110,16 @@ This is the best option when you want to:
 
 Local control means the provider TUI is active in your terminal. Remote control means Happier is driving the same provider session in the background for the app.
 
-For **Claude** and **Codex**, local control is exclusive. While the provider TUI owns the session, Happier does not inject app messages directly into that terminal process. Instead:
+For **Claude**, local control is exclusive. While the provider TUI owns the session, Happier does not inject app messages directly into that terminal process. Instead:
 
 - the app stores the message in the session pending queue,
 - the local Happier process watches for pending messages,
 - if no local turn is running, Happier can switch the session back to remote processing and deliver the queued message,
 - if a local turn is still running, Happier waits for that turn to finish, abort, or exit before switching back to remote.
 
-This avoids interrupting an in-progress local Claude or Codex turn. Without this wait, sending an app message into a busy terminal TUI could cancel or corrupt the current provider turn.
+This avoids interrupting an in-progress local Claude turn. Without this wait, sending an app message into a busy terminal TUI could cancel or corrupt the current provider turn.
 
-For **OpenCode**, local control is shared. The OpenCode TUI and Happier app can both stay connected to the same OpenCode session, so app messages do not need the same exclusive-control handoff path.
+For **OpenCode**, and for App Server sessions using Codex CLI 0.131.0 or newer on macOS or Linux, local control is shared. The provider TUI and Happier app stay connected to the same provider session, so app messages do not need the exclusive-control handoff path merely because a TUI is attached. Earlier Codex versions and Windows do not expose terminal attachment in 0.3.
 
 You can always review queued messages from the **Pending messages** sheet before they run.
 
@@ -133,6 +133,33 @@ The pending queue feature requires support from both:
 If your setup doesn’t support pending queues, the app will fall back to the normal message sending behavior and you won’t be able to rely on pending queue actions.
 
 Modern unattended activation additionally requires server Pending Input V2 support and activation capability from the session's exact target machine. Older or mixed components retain the existing direct-wake fallback. Happier does not use this path to take over Direct or otherwise external sessions.
+
+### Messages for an execution run (0.3 development)
+
+An interactive Execution Run inside a Session uses the same Pending queue as
+the main conversation, but with one exact Run recipient. Its rows, count, and
+actions are shown in that Run's conversation; they do not inflate the main
+Session's pending count or block another Run's queue.
+
+Targeted delivery requires the server and the Session's exact daemon to
+positively support the current target-aware admission contract. If either side
+is older or incomplete, Happier refuses that targeted send with an update-
+required result before creating a row. It never retries the message without its
+recipient and never delivers it to the main conversation.
+
+After a disconnect or restart, Happier may restore a Run that the daemon can
+prove is resumable. A target proven terminal or permanently unavailable becomes
+blocked on that Run, while a target that cannot yet be classified stays queued.
+Use the visible retry or recovery action after checking the Run state; do not
+submit the same uncertain message under a new identity.
+
+When a caller sends and waits, the wait belongs to that exact accepted turn.
+A timeout stops only the observation, not the Run. If Happier cannot prove the
+turn's outcome, it reports **Outcome unknown** rather than treating parent
+Session idle or the Run's eventual terminal state as success.
+
+This is a Developer Preview contract in the current 0.3 source, not a released
+availability claim.
 
 ## Tips
 

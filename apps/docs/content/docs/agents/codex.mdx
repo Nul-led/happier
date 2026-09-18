@@ -110,7 +110,9 @@ Important Codex behavior:
 
 If you manually switch Codex to plain `mcp` in settings, new sessions can still run, but vendor resume is not available on that plain MCP path.
 
-Codex local control is exclusive. When the Codex TUI owns the session, Happier watches Codex turn boundaries and process state so it can tell when it is safe to resume remote processing. Completed turns, aborted turns, and Agent process exit are treated as safe boundaries for handing control back to Happier.
+With the App Server backend, Codex uses shared local control with Codex CLI 0.131.0 or newer on macOS and Linux. Happier and the Codex TUI connect to the same running app-server thread, so the app remains writable and can continue handling approvals while the TUI is attached. If a turn is already active, the normal Happier input flow waits before starting the next app turn.
+
+Earlier Codex CLI versions and Windows can still run App Server sessions remotely, but shared terminal attachment is unavailable. ACP sessions do not expose local attachment.
 
 Codex model availability depends on the active Codex backend, installed runtime, and account state. The new-session engine picker can show the currently available Codex models, model-specific options such as reasoning effort, and favorite Codex model shortcuts when those models are available for the selected backend.
 
@@ -173,9 +175,9 @@ You can later switch back to remote control and keep using the same session from
 
 Local control starts from the terminal. Use `happier attach <session-id>` on the owning machine.
 
-If you send a message from the app while Codex is locally controlled, Happier stores it in the pending queue first. If Codex is idle, Happier can switch back to remote control and process it. If Codex is still running a local turn, Happier waits for that turn to finish, abort, or exit before switching, which avoids interrupting the current Codex TUI turn.
+App messages and approvals stay available while the Codex TUI is attached. Both clients use the same running App Server thread.
 
-On machines with `tmux`, this is usually a tmux-backed attach flow. On Windows, use Happier’s Windows remote session mode (`Windows Terminal`, `Console`, or `Hidden`) instead of relying on tmux.
+The shared App Server path uses Codex’s native local socket attach on macOS and Linux. It does not depend on `tmux`.
 
 For the end-to-end workflow, see [Features → Attach to a running session](/sessions/attach-to-session).
 
@@ -207,7 +209,7 @@ Resume is strict: Happier does not silently replace a failed Codex resume with a
 
 ## Permissions and modes
 
-Happier uses an **Agent-agnostic permission mode** (`default`, `read-only`, `safe-yolo`, `yolo`) and applies it to Codex in the best available way.
+Happier uses an **Agent-agnostic permission intent** (`read_only`, `default`, `auto`, `yolo`) and applies it to Codex in the best available way.
 
 For the full user guide (CLI flags, UI picker, defaults, apply timing), see:
 
@@ -222,8 +224,8 @@ Codex enforcement is a combination of:
 
 Important notes:
 
-- `read-only` is enforced by Happier by **denying write-like actions** (edits/patches/exec) when Happier is the approver.
-- `safe-yolo` and `yolo` control whether Happier prompts vs auto-approves actions it can approve.
+- Read-only is enforced by Happier by **denying write-like actions** (edits/patches/exec) when Happier is the approver.
+- Auto and YOLO select the closest supported automatic approval policy for the active Codex backend.
 - Codex backends may have sandbox policies that are **fixed at session start**. Changing permission mode mid-session can still update Happier’s approval behavior, but it may not change Codex’s internal sandbox until you start a new Codex session.
 
 ### Plan mode

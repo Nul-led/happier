@@ -19,7 +19,7 @@ The window accepts the same duration strings the defaults use (`1 minute`,
 per signed-in account, so one busy user cannot exhaust another's budget.
 `IP address` limits apply before Happier knows who is calling — they protect
 unauthenticated routes, and behind a reverse proxy they are only as accurate as
-the forwarded client address your proxy sets. 35 of the 50 limits are
+the forwarded client address your proxy sets. 43 of the 68 limits are
 per-account.
 
 Two clusters are worth knowing about before a rollout, because they throttle
@@ -30,6 +30,7 @@ account from a headless machine.
 | Endpoint | Default | Counted per | Environment variables |
 | --- | --- | --- | --- |
 | `account.profile` | 300 / 1 minute | Account | `HAPPIER_ACCOUNT_PROFILE_RATE_LIMIT_MAX`<br />`HAPPIER_ACCOUNT_PROFILE_RATE_LIMIT_WINDOW` |
+| `account.security.read` | 120 / 1 minute | Account | `HAPPIER_ACCOUNT_SECURITY_READ_RATE_LIMIT_MAX`<br />`HAPPIER_ACCOUNT_SECURITY_READ_RATE_LIMIT_WINDOW` |
 | `account.settings` | 300 / 1 minute | Account | `HAPPIER_ACCOUNT_SETTINGS_RATE_LIMIT_MAX`<br />`HAPPIER_ACCOUNT_SETTINGS_RATE_LIMIT_WINDOW` |
 | `accountDirectory.assertionMint` | 30 / 1 minute | Account | `HAPPIER_ACCOUNT_DIRECTORY_ASSERTION_MINT_RATE_LIMIT_MAX`<br />`HAPPIER_ACCOUNT_DIRECTORY_ASSERTION_MINT_RATE_LIMIT_WINDOW` |
 | `accountDirectory.assertionRedeem` | 30 / 1 minute | IP address | `HAPPIER_ACCOUNT_DIRECTORY_ASSERTION_REDEEM_RATE_LIMIT_MAX`<br />`HAPPIER_ACCOUNT_DIRECTORY_ASSERTION_REDEEM_RATE_LIMIT_WINDOW` |
@@ -39,6 +40,16 @@ account from a headless machine.
 | `artifacts` | 300 / 1 minute | Account | `HAPPIER_ARTIFACTS_RATE_LIMIT_MAX`<br />`HAPPIER_ARTIFACTS_RATE_LIMIT_WINDOW` |
 | `auth.accountRequest.complete` | 60 / 1 minute | Account | `HAPPIER_AUTH_ACCOUNT_REQUEST_COMPLETE_RATE_LIMIT_MAX`<br />`HAPPIER_AUTH_ACCOUNT_REQUEST_COMPLETE_RATE_LIMIT_WINDOW` |
 | `auth.accountRequest.poll` | 30 / 1 minute | IP address | `HAPPIER_AUTH_ACCOUNT_REQUEST_POLL_RATE_LIMIT_MAX`<br />`HAPPIER_AUTH_ACCOUNT_REQUEST_POLL_RATE_LIMIT_WINDOW` |
+| `auth.apiTokens.mutate` | 10 / 1 minute | Account | `HAPPIER_AUTH_API_TOKENS_MUTATE_RATE_LIMIT_MAX`<br />`HAPPIER_AUTH_API_TOKENS_MUTATE_RATE_LIMIT_WINDOW` |
+| `auth.apiTokens.read` | 120 / 1 minute | Account | `HAPPIER_AUTH_API_TOKENS_READ_RATE_LIMIT_MAX`<br />`HAPPIER_AUTH_API_TOKENS_READ_RATE_LIMIT_WINDOW` |
+| `auth.email.login` | 20 / 1 minute | IP address | `HAPPIER_AUTH_EMAIL_LOGIN_RATE_LIMIT_MAX`<br />`HAPPIER_AUTH_EMAIL_LOGIN_RATE_LIMIT_WINDOW` |
+| `auth.email.prelogin` | 30 / 1 minute | IP address | `HAPPIER_AUTH_EMAIL_PRELOGIN_RATE_LIMIT_MAX`<br />`HAPPIER_AUTH_EMAIL_PRELOGIN_RATE_LIMIT_WINDOW` |
+| `auth.email.stepUp` | 10 / 1 minute | Account | `HAPPIER_AUTH_EMAIL_STEP_UP_RATE_LIMIT_MAX`<br />`HAPPIER_AUTH_EMAIL_STEP_UP_RATE_LIMIT_WINDOW` |
+| `auth.email.unlock` | 10 / 1 minute | IP address | `HAPPIER_AUTH_EMAIL_UNLOCK_RATE_LIMIT_MAX`<br />`HAPPIER_AUTH_EMAIL_UNLOCK_RATE_LIMIT_WINDOW` |
+| `auth.email.verify.preview` | 20 / 1 minute | IP address | `HAPPIER_AUTH_EMAIL_VERIFY_PREVIEW_RATE_LIMIT_MAX`<br />`HAPPIER_AUTH_EMAIL_VERIFY_PREVIEW_RATE_LIMIT_WINDOW` |
+| `auth.email.verify.request` | 10 / 1 minute | IP address | `HAPPIER_AUTH_EMAIL_VERIFY_REQUEST_RATE_LIMIT_MAX`<br />`HAPPIER_AUTH_EMAIL_VERIFY_REQUEST_RATE_LIMIT_WINDOW` |
+| `auth.email.verify.requestAuthenticated` | 5 / 1 minute | Account | `HAPPIER_AUTH_EMAIL_VERIFY_REQUEST_AUTHENTICATED_RATE_LIMIT_MAX`<br />`HAPPIER_AUTH_EMAIL_VERIFY_REQUEST_AUTHENTICATED_RATE_LIMIT_WINDOW` |
+| `auth.entry` | 120 / 1 minute | IP address | `HAPPIER_AUTH_ENTRY_RATE_LIMIT_MAX`<br />`HAPPIER_AUTH_ENTRY_RATE_LIMIT_WINDOW` |
 | `auth.homeApproval.decision` | 60 / 1 minute | Account | `HAPPIER_AUTH_HOME_APPROVAL_DECISION_RATE_LIMIT_MAX`<br />`HAPPIER_AUTH_HOME_APPROVAL_DECISION_RATE_LIMIT_WINDOW` |
 | `auth.homeApproval.list` | 240 / 1 minute | Account | `HAPPIER_AUTH_HOME_APPROVAL_LIST_RATE_LIMIT_MAX`<br />`HAPPIER_AUTH_HOME_APPROVAL_LIST_RATE_LIMIT_WINDOW` |
 | `auth.keyChallenge.issue` | 30 / 1 minute | IP address | `HAPPIER_AUTH_KEY_CHALLENGE_ISSUE_RATE_LIMIT_MAX`<br />`HAPPIER_AUTH_KEY_CHALLENGE_ISSUE_RATE_LIMIT_WINDOW` |
@@ -47,6 +58,10 @@ account from a headless machine.
 | `auth.pairing.request` | 30 / 1 minute | IP address | `HAPPIER_AUTH_PAIRING_REQUEST_RATE_LIMIT_MAX`<br />`HAPPIER_AUTH_PAIRING_REQUEST_RATE_LIMIT_WINDOW` |
 | `auth.pairing.start` | 60 / 1 minute | Account | `HAPPIER_AUTH_PAIRING_START_RATE_LIMIT_MAX`<br />`HAPPIER_AUTH_PAIRING_START_RATE_LIMIT_WINDOW` |
 | `auth.pairing.status` | 240 / 1 minute | Account | `HAPPIER_AUTH_PAIRING_STATUS_RATE_LIMIT_MAX`<br />`HAPPIER_AUTH_PAIRING_STATUS_RATE_LIMIT_WINDOW` |
+| `auth.password.mutate` | 10 / 1 minute | Account | `HAPPIER_AUTH_PASSWORD_MUTATE_RATE_LIMIT_MAX`<br />`HAPPIER_AUTH_PASSWORD_MUTATE_RATE_LIMIT_WINDOW` |
+| `auth.password.reset.preview` | 20 / 1 minute | IP address | `HAPPIER_AUTH_PASSWORD_RESET_PREVIEW_RATE_LIMIT_MAX`<br />`HAPPIER_AUTH_PASSWORD_RESET_PREVIEW_RATE_LIMIT_WINDOW` |
+| `auth.password.reset.request` | 5 / 1 minute | IP address | `HAPPIER_AUTH_PASSWORD_RESET_REQUEST_RATE_LIMIT_MAX`<br />`HAPPIER_AUTH_PASSWORD_RESET_REQUEST_RATE_LIMIT_WINDOW` |
+| `auth.password.reset.submit` | 10 / 1 minute | IP address | `HAPPIER_AUTH_PASSWORD_RESET_SUBMIT_RATE_LIMIT_MAX`<br />`HAPPIER_AUTH_PASSWORD_RESET_SUBMIT_RATE_LIMIT_WINDOW` |
 | `auth.terminalRequest.claim` | 60 / 1 minute | IP address | `HAPPIER_AUTH_TERMINAL_REQUEST_CLAIM_RATE_LIMIT_MAX`<br />`HAPPIER_AUTH_TERMINAL_REQUEST_CLAIM_RATE_LIMIT_WINDOW` |
 | `auth.terminalRequest.complete` | 60 / 1 minute | Account | `HAPPIER_AUTH_TERMINAL_REQUEST_COMPLETE_RATE_LIMIT_MAX`<br />`HAPPIER_AUTH_TERMINAL_REQUEST_COMPLETE_RATE_LIMIT_WINDOW` |
 | `auth.terminalRequest.poll` | 30 / 1 minute | IP address | `HAPPIER_AUTH_TERMINAL_REQUEST_POLL_RATE_LIMIT_MAX`<br />`HAPPIER_AUTH_TERMINAL_REQUEST_POLL_RATE_LIMIT_WINDOW` |
@@ -67,7 +82,10 @@ account from a headless machine.
 | `oauthExternal.authParams` | 60 / 1 minute | IP address | `HAPPIER_OAUTH_EXTERNAL_AUTH_PARAMS_RATE_LIMIT_MAX`<br />`HAPPIER_OAUTH_EXTERNAL_AUTH_PARAMS_RATE_LIMIT_WINDOW` |
 | `oauthExternal.callback` | 60 / 1 minute | IP address | `HAPPIER_OAUTH_EXTERNAL_CALLBACK_RATE_LIMIT_MAX`<br />`HAPPIER_OAUTH_EXTERNAL_CALLBACK_RATE_LIMIT_WINDOW` |
 | `oauthExternal.connectParams` | 60 / 1 minute | Account | `HAPPIER_OAUTH_EXTERNAL_CONNECT_PARAMS_RATE_LIMIT_MAX`<br />`HAPPIER_OAUTH_EXTERNAL_CONNECT_PARAMS_RATE_LIMIT_WINDOW` |
+| `providerBroker.externalApi` | 600 / 1 minute | IP address | `HAPPIER_PROVIDER_BROKER_EXTERNAL_API_RATE_LIMIT_MAX`<br />`HAPPIER_PROVIDER_BROKER_EXTERNAL_API_RATE_LIMIT_WINDOW` |
+| `session.board` | 600 / 1 minute | Account | `HAPPIER_SESSION_BOARD_RATE_LIMIT_MAX`<br />`HAPPIER_SESSION_BOARD_RATE_LIMIT_WINDOW` |
 | `session.detail` | 600 / 1 minute | Account | `HAPPIER_SESSION_DETAIL_RATE_LIMIT_MAX`<br />`HAPPIER_SESSION_DETAIL_RATE_LIMIT_WINDOW` |
+| `session.discussions` | 600 / 1 minute | Account | `HAPPIER_SESSION_DISCUSSIONS_RATE_LIMIT_MAX`<br />`HAPPIER_SESSION_DISCUSSIONS_RATE_LIMIT_WINDOW` |
 | `session.messages` | 600 / 1 minute | Account | `HAPPIER_SESSION_MESSAGES_RATE_LIMIT_MAX`<br />`HAPPIER_SESSION_MESSAGES_RATE_LIMIT_WINDOW` |
 | `session.messages.byLocalId` | 600 / 1 minute | Account | `HAPPIER_SESSION_MESSAGES_BY_LOCAL_ID_RATE_LIMIT_MAX`<br />`HAPPIER_SESSION_MESSAGES_BY_LOCAL_ID_RATE_LIMIT_WINDOW` |
 | `session.pending` | 600 / 1 minute | Account | `HAPPIER_SESSION_PENDING_RATE_LIMIT_MAX`<br />`HAPPIER_SESSION_PENDING_RATE_LIMIT_WINDOW` |

@@ -23,6 +23,7 @@ import { resolveCliEntrypoint } from './runtime/launch/resolveCliEntrypoint.mjs'
 import { ensureStackDaemonPreflight, requiresStackDaemonPreflight } from './stack/stack_happier_daemon_preflight.mjs';
 import { isPidAlive, readStackRuntimeStateFile } from './utils/stack/runtime_state.mjs';
 import {
+  assertStackServerProfileReconciled,
   buildStackServerProfileSetArgs,
   deriveEnvServerIdFromUrl,
   readActiveServerUrlsFromCliSettings,
@@ -49,6 +50,12 @@ function runCliProfileReconciliation({ resolvedCli, env, cliHomeDir, internalSer
     const detail = result.error instanceof Error ? result.error.message : `exit=${result.status ?? 'unknown'}`;
     throw new Error(`[happier] failed to refresh the stack-owned relay profile before launch (${detail}).`);
   }
+  assertStackServerProfileReconciled({
+    homeDir: cliHomeDir,
+    serverId,
+    internalServerUrl,
+    publicServerUrl,
+  });
 }
 
 function printHstackHappierHelp({ json }) {

@@ -20,6 +20,15 @@ This avoids landing on the wrong server or silently approving a request on an un
 - action requests
 - share/collaboration events
 
+## Closed-app session alerts (in development)
+
+Alerts sent by a Home for a session you follow name that Home by its own server identity rather than by whichever server profile is currently active. Happier resolves it against your saved profiles:
+
+- if exactly one saved profile matches, the tap opens that session on that Home, switching profiles first when needed
+- if no saved profile matches — or the identity is ambiguous — the tap does nothing rather than opening the wrong Home's session
+
+When the app is already open, one committed event produces one visible alert on the device: if Happier's own local notification already showed it, the Home alert does not repeat it, and vice versa. This is best effort duplicate suppression on that device, not a delivery receipt or a guarantee that every alert arrives.
+
 ## What happens when you tap a notification
 
 If the notification contains a session route, Happier opens that session.

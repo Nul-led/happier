@@ -8,6 +8,7 @@ import {
   resolveManagedLimaProfile,
   validateManagedLimaInstanceName,
 } from '../managed_lima/profiles.mjs';
+import { normalizeManagedLimaCapacity } from '../managed_lima/capacity.mjs';
 import { resolveManagedLimaPressureProfile } from '../managed_lima/pressure_profiles.mjs';
 import { getHappyStacksHomeDir } from '../paths/paths.mjs';
 import { retireExecutionHostCandidateMirrors } from './candidate_repository.mjs';
@@ -28,6 +29,7 @@ const FIELDS = new Set([
   'workspaces',
   'autoMount',
   'hostMountDir',
+  'capacity',
 ]);
 const WORKSPACE_FIELDS = new Set(['id', 'stackName', 'hostSourceDir', 'hostMirrorDir', 'guestDir']);
 const WORKSPACE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/;
@@ -131,6 +133,12 @@ function normalizeExecutionHostProfile(raw) {
       diskImageFormat: normalizeManagedLimaDiskImageFormat(raw.diskImageFormat),
     } : {}),
     pressureProfile,
+    ...(raw.capacity != null ? {
+      capacity: normalizeManagedLimaCapacity(raw.capacity, {
+        subject: 'capacity',
+        errorPrefix: '[execution-host]',
+      }),
+    } : {}),
     guestWorkspaceDir,
     mirrorWorkspaceDir,
     ...(raw.autoMount != null ? {
@@ -253,6 +261,12 @@ export async function configureExecutionHostWorkspaceMount({ enabled, mountDir }
     autoMount: enabled,
     hostMountDir: requireAbsolutePath(mountDir, 'hostMountDir'),
   }, env);
+}
+
+export async function configureExecutionHostCapacity(capacity, env = process.env) {
+  const current = readExecutionHostProfile(env);
+  if (!current) throw new Error('[execution-host] no execution host profile exists');
+  return writeExecutionHostProfile({ ...current, capacity }, env);
 }
 
 export function validateExecutionHostProfile(raw) {

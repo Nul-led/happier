@@ -27,13 +27,36 @@ corepack yarn --cwd packages/plugins/claude -s typecheck
 corepack yarn --cwd apps/ui -s vitest run <file>
 ```
 
+Use the package's routed `vitest` entry point for a focused Vitest file. Do not
+append a file or `-t` filter to a package's aggregate `test` or `test:unit`
+script unless that script explicitly documents argument forwarding: compound
+aggregate scripts can still launch their complete suite before an appended
+filter reaches the final child command.
+
+Only a script whose current `package.json` command invokes `hstack-exec --script=...` routes
+automatically. Do not assume that every Yarn script is routed. Before running another broad or
+expensive script, inspect its definition; when it does not already invoke the launcher, wrap the
+public script explicitly instead of running it bare:
+
+```bash
+./apps/stack/bin/hstack-exec -- corepack yarn --cwd apps/docs -s check:content
+```
+
 Never invoke a `*:local` script directly; it is the launcher implementation target.
+Likewise, do not invoke `typecheck:source:finite` or package `typecheck:finite` tasks directly;
+they are nested Turbo implementation targets that assume their public `typecheck` caller already
+selected the machine. Use the public `typecheck` script instead.
 
 For a suitable read-only or ignored-output command without a public entry point:
 
 ```bash
 ./apps/stack/bin/hstack-exec -- <command> [args...]
 ```
+
+Default to these automatic forms whenever the command is eligible for remote execution. Do not
+preemptively add `--local` because a target might be unavailable, synchronization might be slow, or
+the caller wants a reliable fallback. Target selection and the configured `fallback=local` policy
+own that decision: the launcher tries healthy targets and runs locally when none is usable.
 
 Use `--script=` only for an actual repository package script. Direct tools such as `rg`, `find`,
 `node --test`, or a test-runner binary use the `-- <command>` form.
@@ -56,7 +79,11 @@ the configured fallback. A selected host that cannot establish its command conne
 and the launcher tries another configured target before fallback. A command that actually starts is
 authoritative and is never replayed elsewhere after failure.
 
-Use `./apps/stack/bin/hstack-exec --local -- <command> [args...]` when one invocation must remain local. For tiny checks, this avoids transport cost without leaking a local-only policy into later descendant commands.
+Use `./apps/stack/bin/hstack-exec --local -- <command> [args...]` only when that invocation must run
+on the authoritative local machine even while healthy remote targets are available—for example, it
+reads machine-local runtime state or exercises the local launcher itself. Do not use `--local` as a
+remote-health workaround or routine optimization; doing so bypasses automatic load spreading and
+its local fallback contract.
 
 Configure automatic routing once:
 

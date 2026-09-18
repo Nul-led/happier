@@ -26,6 +26,27 @@ export const QUALIFIED_CONNECTED_ACCOUNTS_V4_ACTIVATION_PATHS = Object.freeze([
   }),
 ]);
 
+export const ACCOUNT_SESSION_READ_STATE_BACKFILL_MIGRATION =
+  '20260905235000_add_account_session_read_state';
+
+export const ACCOUNT_SESSION_READ_STATE_BACKFILL_PATHS = Object.freeze([
+  Object.freeze({
+    provider: 'postgresql',
+    label: 'PostgreSQL',
+    path: `apps/server/prisma/migrations/${ACCOUNT_SESSION_READ_STATE_BACKFILL_MIGRATION}/migration.sql`,
+  }),
+  Object.freeze({
+    provider: 'mysql',
+    label: 'MySQL',
+    path: `apps/server/prisma/mysql/migrations/${ACCOUNT_SESSION_READ_STATE_BACKFILL_MIGRATION}/migration.sql`,
+  }),
+  Object.freeze({
+    provider: 'sqlite',
+    label: 'SQLite',
+    path: `apps/server/prisma/sqlite/migrations/${ACCOUNT_SESSION_READ_STATE_BACKFILL_MIGRATION}/migration.sql`,
+  }),
+]);
+
 export const QUALIFIED_CONNECTED_ACCOUNTS_V4_ROLLBACK_SUPPORT = Object.freeze([
   Object.freeze({
     key: 'qualifiedAccountsV4',
@@ -113,6 +134,20 @@ function resolveUniformPresence(presence, owner) {
   if (!values.every((value) => value === values[0])) {
     throw new Error(
       `[qualified-v4-activation] ${owner} migration set is split-brain: ${formatPresence(presence)}`,
+    );
+  }
+  return values[0] === true;
+}
+
+function resolveUniformReadStatePresence(presence, owner) {
+  const values = ACCOUNT_SESSION_READ_STATE_BACKFILL_PATHS
+    .map(({ provider }) => presence[provider] === true);
+  if (!values.every((value) => value === values[0])) {
+    const formatted = ACCOUNT_SESSION_READ_STATE_BACKFILL_PATHS
+      .map(({ provider, label }) => `${label}=${presence[provider] === true}`)
+      .join(', ');
+    throw new Error(
+      `[read-state-backfill] ${owner} migration set is split-brain: ${formatted}`,
     );
   }
   return values[0] === true;
@@ -211,6 +246,54 @@ export function evaluateQualifiedConnectedAccountsV4PayloadPublicationAdmission(
   };
 }
 
+export function evaluateAccountSessionReadStateBackfillAdmission({
+  baselinePresence,
+  candidatePresence,
+  approved,
+  approvalSource,
+}) {
+  const baselineHasBackfill = resolveUniformReadStatePresence(
+    baselinePresence,
+    'deployed baseline',
+  );
+  const candidateHasBackfill = resolveUniformReadStatePresence(
+    candidatePresence,
+    'candidate',
+  );
+  const common = {
+    migration: ACCOUNT_SESSION_READ_STATE_BACKFILL_MIGRATION,
+    irreversible: true,
+    legacyApiWriterDrainRequired: true,
+    oldServerRollbackAllowed: false,
+  };
+
+  if (baselineHasBackfill && !candidateHasBackfill) {
+    throw new Error(
+      `[read-state-backfill] candidate removes ${ACCOUNT_SESSION_READ_STATE_BACKFILL_MIGRATION}; ` +
+      'old-server rollback is prohibited after AccountSessionReadState activation',
+    );
+  }
+  if (!candidateHasBackfill) {
+    return { status: 'not-present', ...common };
+  }
+  if (baselineHasBackfill) {
+    return { status: 'already-activated', ...common };
+  }
+  if (approved !== true) {
+    throw new Error(
+      `[read-state-backfill] ${ACCOUNT_SESSION_READ_STATE_BACKFILL_MIGRATION} is pending and irreversible. ` +
+      'The AccountSessionReadState owner backfill cannot run until all legacy API read-state writers are drained, ' +
+      'will remain stopped if migration fails, and old-server rollback is prohibited.',
+    );
+  }
+
+  return {
+    status: 'activation-approved',
+    ...common,
+    approvalSource: String(approvalSource ?? '').trim() || 'unspecified',
+  };
+}
+
 function takeArg(argv, name, defaultValue = '') {
   const direct = argv.find((arg) => arg.startsWith(`${name}=`));
   if (direct) return direct.slice(name.length + 1).trim();
@@ -246,17 +329,21 @@ function refExists(repoRoot, ref) {
   }).status === 0;
 }
 
-function readPresenceAtRef(repoRoot, ref, { allowMissingRef = false } = {}) {
+function readPresenceAtRef(
+  repoRoot,
+  ref,
+  { allowMissingRef = false, paths = QUALIFIED_CONNECTED_ACCOUNTS_V4_ACTIVATION_PATHS } = {},
+) {
   if (!refExists(repoRoot, ref)) {
     if (!allowMissingRef) {
       throw new Error(`[qualified-v4-activation] Git ref does not exist: ${ref}`);
     }
     return Object.fromEntries(
-      QUALIFIED_CONNECTED_ACCOUNTS_V4_ACTIVATION_PATHS.map(({ provider }) => [provider, false]),
+      paths.map(({ provider }) => [provider, false]),
     );
   }
   return Object.fromEntries(
-    QUALIFIED_CONNECTED_ACCOUNTS_V4_ACTIVATION_PATHS.map(({ provider, path }) => [
+    paths.map(({ provider, path }) => [
       provider,
       git(repoRoot, ['cat-file', '-e', `${ref}:${path}`], { allowFailure: true }).status === 0,
     ]),
@@ -307,7 +394,7 @@ function resolveApproval(argv) {
   if (kind === 'explicit-checkbox') {
     return {
       approved: value === 'true',
-      source: 'promote-server explicit qualified V4 activation approval',
+      source: 'promote-server explicit irreversible migration approval',
     };
   }
   throw new Error(`[qualified-v4-activation] unsupported --approval-kind: ${kind}`);
@@ -343,6 +430,25 @@ function renderSummary(result, { baselineRef, candidateRef, admissionKind }) {
   ].filter((line) => line !== '').join('\n') + '\n';
 }
 
+function renderReadStateSummary(result, { baselineRef, candidateRef }) {
+  const approval = result.status === 'activation-approved'
+    ? `\n- approval record: \`${result.approvalSource}\``
+    : '';
+  return [
+    '### AccountSessionReadState backfill admission',
+    '',
+    `- migration: \`${result.migration}\``,
+    `- deployed baseline: \`${baselineRef}\``,
+    `- candidate: \`${candidateRef}\``,
+    `- status: \`${result.status}\``,
+    '- irreversible: `true`',
+    '- legacy API read-state writers drained before backfill: `required`',
+    '- old-server rollback allowed after activation: `false`',
+    approval,
+    '',
+  ].filter((line) => line !== '').join('\n') + '\n';
+}
+
 export async function runQualifiedConnectedAccountsV4ActivationAdmission(argv = process.argv.slice(2)) {
   const repoRoot = resolve(takeArg(argv, '--repo-root', '.'));
   const baselineRef = requireArg(argv, '--baseline-ref');
@@ -359,6 +465,7 @@ export async function runQualifiedConnectedAccountsV4ActivationAdmission(argv = 
     candidateRef,
   );
   let result;
+  let additionalSummary = '';
   if (admissionKind === 'payload-publication') {
     result = evaluateQualifiedConnectedAccountsV4PayloadPublicationAdmission({
       baselinePresence,
@@ -373,6 +480,21 @@ export async function runQualifiedConnectedAccountsV4ActivationAdmission(argv = 
       approved: approval.approved,
       approvalSource: approval.source,
     });
+    const readStateResult = evaluateAccountSessionReadStateBackfillAdmission({
+      baselinePresence: readPresenceAtRef(repoRoot, baselineRef, {
+        allowMissingRef: true,
+        paths: ACCOUNT_SESSION_READ_STATE_BACKFILL_PATHS,
+      }),
+      candidatePresence: readPresenceAtRef(repoRoot, candidateRef, {
+        paths: ACCOUNT_SESSION_READ_STATE_BACKFILL_PATHS,
+      }),
+      approved: approval.approved,
+      approvalSource: approval.source,
+    });
+    additionalSummary = renderReadStateSummary(readStateResult, {
+      baselineRef,
+      candidateRef,
+    });
   } else {
     throw new Error(
       `[qualified-v4-activation] unsupported --admission-kind: ${admissionKind}`,
@@ -382,7 +504,7 @@ export async function runQualifiedConnectedAccountsV4ActivationAdmission(argv = 
     baselineRef,
     candidateRef,
     admissionKind,
-  });
+  }) + additionalSummary;
   process.stdout.write(summary);
   if (summaryFile) await appendFile(summaryFile, summary, 'utf8');
   return result;

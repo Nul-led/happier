@@ -52,6 +52,7 @@ so it has a page per provider rather than one long one.
 - [GitHub](/self-hosting/auth-github) — OAuth for signup and connect, plus allowlists.
 - [OIDC](/self-hosting/auth-oidc) — Okta, Auth0, Entra ID, Keycloak and anything else generic.
 - [mTLS](/self-hosting/auth-mtls) — client certificates from your MDM, auto-provisioning, and mapping one person's devices to one identity.
+- [Enterprise identity](/self-hosting/auth-enterprise-identity) — Home-managed providers, WorkOS, Team sign-in and directory sync, and what each of them does not grant.
 - [Custom providers](/self-hosting/auth-custom-providers) — adding your own without forking the core auth logic.
 
 ## Decide what the server keeps
@@ -69,7 +70,7 @@ so it has a page per provider rather than one long one.
 Both flavors run the same API and the same logic. The difference is only which
 storage backends they use.
 
-- **Full** — external Postgres (default) or MySQL 8.0.16+, with S3 or a
+- **Full** — external Postgres (default) or MySQL 8.0.17+, with S3 or a
   compatible store (default; `HAPPIER_FILES_BACKEND=local` switches to disk).
   Redis is optional and only needed for multi-replica realtime.
 - **Light** — SQLite (default) or embedded Postgres (PGlite) on disk, with local
@@ -109,6 +110,93 @@ For multi-replica API deployments, enable Redis fanout and configure sticky
 sessions at your load balancer. [Docker](/self-hosting/docker) has a working
 example.
 
+## Redis cluster transport
+
+The following applies to development builds using Redis Streams adapter `0.3.1`;
+it does not establish availability in a stable or preview release. With `REDIS_URL`
+and `HAPPIER_SOCKET_ADAPTER=redis-streams`, API replicas join one Socket.IO cluster.
+
+**Each API process opens four Redis connections, not one.** A root client for
+publishing and commands, one blocking stream reader, one Pub/Sub subscriber,
+and one dedicated client for exact peer-tunnel relay admission. The adapter's
+three connections are named for diagnostics, so `CLIENT LIST` shows
+`happier-socket-cluster:root`, `happier-socket-cluster:adapter-1`, and
+`happier-socket-cluster:adapter-2` per replica; the fourth is
+`happier-socket-cluster:relay-admission`. Size managed-Redis connection limits
+for all four transport connections plus ordinary application and worker connections.
+
+**Two backplanes carry different traffic.** Ordinary room broadcasts go through
+Redis Streams. Cross-node socket lookups (`fetchSockets`) and server-to-server
+emission go through Redis Pub/Sub. The Pub/Sub path is transient by design: a
+request issued while Redis is unavailable fails with its normal timeout rather
+than being replayed later. Retry once the adapter connections have recovered.
+
+### Redis ACL
+
+For Redis 6.2+ ACL users, the adapter requires these permissions:
+
+```text
+~socket.io &socket.io#*
++auth +info +client|setname
++xadd +xread
++publish +subscribe +pubsub|numsub
+```
+
+These are Redis ACL rule tokens, not a shell command or a complete API-user ACL.
+Preserve the existing permissions for application, worker and tunnel operations
+using the same `REDIS_URL`; do not reset that user's ACL to this list. The channel
+pattern covers both common requests and node-private replies. Socket.IO
+connection-state recovery is disabled, so its session-key permissions are not
+needed. Keep Redis authenticated and on private networking, with TLS where
+appropriate: adapter messages have no separate authentication or encryption.
+
+`SPUBLISH`, `SSUBSCRIBE`, and `PUBSUB SHARDNUMSUB` are not needed — Happier does
+not use sharded Pub/Sub. Verify the ACL *before* rolling a new pool: a missing
+Pub/Sub permission may leave startup healthy while cross-node discovery fails.
+Check Redis command failure metrics and Redis ACL denial logs as well as a real
+cross-node lookup; a successful local connection or ordinary broadcast is insufficient.
+
+Peer-tunnel relay admission is deliberately separate from the adapter. When
+server-routed peer tunnels are enabled, the API Redis credential also needs
+`SET`, `GET`, `DEL`, and `EVAL` on
+`peer-tunnel-relay-grant:v1:*` so it can reserve and commit one-time relay claims.
+Do not broaden the adapter-only rule above or treat relay claim commands as
+Socket.IO adapter requirements.
+
+### Upgrading API replicas
+
+Adapter `0.3.x` routes cross-node lookups over Pub/Sub; adapter `0.2.x` routes
+them over the Stream. Check the adapter version in the server build you deploy. **Mixing
+the two in one serving pool is not supported** — replicas would broadcast to each
+other while failing to discover each other's sockets, which is worse than a
+visible outage.
+
+- One API replica: restart normally.
+- Several API replicas: drain and stop the old pool, confirm it is out of
+  rotation, then start the new pool as a unit. Roll back the same way: stop all
+  `0.3` API replicas before starting `0.2` replicas.
+
+Watch Redis connection count (four transport connections per API replica),
+`redis-socket-cluster` error logs, and socket
+reconnect health during the transition.
+
+### Validate recovery before rollout
+
+Use an isolated two-API-node environment with the intended Redis version and ACL.
+Connect clients to different nodes and verify room updates, remote socket discovery,
+RPC calls and a binary tunnel/transfer operation. Stop and restart Redis while both
+API processes stay running. An in-outage transient request must fail or time out;
+after all eight transport connections recover, repeat those operations and verify
+server-to-server acknowledgements. Disconnect the remote client and confirm it no
+longer appears in discovery.
+
+Shut down the API nodes normally. With a separate operator credential, use
+`CLIENT LIST` to verify that no `happier-socket-cluster:*` connection remains or
+reappears after more than five seconds. Repeat the full recovery and shutdown
+sequence twice. Also test a silently dropped connection and a deliberately missing
+Pub/Sub permission in this isolated environment. Do not restart a production Redis
+instance merely to follow this validation recipe.
+
 ## Reverse proxy basics
 
 In production, run the API behind a proxy that:
@@ -126,7 +214,34 @@ If you serve `/files/*` from the server (light flavor), allow those routes too.
   then sit there offline, reported as `machine.none_online`.
 </Callout>
 
+### Keep capability tokens out of your access logs
+
+Some Happier links carry a bearer capability **in the URL path**, because that is the only
+place a link can carry one. Anyone who reads such a URL can use it until it expires or is
+revoked. Happier redacts them everywhere it controls — server request logs, error responses,
+crash reporting and client navigation logging all template the token out — but your proxy,
+CDN and log pipeline are yours.
+
+Three path shapes matter:
+
+```text
+/join/<token>                                          Team invitation (development)
+/share/<token>  and  /v1/public-share/<token>          public share links
+/v1/plugins/availability/ui-artifacts/browser/<token>  browser plugin Artifacts
+```
+
+Redact the segment after those prefixes in every access log, log shipper and analytics
+integration that sees a request path, including the one in front of the web app if you host
+it yourself — `/join/…` is a web-app route, so an API-only rule will miss it. Replacing the
+segment with a fixed placeholder keeps the logs useful. Do the same for anything that
+forwards a full URL, such as a `Referer` header sent to a third party.
+
+This is an operator responsibility on a self-hosted deployment. If you cannot redact in the
+proxy, shorten retention on those logs and restrict who can read them.
+
 ## Related
+
+- [Home owner setup and recovery](/self-hosting/home-owner) — establishing or recovering the Home's administrative owner.
 
 The local stack CLI can also bootstrap a remote host over SSH, which is often
 faster than doing it by hand:
