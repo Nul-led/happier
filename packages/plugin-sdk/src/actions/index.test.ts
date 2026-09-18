@@ -77,6 +77,7 @@ import type {
     ActionInputOption,
     ActionInputPredicate,
     ActionExecuteResult,
+    ActionApprovalRequestCreatedResult,
     ActionHandler,
     ActionSpec,
     ActionsService,
@@ -167,7 +168,11 @@ async function bundleGetActionSpecProjection(): Promise<readonly string[]> {
         visited.add(current.id);
         for (const importedId of moduleGraph.get(current.id) ?? []) {
             const path = [...current.path, importedId];
-            if (importedId.startsWith('node:') || importedId.includes('__vite-browser-external')) {
+            if (
+                importedId.includes('/tweetnacl/')
+                || importedId.startsWith('node:')
+                || importedId.includes('__vite-browser-external')
+            ) {
                 forbiddenReach.push(path.join(' -> '));
                 continue;
             }
@@ -250,14 +255,89 @@ describe('ActionsService source contract', () => {
         expectTypeOf<ActionSpec['inputSchema']>().toEqualTypeOf<unknown>();
         // Public author inputs deliberately accept ordinary readonly JSON;
         // Protocol parser output remains the normalized mutable projection.
-        expectTypeOf<CanonicalPluginActionInputById>()
-            .toMatchTypeOf<PluginActionInputById>();
-        expectTypeOf<CanonicalPluginActionResultById>()
-            .toMatchTypeOf<PluginActionResultById>();
+        // `expectTypeOf(...).toMatchTypeOf(...)` distributes object-union
+        // properties into a synthetic shape with impossible `never` members.
+        // Assignment functions prove the intended one-way public projections
+        // without changing the public map. Protocol validator brands are
+        // deliberately erased from SDK results, so arbitrary public strings
+        // do not flow back into canonical parser-output types.
+        const canonicalInputsFitPublic = (
+            value: CanonicalPluginActionInputById,
+        ): PluginActionInputById => value;
+        const canonicalResultsFitPublic = (
+            value: CanonicalPluginActionResultById,
+        ): PluginActionResultById => value;
+        void canonicalInputsFitPublic;
+        void canonicalResultsFitPublic;
         expectTypeOf<PluginInvocableActionId>()
             .toEqualTypeOf<CanonicalPluginInvocableActionId>();
         expectTypeOf<ActionExecuteResult>().toEqualTypeOf<CanonicalActionExecuteResult>();
         expectTypeOf<ActionHandler>().toEqualTypeOf<ActivationActionHandler>();
+    });
+
+    it('publishes the complete Lane 10 user-intent surface to installed plugins', () => {
+        type Lane10PublicActionId =
+            | 'teams.credentials.list'
+            | 'teams.credentials.sources.list'
+            | 'teams.credentials.get'
+            | 'teams.credentials.entitled.list'
+            | 'teams.credentials.create'
+            | 'teams.credentials.update'
+            | 'teams.credentials.audience.set'
+            | 'teams.credentials.delete'
+            | 'teams.credentials.test'
+            | 'teams.credentials.activity.list'
+            | 'teams.credentials.limits.list'
+            | 'teams.credentials.limits.upsert'
+            | 'teams.credentials.limits.delete'
+            | 'teams.credentials.usage.query'
+            | 'teams.credentials.externalKeys.create'
+            | 'teams.credentials.externalKeys.list'
+            | 'teams.credentials.externalKeys.revoke'
+            | 'teams.credentials.externalKeys.revokeAll'
+            | 'secrets.shared.list'
+            | 'secrets.shared.create'
+            | 'secrets.shared.promote'
+            | 'secrets.shared.grants.set'
+            | 'secrets.shared.update'
+            | 'secrets.shared.delete';
+
+        expectTypeOf<Extract<PluginInvocableActionId, Lane10PublicActionId>>()
+            .toEqualTypeOf<Lane10PublicActionId>();
+        expectTypeOf<Extract<PublicActionId, Lane10PublicActionId>>()
+            .toEqualTypeOf<Lane10PublicActionId>();
+
+        type InternalDirectMaterialActionId =
+            | 'teams.credentials.directMaterial.preparation.list'
+            | 'teams.credentials.directMaterial.refresh';
+        expectTypeOf<Extract<PluginInvocableActionId, InternalDirectMaterialActionId>>()
+            .toEqualTypeOf<never>();
+        expectTypeOf<Extract<PublicActionId, InternalDirectMaterialActionId>>()
+            .toEqualTypeOf<never>();
+    });
+
+    it('publishes only the safe Lane 02 Account Security read to installed plugins', () => {
+        type HumanCredentialLifecycleActionId =
+            | 'account.password.enroll'
+            | 'account.password.change'
+            | 'account.password.remove'
+            | 'account.email.change.request'
+            | 'account.apiTokens.create'
+            | 'account.apiTokens.list'
+            | 'account.apiTokens.revoke'
+            | 'account.apiTokens.revokeAll';
+
+        expectTypeOf<Extract<PluginInvocableActionId, 'account.security.get'>>()
+            .toEqualTypeOf<'account.security.get'>();
+        expectTypeOf<Extract<PluginInvocableActionId, HumanCredentialLifecycleActionId>>()
+            .toEqualTypeOf<never>();
+        expect(getActionSpec('account.security.get').id).toBe('account.security.get');
+    });
+
+    it('retains webhook correspondence for plugins while excluding the public API surface', () => {
+        const spec = getActionSpec('plugin.webhook.endpoint.checkCorrespondence');
+        expect(spec.surfaces.plugin).toBe(true);
+        expect(spec.surfaces.api).toBe(false);
     });
 
     it('projects canonical Action form vocabulary and resolvers through the SDK facade', () => {
@@ -297,18 +377,30 @@ describe('ActionsService source contract', () => {
         expect(getActionSpec('execution.run.stop').outputSchema).toBe(ExecutionRunStopResponseSchema);
         expect(getActionSpec('execution.run.wait').outputSchema).toBe(ExecutionRunWaitResultSchema);
 
-        expectTypeOf<PluginActionResultById['execution.run.start']>()
-            .toEqualTypeOf<ExecutionRunStartResponse>();
-        expectTypeOf<PluginActionResultById['execution.run.list']>()
-            .toEqualTypeOf<ExecutionRunListResponse>();
-        expectTypeOf<PluginActionResultById['execution.run.get']>()
-            .toEqualTypeOf<ExecutionRunGetResponse>();
-        expectTypeOf<PluginActionResultById['execution.run.send']>()
-            .toEqualTypeOf<ExecutionRunSendResponse>();
-        expectTypeOf<PluginActionResultById['execution.run.stop']>()
-            .toEqualTypeOf<ExecutionRunStopResponse>();
-        expectTypeOf<PluginActionResultById['execution.run.wait']>()
-            .toEqualTypeOf<ExecutionRunWaitResult>();
+        const projectedStartToCanonical = (value: PluginActionResultById['execution.run.start']): ExecutionRunStartResponse => value;
+        const canonicalStartToProjected = (value: ExecutionRunStartResponse): PluginActionResultById['execution.run.start'] => value;
+        const projectedListToCanonical = (value: PluginActionResultById['execution.run.list']): ExecutionRunListResponse => value;
+        const canonicalListToProjected = (value: ExecutionRunListResponse): PluginActionResultById['execution.run.list'] => value;
+        const projectedGetToCanonical = (value: PluginActionResultById['execution.run.get']): ExecutionRunGetResponse => value;
+        const canonicalGetToProjected = (value: ExecutionRunGetResponse): PluginActionResultById['execution.run.get'] => value;
+        const projectedSendToCanonical = (value: PluginActionResultById['execution.run.send']): ExecutionRunSendResponse => value;
+        const canonicalSendToProjected = (value: ExecutionRunSendResponse): PluginActionResultById['execution.run.send'] => value;
+        const projectedStopToCanonical = (value: PluginActionResultById['execution.run.stop']): ExecutionRunStopResponse => value;
+        const canonicalStopToProjected = (value: ExecutionRunStopResponse): PluginActionResultById['execution.run.stop'] => value;
+        const projectedWaitToCanonical = (value: PluginActionResultById['execution.run.wait']): ExecutionRunWaitResult => value;
+        const canonicalWaitToProjected = (value: ExecutionRunWaitResult): PluginActionResultById['execution.run.wait'] => value;
+        void projectedStartToCanonical;
+        void canonicalStartToProjected;
+        void projectedListToCanonical;
+        void canonicalListToProjected;
+        void projectedGetToCanonical;
+        void canonicalGetToProjected;
+        void projectedSendToCanonical;
+        void canonicalSendToProjected;
+        void projectedStopToCanonical;
+        void canonicalStopToProjected;
+        void projectedWaitToCanonical;
+        void canonicalWaitToProjected;
         expectTypeOf<ExecutionRunStartResponse['wait']>()
             .toEqualTypeOf<ExecutionRunWaitResult | undefined>();
         expectTypeOf<PluginActionInputById['session.transcript.get']>()
@@ -333,7 +425,7 @@ describe('ActionsService source contract', () => {
             .toEqualTypeOf<CanonicalSessionTranscriptGetExternalShareableResultV1>();
     });
 
-    it('keeps getActionSpec free of Node runtime reach', async () => {
+    it('keeps getActionSpec free of TweetNaCl and Node runtime reach', async () => {
         expect(await bundleGetActionSpecProjection()).toEqual([]);
     }, 60_000);
 
@@ -353,6 +445,35 @@ describe('ActionsService source contract', () => {
                 seqFrom: 1,
                 seqTo: 2,
             });
+            void service.execute('identity.providers.test.start', {
+                owner: { kind: 'team', teamId: 'team-1' },
+                id: 'provider-1',
+                expectedRevision: 3,
+                expectedSecurityRevision: 2,
+            });
+            void service.execute('identity.providers.test.consume', {
+                owner: { kind: 'team', teamId: 'team-1' },
+                id: 'provider-1',
+                resultHandle: 'provider-test-result',
+            });
+            void service.execute('teams.identity.connections.test.start', {
+                v: 1,
+                teamId: 'team-1',
+                connectionId: 'connection-1',
+                expectedRevision: 3,
+            });
+            void service.execute('teams.identity.connections.test.consume', {
+                v: 1,
+                teamId: 'team-1',
+                connectionId: 'connection-1',
+                resultHandle: 'connection-test-result',
+            });
+            void service.execute('teams.identity.workos.adminPortalLink.create', {
+                v: 1,
+                teamId: 'team-1',
+                connectionId: 'connection-1',
+                intent: 'sso',
+            });
             const sessionSpawnInput = {
                 creationKey: SessionCreationKeyV1Schema.parse('plugin-operation-7'),
                 executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
@@ -363,8 +484,24 @@ describe('ActionsService source contract', () => {
                 },
             } satisfies SessionSpawnNewInputV2;
             const sessionSpawnResult = service.execute('session.spawn_new', sessionSpawnInput);
-            expectTypeOf<Awaited<typeof sessionSpawnResult>>()
-                .toEqualTypeOf<SessionSpawnNewResultV1>();
+            type ProjectedSessionSpawnResult = Awaited<typeof sessionSpawnResult>;
+            type CanonicalSpawnError = Exclude<
+                Extract<SessionSpawnNewResultV1, { type: 'error' }>,
+                { code: 'update_required' }
+            >;
+            type CanonicalProviderError = NonNullable<CanonicalSpawnError['providerError']>;
+            type PublicSpawnResult =
+                | (Omit<Extract<SessionSpawnNewResultV1, { type: 'success' }>, 'sessionId'> & { sessionId: string })
+                | Extract<SessionSpawnNewResultV1, { type: 'pending' }>
+                | (Omit<CanonicalSpawnError, 'providerError'> & {
+                    providerError?: Omit<CanonicalProviderError, 'connectionId'> & { connectionId?: string };
+                })
+                | Extract<SessionSpawnNewResultV1, { type: 'error'; code: 'update_required' }>
+                | ActionApprovalRequestCreatedResult;
+            const projectedToPublic = (value: ProjectedSessionSpawnResult): PublicSpawnResult => value;
+            const publicToProjected = (value: PublicSpawnResult): ProjectedSessionSpawnResult => value;
+            void projectedToPublic;
+            void publicToProjected;
             void service.execute(
                 { pluginId: 'acme.target', localId: 'publish' },
                 { title: 'Ready' },
@@ -423,9 +560,8 @@ describe('ActionsService source contract', () => {
                 viewId: 'view-1',
                 url: 'https://example.com',
             });
-            expectTypeOf<Awaited<typeof navigateResult>>().toMatchTypeOf<
-                | { v: 1; commandId: string; status: 'dispatched'; events: readonly unknown[] }
-                | { v: 1; commandId: string; status: 'failed'; error: { code: string; message: string } }
+            expectTypeOf<Awaited<typeof navigateResult>>().toEqualTypeOf<
+                PluginActionResultById['browser.navigate'] | ActionApprovalRequestCreatedResult
             >();
             void service.execute('plugins.sessionHooks.status.get', {
                 intent: 'passive_inventory',

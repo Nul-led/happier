@@ -150,12 +150,8 @@ async function mountDetail(
   let fixture!: PluginUiTestkit;
   await act(async () => {
     fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: GITHUB_PLUGIN_ID,
-        pluginVersion: '0.0.0',
-        viewId: 'github-triage-detail',
-        generation: 'github-triage-detail-mount',
-      },
+      identity: { instanceId: 'fixture-instance-202', mountNonce: 'fixture-mount-202' },
+      authorPlugin: { id: GITHUB_PLUGIN_ID, version: '0.0.0' },
       surface: (context) => (
         <TriagePostMutationCompletionProvider
           onComplete={async () => { completedMutations += 1; }}
@@ -539,12 +535,8 @@ describe('the mounted GitHub write controls', () => {
     let fixture!: PluginUiTestkit;
     await act(async () => {
       fixture = await createPluginUiTestkit({
-        identity: {
-          pluginId: GITHUB_PLUGIN_ID,
-          pluginVersion: '0.0.0',
-          viewId: 'github-triage-detail',
-          generation: 'github-triage-detail-reduced-motion',
-        },
+        identity: { instanceId: 'fixture-instance-203', mountNonce: 'fixture-mount-203' },
+        authorPlugin: { id: GITHUB_PLUGIN_ID, version: '0.0.0' },
         surface: (context) => renderSurface(context),
         surfaceContext: createSurfaceContextFixture({ reducedMotion: true }),
         adapter: createPluginUiRnwSemanticSurfaceAdapter(),

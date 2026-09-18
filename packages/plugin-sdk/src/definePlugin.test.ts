@@ -39,6 +39,7 @@ import type {
     PluginActionDeclaration,
     PluginAgentDefinition,
     PluginComposerAttachmentDefinition,
+    PluginComposerReferenceDefinition,
     PluginDaemonDatabaseDeclaration,
     PluginProviderDefinition,
 } from './definePlugin.js';
@@ -466,6 +467,58 @@ describe('definePlugin', () => {
         await expect(registered?.({})).resolves.toEqual({ version: 1 });
         expect(originalRun).toHaveBeenCalledOnce();
         expect(replacementRun).not.toHaveBeenCalled();
+    });
+
+    it('preserves a mutable Resource receiver through definition and captures its methods only at commit', async () => {
+        const runtime = {
+            reads: 0,
+            read() { this.reads += 1; return `original:${this.reads}`; },
+            observe() { return { dispose() {} }; },
+        };
+        const plugin = definePlugin({
+            id: 'acme.mutable-resource',
+            version: '1.0.0',
+            resources: { status: { source: 'dynamic', kind: 'config', scope: 'global', contentType: 'text/plain', runtime } },
+        });
+        const scope = createPluginRegistrationScope({
+            pluginId: plugin.manifest.id,
+            target: { realm: 'daemon' },
+            rights: derivePluginDaemonContributionRegistrationRights(plugin.manifest.contributes),
+        });
+        await plugin.activate(scope.api);
+        runtime.read = function () { this.reads += 1; return `committed:${this.reads}`; };
+        const [registration] = scope.commit();
+        if (registration?.family !== 'resources') throw new Error('Expected Resource registration');
+        runtime.read = () => 'replacement';
+        expect(registration.value.read({ signal: new AbortController().signal, context: { kind: 'global' } })).toBe('committed:1');
+        expect(runtime.reads).toBe(1);
+    });
+
+    it('keeps inline Composer declaration data separate from its original mutable method receiver', async () => {
+        const reference = {
+            title: 'Issues',
+            icon: 'error',
+            triggers: ['@'],
+            async search(this: { title: string }) { this.title += ':original'; return []; },
+            async resolve() { throw new Error('Not invoked'); },
+        } satisfies PluginComposerReferenceDefinition;
+        const plugin = definePlugin({
+            id: 'acme.mutable-composer', version: '1.0.0',
+            composer: { references: { issues: reference } },
+        });
+        reference.title = 'Changed';
+        const scope = createPluginRegistrationScope({
+            pluginId: plugin.manifest.id, target: { realm: 'daemon' },
+            rights: [{ family: 'composerReferences', localId: 'issues', target: { realm: 'daemon' } }],
+        });
+        await plugin.activate(scope.api);
+        reference.search = async function () { this.title += ':committed'; return []; };
+        const [registration] = scope.commit();
+        if (registration?.family !== 'composerReferences') throw new Error('Expected Composer registration');
+        reference.search = async () => { throw new Error('Late replacement'); };
+        await registration.value.search('issue', { signal: new AbortController().signal } as never);
+        expect(reference.title).toBe('Changed:committed');
+        expect(plugin.manifest.contributes.composerReferences?.[0]?.title).toBe('Issues');
     });
 
     it('does not treat matching runtime key names in ordinary metadata as opaque leaves', () => {
@@ -1180,6 +1233,7 @@ describe('definePlugin', () => {
             },
             runtime: {
                 prepareForSend: vi.fn(async () => ({ attachments: [] })),
+                resolveForDispatchV2: vi.fn(async () => ({ attachments: [] })),
             },
         });
         type ExpectedPreparedAttachment = PluginComposerAttachmentDefinition<
@@ -1233,6 +1287,7 @@ describe('definePlugin', () => {
                     'issue-control': defineComposerControl({
                         label: 'Issue',
                         icon: 'error',
+                        scopes: ['workflowAuthoring'],
                         interaction: {
                             kind: 'attachmentPicker',
                             attachment: 'issue',
@@ -1260,6 +1315,7 @@ describe('definePlugin', () => {
                     warning: defineComposerRegion({
                         placement: 'beforeComposer',
                         renderer: 'warning-surface',
+                        scopes: ['workflowAuthoring'],
                     }),
                 },
             },
@@ -1309,12 +1365,16 @@ describe('definePlugin', () => {
                 renderer: { renderer: 'warning-surface' },
                 presentation: 'popover',
             },
-            runtime: { prepareForSend: true },
+            runtime: {
+                prepareForSend: true,
+                resolveForDispatchV2: true,
+            },
         }]);
         expect(plugin.manifest.contributes.composerControls).toEqual([{
             id: 'issue-control',
             label: 'Issue',
             icon: 'error',
+            scopes: ['workflowAuthoring'],
             interaction: {
                 kind: 'attachmentPicker',
                 attachment: 'issue',
@@ -1341,6 +1401,7 @@ describe('definePlugin', () => {
             id: 'warning',
             placement: 'beforeComposer',
             renderer: { renderer: 'warning-surface' },
+            scopes: ['workflowAuthoring'],
         }]);
         const emitted = JSON.parse(JSON.stringify(plugin.manifest));
         expect(emitted.contributes.composerReferences).toEqual(plugin.manifest.contributes.composerReferences);
@@ -1364,7 +1425,10 @@ describe('definePlugin', () => {
             expect.objectContaining({
                 family: 'composerAttachments',
                 localId: 'prepared-issue',
-                value: { prepareForSend: expect.any(Function) },
+                value: {
+                    prepareForSend: expect.any(Function),
+                    resolveForDispatchV2: expect.any(Function),
+                },
             }),
         ]);
     });
@@ -2080,6 +2144,83 @@ describe('definePlugin', () => {
         expect(registerExternalSessions.mock.calls[0]?.[1]).toBe(externalSessions);
     });
 
+    it('requires and registers the exact terminal facet declared by a declarative ACP Agent', async () => {
+        const declaration = {
+            title: 'Terminal ACP Agent',
+            runtime: {
+                kind: 'acp' as const,
+                transport: {
+                    kind: 'stdio' as const,
+                    executable: { kind: 'systemTool' as const, id: 'fixture-acp' },
+                },
+            },
+            primary: 'sessions' as const,
+            capabilities: {
+                sessions: {
+                    open: ['create' as const],
+                    delivery: ['newTurn' as const],
+                    cancel: true,
+                },
+                surfaces: ['terminal' as const],
+            },
+        };
+        const terminal = Object.freeze({
+            resolveLaunch: vi.fn(async () => ({ argv: ['fixture'] })),
+        });
+
+        expect(() => definePlugin({
+            id: 'example.agent-terminal-missing',
+            version: '0.1.0',
+            agents: { assistant: { declaration } },
+        })).toThrow(/terminal.*requires|requires.*terminal/iu);
+
+        const plugin = definePlugin({
+            id: 'example.agent-terminal',
+            version: '0.1.0',
+            agents: { assistant: { declaration, terminal } },
+        });
+        const registerTerminal = vi.fn();
+        await plugin.activate({ agents: { registerTerminal } } as never);
+
+        expect(registerTerminal).toHaveBeenCalledOnce();
+        expect(registerTerminal).toHaveBeenCalledWith('assistant', terminal);
+    });
+
+    it('leaves the terminal surface with the runtime a custom Agent returns', async () => {
+        const declaration = {
+            title: 'Terminal custom Agent',
+            runtime: { kind: 'custom' as const },
+            primary: 'executionRuns' as const,
+            capabilities: {
+                executionRuns: { open: ['create' as const], checkpoint: false, stop: true },
+                surfaces: ['terminal' as const],
+            },
+        };
+        // A custom runtime exposes `AgentRuntime.surfaces.terminal`, which the
+        // host runtime lease composes instead of a registered contribution.
+        const plugin = definePlugin({
+            id: 'example.agent-terminal-custom-runtime',
+            version: '0.1.0',
+            agents: { assistant: { declaration, factory: executionOnlyFactory } },
+        });
+        const register = vi.fn();
+        const registerTerminal = vi.fn();
+        await plugin.activate({ agents: { register, registerTerminal } } as never);
+        expect(registerTerminal).not.toHaveBeenCalled();
+
+        expect(() => definePlugin({
+            id: 'example.agent-terminal-custom-runtime-duplicate',
+            version: '0.1.0',
+            agents: {
+                assistant: {
+                    declaration,
+                    factory: executionOnlyFactory,
+                    terminal: { resolveLaunch: () => ({ argv: [] }) },
+                } as never,
+            },
+        })).toThrow(/owns its terminal surface in the runtime it returns/iu);
+    });
+
     it('keeps Agent executable-binding construction local to definePlugin', () => {
         expect(() => definePlugin({
             id: 'example.invalid-cold-agent-before-runtime-binding',
@@ -2247,7 +2388,7 @@ describe('definePlugin', () => {
         const providerCliAttach = Object.freeze({
             resolveTarget: () => ({ ok: false as const, reason: 'fixture target is unavailable' }),
             createArgs: () => [],
-            buildHealthUrl: () => null,
+            resolveReachability: () => null,
         }) satisfies AgentProviderCliAttachDeclarationV1;
         const cliSessionCommand = Object.freeze({
             sessionRuntimeId: 'example.complete-agent-registration',
@@ -2472,6 +2613,7 @@ describe('definePlugin', () => {
     });
 
     it('projects and registers an adapter-bearing prompt asset under its row local id', async () => {
+        const supportsScope = { user: true, project: true };
         const adapter = {
             descriptor: {
                 id: 'acme.skill',
@@ -2479,7 +2621,7 @@ describe('definePlugin', () => {
                 title: 'Acme skills',
                 description: 'Acme SKILL.md bundles.',
                 libraryKind: 'bundle',
-                supportsScope: { user: true, project: true },
+                supportsScope,
                 supportsFiles: true,
                 formatId: 'skill_md_v1',
                 defaultRoots: [],
@@ -2539,6 +2681,8 @@ describe('definePlugin', () => {
             resources: { registerPromptAssetAdapter },
         } as never);
         expect(registerPromptAssetAdapter).toHaveBeenCalledWith('external-skills', adapter);
+        adapter.descriptor.supportsScope.project = false;
+        expect(plugin.manifest.contributes.promptAssets?.[0]?.adapterDescriptor?.supportsScope.project).toBe(true);
     });
 
     it('projects client-only Voice and descriptor-only prompt assets without inventing daemon registrations', async () => {
@@ -3106,6 +3250,175 @@ void 0; /* @sdk-negative-type-case-end */
                 },
             },
         })).toThrow(/without declaring the External Sessions surface/u);
+    });
+
+    it('reserves declarative ACP resume-only sources for the host contribution', () => {
+        const input = {
+            id: 'example.acp-session-list',
+            version: '0.1.0',
+            agents: {
+                assistant: {
+                    declaration: {
+                        title: 'Assistant',
+                        runtime: {
+                            kind: 'acp' as const,
+                            transport: {
+                                kind: 'stdio' as const,
+                                executable: { kind: 'systemTool' as const, id: 'assistant-cli' },
+                            },
+                        },
+                        primary: 'sessions' as const,
+                        capabilities: {
+                            surfaces: ['externalSessions' as const],
+                            sessions: { open: ['create' as const, 'resume' as const], delivery: ['newTurn' as const], cancel: true },
+                        },
+                        surfaces: { externalSession: { sources: [{
+                            sourceKind: 'assistantAcpSessions',
+                            resumeOnly: true as const,
+                            schema: { fields: [{ name: 'kind', kind: 'literal' as const, value: 'assistantAcpSessions' }] },
+                            key: { segments: [{ kind: 'literal' as const, value: 'assistantAcpSessions' }] },
+                        }] } },
+                    },
+                },
+            },
+            systemTools: {
+                'assistant-cli': { title: 'Assistant CLI', executableNames: ['assistant'] },
+            },
+        };
+
+        expect(() => definePlugin(input)).not.toThrow();
+        expect(() => definePlugin({
+            ...input,
+            agents: {
+                assistant: {
+                    ...input.agents.assistant,
+                    externalSessions: {} as AgentExternalSessionsContribution,
+                },
+            },
+        } as unknown as Parameters<typeof definePlugin>[0])).toThrow(/host-owned ACP session-list contribution/);
+    });
+
+    it('activates an all-resume-only ACP Agent without a plugin External Sessions runtime', async () => {
+        // The declaration the host serves itself: a valid ACP Session-primary
+        // Agent whose every External Sessions source is resume-only. Activation
+        // must not demand a plugin contribution the author is forbidden to
+        // write, which is the failure that previously forced these sources to
+        // be deleted from FX and Kimi rather than activated.
+        const terminal = Object.freeze({ async resolveLaunch() { return { argv: [] }; } });
+        // A generic parameter keeps a literal `resumeOnly: true` visible to
+        // the type-level all-resume-only rule in `definePlugin` instead of
+        // widening to an opaque record.
+        const source = <TExtra extends object>(extra: TExtra) => ({
+            sourceKind: 'assistantAcpSessions',
+            schema: { fields: [{ name: 'kind', kind: 'literal' as const, value: 'assistantAcpSessions' }] },
+            key: { segments: [{ kind: 'literal' as const, value: 'assistantAcpSessions' }] },
+            ...extra,
+        });
+        const plugin = definePlugin({
+            id: 'example.acp-session-list-activation',
+            version: '0.1.0',
+            entrypoints: { daemon: './daemon.js' },
+            agents: {
+                assistant: {
+                    declaration: {
+                        title: 'Assistant',
+                        runtime: {
+                            kind: 'acp' as const,
+                            transport: {
+                                kind: 'stdio' as const,
+                                executable: { kind: 'systemTool' as const, id: 'assistant-cli' },
+                            },
+                        },
+                        primary: 'sessions' as const,
+                        capabilities: {
+                            surfaces: ['terminal' as const, 'externalSessions' as const],
+                            sessions: {
+                                open: ['create' as const, 'resume' as const],
+                                delivery: ['newTurn' as const],
+                                cancel: true,
+                            },
+                        },
+                        surfaces: { externalSession: { sources: [source({ resumeOnly: true as const })] } },
+                    },
+                    terminal,
+                },
+            },
+            systemTools: {
+                'assistant-cli': { title: 'Assistant CLI', executableNames: ['assistant'] },
+            },
+        });
+
+        const activation = await createPluginTestkit({ manifest: plugin.manifest, module: plugin });
+        try {
+            const registration = activation.registration('agents', 'assistant');
+            expect(registration?.terminal).toBeDefined();
+            // The host's declarative ACP registry is the only owner of this
+            // Agent's External Sessions surface.
+            expect(registration).not.toHaveProperty('externalSessions');
+        } finally {
+            await activation.dispose();
+        }
+
+        const withSources = (sources: readonly unknown[]) => ({
+            ...plugin.manifest,
+            contributes: {
+                ...plugin.manifest.contributes,
+                agents: [{
+                    ...plugin.manifest.contributes.agents?.[0],
+                    surfaces: { externalSession: { sources } },
+                }],
+            },
+        } as unknown as typeof plugin.manifest);
+
+        // Fail-closed the moment one declared source is not resume-only: the
+        // host produces nothing for it, so the plugin still owes the runtime.
+        await expect(createPluginTestkit({
+            manifest: withSources([source({ resumeOnly: true as const }), source({})]),
+            module: plugin,
+        })).rejects.toThrow(/missing Agent External Sessions contribution/u);
+
+        // Fail-closed for an ordinary (no resume-only) source set as well.
+        await expect(createPluginTestkit({
+            manifest: withSources([source({})]),
+            module: plugin,
+        })).rejects.toThrow(/missing Agent External Sessions contribution/u);
+    });
+
+    it('rejects resume-only External Sessions sources without explicit Session resume capability', () => {
+        expect(() => definePlugin({
+            id: 'example.acp-session-list-without-resume',
+            version: '0.1.0',
+            agents: {
+                assistant: {
+                    declaration: {
+                        title: 'Assistant',
+                        runtime: {
+                            kind: 'acp' as const,
+                            transport: {
+                                kind: 'stdio' as const,
+                                executable: { kind: 'systemTool' as const, id: 'assistant-cli' },
+                            },
+                        },
+                        primary: 'sessions' as const,
+                        capabilities: {
+                            surfaces: ['externalSessions' as const],
+                            sessions: { open: ['create' as const], delivery: ['newTurn' as const], cancel: true },
+                        },
+                        surfaces: { externalSession: { sources: [{
+                            sourceKind: 'assistantAcpSessions',
+                            resumeOnly: true as const,
+                            schema: { fields: [{ name: 'kind', kind: 'literal' as const, value: 'assistantAcpSessions' }] },
+                            key: { segments: [{ kind: 'literal' as const, value: 'assistantAcpSessions' }] },
+                        }] } },
+                    },
+                },
+            },
+            systemTools: {
+                'assistant-cli': { title: 'Assistant CLI', executableNames: ['assistant'] },
+            },
+        })).toThrow(
+            /resume-only External Sessions source requires an ACP Session-primary Agent/u,
+        );
     });
 
     it('infers composable action input and result types without explicit generics', () => {

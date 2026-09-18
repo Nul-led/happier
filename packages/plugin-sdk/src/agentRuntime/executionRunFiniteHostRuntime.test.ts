@@ -25,7 +25,7 @@ function createRequest(runId = 'finite-run'): Extract<AgentExecutionRunOpenReque
 }
 
 describe('createFiniteExecutionRunHostRuntime', () => {
-  it('owns start, progress, sequence, replay, unsupported follow-up, and one terminal result', async () => {
+  it('owns start, progress, sequence, pre-watch replay, unsupported follow-up, and one terminal result', async () => {
     let finish!: () => void;
     const runtime = createFiniteExecutionRunHostRuntime({
       request: createRequest(),
@@ -57,8 +57,43 @@ describe('createFiniteExecutionRunHostRuntime', () => {
     expect(events.map((event) => event.sequence)).toEqual([1, 2, 3, 4]);
     const replay: AgentExecutionRunEvent[] = [];
     runtime.watch((event) => replay.push(event));
-    expect(replay).toEqual(events);
+    expect(replay).toEqual([events.at(-1)]);
     await expect(runtime.stop()).resolves.toEqual({ status: 'notRunning' });
+  });
+
+  it('retires the pre-first-watch replay after subscription and keeps live fanout plus late terminal truth', async () => {
+    let emitProgress!: (event: AgentFiniteExecutionRunProgressEvent) => void;
+    let finish!: () => void;
+    const runtime = createFiniteExecutionRunHostRuntime({
+      request: createRequest('retired-replay-run'),
+      execute: async ({ emit }) => {
+        emitProgress = emit;
+        await new Promise<void>((resolve) => { finish = resolve; });
+        return { status: 'complete' };
+      },
+      mapFailure: () => ({ code: 'review_failed', severity: 'error' }),
+      unsupportedSendDiagnostic: { code: 'follow_up_unsupported', severity: 'error' },
+    });
+    const first: AgentExecutionRunEvent[] = [];
+    runtime.watch((event) => first.push(event));
+    expect(first.map((event) => event.kind)).toEqual(['run-start']);
+
+    emitProgress({ kind: 'output-delta', channel: 'reasoning', text: 'private progress' });
+    const second: AgentExecutionRunEvent[] = [];
+    runtime.watch((event) => second.push(event));
+    expect(second).toEqual([]);
+
+    emitProgress({ kind: 'run-progress' });
+    expect(first.map((event) => event.kind)).toEqual(['run-start', 'output-delta', 'run-progress']);
+    expect(second.map((event) => event.kind)).toEqual(['run-progress']);
+
+    finish();
+    await vi.waitFor(() => expect(first.at(-1)?.kind).toBe('run-complete'));
+    expect(second.at(-1)?.kind).toBe('run-complete');
+
+    const late: AgentExecutionRunEvent[] = [];
+    runtime.watch((event) => late.push(event));
+    expect(late.map((event) => event.kind)).toEqual(['run-complete']);
   });
 
   it('maps execution failure once and disposes without replacing the terminal result', async () => {

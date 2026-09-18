@@ -225,10 +225,18 @@ export function decodeGithubPullRequestBody(raw: unknown): GithubRawEntityViewV1
   });
 }
 
-/** Decodes `GET /repos/{owner}/{repo}/issues/{number}`. */
+/**
+ * Decodes `GET /repos/{owner}/{repo}/issues/{number}`.
+ *
+ * `route` is the requested path, used only as the fallback repository name when the
+ * response carried none. A numeric redirect destination (`/repositories/{id}/...`)
+ * has no owner/name to fall back to and passes `null`: there, the body's own
+ * repository is the only locator evidence, and a body without one is undecodable
+ * rather than an invitation to reuse the path the redirect just superseded.
+ */
 export function decodeGithubIssueBody(
   raw: unknown,
-  route: Readonly<{ owner: string; name: string }>,
+  route: Readonly<{ owner: string; name: string }> | null,
 ): GithubRawEntityViewV1 | null {
   if (!isRecord(raw)) return null;
   const number = readPositiveDecimal(raw.number);
@@ -237,14 +245,20 @@ export function decodeGithubIssueBody(
   const updatedAtMs = readEpochMs(raw.updated_at);
   if (number === null || title === null) return null;
   if (createdAtMs === null || updatedAtMs === null) return null;
-  const repository = readRepositoryFacts(raw);
+  const repository = readRepositoryFacts(raw) ?? (route === null ? null : Object.freeze({
+    owner: route.owner,
+    name: route.name,
+    label: `${route.owner}/${route.name}`,
+    repositoryId: null,
+  }));
+  if (repository === null) return null;
   return Object.freeze({
     kindId: isRecord(raw.pull_request) ? 'pull-request' : 'issue',
     number,
-    owner: repository?.owner ?? route.owner,
-    name: repository?.name ?? route.name,
-    repositoryLabel: repository?.label ?? `${route.owner}/${route.name}`,
-    repositoryId: repository?.repositoryId ?? null,
+    owner: repository.owner,
+    name: repository.name,
+    repositoryLabel: repository.label,
+    repositoryId: repository.repositoryId,
     title,
     state: raw,
     authorLogin: isRecord(raw.user) ? readTrimmedString(raw.user.login) : null,

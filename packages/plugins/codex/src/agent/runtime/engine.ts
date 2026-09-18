@@ -1,11 +1,15 @@
 import type {
   AgentRuntime,
   AgentRuntimeFactory,
+  AgentExecutionRunOpenRequest,
+  AgentExecutionRunRuntime,
+  AgentExecutionRunRuntimeContextV1,
   AgentSessionOpenRequest,
   AgentSessionRuntime,
   AgentSessionRuntimeContext,
   AgentTerminalSurface,
 } from '@happier-dev/plugin-sdk/agents/runtime';
+import { createExecutionRunHostBackendFromConversationRuntime } from '@happier-dev/plugin-sdk/agents/runtime';
 import { PluginError } from '@happier-dev/plugin-sdk';
 
 import { buildCodexNativeAcpRuntimeOptions } from '../acp/backend.js';
@@ -13,8 +17,12 @@ import { resolveCanonicalCodexBackendModeFromCompatInput } from '../lifecycle/ba
 import { readCanonicalCodexAgentRuntimeDescriptorV1 } from '../../protocol/runtimeDescriptorV1.js';
 import { buildCodexTerminalArgs } from './terminal/invocation.js';
 import { resolveCodexTerminalPermissionPolicy } from './terminal/permissionPolicy.js';
-import { openCodexNativeAppServerSession } from './appServer/native.js';
+import {
+  openCodexNativeAppServerExecutionRunConversation,
+  openCodexNativeAppServerSession,
+} from './appServer/native.js';
 import { createCodexNativeSessionControls } from './controls.js';
+import { createCodexGoalProjection, type CodexGoalProjection } from './appServer/work/goalProjection.js';
 import { codexHandoffSurface } from '../surfaces/sessions/handoff/providerOps.js';
 
 export {
@@ -37,15 +45,42 @@ function readStringArray(value: unknown): readonly string[] | undefined {
     : undefined;
 }
 
-function readCodexBackendMode(request: AgentSessionOpenRequest): 'appServer' | 'acp' {
+function readCodexBackendMode(
+  request: AgentSessionOpenRequest | AgentExecutionRunOpenRequest,
+): 'appServer' | 'acp' {
   const environment = request.launchEnvironment?.values ?? {};
   const resolved = resolveCanonicalCodexBackendModeFromCompatInput({
-    backendMode: request.configuration?.mode.value,
     codexBackendMode: request.configuration?.options.codexBackendMode?.value
       ?? environment.HAPPIER_CODEX_BACKEND_MODE
       ?? environment.CODEX_BACKEND_MODE,
   });
   return resolved === 'acp' ? 'acp' : 'appServer';
+}
+
+async function openCodexExecutionRun(
+  request: AgentExecutionRunOpenRequest,
+  context: AgentExecutionRunRuntimeContextV1,
+): Promise<AgentExecutionRunRuntime> {
+  if (readCodexBackendMode(request) === 'acp') {
+    return await context.protocols.acp.openExecutionRunV1(
+      request,
+      buildCodexNativeAcpRuntimeOptions(request),
+    );
+  }
+  return await createExecutionRunHostBackendFromConversationRuntime({
+    request: request.kind === 'fork'
+      ? {
+          ...request,
+          kind: 'resume',
+          checkpointId: request.checkpointId
+            ?? (() => { throw new Error('Codex detached fork requires an exact provider checkpoint.'); })(),
+        }
+      : request,
+    openConversation: async () => await openCodexNativeAppServerExecutionRunConversation(request, context),
+    readCheckpointId: (event) => event.kind === 'provider-session-id'
+      ? event.providerSessionId
+      : null,
+  });
 }
 
 function requestHasStartupInstructions(request: AgentSessionOpenRequest): boolean {
@@ -55,6 +90,7 @@ function requestHasStartupInstructions(request: AgentSessionOpenRequest): boolea
 async function openCodexSession(
   request: AgentSessionOpenRequest,
   context: AgentSessionRuntimeContext,
+  goalProjection: CodexGoalProjection,
 ): Promise<AgentSessionRuntime> {
   const backendMode = readCodexBackendMode(request);
   if (backendMode === 'acp') {
@@ -74,13 +110,13 @@ async function openCodexSession(
         request,
         buildCodexNativeAcpRuntimeOptions(request),
       )
-    : await openCodexNativeAppServerSession(request, context);
+    : await openCodexNativeAppServerSession(request, context, goalProjection);
   return {
     ...session,
     runtimeCapabilities: {
       ...session.runtimeCapabilities,
       localControl: backendMode === 'appServer'
-        ? { supported: true, topology: 'exclusive', attachStrategy: 'terminal_host' }
+        ? session.runtimeCapabilities?.localControl ?? null
         : null,
       sessionCapabilities: {
         ...session.runtimeCapabilities?.sessionCapabilities,
@@ -123,9 +159,16 @@ function createCodexNativeTerminalSurface(): AgentTerminalSurface {
 }
 
 export const createCodexAgentRuntime: AgentRuntimeFactory = () => {
-  const controls = createCodexNativeSessionControls();
+  const goalProjection = createCodexGoalProjection();
+  const controls = createCodexNativeSessionControls(goalProjection);
   return {
-    sessions: { ...controls, open: openCodexSession },
+    sessions: {
+      ...controls,
+      open: async (request, context) => await openCodexSession(request, context, goalProjection),
+      executionRunContextV1: {
+        open: async (request, context) => await openCodexExecutionRun(request, context),
+      },
+    },
     surfaces: {
       terminal: createCodexNativeTerminalSurface(),
       handoff: codexHandoffSurface,

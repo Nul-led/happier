@@ -30,7 +30,13 @@ export type ProtocolComposerRefV1 =
     | Readonly<{ kind: 'newSession'; instanceId: string }>
     | Readonly<{ kind: 'pendingMessage'; sessionId: string; localId: string }>
     | Readonly<{ kind: 'participantMessage'; sessionId: string; instanceId: string }>
-    | Readonly<{ kind: 'automationAuthoring'; sessionId: string; instanceId: string }>;
+    | Readonly<{ kind: 'automationAuthoring'; sessionId: string; instanceId: string }>
+    | Readonly<{
+        kind: 'workflowAuthoring';
+        draftId: string;
+        blockId: string;
+        instanceId: string;
+    }>;
 
 /** The canonical Protocol parser remains the sole schema owner. */
 export const ProtocolComposerRefV1Schema: ProtocolComposableSchema<ProtocolComposerRefV1> =

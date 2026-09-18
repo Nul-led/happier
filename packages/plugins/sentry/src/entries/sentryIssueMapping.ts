@@ -173,6 +173,43 @@ function readLifetimeCount(
   return lifetime ?? readCountValue(raw[topLevelKey]);
 }
 
+/**
+ * Which issue a 200 issue response is actually about (`SENTRY.md` §4.1).
+ *
+ * `[SOURCE]` `src/sentry/issues/endpoints/bases/group.py` resolves a
+ * `GroupRedirect` and **discards** the `redirected` flag, so a `GET` on a
+ * merged-away id answers `200` with the SURVIVING issue's body — no `3xx`, no
+ * header, no field announcing it. Comparing the returned `id` against the
+ * requested one is the only detection any client has, which is why it belongs
+ * to one owner rather than to whichever read remembered to do it: `get` reports
+ * the successor as `merged`, while a detail read has no merge arm and must
+ * refuse instead of rendering issue B beneath issue A's still-mounted identity.
+ */
+export type SentryIssueResponseIdentityV1 =
+  | Readonly<{ kind: 'requested' }>
+  | Readonly<{ kind: 'superseded'; returnedEntryId: string }>
+  /** No usable `id`: the body is not an issue this source can characterize. */
+  | Readonly<{ kind: 'unreadable' }>;
+
+const IDENTITY_REQUESTED: SentryIssueResponseIdentityV1 = Object.freeze({
+  kind: 'requested' as const,
+});
+const IDENTITY_UNREADABLE: SentryIssueResponseIdentityV1 = Object.freeze({
+  kind: 'unreadable' as const,
+});
+
+export function admitSentryIssueResponseIdentity(
+  body: unknown,
+  requestedEntryId: string,
+): SentryIssueResponseIdentityV1 {
+  if (!isRecord(body)) return IDENTITY_UNREADABLE;
+  const returnedEntryId = readString(body.id);
+  if (returnedEntryId === null) return IDENTITY_UNREADABLE;
+  return returnedEntryId === requestedEntryId
+    ? IDENTITY_REQUESTED
+    : Object.freeze({ kind: 'superseded' as const, returnedEntryId });
+}
+
 export function mapSentryIssueForInvokedInstance(
   input: SentryIssueMappingInputV1,
 ): SentryIssueMappingResultV1 {

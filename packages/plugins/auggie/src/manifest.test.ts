@@ -31,7 +31,7 @@ describe('Auggie plugin manifest', () => {
           capabilities: {
             sessions: {
               open: ['create', 'resume'],
-              delivery: ['newTurn', 'steer', 'followUp'],
+              delivery: ['newTurn', 'followUp'],
               cancel: true,
             },
           },

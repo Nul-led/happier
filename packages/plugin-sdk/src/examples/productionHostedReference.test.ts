@@ -90,12 +90,8 @@ async function settleMount(): Promise<void> {
 
 async function createFixture() {
     return await createPluginUiTestkit({
-        identity: {
-            pluginId: 'examples.production-hosted-reference',
-            pluginVersion: '0.1.0',
-            viewId: 'review-dashboard',
-            generation: 'review-panel-test',
-        },
+        identity: { instanceId: 'fixture-instance-71', mountNonce: 'fixture-mount-71' },
+        authorPlugin: { id: 'examples.production-hosted-reference', version: '0.1.0' },
         surface: { kind: 'review-panel-test' },
         surfaceContext: surface,
         adapter: semanticAdapter,

@@ -457,6 +457,10 @@ class PresentationBoundaryFixture implements PresentationService {
     this.calls.push(call);
   }
 
+  async present(_intent: Parameters<PresentationService['present']>[0], options?: Parameters<PresentationService['present']>[1]): Promise<void> {
+    this.record('present', options?.signal);
+  }
+
   async notify(_message: string, options?: Parameters<PresentationService['notify']>[1]): Promise<void> {
     this.record('notify', options?.signal);
   }

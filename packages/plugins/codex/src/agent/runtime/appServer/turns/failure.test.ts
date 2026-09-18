@@ -8,6 +8,25 @@ import {
 } from './failure.js';
 
 describe('createCodexAppServerTurnFailure', () => {
+    it('preserves bounded model entitlement evidence for host recovery', () => {
+        const failure = createCodexAppServerTurnFailure({
+            value: {
+                error: {
+                    type: 'invalid_request_error',
+                    message: "The 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT account.",
+                },
+            },
+            authContext: { profileId: 'free-account', groupId: 'happier' },
+        });
+
+        expect((failure as Error & { runtimeAuthClassification?: unknown }).runtimeAuthClassification).toMatchObject({
+            kind: 'plan',
+            limitCategory: 'plan_invalid',
+            quotaScope: 'model',
+            providerLimitId: 'gpt-5.6-sol',
+        });
+    });
+
     it('carries structured runtime-auth classification for Codex usage-limit errors', () => {
         const failure = createCodexAppServerTurnFailure({
             value: {

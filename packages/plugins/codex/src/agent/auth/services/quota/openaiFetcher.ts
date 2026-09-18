@@ -1,4 +1,3 @@
-import { parseTimestampMs } from '@happier-dev/plugin-sdk';
 import type {
   AgentAccountUsageMeter,
   AgentAccountUsageRecoveryCredits,
@@ -12,6 +11,7 @@ import type { ConnectedAccountRuntime as PluginConnectedAccountRuntime } from '@
 import type { HttpService } from '@happier-dev/plugin-sdk/http';
 
 import { mapCodexRateLimitResetCredits } from './rateLimitResetCredits.js';
+import { mapCodexRateLimitSnapshotToUsageMeters } from './rateLimitSnapshot.js';
 import {
   OPENAI_CODEX_DEFAULT_RATE_LIMIT_RESET_CREDIT_CONSUME_URL,
   OPENAI_CODEX_DEFAULT_RATE_LIMIT_RESET_CREDITS_URL,
@@ -31,45 +31,19 @@ function normalizeNonEmptyString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
-function normalizePct(value: unknown): number | null {
-  const numeric = typeof value === 'number' ? value : Number(value);
-  if (!Number.isFinite(numeric)) return null;
-  return Math.max(0, Math.min(100, numeric));
-}
-
-function normalizeResetAtMs(value: unknown): number | null {
-  if (typeof value === 'number') {
-    const parsed = parseTimestampMs(value);
-    return parsed !== null && parsed > 0 ? parsed : null;
-  }
-  const num = Number(value);
-  if (!Number.isFinite(num) || num <= 0) return null;
-  const parsed = parseTimestampMs(num);
-  return parsed !== null && parsed > 0 ? parsed : null;
-}
-
 export function parseOpenAiCodexConnectedAccountQuotaLimits(
   value: unknown,
 ): Awaited<
   ReturnType<NonNullable<PluginConnectedAccountRuntime['quota']>>
 >['limits'] {
-  const data = isRecord(value) ? value : {};
-  const rateLimit = isRecord(data.rate_limit) ? data.rate_limit : null;
-  const primary = rateLimit && isRecord(rateLimit.primary_window) ? rateLimit.primary_window : null;
-  const secondary = rateLimit && isRecord(rateLimit.secondary_window) ? rateLimit.secondary_window : null;
-  return [
-    ['session', primary],
-    ['weekly', secondary],
-  ].map(([id, window]) => {
-    const usageWindow = isRecord(window) ? window : null;
-    const used = normalizePct(usageWindow?.used_percent);
-    const resetsAtMs = normalizeResetAtMs(usageWindow?.reset_at);
-    return {
-      id: String(id),
-      ...(used === null ? {} : { used, remaining: 100 - used }),
-      ...(resetsAtMs === null ? {} : { resetsAtMs }),
-    };
-  });
+  return mapOpenAiCodexConnectedAccountUsageMeters(value).map((meter) => ({
+    id: meter.meterId,
+    ...(meter.utilizationPct === null ? {} : {
+      used: meter.utilizationPct,
+      remaining: meter.remainingPct ?? Math.max(0, 100 - meter.utilizationPct),
+    }),
+    ...(meter.resetsAt === null ? {} : { resetsAtMs: meter.resetsAt }),
+  }));
 }
 
 function resolveConnectedServiceQuotaAccountLabel(record: OauthCredentialRecord | TokenCredentialRecord): string | null {
@@ -161,6 +135,20 @@ function buildQuotaUnknownMeter(meterId: string, label: string): AgentAccountUsa
     confidence: 'unknown',
     details: { code: 'quota_unknown' },
   };
+}
+
+function mapOpenAiCodexConnectedAccountUsageMeters(value: unknown): readonly AgentAccountUsageMeter[] {
+  const meters = mapCodexRateLimitSnapshotToUsageMeters(value, {
+    legacyPrimary: { meterId: 'session', label: 'Session', scope: 'session' },
+    legacySecondary: { meterId: 'weekly', label: 'Weekly', scope: 'weekly' },
+    source: 'provider_api',
+  });
+  const byId = new Map(meters.map((meter) => [meter.meterId, meter]));
+  return [
+    byId.get('session') ?? buildQuotaUnknownMeter('session', 'Session'),
+    byId.get('weekly') ?? buildQuotaUnknownMeter('weekly', 'Weekly'),
+    ...meters.filter((meter) => meter.meterId !== 'session' && meter.meterId !== 'weekly'),
+  ];
 }
 
 function buildCodexProviderHttpQuotaSnapshot(input: Readonly<{
@@ -311,8 +299,6 @@ export function createOpenAiCodexQuotaFetcher(params?: Readonly<{
       });
 
       const planLabel = normalizeNonEmptyString(data.plan_type);
-      const connectedAccountLimits = parseOpenAiCodexConnectedAccountQuotaLimits(data);
-
       return buildCodexProviderHttpQuotaSnapshot({
         record,
         now,
@@ -320,23 +306,7 @@ export function createOpenAiCodexQuotaFetcher(params?: Readonly<{
         planLabel,
         accountLabel: resolveConnectedServiceQuotaAccountLabel(record),
         ...(recoveryCredits ? { recoveryCredits } : {}),
-        meters: connectedAccountLimits.map((limit) => ({
-          meterId: limit.id,
-          label: limit.id === 'session' ? 'Session' : 'Weekly',
-          used: null,
-          limit: null,
-          unit: 'unknown',
-          utilizationPct: limit.used ?? null,
-          remainingPct: limit.remaining ?? null,
-          resetsAt: limit.resetsAtMs ?? null,
-          resetAtMs: limit.resetsAtMs ?? null,
-          status: limit.used === undefined ? 'unavailable' : 'ok',
-          source: 'provider_api',
-          scope: limit.id === 'session' ? 'session' : 'weekly',
-          limitScope: 'account',
-          confidence: limit.used === undefined ? 'unknown' : 'exact',
-          details: {},
-        })),
+        meters: mapOpenAiCodexConnectedAccountUsageMeters(data),
       });
     },
   };

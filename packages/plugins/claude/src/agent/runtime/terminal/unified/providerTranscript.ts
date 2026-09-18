@@ -1,3 +1,4 @@
+import { readClaudeProviderIdentityValue } from '../../../../protocol/providerIdentity.js';
 import { isSidechainSessionHook } from '../../../hooks/sidechain.js';
 import type {
   AgentSessionHooksService,
@@ -144,10 +145,6 @@ function normalizeFinalDrainTimeoutMs(value: number | undefined): number {
   return Math.floor(value);
 }
 
-function readExactNonBlankString(value: unknown): string | null {
-  return typeof value === 'string' && value.trim().length > 0 ? value : null;
-}
-
 function readTurnId(row: Readonly<Record<string, unknown>>): string | undefined {
   return readString(row.uuid) ?? undefined;
 }
@@ -204,9 +201,9 @@ function readNativeQueuedCommandOperation(
   if (row.type !== 'queue-operation') return null;
   const operation = row.operation;
   if (operation !== 'enqueue' && operation !== 'remove') return null;
-  const content = readExactNonBlankString(row.content);
-  const sessionId = readExactNonBlankString(row.sessionId);
-  const timestamp = readExactNonBlankString(row.timestamp);
+  const content = readClaudeProviderIdentityValue(row.content);
+  const sessionId = readClaudeProviderIdentityValue(row.sessionId);
+  const timestamp = readClaudeProviderIdentityValue(row.timestamp);
   if (!content || !sessionId || !timestamp) return null;
   const timestampMs = Date.parse(timestamp);
   if (!Number.isFinite(timestampMs)) return null;
@@ -219,11 +216,11 @@ function readNativeQueuedCommandConsumption(
   if (row.type !== 'attachment' || row.isSidechain !== false) return null;
   const attachment = isRecord(row.attachment) ? row.attachment : null;
   const origin = isRecord(attachment?.origin) ? attachment.origin : null;
-  const prompt = readExactNonBlankString(attachment?.prompt);
-  const sessionId = readExactNonBlankString(row.sessionId);
-  const transcriptUuid = readExactNonBlankString(row.uuid);
-  const parentUuid = readExactNonBlankString(row.parentUuid);
-  const timestamp = readExactNonBlankString(row.timestamp);
+  const prompt = readClaudeProviderIdentityValue(attachment?.prompt);
+  const sessionId = readClaudeProviderIdentityValue(row.sessionId);
+  const transcriptUuid = readClaudeProviderIdentityValue(row.uuid);
+  const parentUuid = readClaudeProviderIdentityValue(row.parentUuid);
+  const timestamp = readClaudeProviderIdentityValue(row.timestamp);
   if (
     attachment?.type !== 'queued_command'
     || attachment.commandMode !== 'prompt'
@@ -564,7 +561,7 @@ export function createClaudeUnifiedProviderTranscriptPublisher(
       replaceExistingBinding: boolean;
     }>,
   ): Promise<ClaudeUnifiedProviderTranscriptBindResult> {
-    const trustedProviderSessionId = readString(input.providerSessionId);
+    const trustedProviderSessionId = readClaudeProviderIdentityValue(input.providerSessionId);
     const transcriptPath = readString(input.transcriptPath);
     if (disposed || !trustedProviderSessionId || !transcriptPath) return { status: 'ignored' };
 
@@ -626,20 +623,29 @@ export function createClaudeUnifiedProviderTranscriptPublisher(
     payload: Readonly<Record<string, unknown>>,
   ): Promise<ClaudeUnifiedProviderTranscriptBindResult> {
     if (disposed) return { status: 'ignored' };
-    if (readHookEventName(payload) !== 'SessionStart') return { status: 'ignored' };
-    // A sidechain (subagent) SessionStart must never re-key the parent transcript binding
+    const hookEventName = readHookEventName(payload);
+    if (!hookEventName) return { status: 'ignored' };
+    // A sidechain (subagent) hook must never re-key the parent transcript binding
     // (ported HF-7): its transcript belongs to the subagent's own provider session.
     if (isSidechainSessionHook(payload)) return { status: 'ignored' };
     const transcriptPath = readTranscriptPath(payload);
-    const trustedProviderSessionId = readString(providerSessionId)
-      ?? readString(payload.session_id)
-      ?? readString(payload.sessionId);
+    const trustedProviderSessionId = readClaudeProviderIdentityValue(providerSessionId)
+      ?? readClaudeProviderIdentityValue(payload.session_id)
+      ?? readClaudeProviderIdentityValue(payload.sessionId);
     if (!transcriptPath || !trustedProviderSessionId) return { status: 'ignored' };
+    const isSessionStart = hookEventName === 'SessionStart';
+    if (!isSessionStart) {
+      if (
+        !binding
+        || binding.providerSessionId !== trustedProviderSessionId
+        || binding.transcriptPath === transcriptPath
+      ) return { status: 'ignored' };
+    }
 
     return await bindTranscript({
       providerSessionId: trustedProviderSessionId,
       transcriptPath,
-      initialResumeCatchUp: readSessionStartSource(payload) === 'resume',
+      initialResumeCatchUp: isSessionStart && readSessionStartSource(payload) === 'resume',
       replaceExistingBinding: true,
       startAt: 'beginning',
     });

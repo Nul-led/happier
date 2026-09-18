@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
     createCodexAppServerRpcError,
+    isCodexAppServerDefinitiveMethodNotFoundError,
     isCodexAppServerApplicationRejectionForMethod,
     isCodexAppServerInvalidParamsForFieldError,
     isCodexAppServerMethodNotFoundError,
@@ -41,7 +42,7 @@ describe('Codex app-server compatibility predicates', () => {
         }))).toBe(true);
     });
 
-    it('distinguishes a received JSON-RPC application rejection from transport failure', () => {
+  it('distinguishes a received JSON-RPC application rejection from transport failure', () => {
         const rejection = createCodexAppServerRpcError({
             method: 'thread/realtime/start',
             code: -32602,
@@ -58,5 +59,16 @@ describe('Codex app-server compatibility predicates', () => {
             }),
             'thread/realtime/start',
         )).toBe(false);
-    });
+  });
+
+  it('allows a mutating compatibility fallback only for an exact application method-not-found rejection', () => {
+    const rejection = createCodexAppServerRpcError({ method: 'thread/revert', code: -32601 });
+    rejection.name = 'JsonRpcApplicationError';
+    expect(isCodexAppServerDefinitiveMethodNotFoundError(rejection, 'thread/revert')).toBe(true);
+    expect(isCodexAppServerDefinitiveMethodNotFoundError(
+      Object.assign(new Error('Method not found'), { method: 'thread/revert', code: -32601 }),
+      'thread/revert',
+    )).toBe(false);
+    expect(isCodexAppServerDefinitiveMethodNotFoundError(rejection, 'thread/rollback')).toBe(false);
+  });
 });

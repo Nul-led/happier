@@ -5,11 +5,13 @@ import type {
 import { AgentRuntimeJsonValueSchema } from '@happier-dev/plugin-sdk/agents/runtime';
 import { redactBugReportSensitiveText } from '@happier-dev/plugin-sdk';
 
-type WithoutSequence<T> = T extends { sequence: number } ? Omit<T, 'sequence'> : never;
-export type PiRuntimeEvent = WithoutSequence<AgentSessionRuntimeEvent>;
+type WithoutHostEnvelope<T> = T extends { sequence: number; sessionId: string; emittedAtMs: number }
+  ? Omit<T, 'sequence' | 'sessionId' | 'emittedAtMs'> & Readonly<{ emittedAtMs?: number }>
+  : never;
+/** Provider-conversation fact before a Happier Session or Execution Run owns its envelope. */
+export type PiRuntimeEvent = WithoutHostEnvelope<AgentSessionRuntimeEvent>;
 
 type PiRuntimeEventProjectionContext = Readonly<{
-  sessionId: string | null;
   turnId: string | null;
   agentSessionId: string | null;
   nowMs: () => number;
@@ -75,17 +77,14 @@ function readSuccessfulCompactionResult(value: unknown): Readonly<Record<string,
 }
 
 function baseEvent(context: PiRuntimeEventProjectionContext) {
-  const sessionId = context.sessionId;
-  if (!sessionId) return null;
   return {
-    sessionId,
     emittedAtMs: context.nowMs(),
   };
 }
 
 function turnEventBase(context: PiRuntimeEventProjectionContext) {
   const base = baseEvent(context);
-  if (!base || !context.turnId) return null;
+  if (!context.turnId) return null;
   return {
     ...base,
     turnId: context.turnId,

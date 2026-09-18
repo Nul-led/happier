@@ -104,6 +104,38 @@ describe('resolveCodexNativeSessionLogPath', () => {
     })).resolves.toBe(archivedRolloutPath);
   });
 
+  it('matches the exact vendor resume id bytes instead of a stripped sibling rollout', async () => {
+    const exactVendorResumeId = '  provider ses AB+cd==  ';
+    const strippedVendorResumeId = exactVendorResumeId.trim();
+    const dayDir = join(codexHome, 'sessions', '2026', '09', '13');
+    const exactRolloutPath = join(dayDir, `rollout-2026-09-13T10-00-00-${exactVendorResumeId}.jsonl`);
+    const strippedRolloutPath = join(dayDir, `rollout-2026-09-13T10-00-00-${strippedVendorResumeId}.jsonl`);
+    await mkdir(dayDir, { recursive: true });
+    await writeFile(exactRolloutPath, '{}\n');
+    await writeFile(strippedRolloutPath, '{}\n');
+
+    await expect(resolveCodexNativeSessionLogPath({
+      vendorResumeId: exactVendorResumeId,
+      env: { CODEX_HOME: codexHome },
+    })).resolves.toBe(exactRolloutPath);
+    await expect(resolveCodexNativeSessionLogPath({
+      vendorResumeId: strippedVendorResumeId,
+      env: { CODEX_HOME: codexHome },
+    })).resolves.toBe(strippedRolloutPath);
+    await expect(resolveCodexNativeTranscriptPathCandidate({
+      identity: { v: 1, vendorResumeId: exactVendorResumeId },
+      runtimeDescriptorV1: buildCodexAgentRuntimeDescriptorV1({
+        backendMode: 'appServer',
+        providerSessionId: exactVendorResumeId,
+        homePath: codexHome,
+      }),
+    })).resolves.toEqual({ path: exactRolloutPath, containmentRoot: codexHome });
+    await expect(resolveCodexNativeSessionLogPath({
+      vendorResumeId: ' \n ',
+      env: { CODEX_HOME: codexHome },
+    })).resolves.toBeNull();
+  });
+
   it('answers nothing for an id no rollout file on this machine carries', async () => {
     await expect(resolveCodexNativeSessionLogPath({
       vendorResumeId: '019e7cfd-0000-0000-0000-000000000000',

@@ -88,10 +88,10 @@ export const GROK_ACP_HISTORY: NonNullable<AgentAcpRuntimeDefinition['history']>
       });
     },
     readProviderSessionId(response: JsonValue) {
+      // Grok minted the forked session id and Happier hands it straight back,
+      // so padding is part of those bytes: presence only, no re-canonicalizing.
       const newSessionId = record(response)?.newSessionId;
-      return typeof newSessionId === 'string'
-        && newSessionId.length > 0
-        && newSessionId === newSessionId.trim()
+      return typeof newSessionId === 'string' && newSessionId.trim().length > 0
         ? newSessionId
         : null;
     },
@@ -129,8 +129,11 @@ export function createGrokConversationRollbackControl(
         ),
       };
     }
+    // Grok minted this id, so padding is part of its bytes. Exactness is proven
+    // by matching the live session's own id below; a "must already be trimmed"
+    // rule would instead refuse an identity the Agent itself issued.
     if (
-      request.providerSessionId !== request.providerSessionId.trim()
+      request.providerSessionId.trim().length === 0
       || session.getProviderSessionId() !== request.providerSessionId
     ) {
       return {

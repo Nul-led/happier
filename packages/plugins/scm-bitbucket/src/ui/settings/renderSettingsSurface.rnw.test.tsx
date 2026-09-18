@@ -45,12 +45,8 @@ async function mountSettings(): Promise<PluginUiTestkit> {
   let fixture!: PluginUiTestkit;
   await act(async () => {
     fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: BITBUCKET_PLUGIN_ID,
-        pluginVersion: '0.0.0',
-        viewId: 'triage-sources',
-        generation: 'triage-sources-mount',
-      },
+      identity: { instanceId: 'fixture-instance-164', mountNonce: 'fixture-mount-164' },
+      authorPlugin: { id: BITBUCKET_PLUGIN_ID, version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createSurfaceContextFixture(),
       adapter: createPluginUiRnwSemanticSurfaceAdapter(),

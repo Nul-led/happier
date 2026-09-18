@@ -1,4 +1,8 @@
 import {
+  type AgentExecutionRunConversationRuntimeV1,
+  type AgentExecutionRunConversationEventV1,
+  type AgentExecutionRunOpenRequest,
+  type AgentExecutionRunRuntimeContextV1,
   AgentRuntimeJsonValueSchema,
   type AgentSessionOpenRequest,
   type AgentSessionRuntime,
@@ -32,12 +36,29 @@ import {
 } from './runtime.js';
 import { sanitizeCodexAppServerRuntimeAuthClassification } from './turns/failure.js';
 import { parseCodexProviderBindingEngineConfigV1 } from '../../providerBinding/runtimeConfig.js';
+import { reconcileCodexResumeRolloutPath } from '../../auth/services/state/sharing/reconcileResumeRolloutPath.js';
+import type { CodexGoalProjection } from './work/goalProjection.js';
+import { readExactCodexProviderSessionId } from '../../../protocol/runtimeDescriptorV1.js';
+import { createCodexSharedAppServer } from './sharedServer.js';
+
+type CodexSharedAppServer = NonNullable<Awaited<ReturnType<typeof createCodexSharedAppServer>>>;
 
 type NativeSessionEventInput = AgentSessionRuntimeEvent extends infer Event
   ? Event extends AgentSessionRuntimeEvent
     ? Omit<Event, 'sequence' | 'sessionId' | 'emittedAtMs'>
     : never
   : never;
+
+type NativeExecutionRunConversationEvent = AgentExecutionRunConversationEventV1;
+
+type NativeConversationRuntimeCore = Omit<
+  AgentSessionRuntime & Partial<ExperimentalAgentSessionRealtimeRuntime>,
+  'watch'
+> & Readonly<{
+  watch(
+    listener: (event: AgentSessionRuntimeEvent | NativeExecutionRunConversationEvent) => void,
+  ): { dispose(): void };
+}>;
 
 type NativeCurrentSession = NonNullable<AgentSessionRuntimeContext['services']['sessions']['current']>;
 type NativeMediaSourceRoot = Awaited<ReturnType<
@@ -50,7 +71,9 @@ type CodexAccountUsageSourceContext = Awaited<
   ReturnType<CodexAccountUsageService['resolveSourceContext']>
 >;
 
-function readLaunchEnvironment(request: AgentSessionOpenRequest): Record<string, string> {
+type CodexAppServerLaunchRequest = AgentSessionOpenRequest | AgentExecutionRunOpenRequest;
+
+function readLaunchEnvironment(request: CodexAppServerLaunchRequest): Record<string, string> {
   const values = { ...(request.launchEnvironment?.values ?? {}) };
   const unsetNames = new Set((request.launchEnvironment?.unset ?? []).map((name) => name.toUpperCase()));
   for (const key of Object.keys(values)) {
@@ -59,11 +82,11 @@ function readLaunchEnvironment(request: AgentSessionOpenRequest): Record<string,
   return values;
 }
 
-function readPermissionMode(request: AgentSessionOpenRequest): string {
+function readPermissionMode(request: CodexAppServerLaunchRequest): string {
   return request.configuration?.permissionIntent.value ?? 'default';
 }
 
-function readInitialModelId(request: AgentSessionOpenRequest): string | null {
+function readInitialModelId(request: CodexAppServerLaunchRequest): string | null {
   const providerModelId = request.providerBinding?.model.id.trim();
   if (providerModelId) return providerModelId;
   const modelId = request.configuration?.model.value?.trim();
@@ -74,6 +97,7 @@ export function createCodexNativeAppServerRuntimeHost(params: Readonly<{
   request: AgentSessionOpenRequest;
   context: AgentSessionRuntimeContext;
   processEnv: Readonly<Record<string, string>>;
+  sharedAppServer?: CodexSharedAppServer | null;
 }>): CodexAppServerRuntimeHost {
   const accountUsage: CodexAccountUsageService = {
     resolveSourceContext: async (input, options) =>
@@ -109,14 +133,16 @@ export function createCodexNativeAppServerRuntimeHost(params: Readonly<{
     ...(params.context.services.sessions.current?.mcp
       ? { mcp: params.context.services.sessions.current.mcp }
       : {}),
-    createClient: async (request) => await createCodexNativeAppServerClient({
-      exec: params.context.services.exec,
-      cwd: request.cwd,
-      processEnv: request.processEnv,
-      configOverrides: request.configOverrides,
-      disableUserMcpServers: request.disableUserMcpServers,
-      signal: params.context.signal,
-    }),
+    createClient: async (clientRequest) => params.sharedAppServer
+      ? await params.sharedAppServer.createClient(clientRequest)
+      : await createCodexNativeAppServerClient({
+          exec: params.context.services.exec,
+          cwd: clientRequest.cwd,
+          processEnv: clientRequest.processEnv,
+          configOverrides: clientRequest.configOverrides,
+          disableUserMcpServers: clientRequest.disableUserMcpServers,
+          signal: params.context.signal,
+        }),
     fetchRateLimitResetCredits: async ({ accessToken, accountId }) => {
       const response = await params.context.services.http.request({
         url: OPENAI_CODEX_DEFAULT_RATE_LIMIT_RESET_CREDITS_URL,
@@ -166,6 +192,35 @@ export function createCodexNativeAppServerRuntimeHost(params: Readonly<{
       for (const source of sources) {
         if (source.status === 'fulfilled') source.value.dispose();
       }
+      await params.sharedAppServer?.dispose();
+    },
+  };
+}
+
+export function createCodexNativeAppServerExecutionRunRuntimeHost(params: Readonly<{
+  context: AgentExecutionRunRuntimeContextV1;
+  processEnv: Readonly<Record<string, string>>;
+  sharedAppServer?: CodexSharedAppServer | null;
+}>): CodexAppServerRuntimeHost {
+  return {
+    baseProcessEnv: params.processEnv,
+    ...(params.context.executionRun.services.nativeHome
+      ? { nativeHome: params.context.executionRun.services.nativeHome }
+      : {}),
+    logger: params.context.services.logger,
+    ui: params.context.services.interactions,
+    createClient: async (clientRequest) => params.sharedAppServer
+      ? await params.sharedAppServer.createClient(clientRequest)
+      : await createCodexNativeAppServerClient({
+          exec: params.context.services.exec,
+          cwd: clientRequest.cwd,
+          processEnv: clientRequest.processEnv,
+          configOverrides: clientRequest.configOverrides,
+          disableUserMcpServers: clientRequest.disableUserMcpServers,
+          signal: params.context.signal,
+        }),
+    dispose: async () => {
+      await params.sharedAppServer?.dispose();
     },
   };
 }
@@ -257,7 +312,12 @@ function readCommittedMessage(
       ? body.text
       : null;
   if (text === null) return null;
-  return { text, role: body.thinking === true ? 'reasoning' : 'assistant' };
+  return {
+    text,
+    role: body.thinking === true || body.type === 'reasoning' || body.type === 'thinking'
+      ? 'reasoning'
+      : 'assistant',
+  };
 }
 
 function mapCodexAppServerEvent(event: CodexAppServerEvent): NativeSessionEventInput | null {
@@ -328,7 +388,8 @@ function mapCodexAppServerEvent(event: CodexAppServerEvent): NativeSessionEventI
         ...(event.isError === true ? { isError: true } : {}),
       };
     case 'session-id-publish': {
-      const providerSessionId = event.publishedSessionId.trim();
+      // Codex minted this id; publish its exact bytes.
+      const providerSessionId = readExactCodexProviderSessionId(event.publishedSessionId);
       return providerSessionId ? { kind: 'provider-session-id', providerSessionId } : null;
     }
     case 'transcript-agent-message-committed': {
@@ -342,6 +403,14 @@ function mapCodexAppServerEvent(event: CodexAppServerEvent): NativeSessionEventI
           }
         : null;
     }
+    case 'transcript-user-message-committed':
+      return {
+        kind: 'transcript-message-committed',
+        messageId: event.localId,
+        role: 'user',
+        text: event.text,
+        ...(event.turnId ? { turnId: event.turnId } : {}),
+      };
     case 'usage-observed':
       return {
         kind: event.kind,
@@ -402,10 +471,40 @@ export function createCodexNativeAppServerSessionRuntime(
   realtimeConversation?: AgentSessionRealtimeConversation,
   onDispose?: () => void | Promise<void>,
 ): AgentSessionRuntime {
-  const listeners = new Set<(event: AgentSessionRuntimeEvent) => void>();
+  return createCodexNativeAppServerConversationRuntime(
+    appServer,
+    { kind: 'session', sessionId },
+    realtimeConversation,
+    onDispose,
+  ) as AgentSessionRuntime;
+}
+
+export function createCodexNativeAppServerExecutionRunConversationRuntime(
+  appServer: CodexAppServerSession,
+  executionRunId: string,
+  onDispose?: () => void | Promise<void>,
+): AgentExecutionRunConversationRuntimeV1 {
+  return createCodexNativeAppServerConversationRuntime(
+    appServer,
+    { kind: 'execution_run', executionRunId },
+    undefined,
+    onDispose,
+  ) as AgentExecutionRunConversationRuntimeV1;
+}
+
+function createCodexNativeAppServerConversationRuntime(
+  appServer: CodexAppServerSession,
+  scope:
+    | Readonly<{ kind: 'session'; sessionId: string }>
+    | Readonly<{ kind: 'execution_run'; executionRunId: string }>,
+  realtimeConversation?: AgentSessionRealtimeConversation,
+  onDispose?: () => void | Promise<void>,
+): AgentSessionRuntime | AgentExecutionRunConversationRuntimeV1 {
+  const listeners = new Set<(
+    event: AgentSessionRuntimeEvent | NativeExecutionRunConversationEvent,
+  ) => void>();
   let sequence = 0;
   let disposed = false;
-  let activeTurnId: string | null = null;
   let bufferedEvents: AgentSessionPreAdmissionBuffer<Readonly<{
     event: NativeSessionEventInput;
     emittedAtMs: number;
@@ -418,18 +517,21 @@ export function createCodexNativeAppServerSessionRuntime(
   }> | null = null;
 
   const emit = (event: NativeSessionEventInput, emittedAtMs = Date.now()): void => {
-    const published = Object.freeze({
-      ...event,
-      sequence: ++sequence,
-      sessionId,
-      emittedAtMs,
-    }) as AgentSessionRuntimeEvent;
+    const published = scope.kind === 'session'
+      ? Object.freeze({
+          ...event,
+          sequence: ++sequence,
+          sessionId: scope.sessionId,
+          emittedAtMs,
+        }) as AgentSessionRuntimeEvent
+      : Object.freeze({ ...event, emittedAtMs }) as NativeExecutionRunConversationEvent;
     for (const listener of listeners) listener(published);
-    if ((event.kind === 'turn-complete' || event.kind === 'turn-failed' || event.kind === 'turn-cancelled')
-      && activeTurnId === event.turnId) activeTurnId = null;
   };
 
   const subscription = appServer.events.subscribe((event) => {
+    // This is the provider Session projection. Detached Runs terminalize from
+    // their turn lifecycle through the shared Execution Run adapter.
+    if (scope.kind === 'execution_run' && event.kind === 'session-ended') return;
     const mapped = mapCodexAppServerEvent(event);
     if (!mapped) return;
     if (mapped.kind === 'provider-session-id' && listeners.size === 0) {
@@ -447,7 +549,9 @@ export function createCodexNativeAppServerSessionRuntime(
     emit(mapped, event.emittedAtMs);
   });
 
-  const initialProviderSessionId = appServer.identity.read().providerSessionId?.trim();
+  const initialProviderSessionId = readExactCodexProviderSessionId(
+    appServer.identity.read().providerSessionId,
+  ) ?? undefined;
   if (initialProviderSessionId) {
     pendingProviderIdentity = {
       event: { kind: 'provider-session-id', providerSessionId: initialProviderSessionId },
@@ -455,7 +559,7 @@ export function createCodexNativeAppServerSessionRuntime(
     };
   }
 
-  const nativeRuntime: AgentSessionRuntime & Partial<ExperimentalAgentSessionRealtimeRuntime> = {
+  const nativeRuntime: NativeConversationRuntimeCore = {
     ...(realtimeConversation ? { realtimeConversation } : {}),
     ...(appServer.runtimeAuth ? { runtimeAuth: appServer.runtimeAuth } : {}),
     conversationRollback: {
@@ -542,7 +646,6 @@ export function createCodexNativeAppServerSessionRuntime(
       bufferedEvents?.dispose();
       bufferedEvents = null;
       if (result.status === 'accepted') {
-        activeTurnId = request.delivery.turnId;
         emit({
           kind: 'input-accepted',
           inputIds: request.inputIds,
@@ -565,7 +668,6 @@ export function createCodexNativeAppServerSessionRuntime(
     },
     async cancel(request) {
       if (!appServer.cancel) return { status: 'unsupported' };
-      if (activeTurnId !== request.turnId) return { status: 'notRunning' };
       const result = await appServer.cancel(request.turnId);
       if (result.status === 'cancelled') return { status: 'requested', turnId: request.turnId };
       if (result.status === 'not_running') return { status: 'notRunning' };
@@ -585,8 +687,13 @@ export function createCodexNativeAppServerSessionRuntime(
       }
       const changed: string[] = [];
       try {
+        const collaborationModeId = request.mode.value?.trim();
         const permissionMode = request.permissionIntent.value;
         const modelId = request.model.value?.trim();
+        if (collaborationModeId) {
+          await appServer.updateConfig({ collaborationModeId });
+          changed.push('mode');
+        }
         if (permissionMode !== null || modelId) {
           await appServer.updateConfig({
             ...(permissionMode !== null ? { permissionMode } : {}),
@@ -601,7 +708,20 @@ export function createCodexNativeAppServerSessionRuntime(
           await appServer.updateConfig({ configOption: { id, value } });
           changed.push(`options.${id}`);
         }
-      } catch {
+      } catch (error) {
+        if (
+          error
+          && typeof error === 'object'
+          && (error as Readonly<{ code?: unknown }>).code === 'codex_collaboration_mode_unavailable'
+        ) {
+          return {
+            status: 'rejected',
+            diagnostic: diagnostic(
+              'codex_collaboration_mode_unavailable',
+              'The selected Codex collaboration mode is unavailable.',
+            ),
+          };
+        }
         return {
           status: 'unavailable',
           diagnostic: diagnostic(
@@ -612,7 +732,9 @@ export function createCodexNativeAppServerSessionRuntime(
       }
       return { status: 'applied', changed };
     },
-    watch(listener) {
+    watch(listener: (
+      event: AgentSessionRuntimeEvent | NativeExecutionRunConversationEvent,
+    ) => void) {
       listeners.add(listener);
       if (pendingProviderIdentity) {
         const pending = pendingProviderIdentity;
@@ -633,12 +755,28 @@ export function createCodexNativeAppServerSessionRuntime(
       await appServer.dispose('session_closed');
     },
   };
-  return nativeRuntime;
+  if (scope.kind === 'session') {
+    return {
+      ...nativeRuntime,
+      watch(listener) {
+        return nativeRuntime.watch((event) => listener(event as AgentSessionRuntimeEvent));
+      },
+    } satisfies AgentSessionRuntime & Partial<ExperimentalAgentSessionRealtimeRuntime>;
+  }
+  return {
+    send: nativeRuntime.send,
+    cancel: nativeRuntime.cancel,
+    watch(listener) {
+      return nativeRuntime.watch((event) => listener(event as NativeExecutionRunConversationEvent));
+    },
+    dispose: nativeRuntime.dispose,
+  } satisfies AgentExecutionRunConversationRuntimeV1;
 }
 
 export async function openCodexNativeAppServerSession(
   request: AgentSessionOpenRequest,
   context: AgentSessionRuntimeContext,
+  goalProjection?: CodexGoalProjection,
 ): Promise<AgentSessionRuntime> {
   const initialProviderBinding = parseCodexProviderBindingEngineConfigV1(
     Object.prototype.hasOwnProperty.call(request, 'providerBinding')
@@ -647,6 +785,21 @@ export async function openCodexNativeAppServerSession(
   );
   const processEnv = readLaunchEnvironment(request);
   let providerSessionId = request.kind === 'resume' ? request.providerSessionId : null;
+  const continuationProviderSessionId = request.kind === 'resume'
+    ? request.providerSessionId
+    : request.kind === 'fork'
+      ? request.source.providerSessionId
+      : null;
+  if (
+    continuationProviderSessionId
+    && !await reconcileCodexResumeRolloutPath({
+      processEnv,
+      cwd: request.cwd,
+      vendorResumeId: continuationProviderSessionId,
+    })
+  ) {
+    throw new Error('Codex resume index reconciliation failed.');
+  }
   if (request.kind === 'fork') {
     const forkClient = await createCodexNativeAppServerClient({
       exec: context.services.exec,
@@ -670,16 +823,34 @@ export async function openCodexNativeAppServerSession(
     }
   }
 
+  const sharedAppServer = await createCodexSharedAppServer({
+    exec: context.services.exec,
+    processEnv,
+    signal: context.signal,
+  });
+
   const runtime = createCodexAppServerRuntime({
-    host: createCodexNativeAppServerRuntimeHost({ request, context, processEnv }),
+    host: createCodexNativeAppServerRuntimeHost({ request, context, processEnv, sharedAppServer }),
     directory: request.cwd,
     happierSessionId: request.sessionId,
     initialProviderSessionId: providerSessionId,
+    appServerEndpoint: sharedAppServer?.endpoint,
     initialModelId: readInitialModelId(request),
+    initialCollaborationModeId: request.configuration?.mode.value,
     ...(initialProviderBinding ? { initialProviderBinding } : {}),
     processEnv,
     ...(request.mcpServers ? { mcpServers: request.mcpServers } : {}),
     resolveCurrentPolicy: () => resolveCodexTerminalPermissionPolicy(readPermissionMode(request)),
+    ...(goalProjection
+      ? {
+          observeGoal: (() => {
+            const goalSource = context.workState.publisher('goals');
+            return async (payload: Parameters<CodexGoalProjection['publish']>[0]): Promise<void> => {
+              await goalProjection.publish(payload, goalSource);
+            };
+          })(),
+        }
+      : {}),
   });
   if (providerSessionId || (request.kind !== 'fork' && request.startupInstructions)) {
     try {
@@ -694,12 +865,90 @@ export async function openCodexNativeAppServerSession(
           : {}),
       });
     } catch (error) {
+      await sharedAppServer?.dispose();
       throw createSanitizedNativeRuntimeError('Codex app-server startup failed.', error);
     }
   }
-  return createCodexNativeAppServerSessionRuntime(
+  const sessionRuntime = createCodexNativeAppServerSessionRuntime(
     runtime,
     request.sessionId,
     runtime.realtimeConversation,
   );
+  return {
+    ...sessionRuntime,
+    runtimeCapabilities: {
+      ...sessionRuntime.runtimeCapabilities,
+      localControl: sharedAppServer
+        ? { supported: true, topology: 'shared', attachStrategy: 'provider_attach' }
+        : null,
+    },
+  };
+}
+
+export async function openCodexNativeAppServerExecutionRunConversation(
+  request: AgentExecutionRunOpenRequest,
+  context: AgentExecutionRunRuntimeContextV1,
+): Promise<AgentExecutionRunConversationRuntimeV1> {
+  const initialProviderBinding = parseCodexProviderBindingEngineConfigV1(
+    Object.prototype.hasOwnProperty.call(request, 'providerBinding')
+      ? (request as unknown as Readonly<Record<string, unknown>>).providerBinding
+      : null,
+  );
+  const processEnv = readLaunchEnvironment(request);
+  let providerSessionId = request.kind === 'resume' ? request.checkpointId : null;
+  if (request.kind === 'fork') {
+    const sourceProviderSessionId = readExactCodexProviderSessionId(request.checkpointId);
+    if (!sourceProviderSessionId) {
+      throw new Error('Codex detached fork requires an exact provider checkpoint.');
+    }
+    const forkClient = await createCodexNativeAppServerClient({
+      exec: context.services.exec,
+      cwd: request.cwd,
+      processEnv,
+      signal: context.signal,
+      initializeRequestOptions: { signal: context.signal, timeoutMs: null },
+    });
+    try {
+      const forked = await forkCodexNativeAppServerConversation({
+        client: forkClient,
+        parentCodexSessionId: sourceProviderSessionId,
+        signal: context.signal,
+      });
+      if (!forked) throw new Error('Codex app-server could not fork the requested provider checkpoint.');
+      providerSessionId = forked.providerSessionId;
+    } finally {
+      await forkClient.dispose().catch(() => undefined);
+    }
+  }
+
+  const sharedAppServer = await createCodexSharedAppServer({
+    exec: context.services.exec,
+    processEnv,
+    signal: context.signal,
+  });
+  const runtime = createCodexAppServerRuntime({
+    host: createCodexNativeAppServerExecutionRunRuntimeHost({ context, processEnv, sharedAppServer }),
+    directory: request.cwd,
+    executionRunId: request.runId,
+    initialProviderSessionId: providerSessionId,
+    appServerEndpoint: sharedAppServer?.endpoint,
+    initialModelId: readInitialModelId(request),
+    initialCollaborationModeId: request.configuration?.mode.value,
+    ...(initialProviderBinding ? { initialProviderBinding } : {}),
+    processEnv,
+    ...(request.mcpServers ? { mcpServers: request.mcpServers } : {}),
+    resolveCurrentPolicy: () => resolveCodexTerminalPermissionPolicy(readPermissionMode(request)),
+  });
+  if (providerSessionId) {
+    try {
+      await startCodexAppServerRuntime(runtime, {
+        resumeId: providerSessionId,
+        preserveRequestedThreadId: true,
+      });
+    } catch (error) {
+      await sharedAppServer?.dispose();
+      throw createSanitizedNativeRuntimeError('Codex app-server startup failed.', error);
+    }
+  }
+  return createCodexNativeAppServerExecutionRunConversationRuntime(runtime, request.runId);
 }

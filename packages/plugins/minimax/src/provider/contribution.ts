@@ -12,6 +12,7 @@ const MINIMAX_MODELS = [
   {
     id: 'MiniMax-M3',
     name: 'MiniMax M3',
+    aliases: ['MiniMax-M3[1m]'] as string[],
     contextWindowTokens: 1_000_000,
     // MiniMax gates M3's full window behind a `[1m]` model id, the same
     // extended-context convention Claude models use. Declaring it here lets the

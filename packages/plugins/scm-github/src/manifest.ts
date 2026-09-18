@@ -14,6 +14,7 @@ import {
 import type { ActionInputHints } from '@happier-dev/plugin-sdk/actions';
 import type { BackgroundServiceContext } from '@happier-dev/plugin-sdk/background-services';
 import { QualifiedConnectedAccountRefJsonSchema } from '@happier-dev/plugin-sdk/connected-accounts';
+import { CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1 } from '@happier-dev/plugin-sdk/connected-accounts';
 import {
   createPluginEventAutomationSetupResultV1JsonSchema,
   PluginEventAutomationHistoryGapResetActionInputV1JsonSchema,
@@ -1466,6 +1467,7 @@ function createGithubPlugin() {
           modes: [{
             id: 'fine-grained-pat',
             kind: 'manual',
+            directExport: { contractVersion: CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1 },
             title: 'Fine-grained personal access token',
             outcomeReconciliation: 'none',
             fields: [{

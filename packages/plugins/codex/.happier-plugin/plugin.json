@@ -30,6 +30,11 @@
               "newTurn",
               "steer"
             ],
+            "executionRunContext": {
+              "versions": [
+                1
+              ]
+            },
             "goals": {
               "active": {
                 "clear": true,
@@ -93,7 +98,6 @@
             ]
           },
           "surfaces": [
-            "terminal",
             "externalSessions"
           ],
           "tools": {
@@ -432,6 +436,9 @@
           ]
         },
         "id": "openai-codex",
+        "recoveryCredits": {
+          "supported": true
+        },
         "title": "Codex"
       }
     ],
@@ -842,10 +849,11 @@
       {
         "capability": "network",
         "id": "openai-codex-quota",
-        "reason": "Read quota for the exact OpenAI Codex Connected Account.",
+        "reason": "Read quota and consume recovery credits for the exact OpenAI Codex Connected Account.",
         "scope": {
           "methods": [
-            "GET"
+            "GET",
+            "POST"
           ],
           "targets": [
             {

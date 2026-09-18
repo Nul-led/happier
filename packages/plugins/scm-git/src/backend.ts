@@ -1,10 +1,11 @@
 import {
   createScmCapabilitiesFromBackendCapabilities,
+  resolveScmBackendCapabilities,
   type ScmBackendDescribeResponse,
 } from '@happier-dev/plugin-sdk/scm/backend';
 import type { BackendRuntimeRegistration as ScmBackendRuntimeRegistration } from '@happier-dev/plugin-sdk/scm/backend';
 
-import { resolveScmBackendCapabilities } from './capabilities/resolveScmBackendCapabilities.js';
+import { classifyGitDirectoryIgnores } from './directoryIgnores.js';
 import type { ScmBackend } from './types.js';
 import { detectGitRepo, getGitSnapshot, getGitWorktreesEnrichment } from './repository.js';
 import { GIT_SCM_BACKEND_CAPABILITIES } from './capabilities.js';
@@ -56,6 +57,7 @@ export function createGitBackend(): ScmBackend {
             preferenceAllowedModes: ['.git'],
         },
         workspaceIntegration: {
+            classifyDirectoryIgnores: classifyGitDirectoryIgnores,
             inspectWorkspaceLocation: inspectGitWorkspaceLocation,
             reconcilePostMaterialization: reconcileGitWorkspacePostMaterialization,
             prepareReviewWorkspace: prepareGitReviewWorkspaceAtSelectedRoot,

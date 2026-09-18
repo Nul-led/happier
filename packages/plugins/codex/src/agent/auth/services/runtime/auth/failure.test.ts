@@ -18,9 +18,23 @@ describe('classifyCodexConnectedServiceAuthFailure', () => {
     });
 
     expect(result).toMatchObject({
-      kind: 'permission_denied',
+      kind: 'plan',
       limitCategory: 'plan_invalid',
+      quotaScope: 'model',
+      providerLimitId: 'gpt-5.6-sol',
       source: 'structured_provider_error',
+    });
+
+    expect(classifyCodexConnectedServiceAuthFailure({
+      providerErrorPath: true,
+      error: new Error('Codex process error: CodexAppServerTurnFailure: {"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The \'gpt-5.6-sol\' model is not supported when using Codex with a ChatGPT account."}}'),
+      serviceId: 'openai-codex',
+      profileId: 'free-account',
+      groupId: 'happier',
+    })).toMatchObject({
+      kind: 'plan',
+      quotaScope: 'model',
+      providerLimitId: 'gpt-5.6-sol',
     });
   });
 

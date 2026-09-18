@@ -100,7 +100,11 @@ export const ClaudeSessionRuntimeIssueSchema = z.object({
     exitCode: z.number().int().nullable(),
     signal: z.string().trim().min(1).max(128).nullable(),
     lastStderrLine: z.string().trim().min(1).max(2_000).nullable(),
-    vendorResumeId: z.string().trim().min(1).max(512).nullable(),
+    // Claude minted this id: presence-validated, never renormalized.
+    vendorResumeId: z.string()
+      .refine((value) => value.trim().length > 0, 'Opaque identifiers must contain a non-whitespace character')
+      .max(512)
+      .nullable(),
     materializationRoot: z.string().trim().min(1).max(2_000).nullable(),
     effectiveStateMode: z.enum(['shared', 'isolated']).nullable(),
   }).strict().optional(),

@@ -304,7 +304,7 @@ const scopeByHost = new WeakMap<object, PluginUiEphemeralSharedScope>();
 async function mountSurface(
     surface: RenderSurface,
     harness: ReturnType<typeof createHarness>,
-    viewId: string,
+    instanceId: string,
     context: Parameters<typeof createSurfaceContextFixture>[0] = {},
     options: Readonly<{ subPath?: string }> = {},
 ): Promise<PluginUiTestkit> {
@@ -314,12 +314,8 @@ async function mountSurface(
     let fixture!: PluginUiTestkit;
     await act(async () => {
         fixture = await createPluginUiTestkit({
-            identity: {
-                pluginId: 'happier.triage',
-                pluginVersion: '0.0.0',
-                viewId,
-                generation: `${viewId}-mount`,
-            },
+            identity: { instanceId, mountNonce: 'fixture-mount-185' },
+            authorPlugin: { id: 'happier.triage', version: '0.0.0' },
             ...(options.subPath === undefined ? {} : { subPath: options.subPath }),
             surface,
             surfaceContext: createSurfaceContextFixture(context),

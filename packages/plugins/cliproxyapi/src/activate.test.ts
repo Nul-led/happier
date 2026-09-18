@@ -61,6 +61,7 @@ const healthyIdentity = Object.freeze({
     }),
   ]),
   modelListEnabled: true,
+  sourceClass: 'connected_account',
 });
 
 const anthropicOnlyIdentity = Object.freeze({
@@ -70,7 +71,7 @@ const anthropicOnlyIdentity = Object.freeze({
 });
 
 const fullyBoundPurposeConfiguration = JSON.stringify({
-  v: 2,
+  v: 3,
   modelListEnabled: true,
   purposes: [
     {
@@ -99,7 +100,7 @@ const fullyBoundPurposeConfiguration = JSON.stringify({
 });
 
 const anthropicOnlyPurposeConfiguration = JSON.stringify({
-  v: 2,
+  v: 3,
   modelListEnabled: true,
   purposes: [{
     id: 'claude',

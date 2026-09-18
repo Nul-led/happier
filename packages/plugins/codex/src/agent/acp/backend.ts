@@ -1,5 +1,6 @@
 import type {
   AgentAcpRuntimeOptions,
+  AgentExecutionRunOpenRequest,
   AgentSessionOpenRequest,
 } from '@happier-dev/plugin-sdk/agents/runtime';
 
@@ -12,7 +13,7 @@ import {
 } from './transport.js';
 
 export function buildCodexNativeAcpRuntimeOptions(
-  request: AgentSessionOpenRequest,
+  request: AgentSessionOpenRequest | AgentExecutionRunOpenRequest,
 ): AgentAcpRuntimeOptions {
   const env = request.launchEnvironment?.values ?? {};
   const permissionMode = request.configuration?.permissionIntent.value ?? undefined;

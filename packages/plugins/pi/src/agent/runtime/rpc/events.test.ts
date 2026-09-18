@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest';
 import { createPiRuntimeEventProjector } from './events.js';
 
 const context = {
-  sessionId: 'session-1',
   turnId: 'turn-1',
   agentSessionId: 'pi-session-1',
   nowMs: () => 1,

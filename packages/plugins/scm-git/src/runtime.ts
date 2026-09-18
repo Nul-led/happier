@@ -10,6 +10,7 @@ import {
 } from '@happier-dev/plugin-sdk/scm';
 import { isCanonicalAbsolutePathInsideRoot } from '@happier-dev/plugin-sdk/fs';
 
+import { toRepoRootLiteralPathspec } from './literalPathspec.js';
 import { GIT_INSTALLABLE_DEP_ID } from './installables/gitInstallable.js';
 
 const SAFE_GIT_ALLOW_PROTOCOL = 'https:ssh:git:file';
@@ -89,20 +90,20 @@ export function normalizePathspec(rawPath: string, cwd: string): { ok: true; pat
 export function normalizeRepoRootRelativePath(
   rawPath: string,
 ): { ok: true; relativePath: string; pathspec: string } | { ok: false; error: string } {
-  const trimmed = String(rawPath ?? '').trim();
-  if (!trimmed) return { ok: false, error: 'Path cannot be empty' };
-  if (trimmed.includes('\0')) return { ok: false, error: 'Path contains null bytes' };
-  if (trimmed.startsWith('-')) return { ok: false, error: 'Path cannot start with "-"' };
-  if (trimmed.startsWith(':')) return { ok: false, error: 'Path contains unsupported syntax' };
-  if (isAbsolute(trimmed)) return { ok: false, error: 'Absolute paths are not supported' };
+  const requestedPath = String(rawPath ?? '');
+  if (!requestedPath.trim()) return { ok: false, error: 'Path cannot be empty' };
+  if (requestedPath.includes('\0')) return { ok: false, error: 'Path contains null bytes' };
+  if (requestedPath.startsWith('-')) return { ok: false, error: 'Path cannot start with "-"' };
+  if (requestedPath.startsWith(':')) return { ok: false, error: 'Path contains unsupported syntax' };
+  if (isAbsolute(requestedPath)) return { ok: false, error: 'Absolute paths are not supported' };
 
-  const normalized = trimmed.split(sep).join('/').replace(/^\.\/+/, '').replace(/^\/+/, '');
+  const normalized = requestedPath.split(sep).join('/').replace(/^\.\/+/, '').replace(/^\/+/, '');
   const parts = normalized.split('/');
   if (parts.some((part) => part === '..')) {
     return { ok: false, error: `Path contains unsupported ".." segment: ${rawPath}` };
   }
-  if (!normalized || normalized === '.') return { ok: true, relativePath: '.', pathspec: ':(top).' };
-  return { ok: true, relativePath: normalized, pathspec: `:(top)${normalized}` };
+  if (!normalized || normalized === '.') return { ok: true, relativePath: '.', pathspec: toRepoRootLiteralPathspec('.') };
+  return { ok: true, relativePath: normalized, pathspec: toRepoRootLiteralPathspec(normalized) };
 }
 
 export function normalizeRepoRootPathspec(rawPath: string): { ok: true; pathspec: string } | { ok: false; error: string } {

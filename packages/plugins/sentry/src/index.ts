@@ -142,8 +142,16 @@ export type {
 } from './api/sentryApiClient.js';
 export { classifySentryFailure } from './api/sentryFailure.js';
 export type { SentryFailureInputV1, SentrySettledResponseV1 } from './api/sentryFailure.js';
-export { parseSentryLinkHeader } from './api/sentryLinkHeader.js';
-export type { SentryLinkHeaderV1, SentryLinkRelationV1 } from './api/sentryLinkHeader.js';
+export {
+  parseSentryLinkHeader,
+  readSentryNextPageRelation,
+} from './api/sentryLinkHeader.js';
+export type {
+  SentryLinkHeaderV1,
+  SentryLinkRelationV1,
+  SentryLinkResultsV1,
+  SentryNextPageRelationV1,
+} from './api/sentryLinkHeader.js';
 export {
   readSentryRateLimitSnapshot,
   resolveSentryRetryNotBeforeMs,

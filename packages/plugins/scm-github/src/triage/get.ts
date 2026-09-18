@@ -20,6 +20,7 @@ import {
   decodeGithubIssueBody,
   decodeGithubPullRequestBody,
   projectGithubEntry,
+  type GithubRawEntityViewV1,
 } from './mapping/entry.js';
 import {
   projectGithubIssueOverview,
@@ -83,19 +84,34 @@ function readNonEmptyString(value: unknown): string | null {
 }
 
 export type GithubIssueRedirectDestinationV1 = Readonly<{
-  route: GithubRepositoryRouteV1;
+  /** The destination repository path, or `null` for the numeric destination form. */
+  route: GithubRepositoryRouteV1 | null;
+  /** The repository id the numeric destination form asserts, or `null` for a path. */
+  repositoryId: string | null;
   number: string;
   url: string;
 }>;
 
+const POSITIVE_DECIMAL_PATTERN = /^[1-9][0-9]*$/u;
+
 /**
  * Resolves `Location` against the requested API URL and accepts ONLY a same-origin
- * `https://api.github.com` issue route with no user information, query, or fragment,
- * whose path parses as `/repos/{owner}/{repo}/issues/{number}` with a positive decimal
- * number, and which differs from the requested route.
+ * `https://api.github.com` issue destination with no user information, query, or
+ * fragment, whose path parses as one of the TWO issue destination grammars GitHub
+ * actually returns:
  *
- * Cross-origin, malformed, non-issue, same-route and second redirects are refused, and
- * credentials are never forwarded to them.
+ *  - `/repos/{owner}/{repo}/issues/{number}`, which must differ from the requested
+ *    route; and
+ *  - `/repositories/{repositoryId}/issues/{number}`, the numeric form observed on
+ *    2026-09-05 from `GET /repos/zeit/next.js/issues/98287`, which answered `301`
+ *    with `Location: https://api.github.com/repositories/70107786/issues/98287` at
+ *    `X-GitHub-Api-Version: 2026-03-10`. Refusing that grammar refuses the only
+ *    recovery a renamed repository's entries have.
+ *
+ * Both numbers are positive decimals. Cross-origin, malformed, non-issue, same-route
+ * and second redirects are refused, and credentials are never forwarded to them.
+ * Neither form is an identity: the destination body and a read of that exact
+ * destination repository still have to agree before anything is projected.
  */
 export function validateGithubIssueRedirect(input: Readonly<{
   location: string | null;
@@ -114,11 +130,26 @@ export function validateGithubIssueRedirect(input: Readonly<{
   if (url.username || url.password || url.search || url.hash) return null;
 
   const segments = url.pathname.split('/').filter((segment) => segment.length > 0);
+
+  if (segments.length === 4) {
+    const [repositories, repositoryId, issues, number] = segments;
+    if (repositories !== 'repositories' || issues !== 'issues') return null;
+    if (repositoryId === undefined || number === undefined) return null;
+    if (!POSITIVE_DECIMAL_PATTERN.test(repositoryId)) return null;
+    if (!POSITIVE_DECIMAL_PATTERN.test(number)) return null;
+    return Object.freeze({
+      route: null,
+      repositoryId,
+      number,
+      url: url.toString(),
+    });
+  }
+
   if (segments.length !== 5) return null;
   const [repos, owner, name, issues, number] = segments;
   if (repos !== 'repos' || issues !== 'issues') return null;
   if (owner === undefined || name === undefined || number === undefined) return null;
-  if (!/^[1-9][0-9]*$/u.test(number)) return null;
+  if (!POSITIVE_DECIMAL_PATTERN.test(number)) return null;
 
   const sameRoute = owner.toLowerCase() === input.requestedRoute.owner.toLowerCase()
     && name.toLowerCase() === input.requestedRoute.name.toLowerCase()
@@ -127,6 +158,7 @@ export function validateGithubIssueRedirect(input: Readonly<{
 
   return Object.freeze({
     route: Object.freeze({ owner, name }),
+    repositoryId: null,
     number,
     url: url.toString(),
   });
@@ -489,11 +521,11 @@ export async function readGithubIssue(
   }
 
   if (response.status === 301) {
-    // A transfer renumbers the entry, so the successor — not this route — is what a
-    // later read or write must address. No facts travel with it.
-    return observedIssue(
-      await followIssueTransfer(input, route, url, response, repositories, dependencies),
-    );
+    // Two different things arrive as `301`. A transfer renumbers the entry, so the
+    // successor — not this route — is what a later read or write must address, and no
+    // facts travel with it. A rename keeps the entry and moves only its path, so the
+    // destination response IS this entry and is projected as present.
+    return await followIssueTransfer(input, route, url, response, repositories, dependencies);
   }
   if (response.status === 410) {
     // `410` is the status that actually means deleted, and the confirming repository
@@ -554,9 +586,27 @@ export async function readGithubIssue(
     return observedIssue(unresolved(input.localRef, GITHUB_ROUTE_BODY_MISMATCH_FAILURE));
   }
 
-  const projection = projectGithubEntry(view, resolved.repositoryId);
+  return projectIssuePresent(input.localRef, view, resolved.repositoryId, body);
+}
+
+/**
+ * The ONE present projection an issue read produces, from whichever response
+ * proved this entry: the direct `200`, or the `200` behind a validated `301`.
+ *
+ * Both callers have the same evidence at this point — a decoded view whose number
+ * and repository identity were validated — so they must publish the same locator,
+ * snapshot and facts. A second projection at the redirect path is how the two
+ * would drift.
+ */
+function projectIssuePresent(
+  localRef: GithubTriageEntryLocalRefV1,
+  view: GithubRawEntityViewV1,
+  repositoryId: string,
+  body: unknown,
+): GithubIssueReadV1 {
+  const projection = projectGithubEntry(view, repositoryId);
   if (projection === null) {
-    return observedIssue(unresolved(input.localRef, GITHUB_ROUTE_BODY_MISMATCH_FAILURE));
+    return observedIssue(unresolved(localRef, GITHUB_ROUTE_BODY_MISMATCH_FAILURE));
   }
   const record = isRecord(body) ? body : {};
   return Object.freeze({
@@ -579,14 +629,17 @@ async function followIssueTransfer(
   response: GithubApiResponseV1,
   repositories: GithubRepositoryReaderV1,
   dependencies: GithubGetDependenciesV1,
-): Promise<GithubTriageObservationV1> {
+): Promise<GithubIssueReadV1> {
+  const mismatch = (): GithubIssueReadV1 => observedIssue(
+    unresolved(input.localRef, GITHUB_ROUTE_BODY_MISMATCH_FAILURE),
+  );
   const destination = validateGithubIssueRedirect({
     location: readTriageResponseHeaderV1(response.headers, 'location'),
     requestedUrl,
     requestedRoute: route,
     requestedNumber: input.localRef.entryId,
   });
-  if (destination === null) return unresolved(input.localRef, GITHUB_ROUTE_BODY_MISMATCH_FAILURE);
+  if (destination === null) return mismatch();
 
   // Followed exactly ONCE, through the ordinary client: a second redirect is refused by
   // that client's `redirect: 'error'` rather than chased.
@@ -594,45 +647,72 @@ async function followIssueTransfer(
   try {
     destinationResponse = await dependencies.client.request({ url: destination.url });
   } catch (error) {
-    return unresolved(input.localRef, classifyGithubTransportFailure(error));
+    return observedIssue(unresolved(input.localRef, classifyGithubTransportFailure(error)));
   }
   if (!isGithubSuccessStatus(destinationResponse.status)) {
-    return unresolved(
+    return observedIssue(unresolved(
       input.localRef,
       classifyGithubResponseFailure(destinationResponse, dependencies.now()),
-    );
+    ));
   }
 
   let destinationBody: unknown;
   try {
     destinationBody = decodeGithubJsonResponse(destinationResponse);
   } catch (error) {
-    return unresolved(input.localRef, classifyGithubTransportFailure(error));
+    return observedIssue(unresolved(input.localRef, classifyGithubTransportFailure(error)));
   }
   const destinationView = decodeGithubIssueBody(destinationBody, destination.route);
-  if (destinationView === null || destinationView.kindId !== 'issue') {
-    return unresolved(input.localRef, GITHUB_ROUTE_BODY_MISMATCH_FAILURE);
-  }
+  if (destinationView === null || destinationView.kindId !== 'issue') return mismatch();
   // Compared against the DESTINATION route's own number — never the old issue number,
   // because a transfer may renumber.
-  if (destinationView.number !== destination.number) {
-    return unresolved(input.localRef, GITHUB_ROUTE_BODY_MISMATCH_FAILURE);
+  if (destinationView.number !== destination.number) return mismatch();
+
+  // The destination body's own repository is the locator, and whatever the redirect
+  // asserted about it has to agree: a named destination names an `owner/name`, and the
+  // numeric destination names a repository id. Either disagreeing is the same
+  // `route-body-mismatch` a bare `200` scope mismatch is.
+  const destinationRoute: GithubRepositoryRouteV1 = Object.freeze({
+    owner: destinationView.owner,
+    name: destinationView.name,
+  });
+  if (destination.route !== null
+    && (destination.route.owner.toLowerCase() !== destinationRoute.owner.toLowerCase()
+      || destination.route.name.toLowerCase() !== destinationRoute.name.toLowerCase())) {
+    return mismatch();
   }
   const resolved = await readRepositoryId(
     repositories,
-    destination.route,
+    destinationRoute,
     destinationView.repositoryId,
   );
-  if (resolved.kind === 'failed') return unresolved(input.localRef, resolved.failure);
+  if (resolved.kind === 'failed') return observedIssue(unresolved(input.localRef, resolved.failure));
+  if (destination.repositoryId !== null && destination.repositoryId !== resolved.repositoryId) {
+    return mismatch();
+  }
 
   const successor = buildGithubEntryLocalRef({
     kindId: 'issue',
     repositoryId: resolved.repositoryId,
     nativeItemId: destination.number,
   });
-  if (successor === null) return unresolved(input.localRef, GITHUB_ROUTE_BODY_MISMATCH_FAILURE);
+  if (successor === null) return mismatch();
 
-  return Object.freeze({ kind: 'merged', localRef: input.localRef, successor });
+  // §3.4a: a redirect that lands on the SAME entry is a repository rename, so the
+  // answer is this entry at a refreshed locator. `merged` naming an entry as its own
+  // successor is not recovery — presence folding treats merged as unresolved, so the
+  // row would stay stuck at a path that no longer exists.
+  if (successor.collisionScope === input.localRef.collisionScope
+    && successor.entryId === input.localRef.entryId) {
+    return projectIssuePresent(
+      input.localRef,
+      destinationView,
+      resolved.repositoryId,
+      destinationBody,
+    );
+  }
+
+  return observedIssue(Object.freeze({ kind: 'merged', localRef: input.localRef, successor }));
 }
 
 /**

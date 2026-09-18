@@ -1206,6 +1206,7 @@ function createIngressHarness(options: IngressHarnessOptions = {}) {
         id: 'channel-poller',
         qualifiedId: 'happier.channel.telegram/background/channel-poller',
       },
+      immutableGenerationId: 'channels-ingress-telegram-fixture-generation',
       materialization: channelConnection().payload.transportOrigin.materializationRef,
     },
     signal: new AbortController().signal,
@@ -2121,6 +2122,12 @@ describe('Conversation provider observation ingress', () => {
       },
     });
     setBindingApprovalEnabled(harness.rows, { maximumScope: 'session' });
+
+    const binding = record(harness.rows.get('binding-1')?.value);
+    harness.rows.set('binding-1', stateRow({
+      ...binding,
+      payload: { ...record(binding.payload), inboundDebounceMs: 5_000 },
+    }));
 
     await expect(ingestConversationProviderObservationForInvocation(observation({
       messageRevision: 'approval-command:1',
@@ -4102,6 +4109,7 @@ describe('Conversation provider observation ingress', () => {
           id: 'channel-poller',
           qualifiedId: 'happier.channel.telegram/background/channel-poller',
         },
+        immutableGenerationId: 'channels-ingress-telegram-fixture-generation',
         materialization: {
           pluginId: String(materialization.pluginId),
           machineId: String(materialization.machineId),
@@ -4135,6 +4143,7 @@ describe('Conversation provider observation ingress', () => {
           id: 'channel-poller',
           qualifiedId: `${String(payload.providerPluginId)}/background/channel-poller`,
         },
+        immutableGenerationId: 'channels-ingress-provider-fixture-generation',
         materialization: {
           pluginId: String(materialization.pluginId),
           machineId: String(materialization.machineId),
@@ -4209,6 +4218,86 @@ describe('Conversation provider observation ingress', () => {
       vi.useRealTimers();
     }
   });
+
+  it('accepts complete socket debounce custody and resumes it without another observation', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    try {
+      const harness = createIngressHarness({ connection: socketChannelConnection() });
+      const binding = record(harness.rows.get('binding-1')?.value);
+      harness.rows.set('binding-1', stateRow({
+        ...binding,
+        payload: { ...record(binding.payload), inboundDebounceMs: 750 },
+      }));
+      const ingress = observation({ messageRevision: 'socket:debounce', occurredAt: 1_000, transport: 'socket' });
+      await expect(ingestConversationProviderObservationForInvocation(ingress, harness.context))
+        .resolves.toBeUndefined();
+      await expect(ingestConversationProviderObservationForInvocation(ingress, harness.context))
+        .resolves.toBeUndefined();
+      expect(harness.send).not.toHaveBeenCalled();
+      const censuses = [...harness.rows.values()].filter((row) => row.value['record-kind'] === 'ingress-census');
+      const obligations = [...harness.rows.values()].filter((row) => row.value['record-kind'] === 'ingress-obligation');
+      expect(censuses).toHaveLength(1);
+      expect(censuses[0]?.value).toMatchObject({ payload: { phase: 'prepared', normalizedIngress: ingress.entry.observation } });
+      expect(obligations).toHaveLength(1);
+      expect(obligations[0]?.value).toMatchObject({
+        terminal: false,
+        payload: { censusId: censuses[0]?.rowId, lifecycle: { phase: 'debounceDue', dueAt: 1_750 } },
+      });
+      vi.setSystemTime(1_750);
+      await expect(runConversationIngressDueWorkForInvocation({ now: 1_750 }, harness.context)).resolves.toBe(1);
+      expect(harness.send).toHaveBeenCalledTimes(1);
+      await expect(ingestConversationProviderObservationForInvocation(ingress, harness.context)).resolves.toBeUndefined();
+      expect(harness.send).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(['missingMember', 'changedAuthority', 'cancelled'] as const)(
+    'rejects socket debounce custody when completion is invalid: %s',
+    async (fault) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(1_000);
+      try {
+        const controller = new AbortController();
+        const harness = createIngressHarness({
+          connection: socketChannelConnection(),
+          beforeBatch: ({ rows, operations }) => {
+            const preparesCensus = operations.some((operation) => operation.kind === 'put'
+              && operation.value['record-kind'] === 'ingress-census'
+              && record(operation.value.payload).phase === 'prepared');
+            if (!preparesCensus) return;
+            if (fault === 'missingMember') {
+              const member = [...rows.values()].find((row) => row.value['record-kind'] === 'ingress-obligation');
+              if (member === undefined) throw new Error('Expected prepared member fixture');
+              rows.delete(member.rowId);
+            } else if (fault === 'changedAuthority') {
+              reviseStateRow(rows, 'connection-1');
+            } else {
+              controller.abort();
+            }
+          },
+        });
+        const binding = record(harness.rows.get('binding-1')?.value);
+        harness.rows.set('binding-1', stateRow({
+          ...binding,
+          payload: { ...record(binding.payload), inboundDebounceMs: 750 },
+        }));
+        const admission = ingestConversationProviderObservationForInvocation(
+          observation({ messageRevision: 'socket:debounce:invalid', occurredAt: 1_000, transport: 'socket' }),
+          { ...harness.context, signal: controller.signal },
+        );
+        if (fault === 'cancelled') await expect(admission).rejects.toBeDefined();
+        else await expect(admission).rejects.toMatchObject({
+          code: fault === 'missingMember' ? 'channels_ingress_obligation_missing' : 'channels_ingress_stale_authority',
+        });
+        expect(harness.send).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it('restarts a debounced obligation from the persisted due index without another observation', async () => {
     vi.useFakeTimers();
@@ -6663,6 +6752,7 @@ describe('Conversation checkpointed-poll ingress', () => {
               id: 'ingress-supervisor',
               qualifiedId: 'happier.channels/background/ingress-supervisor',
             },
+            immutableGenerationId: 'channels-ingress-supervisor-fixture-generation',
             materialization: channelConnection().payload.transportOrigin.materializationRef,
           },
           signal,
@@ -8493,6 +8583,61 @@ describe('Conversation checkpointed-poll ingress', () => {
       payload: { opaqueToken: { cursor: 'baseline' } },
     });
     expect(record(record(harness.rows.get('connection-1')?.value).payload).pollFailure).toBeNull();
+  });
+
+  it.each(['socket', 'webhook'] as const)('retains current %s capacity retry custody without losing the provider occurrence', async (transport) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    try {
+      const harness = createIngressHarness({
+        connection: transport === 'socket' ? socketChannelConnection() : durablePushChannelConnection(),
+        automationEventAdmitResults: [{ kind: 'unsettled' }, { kind: 'checkpointSafe' }],
+      });
+      const ingress = withTelegramAutomationEventCandidate(observation({
+        messageRevision: 'event:capacity', occurrenceId: 'event:capacity', transport,
+      }));
+      const admission = ingestConversationProviderObservationForInvocation(ingress, harness.context);
+      if (transport === 'socket') await expect(admission).resolves.toBeUndefined();
+      else await expect(admission).rejects.toMatchObject({ code: 'channels_ingress_admission_unsettled' });
+      const retry = [...harness.rows.values()].find((row) =>
+        row.value['record-kind'] === 'ingress-obligation' && record(record(row.value.payload).target).kind === 'event');
+      expect(retry?.value).toMatchObject({ payload: { lifecycle: { phase: 'retryDue', attemptCount: 1, dueAt: 2_000 } } });
+      const replay = ingestConversationProviderObservationForInvocation(ingress, harness.context);
+      if (transport === 'socket') await expect(replay).resolves.toBeUndefined();
+      else await expect(replay).rejects.toMatchObject({ code: 'channels_ingress_admission_unsettled' });
+      vi.setSystemTime(2_000);
+      await expect(runConversationIngressDueWorkForInvocation({ now: 2_000 }, harness.context)).resolves.toBe(1);
+      expect(harness.rows.get(retry!.rowId)?.value).toMatchObject({ terminal: true });
+      await expect(ingestConversationProviderObservationForInvocation(observation({
+        messageRevision: 'event:after-capacity', occurrenceId: 'event:after-capacity', transport,
+      }), harness.context)).resolves.toBeUndefined();
+      expect(harness.send).toHaveBeenCalledTimes(2);
+      expect(currentCheckpoint(harness.rows)).toBeUndefined();
+      expect(record(record(harness.rows.get('connection-1')?.value).payload).historyGap).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(['retryWriteFailed', 'authorityChanged'] as const)('refuses socket capacity custody when %s', async (fault) => {
+    const harness = createIngressHarness({
+      connection: socketChannelConnection(),
+      automationEventAdmitResult: { kind: 'unsettled' },
+      beforeBatch: ({ rows, operations }) => {
+        const writesRetry = operations.some((operation) => operation.kind === 'put'
+          && operation.value['record-kind'] === 'ingress-obligation'
+          && record(record(operation.value.payload).lifecycle).phase === 'retryDue');
+        if (!writesRetry) return;
+        if (fault === 'retryWriteFailed') throw new Error('Retry custody storage unavailable');
+        reviseStateRow(rows, 'connection-1');
+      },
+    });
+    const admission = ingestConversationProviderObservationForInvocation(withTelegramAutomationEventCandidate(observation({
+      messageRevision: 'event:capacity:failure', transport: 'socket',
+    })), harness.context);
+    if (fault === 'retryWriteFailed') await expect(admission).rejects.toThrow('Retry custody storage unavailable');
+    else await expect(admission).rejects.toMatchObject({ code: 'channels_ingress_stale_authority' });
+    expect(currentCheckpoint(harness.rows)).toBeUndefined();
   });
 
   it('durably retries one provider Event candidate before checkpointing its replay-safe settlement', async () => {

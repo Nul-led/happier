@@ -38,6 +38,7 @@ const CODEX_APP_SERVER_RUNTIME_AUTH_KINDS = new Set([
     'account_changed',
     'refresh_failed',
     'permission_denied',
+    'plan',
     'unknown',
 ]);
 const CODEX_APP_SERVER_RUNTIME_AUTH_LIMIT_CATEGORIES = new Set([
@@ -129,6 +130,7 @@ export function sanitizeCodexAppServerRuntimeAuthClassification(
     const resetsAtMs = readNonNegativeInteger(classification.resetsAtMs);
     const retryAfterMs = readNonNegativeInteger(classification.retryAfterMs);
     const planType = readEnumValue(classification.planType, CODEX_APP_SERVER_SAFE_PLAN_TYPES);
+    const providerLimitId = readBoundedString(classification.providerLimitId);
     const sourceProviderAccountId = readBoundedString(classification.sourceProviderAccountId);
     const sourceAccountLabel = readBoundedString(classification.sourceAccountLabel);
     const failingAccessTokenFingerprint = readBoundedString(classification.failingAccessTokenFingerprint, 64);
@@ -151,7 +153,10 @@ export function sanitizeCodexAppServerRuntimeAuthClassification(
         ...(classification.connectedServiceRecovery === 'available'
             ? { connectedServiceRecovery: 'available' }
             : {}),
-        ...(classification.quotaScope === 'provider' ? { quotaScope: 'provider' } : {}),
+        ...(classification.quotaScope === 'provider' || classification.quotaScope === 'model'
+            ? { quotaScope: classification.quotaScope }
+            : {}),
+        ...(providerLimitId ? { providerLimitId } : {}),
         ...(planType ? { planType } : {}),
         ...(sourceProviderAccountId ? { sourceProviderAccountId } : {}),
         ...(sourceAccountLabel ? { sourceAccountLabel } : {}),

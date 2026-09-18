@@ -763,4 +763,43 @@ describe('createClaudeAgentSdkResumeIdentityOwner', () => {
             await owner.dispose();
         }
     });
+    it('treats a trimmed SDK result session id as a resume identity mismatch', async () => {
+        const terminalHost = createTerminalHostFixture();
+        const events = createEventsFixture();
+        const ctx = createPluginContextFixture(terminalHost.service, events.service);
+        // Claude was asked to resume the padded bytes. A result naming the trimmed
+        // form is a different conversation, so resume must fail rather than adopt it.
+        const owner = createClaudeAgentSdkResumeIdentityOwner({
+            ctx,
+            nowMs: () => 10_000,
+            onProviderSessionId: vi.fn(),
+            onTranscriptPromoted: async () => undefined,
+            expectedInitialProviderSessionId: '  provider\nses/AB+cd==  ',
+        });
+
+        try {
+            expect(owner.validateSdkResultProviderSessionId('provider\nses/AB+cd==')).not.toBeNull();
+        } finally {
+            await owner.dispose();
+        }
+    });
+
+    it('accepts the SDK result that echoes the requested provider session id exactly', async () => {
+        const terminalHost = createTerminalHostFixture();
+        const events = createEventsFixture();
+        const ctx = createPluginContextFixture(terminalHost.service, events.service);
+        const owner = createClaudeAgentSdkResumeIdentityOwner({
+            ctx,
+            nowMs: () => 10_000,
+            onProviderSessionId: vi.fn(),
+            onTranscriptPromoted: async () => undefined,
+            expectedInitialProviderSessionId: '  provider\nses/AB+cd==  ',
+        });
+
+        try {
+            expect(owner.validateSdkResultProviderSessionId('  provider\nses/AB+cd==  ')).toBeNull();
+        } finally {
+            await owner.dispose();
+        }
+    });
 });

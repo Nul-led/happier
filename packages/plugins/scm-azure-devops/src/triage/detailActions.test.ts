@@ -492,6 +492,22 @@ describe('Azure policies plane', () => {
     expect(settled.evaluationsPartial).toBe(true);
   });
 
+  it('reports the evaluation half short when Azure returns an unrecognized collection', async () => {
+    // `sources/SCM.md` §2.9: the page envelope is strict. An unknown body shape is not evidence
+    // that this pull request has no policy evaluations, and reading it as an empty page also ends
+    // the walk without ever saying the plane is short.
+    const seam = harness(respondWith({ body: { unexpected: 'not a collection' } }));
+
+    const settled = AzurePoliciesResultV1Schema.parse(
+      await readAzureDevOpsPolicies(planeInput(), seam.context),
+    );
+
+    if (settled.kind !== 'policies') throw new Error('the statuses are real and stay');
+    expect(settled.statuses).toHaveLength(1);
+    expect(settled.evaluations).toHaveLength(0);
+    expect(settled.evaluationsPartial).toBe(true);
+  });
+
   it('does not publish stale statuses as partial when cancellation wins during evaluation paging', async () => {
     const caller = new AbortController();
     const otherRoutes = respondWith(collection([]));
@@ -609,6 +625,21 @@ describe('Azure threads read', () => {
     expect(settled.rows[0]?.path).toBe('/src/a.ts');
     expect(settled.rows[1]).not.toHaveProperty('path');
     expect(settled.omittedRowCount).toBe(0);
+  });
+
+  it('refuses an unrecognized thread collection instead of publishing an empty conversation', async () => {
+    // A malformed provider or intermediary answer must attribute a failure (REQ-04), never
+    // present itself as a healthy, complete, empty discussion.
+    const seam = harness((url) => (
+      url.includes('/threads') ? { body: { unexpected: 'not a collection' } } : undefined
+    ));
+
+    const settled = AzureThreadsResultV1Schema.parse(
+      await readAzureDevOpsThreads(planeInput(), seam.context),
+    );
+
+    if (settled.kind !== 'unavailable') throw new Error('an unknown envelope is not an empty list');
+    expect(settled.failure.code).toBe('azure-devops/malformed-response');
   });
 
   it('keeps every admitted embedded comment from the one thread response', async () => {

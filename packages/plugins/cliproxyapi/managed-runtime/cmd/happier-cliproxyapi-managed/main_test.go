@@ -15,7 +15,7 @@ import (
 	managedruntime "github.com/happier-dev/happier/packages/plugins/cliproxyapi/managed-runtime"
 )
 
-const fullyBoundPurposeConfiguration = `{"v":2,"modelListEnabled":true,"purposes":[{"id":"codex","provider":"codex","consumer":{"pluginId":"happier.provider.cliproxyapi","localId":"cliproxyapi"},"purpose":"openai-upstream","allowedHttpsOrigin":"https://chatgpt.com","protocols":["openai-chat","openai-responses"]},{"id":"claude","provider":"claude","consumer":{"pluginId":"happier.provider.cliproxyapi","localId":"cliproxyapi"},"purpose":"anthropic-upstream","allowedHttpsOrigin":"https://api.anthropic.com","protocols":["anthropic"]}]}`
+const fullyBoundPurposeConfiguration = `{"v":3,"modelListEnabled":true,"purposes":[{"id":"codex","provider":"codex","consumer":{"pluginId":"happier.provider.cliproxyapi","localId":"cliproxyapi"},"purpose":"openai-upstream","allowedHttpsOrigin":"https://chatgpt.com","protocols":["openai-chat","openai-responses"]},{"id":"claude","provider":"claude","consumer":{"pluginId":"happier.provider.cliproxyapi","localId":"cliproxyapi"},"purpose":"anthropic-upstream","allowedHttpsOrigin":"https://api.anthropic.com","protocols":["anthropic"]}]}`
 
 func TestParseArgumentsAcceptsOnlyNoArguments(t *testing.T) {
 	t.Parallel()
@@ -81,6 +81,27 @@ func TestMaterializeGatewayConfigReadsExactProcessEnvironmentAndImmutableFacts(t
 	}
 	if brokerConfig.CapabilityPath != capabilityPath {
 		t.Fatalf("request-auth config = %#v", brokerConfig)
+	}
+}
+
+func TestMaterializeGatewayConfigAcceptsProviderConnectionWithoutRequestAuthCapability(t *testing.T) {
+	t.Parallel()
+	environment := map[string]string{
+		"HOST": "127.0.0.1",
+		"PORT": "32123",
+		managedruntime.DownstreamBearerEnvironmentVariable:            "host-secret",
+		managedruntime.ManagedPurposeConfigurationEnvironmentVariable: `{"v":3,"modelListEnabled":false,"purposes":[],"providerConnection":{"protocol":"anthropic","downstreamBasePath":"/"}}`,
+	}
+	config, brokerConfig, err := materializeGatewayConfig(func(name string) (string, bool) {
+		value, ok := environment[name]
+		return value, ok
+	})
+	if err != nil {
+		t.Fatalf("materializeGatewayConfig() error = %v", err)
+	}
+	if config.ProviderConnection == nil || config.ProviderConnection.Protocol != managedruntime.ProtocolAnthropic ||
+		config.ModelListEnabled || len(config.AuthEntries) != 0 || brokerConfig.CapabilityPath != "" {
+		t.Fatalf("Provider Connection config = %#v; broker = %#v", config, brokerConfig)
 	}
 }
 

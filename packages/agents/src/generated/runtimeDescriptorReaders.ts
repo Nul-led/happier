@@ -25,6 +25,11 @@ const CODEX_GENERATED_RUNTIME_DESCRIPTOR_READER = createGeneratedRuntimeDescript
     },
     {
       "key": "providerSessionId",
+      "kind": "opaqueIdentifier",
+      "runtimeHandle": "whenPresent"
+    },
+    {
+      "key": "appServerEndpoint",
       "kind": "trimmedString",
       "runtimeHandle": "whenPresent"
     },
@@ -64,9 +69,14 @@ const CODEX_GENERATED_RUNTIME_DESCRIPTOR_READER = createGeneratedRuntimeDescript
       },
       {
         "key": "providerSessionId",
-        "kind": "trimmedString",
+        "kind": "opaqueIdentifier",
         "runtimeHandle": "whenPresent",
         "sourceKey": "codexSessionId"
+      },
+      {
+        "key": "appServerEndpoint",
+        "kind": "trimmedString",
+        "runtimeHandle": "whenPresent"
       },
       {
         "key": "home",
@@ -131,7 +141,7 @@ const OPENCODE_GENERATED_RUNTIME_DESCRIPTOR_READER = createGeneratedRuntimeDescr
     },
     {
       "key": "providerSessionId",
-      "kind": "trimmedString",
+      "kind": "opaqueIdentifier",
       "runtimeHandle": "whenPresent"
     },
     {
@@ -157,7 +167,7 @@ const OPENCODE_GENERATED_RUNTIME_DESCRIPTOR_READER = createGeneratedRuntimeDescr
       },
       {
         "key": "providerSessionId",
-        "kind": "trimmedString",
+        "kind": "opaqueIdentifier",
         "runtimeHandle": "whenPresent",
         "sourceKey": "opencodeSessionId"
       },

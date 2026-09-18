@@ -1,9 +1,10 @@
 import type { PluginDiagnosticData } from '../diagnostics.js';
 import type { PluginContributionRef } from '../identity.js';
 import type { Disposable } from '../lifecycle.js';
+import type { PluginJsonSchemaV2 } from '../actions/actionTypeMap.generated.js';
 import type { ProviderBoundModelRef } from '@happier-dev/protocol';
 import type { AgentExecutionRunEventV1 } from '@happier-dev/protocol/runtime';
-import type { AgentRuntimeContext } from './context.js';
+import type { AgentExecutionRunHostServicesV1, AgentRuntimeContext } from './context.js';
 import type {
   AgentLaunchEnvironment,
   AgentSessionConfigurationSnapshot,
@@ -14,6 +15,17 @@ import type {
   AgentSessionRuntimeEvent,
   AgentSessionSendRequest,
 } from './session.js';
+
+/**
+ * Exact result requested for one Agent execution turn. This SDK-owned
+ * structural projection keeps external author declarations independent from
+ * Protocol's private declaration graph while Protocol remains the runtime
+ * schema owner.
+ */
+export type AgentExecutionRunResultContractV1 =
+  | { kind: 'text' }
+  | { kind: 'json'; schema: PluginJsonSchemaV2 }
+  | { kind: 'decision'; decisions: string[] };
 
 export type AgentExecutionRunOpenRequest =
   Readonly<{
@@ -28,10 +40,16 @@ export type AgentExecutionRunOpenRequest =
     causalPermissionAuthority?: AgentSessionSendRequest['causalPermissionAuthority'];
     /** Same host-resolved policy an Agent session open carries. */
     stateSharing?: AgentSessionOpenRequest['stateSharing'];
+    /** Exact host-resolved MCP process bindings for this Run open. */
+    mcpServers?: AgentSessionOpenRequest['mcpServers'];
   }> & (
     | Readonly<{
         kind: 'create';
         input: AgentSessionInput;
+        /** Stable host-authored identity for this initial input. */
+        localInputId?: string;
+        /** Exact result requested for this initial turn only. */
+        resultContract?: AgentExecutionRunResultContractV1;
       }>
     | Readonly<{
         kind: 'resume';
@@ -60,16 +78,20 @@ export interface AgentExecutionRunRuntime extends Disposable {
     input: AgentSessionInput,
     options?: Readonly<{
       signal?: AbortSignal;
+      /** Stable host-authored identity for this input. */
+      localInputId?: string;
+      /** Exact result requested for this turn only. */
+      resultContract?: AgentExecutionRunResultContractV1;
       /** Exact immutable authority admitted for the host input that sends this turn. */
       causalPermissionAuthority?: AgentSessionSendRequest['causalPermissionAuthority'];
     }>,
   ): Promise<AgentExecutionRunSendResult>;
   stop(options?: Readonly<{ signal?: AbortSignal }>): Promise<AgentExecutionRunStopResult>;
   /**
-   * Subscribes to ordered Run events and synchronously replays every event
-   * already published by this runtime before returning. In particular, a Run
-   * that terminalizes before `open()` settles must replay its terminal event;
-   * the host deliberately subscribes only after it receives the runtime.
+   * Subscribes to ordered Run events. The first watcher synchronously receives
+   * events published before `open()` settled, closing the open/watch race; that
+   * replay is then retired. Later watchers receive live fanout, or only the
+   * terminal event after settlement.
    */
   watch(listener: (event: AgentExecutionRunEvent) => void): Disposable;
 }
@@ -77,7 +99,28 @@ export interface AgentExecutionRunRuntime extends Disposable {
 export interface AgentExecutionRunRuntimeFactory {
   open(
     request: AgentExecutionRunOpenRequest,
-    context: AgentRuntimeContext,
+    context: AgentExecutionRunRuntimeContextV1,
+  ): AgentExecutionRunRuntime | Promise<AgentExecutionRunRuntime>;
+}
+
+/** Truthful host context for a detached Execution Run. */
+export type AgentExecutionRunRuntimeContextV1 = Omit<AgentRuntimeContext, 'session'> & Readonly<{
+  scope: Readonly<{ kind: 'execution_run'; executionRunId: string }>;
+  session?: never;
+  executionRun: Readonly<{
+    id: string;
+    services: AgentExecutionRunHostServicesV1;
+  }>;
+}>;
+
+/**
+ * Additive detached-run facet for Session-primary Agents. Its lifecycle is an
+ * Execution Run; it must not call the Session V1 factory with a Run id.
+ */
+export interface AgentSessionExecutionRunRuntimeFactoryV1 {
+  open(
+    request: AgentExecutionRunOpenRequest,
+    context: AgentExecutionRunRuntimeContextV1,
   ): AgentExecutionRunRuntime | Promise<AgentExecutionRunRuntime>;
 }
 
@@ -95,6 +138,61 @@ export type AgentExecutionRunSessionAdapterOptions = Readonly<{
    * has one. All common Run lifecycle decisions remain in this adapter.
    */
   readCheckpointId?: (event: AgentSessionRuntimeEvent) => string | null;
+  /**
+   * Preserves the provider-owned Session usage observation for a host that has
+   * an existing usage publisher. Usage deliberately remains outside the finite
+   * Run event union so this adapter cannot become a second terminal producer.
+   */
+  observeSessionUsage?: (
+    event: Extract<AgentSessionRuntimeEvent, { kind: 'usage-observed' }>,
+  ) => void;
+}>;
+
+export type AgentExecutionRunConversationEventV1 = AgentSessionRuntimeEvent extends infer Event
+  ? Event extends AgentSessionRuntimeEvent
+    ? Omit<Event, 'sequence' | 'sessionId' | 'emittedAtMs'> & Readonly<{ emittedAtMs?: number }>
+    : never
+  : never;
+
+/**
+ * Scope-neutral provider conversation used by shared protocol composers. It
+ * deliberately carries no Happier Session identity or Session-only services.
+ */
+export interface AgentExecutionRunConversationRuntimeV1 extends Disposable {
+  send(
+    request: AgentSessionSendRequest,
+    options?: AgentExecutionRunConversationSendOptionsV1,
+  ): Promise<AgentExecutionRunSendResult>;
+  cancel?(
+    request: Readonly<{
+      turnId: string;
+      reason: 'user' | 'hostShutdown' | 'sessionDispose' | 'runtimeRecovery';
+    }>,
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ): Promise<Readonly<{
+    status: 'requested' | 'notRunning' | 'unavailable' | 'unsupported';
+    turnId?: string;
+    diagnostic?: PluginDiagnosticData;
+  }>>;
+  watch(listener: (event: AgentExecutionRunConversationEventV1) => void): Disposable;
+}
+
+export type AgentExecutionRunConversationSendOptionsV1 = Readonly<{
+  signal?: AbortSignal;
+  /** Exact host-authored identity also carried in `request.inputIds`. */
+  localInputId?: string;
+  /** Per-turn result contract; never retained as conversation-wide configuration. */
+  resultContract?: AgentExecutionRunResultContractV1;
+  /** Exact current admission authority also carried on the native send request. */
+  causalPermissionAuthority?: AgentSessionSendRequest['causalPermissionAuthority'];
+}>;
+
+export type AgentExecutionRunConversationAdapterOptionsV1 = Readonly<{
+  request: Extract<AgentExecutionRunOpenRequest, { kind: 'create' | 'resume' }>;
+  openConversation():
+    | AgentExecutionRunConversationRuntimeV1
+    | Promise<AgentExecutionRunConversationRuntimeV1>;
+  readCheckpointId?: (event: AgentExecutionRunConversationEventV1) => string | null;
 }>;
 
 type AgentExecutionRunEventInput = AgentExecutionRunEvent extends infer Event
@@ -163,7 +261,8 @@ function createExecutionRunLifecycle(
   options: AgentExecutionRunLifecycleOptions,
 ): AgentExecutionRunLifecycle {
   const listeners = new Set<(event: AgentExecutionRunEvent) => void>();
-  const history: AgentExecutionRunEvent[] = [];
+  let preWatchReplay: AgentExecutionRunEvent[] | null = [];
+  let terminalEvent: AgentExecutionRunEvent | null = null;
   let sequence = 0;
   let terminal = false;
   let disposed = false;
@@ -178,7 +277,8 @@ function createExecutionRunLifecycle(
       runId: options.runId,
       emittedAtMs,
     }) as AgentExecutionRunEvent;
-    history.push(published);
+    preWatchReplay?.push(published);
+    if (isTerminalExecutionRunEvent(event)) terminalEvent = published;
     for (const listener of Array.from(listeners)) {
       try {
         listener(published);
@@ -199,7 +299,13 @@ function createExecutionRunLifecycle(
       return await options.stop(lifecycle, stopOptions);
     },
     watch(listener) {
-      for (const event of history) listener(event);
+      if (preWatchReplay !== null) {
+        const replay = preWatchReplay;
+        preWatchReplay = null;
+        for (const event of replay) listener(event);
+      } else if (terminalEvent !== null) {
+        listener(terminalEvent);
+      }
       if (!terminal && !disposed) listeners.add(listener);
       return {
         dispose() {
@@ -289,9 +395,22 @@ export function createFiniteExecutionRunHostRuntime(
   return lifecycle.runtime;
 }
 
-function createExecutionRunRuntimeFromSession(
-  options: AgentExecutionRunSessionAdapterOptions,
-  session: AgentSessionRuntime,
+type ExecutionRunConversationRuntimeOptions<Event extends AgentExecutionRunConversationEventV1> = Readonly<{
+  request: Extract<AgentExecutionRunOpenRequest, { kind: 'create' | 'resume' }>;
+  readCheckpointId?: (event: Event) => string | null;
+  observeEvent?: (event: Event) => void;
+}>;
+
+type ExecutionRunConversationRuntime<Event extends AgentExecutionRunConversationEventV1> = Readonly<{
+  send: AgentExecutionRunConversationRuntimeV1['send'];
+  cancel?: AgentExecutionRunConversationRuntimeV1['cancel'];
+  watch(listener: (event: Event) => void): Disposable;
+  dispose(): void | Promise<void>;
+}>;
+
+function createExecutionRunRuntimeFromConversation<Event extends AgentExecutionRunConversationEventV1>(
+  options: ExecutionRunConversationRuntimeOptions<Event>,
+  session: ExecutionRunConversationRuntime<Event>,
 ): AgentExecutionRunRuntime {
   let turnOrdinal = 0;
   let activeTurnId: string | null = null;
@@ -307,10 +426,16 @@ function createExecutionRunRuntimeFromSession(
     async send({ emit }, input, sendOptions) {
       if (activeTurnId) return { status: 'unavailable' };
       const turnId = `${options.request.runId}-turn-${++turnOrdinal}`;
-      const inputIds = [`${options.request.runId}-input-${turnOrdinal}`] as const;
+      const inputIds = [
+        sendOptions?.localInputId
+          ?? (options.request.kind === 'create' && turnOrdinal === 1
+            ? options.request.localInputId
+            : undefined)
+          ?? `${options.request.runId}-input-${turnOrdinal}`,
+      ] as const;
       activeTurnId = turnId;
       activeInputIds = inputIds;
-      let result: Awaited<ReturnType<AgentSessionRuntime['send']>>;
+      let result: AgentExecutionRunSendResult;
       try {
         const causalPermissionAuthority = sendOptions?.causalPermissionAuthority
           ?? options.request.causalPermissionAuthority;
@@ -361,6 +486,17 @@ function createExecutionRunRuntimeFromSession(
   });
   subscription = session.watch((event) => {
     if (lifecycle.isTerminal()) return;
+    if (event.kind === 'usage-observed') {
+      if (!activeTurnId || (event.turnId !== undefined && event.turnId !== activeTurnId)) {
+        return;
+      }
+      try {
+        options.observeEvent?.(event);
+      } catch {
+        // Usage publication is observational and cannot change Run lifecycle.
+      }
+      return;
+    }
     const checkpointId = options.readCheckpointId?.(event);
     if (checkpointId !== undefined && checkpointId !== null) {
       lifecycle.emit({ kind: 'checkpoint', checkpointId }, event.emittedAtMs);
@@ -446,6 +582,7 @@ function createSessionOpenRequestFromExecutionRun(
     ...(request.configuration ? { configuration: request.configuration } : {}),
     ...(request.providerBinding ? { providerBinding: request.providerBinding } : {}),
     ...(request.stateSharing ? { stateSharing: request.stateSharing } : {}),
+    ...(request.mcpServers ? { mcpServers: request.mcpServers } : {}),
   };
   return request.kind === 'resume'
     ? { ...common, kind: 'resume', providerSessionId: request.checkpointId }
@@ -468,7 +605,26 @@ export async function createExecutionRunHostBackendFromSessionRuntime(
       options.request,
       options.sessionId,
     ));
-    runtime = createExecutionRunRuntimeFromSession(options, session);
+    runtime = createExecutionRunRuntimeFromConversation({
+      request: options.request,
+      ...(options.readCheckpointId ? { readCheckpointId: options.readCheckpointId } : {}),
+      ...(options.observeSessionUsage
+        ? {
+            observeEvent(event: AgentSessionRuntimeEvent) {
+              if (event.kind === 'usage-observed') options.observeSessionUsage!(event);
+            },
+          }
+        : {}),
+    }, {
+      send: (request, sendOptions) => session!.send(request, sendOptions),
+      ...(session.cancel
+        ? { cancel: (request, cancelOptions) => session!.cancel!(request, cancelOptions) }
+        : {}),
+      watch(listener: (event: AgentSessionRuntimeEvent) => void) {
+        return session!.watch(listener);
+      },
+      dispose: () => session!.dispose(),
+    });
     if (options.request.kind === 'create') {
       const result = await runtime.send(options.request.input);
       if (result.status !== 'admitted') await runtime.dispose();
@@ -479,6 +635,40 @@ export async function createExecutionRunHostBackendFromSessionRuntime(
       await (runtime?.dispose() ?? session?.dispose());
     } catch {
       // Preserve the opening or send failure; cleanup has already been attempted.
+    }
+    throw error;
+  }
+}
+
+/**
+ * Adapts a provider conversation that has no Happier Session identity into the
+ * canonical Execution Run lifecycle. This is the truthful path used by
+ * versioned protocol composers such as ACP execution-run V1.
+ */
+export async function createExecutionRunHostBackendFromConversationRuntime(
+  options: AgentExecutionRunConversationAdapterOptionsV1,
+): Promise<AgentExecutionRunRuntime> {
+  let conversation: AgentExecutionRunConversationRuntimeV1 | null = null;
+  let runtime: AgentExecutionRunRuntime | null = null;
+  try {
+    conversation = await options.openConversation();
+    runtime = createExecutionRunRuntimeFromConversation(options, conversation);
+    if (options.request.kind === 'create') {
+      const result = await runtime.send(options.request.input, {
+        ...(options.request.localInputId ? { localInputId: options.request.localInputId } : {}),
+        ...(options.request.resultContract ? { resultContract: options.request.resultContract } : {}),
+        ...(options.request.causalPermissionAuthority
+          ? { causalPermissionAuthority: options.request.causalPermissionAuthority }
+          : {}),
+      });
+      if (result.status !== 'admitted') await runtime.dispose();
+    }
+    return runtime;
+  } catch (error) {
+    try {
+      await (runtime?.dispose() ?? conversation?.dispose());
+    } catch {
+      // Preserve the opening or initial admission failure after cleanup.
     }
     throw error;
   }

@@ -95,6 +95,7 @@ async function requestApproval(
     params: unknown;
     allowSessionPersistence?: boolean;
   }>,
+  signal?: AbortSignal,
 ): Promise<InteractionTransientApprovalResultV1> {
   if (!ui) {
     return {
@@ -116,7 +117,7 @@ async function requestApproval(
       ...(input.allowSessionPersistence === undefined
         ? {}
         : { allowSessionPersistence: input.allowSessionPersistence }),
-    });
+    }, { signal });
   } catch {
     return {
       requestId: randomUUID(),
@@ -223,6 +224,7 @@ async function askQuestions(
   ui: InteractionUi | undefined,
   questions: readonly CodexQuestion[],
   title: string,
+  signal?: AbortSignal,
 ): Promise<Readonly<Record<string, InteractionTransientQuestionAnswerV1>> | null> {
   if (!ui || questions.length === 0) return null;
   const pluginQuestions = questions.map(toPluginQuestion) as [
@@ -234,7 +236,7 @@ async function askQuestions(
       kind: 'questions',
       title,
       questions: pluginQuestions,
-    });
+    }, { signal });
     return result.status === 'answered' ? result.answers : null;
   } catch {
     return null;
@@ -254,9 +256,46 @@ export function registerCodexAppServerInteractionHandlers(params: Readonly<{
   mcp?: SessionMcp;
   getThreadId(): string | null;
 }>): void {
-  params.client.registerRequestHandler(
+  type RequestMessage = Readonly<{ id?: unknown }>;
+  type TrackedRequestHandler = (
+    raw: RecordLike,
+    signal: AbortSignal | undefined,
+    message: RequestMessage,
+  ) => Promise<unknown>;
+  const pendingRequests = new Map<string, AbortController>();
+  const requestKey = (value: unknown): string | null => (
+    typeof value === 'string' || typeof value === 'number'
+      ? `${typeof value}:${String(value)}`
+      : null
+  );
+  const registerTrackedRequestHandler = (method: string, handler: TrackedRequestHandler): void => {
+    params.client.registerRequestHandler(method, async (raw, message) => {
+      const request = readRecord(raw) ?? {};
+      const key = requestKey(message.id);
+      if (!key) return await handler(request, undefined, message);
+      const controller = new AbortController();
+      pendingRequests.set(key, controller);
+      try {
+        return await handler(request, controller.signal, message);
+      } finally {
+        if (pendingRequests.get(key) === controller) pendingRequests.delete(key);
+      }
+    });
+  };
+
+  params.client.registerNotificationHandler('serverRequest/resolved', (raw) => {
+    if (!matchesCurrentThread(raw, params.getThreadId)) return;
+    const key = requestKey(readRecord(raw)?.requestId);
+    if (!key) return;
+    const controller = pendingRequests.get(key);
+    if (!controller) return;
+    pendingRequests.delete(key);
+    controller.abort();
+  });
+
+  registerTrackedRequestHandler(
     'item/commandExecution/requestApproval',
-    async (raw) => {
+    async (raw, signal) => {
       if (!matchesCurrentThread(raw, params.getThreadId)) return { decision: 'decline' };
       const availability = readCommandApprovalAvailability(raw);
       if (!availability.accept && !availability.acceptForSession) {
@@ -268,7 +307,7 @@ export function registerCodexAppServerInteractionHandlers(params: Readonly<{
         toolName: 'codex_command_execution',
         params: raw,
         allowSessionPersistence: availability.acceptForSession,
-      });
+      }, signal);
       return {
         decision: mapApprovalDecision(result, {
           allowAccept: availability.accept,
@@ -278,9 +317,9 @@ export function registerCodexAppServerInteractionHandlers(params: Readonly<{
     },
   );
 
-  params.client.registerRequestHandler(
+  registerTrackedRequestHandler(
     'item/fileChange/requestApproval',
-    async (raw) => {
+    async (raw, signal) => {
       if (!matchesCurrentThread(raw, params.getThreadId)) return { decision: 'decline' };
       const result = await requestApproval(params.ui, {
         title: 'Allow Codex file changes?',
@@ -288,14 +327,14 @@ export function registerCodexAppServerInteractionHandlers(params: Readonly<{
         toolName: 'codex_file_change',
         params: raw,
         allowSessionPersistence: true,
-      });
+      }, signal);
       return { decision: mapApprovalDecision(result) };
     },
   );
 
-  params.client.registerRequestHandler(
+  registerTrackedRequestHandler(
     'item/permissions/requestApproval',
-    async (raw) => {
+    async (raw, signal) => {
       if (!matchesCurrentThread(raw, params.getThreadId)) {
         return { permissions: {}, scope: 'turn' };
       }
@@ -305,7 +344,7 @@ export function registerCodexAppServerInteractionHandlers(params: Readonly<{
         toolName: 'codex_permissions',
         params: raw,
         allowSessionPersistence: true,
-      });
+      }, signal);
       if (result.status !== 'approved') {
         return { permissions: {}, scope: 'turn' };
       }
@@ -325,9 +364,9 @@ export function registerCodexAppServerInteractionHandlers(params: Readonly<{
     },
   );
 
-  params.client.registerRequestHandler(
+  registerTrackedRequestHandler(
     'item/tool/requestUserInput',
-    async (raw) => {
+    async (raw, signal) => {
       if (!matchesCurrentThread(raw, params.getThreadId)) return { answers: {} };
       const questions = normalizeToolQuestions(raw.questions);
       if (questions.length === 0) return { answers: {} };
@@ -340,7 +379,7 @@ export function registerCodexAppServerInteractionHandlers(params: Readonly<{
           toolName: 'codex_request_user_input_approval',
           params: raw,
           allowSessionPersistence: true,
-        });
+        }, signal);
         const choice = resolveCodexApprovalQuestionChoice({
           questions: raw.questions,
           outcome: approvalOutcome(result),
@@ -349,7 +388,7 @@ export function registerCodexAppServerInteractionHandlers(params: Readonly<{
           ? { answers: { [choice.questionId]: { answers: [choice.label] } } }
           : { answers: {} };
       }
-      const answers = await askQuestions(params.ui, questions, 'Codex question');
+      const answers = await askQuestions(params.ui, questions, 'Codex question', signal);
       if (!answers) return { answers: {} };
       return {
         answers: buildCodexRequestUserInputAnswers({
@@ -365,9 +404,9 @@ export function registerCodexAppServerInteractionHandlers(params: Readonly<{
     },
   );
 
-  params.client.registerRequestHandler(
+  registerTrackedRequestHandler(
     'mcpServer/elicitation/request',
-    async (raw, message) => {
+    async (raw, signal, message) => {
       if (!matchesCurrentThread(raw, params.getThreadId)) {
         return { action: 'decline', content: null, _meta: null };
       }
@@ -391,7 +430,7 @@ export function registerCodexAppServerInteractionHandlers(params: Readonly<{
           ...(isFormMode
             ? { schema: raw.requestedSchema }
             : {}),
-        });
+        }, { signal });
         if (result.status === 'accepted') {
           return {
             action: 'accept',

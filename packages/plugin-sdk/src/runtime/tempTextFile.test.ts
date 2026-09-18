@@ -6,6 +6,8 @@ import { basename, dirname, join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  createSecureTempDirectorySync,
+  createSecureTempDirectorySyncWithDeps,
   writeSecureTempTextFileSync,
   writeSecureTempTextFileSyncWithDeps,
 } from './tempTextFile.js';
@@ -14,6 +16,44 @@ import type { WindowsProtectedAclBoundarySync } from '@happier-dev/cli-common/fs
 function mode(path: string): number {
   return statSync(path).mode & 0o777;
 }
+
+describe('createSecureTempDirectorySync', () => {
+  it('creates a private unique directory and supports idempotent cleanup', () => {
+    const root = mkdtempSync(join(tmpdir(), 'happier-plugin-sdk-temp-dir-'));
+    try {
+      const directory = createSecureTempDirectorySync({
+        tmpDir: root,
+        prefix: 'happier-provider-config',
+      });
+      expect(dirname(directory.path)).toBe(root);
+      if (process.platform !== 'win32') expect(mode(directory.path)).toBe(0o700);
+      directory.cleanup();
+      directory.cleanup();
+      expect(() => statSync(directory.path)).toThrow();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed when the Windows directory ACL cannot be applied', () => {
+    const root = mkdtempSync(join(tmpdir(), 'happier-plugin-sdk-temp-dir-windows-'));
+    try {
+      expect(() => createSecureTempDirectorySyncWithDeps({
+        tmpDir: root,
+        prefix: 'happier-provider-config',
+      }, {
+        platform: 'win32',
+        windowsAclBoundary: {
+          applyAndVerify() { throw new Error('synthetic ACL rejection'); },
+          verify() {},
+        },
+      })).toThrow('synthetic ACL rejection');
+      expect(readdirSync(root)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('writeSecureTempTextFileSync', () => {
   it('writes text into a private unique temp directory with restrictive permissions', () => {

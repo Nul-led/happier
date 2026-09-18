@@ -1,4 +1,5 @@
 import { isPluginError, PluginError, type JsonValue, type PluginInvocationContext } from '@happier-dev/plugin-sdk';
+import { isPluginActionApprovalRequestCreated } from '@happier-dev/plugin-sdk/actions';
 import type { PluginActionInputById, PluginActionResultById } from '@happier-dev/plugin-sdk/actions';
 import type { BackgroundServiceContext } from '@happier-dev/plugin-sdk/background-services';
 import type { ConnectedAccountRef } from '@happier-dev/plugin-sdk/connected-accounts';
@@ -1172,6 +1173,12 @@ async function refreshCurrentSources(input: Readonly<{
         : cursor === undefined ? {} : { cursor }),
     }, { signal: input.context.signal });
     input.context.signal.throwIfAborted();
+    // A policy deferral means the catalog read never ran. With no observed
+    // revision it can neither adopt nor invalidate the current catalog, so the
+    // existing not-refreshed result owns it instead of a reconciliation report.
+    if (isPluginActionApprovalRequestCreated(result)) {
+      return sourceRefreshResult(input.state.adopted, false);
+    }
     if (result.kind === 'unchanged') {
       if (input.state.adopted !== null && input.state.adopted.revision === result.revision) {
         await reportAdoptedCatalog({ ...input, revision: result.revision });
@@ -1517,6 +1524,12 @@ async function runObservedSource(input: Readonly<{
         }],
       }, { signal: input.context.signal });
       input.context.signal.throwIfAborted();
+      // A policy deferral is not an admission: the occurrence never reached the
+      // canonical Automation owner, so it stays unsettled rather than advancing
+      // this source's contiguous checkpoint.
+      if (isPluginActionApprovalRequestCreated(admitted)) {
+        throw new GithubRepositoryEventsAdmissionError('GitHub Automation admission was deferred to an approval decision');
+      }
       if (admitted.results.length !== 1) {
         throw new GithubRepositoryEventsAdmissionError('GitHub Automation admission did not settle one definition');
       }

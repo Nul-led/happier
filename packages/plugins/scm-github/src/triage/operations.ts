@@ -1,5 +1,8 @@
 import type { PluginInvocationContext } from '@happier-dev/plugin-sdk';
-import { isExternalActionResultWithinResponseEnvelopeLimitV1 } from '@happier-dev/plugin-sdk/actions';
+import {
+  isExternalActionResultWithinResponseEnvelopeLimitV1,
+  isPluginActionApprovalRequestCreated,
+} from '@happier-dev/plugin-sdk/actions';
 import { pluginJsonValuesEqual } from '@happier-dev/plugin-sdk/protocol';
 import {
   TriageGetInputV1Schema,
@@ -558,6 +561,11 @@ export async function prepareGithubTriageReviewWorkspace(
     return Object.freeze({ kind: 'unavailable' as const, reason: 'scmResolver' as const });
   }
   context.signal.throwIfAborted();
+  // A policy deferral means the canonical SCM owner never materialized a
+  // workspace, so this preparation is unavailable rather than prepared.
+  if (isPluginActionApprovalRequestCreated(materialized)) {
+    return Object.freeze({ kind: 'unavailable' as const, reason: 'scmResolver' as const });
+  }
   if (!materialized.success) {
     return mapGithubReviewWorkspaceMaterializationFailure(materialized.errorCode);
   }
@@ -617,6 +625,11 @@ export async function verifyGithubTriageReviewWorkspace(
     return Object.freeze({ kind: 'unavailable' as const, reason: 'scmResolver' as const });
   }
   context.signal.throwIfAborted();
+  // A policy deferral means the canonical SCM owner never reverified the
+  // prepared workspace; it stays unavailable rather than claiming a result.
+  if (isPluginActionApprovalRequestCreated(localResult)) {
+    return Object.freeze({ kind: 'unavailable' as const, reason: 'scmResolver' as const });
+  }
   if (!localResult.success) {
     return mapGithubReviewWorkspaceMaterializationFailure(localResult.errorCode);
   }

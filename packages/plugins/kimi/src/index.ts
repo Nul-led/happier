@@ -1,4 +1,5 @@
 export * from './manifest.js';
 export { PLUGIN_MANIFEST as manifest } from './manifest.js';
 export * from './activate.js';
-export * from './agent/lifecycle/spawnHooks.js';
+export { AGENT_DEFINITION } from './agent/definition.js';
+export { KIMI_UI_DESCRIPTOR } from './ui/descriptor.js';

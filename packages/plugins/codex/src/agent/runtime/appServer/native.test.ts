@@ -3,6 +3,10 @@ import type {
   AgentSessionRuntimeContext,
   AgentSessionRuntimeEvent,
 } from '@happier-dev/plugin-sdk/agents/runtime';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import {
   assertAgentSessionRealtimeRuntime as assertExperimentalAgentSessionRealtimeRuntime,
   type AgentSessionRealtimeConversation,
@@ -217,6 +221,67 @@ describe('createCodexNativeAppServerSessionRuntime', () => {
     );
   });
 
+  it('reconciles the exact stale shared SQLite path before app-server resume', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-codex-native-resume-'));
+    try {
+      const codexHome = join(root, 'materialized-home');
+      const sqliteHome = join(root, 'shared-state');
+      const providerSessionId = '019fea40-8040-7d00-9b7e-9b8f3b5cfca8';
+      const rolloutDirectory = join(codexHome, 'sessions', '2026', '09', '07');
+      const rolloutPath = join(
+        rolloutDirectory,
+        `rollout-2026-09-07T12-00-00-${providerSessionId}.jsonl`,
+      );
+      await mkdir(rolloutDirectory, { recursive: true });
+      await mkdir(sqliteHome, { recursive: true });
+      await writeFile(rolloutPath, '{}\n', 'utf8');
+      const databasePath = join(sqliteHome, 'state_5.sqlite');
+      const database = new DatabaseSync(databasePath);
+      database.exec('CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL)');
+      database
+        .prepare('INSERT INTO threads (id, rollout_path) VALUES (?, ?)')
+        .run(providerSessionId, join(root, 'removed-generation', 'rollout.jsonl'));
+      database.close();
+
+      const appServer = createAppServerSession();
+      runtimeModuleMocks.createCodexAppServerRuntime.mockReturnValueOnce(appServer.runtime);
+      runtimeModuleMocks.startCodexAppServerRuntime.mockImplementationOnce(async () => {
+        const verificationDatabase = new DatabaseSync(databasePath);
+        try {
+          const row = verificationDatabase
+            .prepare('SELECT rollout_path FROM threads WHERE id = ?')
+            .get(providerSessionId) as { rollout_path?: unknown } | undefined;
+          expect(row?.rollout_path).toBe(rolloutPath);
+        } finally {
+          verificationDatabase.close();
+        }
+      });
+      const context = {
+        signal: new AbortController().signal,
+        services: {
+          logger: { debug: vi.fn() },
+          sessions: { current: { media: { registerSourceRoot: vi.fn() } } },
+          connectedAccounts: createConnectedAccountsFixture(),
+        },
+        session: { id: 'session-1', services: {} },
+        ui: { title: { set: vi.fn(async () => undefined) } },
+      } as unknown as AgentSessionRuntimeContext;
+
+      await openCodexNativeAppServerSession({
+        kind: 'resume',
+        sessionId: 'session-1',
+        cwd: root,
+        providerSessionId,
+        launchEnvironment: {
+          values: { CODEX_HOME: codexHome, CODEX_SQLITE_HOME: sqliteHome },
+          unset: [],
+        },
+      }, context);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('does not eagerly start a fresh session before its first prompt', async () => {
     const appServer = createAppServerSession();
     runtimeModuleMocks.createCodexAppServerRuntime.mockReturnValueOnce(appServer.runtime);
@@ -414,9 +479,11 @@ describe('createCodexNativeAppServerSessionRuntime', () => {
     });
   });
 
-  it('cancels only the exact tracked native turn and reports notRunning for any other turn', async () => {
+  it('delegates exact-turn cancellation eligibility to the app-server runtime owner', async () => {
     const appServer = createAppServerSession();
+    let activeTurnId: string | null = 'turn-1';
     const appServerCancel = vi.fn(async (expectedTurnId: string | undefined) => {
+      if (expectedTurnId !== activeTurnId) return { status: 'not_running' as const };
       appServer.publish({
         kind: 'turn-cancelled',
         sessionId: 'session-1',
@@ -424,6 +491,7 @@ describe('createCodexNativeAppServerSessionRuntime', () => {
         turnId: expectedTurnId ?? 'turn-1',
         reason: 'user',
       });
+      activeTurnId = null;
       return { status: 'cancelled' as const };
     });
     const runtime = createCodexNativeAppServerSessionRuntime(
@@ -441,19 +509,19 @@ describe('createCodexNativeAppServerSessionRuntime', () => {
     await expect(runtime.cancel?.({ turnId: 'turn-stale', reason: 'user' })).resolves.toEqual({
       status: 'notRunning',
     });
-    expect(appServerCancel).not.toHaveBeenCalled();
+    expect(appServerCancel).toHaveBeenNthCalledWith(1, 'turn-stale');
 
     await expect(runtime.cancel?.({ turnId: 'turn-1', reason: 'user' })).resolves.toEqual({
       status: 'requested',
       turnId: 'turn-1',
     });
-    expect(appServerCancel).toHaveBeenCalledTimes(1);
-    expect(appServerCancel).toHaveBeenCalledWith('turn-1');
+    expect(appServerCancel).toHaveBeenCalledTimes(2);
+    expect(appServerCancel).toHaveBeenNthCalledWith(2, 'turn-1');
 
     await expect(runtime.cancel?.({ turnId: 'turn-1', reason: 'user' })).resolves.toEqual({
       status: 'notRunning',
     });
-    expect(appServerCancel).toHaveBeenCalledTimes(1);
+    expect(appServerCancel).toHaveBeenCalledTimes(3);
 
     await runtime.dispose();
   });
@@ -1034,12 +1102,12 @@ describe('createCodexNativeAppServerSessionRuntime', () => {
     expect(runtimeModuleMocks.startCodexAppServerRuntime).not.toHaveBeenCalled();
   });
 
-  it('applies supported model, permission, and Codex option configuration fields without claiming mode', async () => {
+  it('applies supported mode, model, permission, and Codex option configuration fields', async () => {
     const appServer = createAppServerSession();
     const runtime = createCodexNativeAppServerSessionRuntime(appServer.runtime, 'session-1');
 
     await expect(runtime.updateConfiguration?.({
-      mode: { value: 'appServer', updatedAtMs: 1 },
+      mode: { value: 'plan', updatedAtMs: 1 },
       model: { value: 'gpt-5.4', updatedAtMs: 2 },
       permissionIntent: { value: 'safe-yolo', updatedAtMs: 3 },
       options: {
@@ -1048,18 +1116,43 @@ describe('createCodexNativeAppServerSessionRuntime', () => {
       },
     })).resolves.toEqual({
       status: 'applied',
-      changed: ['permissionIntent', 'model', 'options.reasoning_effort', 'options.service_tier'],
+      changed: ['mode', 'permissionIntent', 'model', 'options.reasoning_effort', 'options.service_tier'],
     });
     expect(appServer.updateConfig).toHaveBeenNthCalledWith(1, {
+      collaborationModeId: 'plan',
+    });
+    expect(appServer.updateConfig).toHaveBeenNthCalledWith(2, {
       permissionMode: 'safe-yolo',
       modelId: 'gpt-5.4',
     });
-    expect(appServer.updateConfig).toHaveBeenNthCalledWith(2, {
+    expect(appServer.updateConfig).toHaveBeenNthCalledWith(3, {
       configOption: { id: 'reasoning_effort', value: 'high' },
     });
-    expect(appServer.updateConfig).toHaveBeenNthCalledWith(3, {
+    expect(appServer.updateConfig).toHaveBeenNthCalledWith(4, {
       configOption: { id: 'service_tier', value: 'fast' },
     });
+  });
+
+  it('preserves committed reasoning as reasoning', () => {
+    const appServer = createAppServerSession();
+    const runtime = createCodexNativeAppServerSessionRuntime(appServer.runtime, 'session-1');
+    const events: AgentSessionRuntimeEvent[] = [];
+    runtime.watch((event) => events.push(event));
+
+    appServer.publish({
+      kind: 'transcript-agent-message-committed',
+      sessionId: 'session-1',
+      emittedAtMs: 10,
+      agentId: 'codex',
+      localId: 'reasoning-1',
+      body: { type: 'reasoning', message: 'Think carefully' },
+    });
+
+    expect(events).toContainEqual(expect.objectContaining({
+      kind: 'transcript-message-committed',
+      role: 'reasoning',
+      text: 'Think carefully',
+    }));
   });
 
   it('reports failed app-server configuration updates without optimistic application', async () => {

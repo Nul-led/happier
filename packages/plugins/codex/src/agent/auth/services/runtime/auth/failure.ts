@@ -12,6 +12,7 @@ export type CodexConnectedServiceRuntimeFailureKind =
   | 'account_changed'
   | 'refresh_failed'
   | 'permission_denied'
+  | 'plan'
   | 'unknown';
 
 export type CodexConnectedServiceRuntimeFailureClassification = Readonly<{
@@ -23,7 +24,8 @@ export type CodexConnectedServiceRuntimeFailureClassification = Readonly<{
   resetsAtMs: number | null;
   retryAfterMs: number | null;
   connectedServiceRecovery?: 'available';
-  quotaScope?: 'provider';
+  quotaScope?: 'provider' | 'model';
+  providerLimitId?: string | null;
   planType: string | null;
   sourceProviderAccountId?: string | null;
   sourceAccountLabel?: string | null;
@@ -143,8 +145,8 @@ function containsRefreshTokenFailureMessage(text: string): boolean {
     || /\brefresh\s+token\s+(?:(?:has\s+been|was)\s+)?(?:invalidated|revoked)\b/iu.test(text);
 }
 
-function containsChatGptAccountModelIncompatibility(text: string): boolean {
-  return /\bmodel\b[\s\S]{0,180}\bnot supported\b[\s\S]{0,180}\busing Codex with a ChatGPT account\b/iu.test(text);
+function readChatGptAccountUnsupportedModel(text: string): string | null {
+  return /The\s+['"]([^'"]+)['"]\s+model\s+is\s+not\s+supported\s+when\s+using\s+Codex\s+with\s+a\s+ChatGPT\s+account\./iu.exec(text)?.[1]?.trim() || null;
 }
 
 function containsTemporaryThrottleMessage(text: string): boolean {
@@ -216,6 +218,7 @@ function buildClassification(
     resetsAtMs?: number | null;
     retryAfterMs?: number | null;
     quotaScope?: CodexConnectedServiceRuntimeFailureClassification['quotaScope'];
+    providerLimitId?: string | null;
     planType?: string | null;
     rateLimits?: unknown | null;
     source: CodexConnectedServiceRuntimeFailureClassification['source'];
@@ -245,6 +248,7 @@ function buildClassification(
     retryAfterMs: params.retryAfterMs ?? null,
     connectedServiceRecovery: 'available',
     ...(params.quotaScope ? { quotaScope: params.quotaScope } : {}),
+    ...(params.providerLimitId ? { providerLimitId: params.providerLimitId } : {}),
     planType: params.planType ?? null,
     ...(sourceProviderAccountId ? { sourceProviderAccountId } : {}),
     ...(sourceProviderAccountId && sourceAccountLabel ? { sourceAccountLabel } : {}),
@@ -282,10 +286,13 @@ export function classifyCodexConnectedServiceAuthFailure(
   }
 
   const text = readErrorText(input.error);
-  if (input.providerErrorPath && containsChatGptAccountModelIncompatibility(text)) {
+  const unsupportedModel = readChatGptAccountUnsupportedModel(text);
+  if (input.providerErrorPath && unsupportedModel) {
     return buildClassification(input, {
-      kind: 'permission_denied',
+      kind: 'plan',
       limitCategory: 'plan_invalid',
+      quotaScope: 'model',
+      providerLimitId: unsupportedModel,
       source: record ? 'structured_provider_error' : 'stable_provider_message',
     });
   }

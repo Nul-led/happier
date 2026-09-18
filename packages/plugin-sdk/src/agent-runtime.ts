@@ -1,6 +1,11 @@
 export { buildAgentAccountUsageRecordId } from './agentRuntime/index.js';
 export { createFiniteExecutionRunHostRuntime } from './agentRuntime/index.js';
+export { createExecutionRunHostBackendFromConversationRuntime } from './agentRuntime/index.js';
 export type {
+  AgentExecutionRunConversationAdapterOptionsV1,
+  AgentExecutionRunConversationEventV1,
+  AgentExecutionRunConversationRuntimeV1,
+  AgentExecutionRunConversationSendOptionsV1,
   AgentAccountUsageRecordKey,
   AgentAccountUsageDiagnostic,
   AgentAccountUsageMeter,
@@ -35,6 +40,9 @@ export type {
   AgentExecutionRunOpenRequest,
   AgentExecutionRunRuntime,
   AgentExecutionRunRuntimeFactory,
+  AgentExecutionRunRuntimeContextV1,
+  AgentExecutionRunHostServicesV1,
+  AgentSessionExecutionRunRuntimeFactoryV1,
   AgentFeatureDecisionService,
   AgentLaunchEnvironment,
   AgentPermissionIntent,
@@ -44,6 +52,7 @@ export type {
   AgentProviderBindingPrepareInput,
   AgentProviderBindingPrepared,
   AgentProviderBindingResolvedFacts,
+  AgentProviderBindingSourceKey,
   AgentRuntime,
   AgentRuntimeContext,
   AgentRuntimeFactory,

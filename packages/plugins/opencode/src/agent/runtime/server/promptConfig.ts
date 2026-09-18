@@ -1,6 +1,11 @@
 import { asRecord, normalizeString } from './openCodeParsing.js';
 
-const VARIANT_CONFIG_OPTION_IDS = new Set(['variant', 'reasoning', 'reasoningEffort']);
+const VARIANT_CONFIG_OPTION_IDS = new Set([
+  'variant',
+  'reasoning',
+  'reasoningEffort',
+  'reasoning_effort',
+]);
 
 export type OpenCodePromptModel = Readonly<{
   providerID: string;
@@ -38,6 +43,34 @@ function readPromptModel(update: Readonly<Record<string, unknown>>): Readonly<{
       modelID: modelId.slice(separatorIndex + 1),
     }),
     hasModel: true,
+  });
+}
+
+export function projectOpenCodeSessionConfiguration(
+  configuration: Readonly<{
+    model: Readonly<{ value: string | null }>;
+    options: Readonly<Record<string, Readonly<{ value: unknown }>>>;
+  }>,
+): Readonly<{
+  updates: readonly Readonly<Record<string, unknown>>[];
+  changed: readonly string[];
+}> {
+  const promptOptions = Object.entries(configuration.options).filter(
+    ([id]) => id !== 'opencodeBackendMode',
+  );
+  return Object.freeze({
+    updates: Object.freeze([
+      Object.freeze({
+        modelId: configuration.model.value,
+      }),
+      ...promptOptions.map(([id, option]) => Object.freeze({
+        configOption: Object.freeze({ id, value: option.value }),
+      })),
+    ]),
+    changed: Object.freeze([
+      'model',
+      ...promptOptions.map(([id]) => `options.${id}`),
+    ]),
   });
 }
 

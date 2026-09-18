@@ -16,10 +16,14 @@ import {
 } from '@happier-dev/plugin-sdk/collections';
 import { pluginJsonValuesEqual } from '@happier-dev/plugin-sdk/protocol';
 import type {
+  ActionApprovalRequestCreatedResult,
   PluginActionResultById,
   PluginMachineExecutionOriginV1,
 } from '@happier-dev/plugin-sdk/actions';
-import { PluginMachineExecutionOriginV1Schema } from '@happier-dev/plugin-sdk/actions';
+import {
+  isPluginActionApprovalRequestCreated,
+  PluginMachineExecutionOriginV1Schema,
+} from '@happier-dev/plugin-sdk/actions';
 import {
   AutomationConversationResultDeliveryV1Schema,
   type AutomationConversationAdmitInputV1,
@@ -293,8 +297,8 @@ type FrozenEventTarget = Readonly<{
 
 type FrozenIngressTarget = FrozenSessionTarget | FrozenAutomationTarget | FrozenEventTarget;
 
-type IngressCheckpointOutcome = 'checkpointSafe' | 'unsettled';
-type IngressObservationOutcome = 'checkpointSafe' | 'checkpointSafeNoCensus' | 'unsettled';
+type IngressCheckpointOutcome = 'checkpointSafe' | 'socketCustodyDeferred' | 'unsettled';
+type IngressObservationOutcome = IngressCheckpointOutcome | 'checkpointSafeNoCensus';
 
 type IngressDisposition =
   | 'admitted'
@@ -1346,6 +1350,7 @@ function combineIngressCheckpointOutcomes(
   next: IngressCheckpointOutcome,
 ): IngressCheckpointOutcome {
   if (current === 'unsettled' || next === 'unsettled') return 'unsettled';
+  if (current === 'socketCustodyDeferred' || next === 'socketCustodyDeferred') return 'socketCustodyDeferred';
   return 'checkpointSafe';
 }
 
@@ -1386,6 +1391,7 @@ function sessionDisplayNameSnapshot(label: string | undefined): string | undefin
 }
 
 type IngressAdmissionDecision = Readonly<{
+  debounceMs: number;
   terminalOutcome: Readonly<{ disposition: IngressDisposition; nonAdmission: IngressNonAdmission }> | undefined;
   newSession: FrozenSessionTarget['newSession'];
   approval: FrozenSessionTarget['approval'];
@@ -1437,6 +1443,7 @@ function ingressAdmissionDecision(input: Readonly<{
   });
   if (policy.kind === 'terminal') {
     return {
+      debounceMs: 0,
       terminalOutcome: {
         disposition: policy.disposition,
         nonAdmission: {
@@ -1451,6 +1458,7 @@ function ingressAdmissionDecision(input: Readonly<{
   }
   if (policy.kind === 'approve') {
     return {
+      debounceMs: 0,
       terminalOutcome: undefined,
       newSession: null,
       approval: {
@@ -1463,6 +1471,7 @@ function ingressAdmissionDecision(input: Readonly<{
   }
   if (policy.kind === 'userActionAnswer') {
     return {
+      debounceMs: 0,
       terminalOutcome: undefined,
       newSession: null,
       approval: null,
@@ -1480,6 +1489,7 @@ function ingressAdmissionDecision(input: Readonly<{
       );
     }
     return {
+      debounceMs: 0,
       terminalOutcome: undefined,
       newSession: {
         recipe: newSessionPolicy.recipe,
@@ -1491,6 +1501,7 @@ function ingressAdmissionDecision(input: Readonly<{
   }
   if (ingress.kind === 'routableNonAdmission') {
     return {
+      debounceMs: 0,
       terminalOutcome: {
         disposition: 'rejected',
         nonAdmission: {
@@ -1511,6 +1522,7 @@ function ingressAdmissionDecision(input: Readonly<{
   }
   if (!isAddressedForBinding(binding, shell)) {
     return {
+      debounceMs: 0,
       terminalOutcome: {
         disposition: 'rejected',
         nonAdmission: {
@@ -1528,7 +1540,13 @@ function ingressAdmissionDecision(input: Readonly<{
       userActionAnswer: null,
     };
   }
-  return { terminalOutcome: undefined, newSession: null, approval: null, userActionAnswer: null };
+  return {
+    debounceMs: command.kind === 'ordinaryText' ? binding.payload.inboundDebounceMs : 0,
+    terminalOutcome: undefined,
+    newSession: null,
+    approval: null,
+    userActionAnswer: null,
+  };
 }
 
 function decodeBase64Url(value: string): Uint8Array {
@@ -1962,6 +1980,7 @@ function frozenConnectionForIngressCensus(input: Readonly<{
 
 function createIngressObligationValue(input: Readonly<{
   censusId: string;
+  debounceMs: number;
   obligationId: string;
   connection: ChannelConnectionRecord;
   binding: ChannelBindingRecord;
@@ -1973,7 +1992,7 @@ function createIngressObligationValue(input: Readonly<{
 }>): JsonRecord {
   const terminal = input.terminalOutcome !== undefined;
   const shell = ingressShell(input.ingress);
-  const dueAt = terminal ? null : input.now + input.binding.payload.inboundDebounceMs;
+  const dueAt = terminal ? null : input.now + input.debounceMs;
   return {
     id: input.obligationId,
     [CHANNEL_STATE_FIELD.recordKind]: CHANNEL_STATE_RECORD_KIND.ingressObligation,
@@ -1997,7 +2016,7 @@ function createIngressObligationValue(input: Readonly<{
       lifecycle: {
         phase: terminal
           ? 'terminal'
-          : input.binding.payload.inboundDebounceMs > 0 ? 'debounceDue' : 'ready',
+          : input.debounceMs > 0 ? 'debounceDue' : 'ready',
         attemptCount: 0,
         dueAt,
       },
@@ -3422,6 +3441,9 @@ async function dispatchNewSessionRotation(input: Readonly<{
     { signal: input.context.signal },
   );
   assertNotAborted(input.context.signal);
+  // A policy deferral means no Session was spawned for this occurrence, so the
+  // rotation stays unsettled and its checkpoint does not advance.
+  if (isPluginActionApprovalRequestCreated(spawned)) return 'unsettled';
   if (spawned.type === 'pending') return 'unsettled';
   if (spawned.type === 'error') {
     if (spawned.retryable || firstAuthority === undefined) return 'unsettled';
@@ -3881,7 +3903,8 @@ async function dispatchApprovalMediation(input: Readonly<{
     turnId = match.turnId;
   }
 
-  let responded: PluginActionResultById['session.permission.remote.respond'];
+  let responded: PluginActionResultById['session.permission.remote.respond']
+    | ActionApprovalRequestCreatedResult;
   try {
     responded = await input.context.services.actions.execute(
       'session.permission.remote.respond',
@@ -3914,6 +3937,11 @@ async function dispatchApprovalMediation(input: Readonly<{
     return await retryMediatedIngressControl({ context: input.context, obligation });
   }
 
+  // A policy deferral means the mediated response never reached the Session, so
+  // this control obligation retries instead of settling as applied or rejected.
+  if (isPluginActionApprovalRequestCreated(responded)) {
+    return await retryMediatedIngressControl({ context: input.context, obligation });
+  }
   if (responded.status === 'rejected') {
     if (
       responded.code === 'mediationStateUnavailable'
@@ -4025,7 +4053,8 @@ async function dispatchUserActionAnswerMediation(input: Readonly<{
     turnId = match.turnId;
   }
 
-  let responded: PluginActionResultById['session.user_action.remote.answer'];
+  let responded: PluginActionResultById['session.user_action.remote.answer']
+    | ActionApprovalRequestCreatedResult;
   try {
     responded = await input.context.services.actions.execute(
       'session.user_action.remote.answer',
@@ -4055,6 +4084,11 @@ async function dispatchUserActionAnswerMediation(input: Readonly<{
     return await retryMediatedIngressControl({ context: input.context, obligation });
   }
 
+  // A policy deferral means the mediated response never reached the Session, so
+  // this control obligation retries instead of settling as applied or rejected.
+  if (isPluginActionApprovalRequestCreated(responded)) {
+    return await retryMediatedIngressControl({ context: input.context, obligation });
+  }
   if (responded.status === 'rejected') {
     if (
       responded.code === 'mediationStateUnavailable'
@@ -4203,7 +4237,16 @@ async function dispatchIngressObligation(input: Readonly<{
   if (
     obligation.value.payload.lifecycle.dueAt !== null
     && obligation.value.payload.lifecycle.dueAt > Date.now()
-  ) return 'unsettled';
+  ) {
+    // Socket receive progress is not a settlement checkpoint. The prepared
+    // census and exact member checks at ingress own durable capture; its
+    // existing due-work supervisor owns the debounce, not the Gateway lane.
+    return input.source.kind === 'providerObservation'
+      && ingressShell(ingress).transport.kind === 'socket'
+      && obligation.value.payload.lifecycle.phase === 'debounceDue'
+      ? 'socketCustodyDeferred'
+      : 'unsettled';
+  }
   if (obligation.value.payload.lifecycle.phase === 'attempting') {
     if (obligation.value.payload.lifecycle.attemptCount >= MAX_CONVERSATION_DELIVERY_ATTEMPTS) {
       await putIngressObligationLifecycle({
@@ -4450,11 +4493,15 @@ async function dispatchIngressObligation(input: Readonly<{
     text: fullText.message.text,
     resultDelivery: target.resultDelivery,
   };
-  const admission: AutomationConversationAdmitResultV1 = await input.context.services.actions.execute(
+  const admitted = await input.context.services.actions.execute(
     'automation.conversation.admit',
     admissionInput,
     { signal: input.context.signal },
   );
+  // A policy deferral means the conversation occurrence was never admitted, so
+  // the delivery obligation stays unsettled for its ordinary retry.
+  if (isPluginActionApprovalRequestCreated(admitted)) return 'unsettled';
+  const admission: AutomationConversationAdmitResultV1 = admitted;
   if (admission.kind === 'blocked') {
     const exhausted = obligation.value.payload.lifecycle.attemptCount >= MAX_CONVERSATION_DELIVERY_ATTEMPTS;
     await putIngressObligationLifecycle({
@@ -4861,6 +4908,7 @@ async function ingestConversationObservationForInvocation(
       });
       missingValues.push(createIngressObligationValue({
         censusId: census.value.id,
+        debounceMs: decision.debounceMs,
         obligationId,
         connection: frozenConnection,
         binding: binding.value,
@@ -5004,9 +5052,34 @@ async function ingestConversationObservationForInvocation(
       assertNotAborted(context.signal);
       outcome = await settleFailedIngressDueWork({ context, obligation });
     }
+    if (outcome === 'unsettled' && source.kind === 'providerObservation' && shell.transport.kind === 'socket') {
+      // A successfully retained retry is Channel custody, not lost socket
+      // input. Rejoin its exact census member rather than treating arbitrary
+      // unsettled work or an uncommitted retry as durable capture.
+      const retained = asIngressObligation(readStateRow(await collection.get(
+        obligation.row.rowId,
+        { signal: context.signal },
+      )) ?? null);
+      if (retained !== undefined
+        && ingressObligationMatchesCensusMember({ censusId: census.value.id, member, obligation: retained.value })
+        && retained.value.payload.lifecycle.phase === 'retryDue') {
+        outcome = 'socketCustodyDeferred';
+      }
+    }
     checkpointOutcome = combineIngressCheckpointOutcomes(checkpointOutcome, outcome);
   }
 
+  if (checkpointOutcome === 'socketCustodyDeferred') {
+    const current = asConnection(readStateRow(await collection.get(
+      connectionState.row.rowId,
+      { signal: context.signal },
+    )) ?? null);
+    assertNotAborted(context.signal);
+    if (current === undefined || current.row.revision !== connectionState.row.revision) {
+      throw pluginError('channels_ingress_stale_authority', 'Channel authority changed before durable custody was acknowledged.', true);
+    }
+    assertCurrentConnection({ connection: current.value, source, observation: shell });
+  }
   return checkpointOutcome;
 }
 
@@ -7199,7 +7272,7 @@ async function routeCheckpointedPollBatch(input: Readonly<{
       input.source,
       input.pairing,
     );
-    if (observationOutcome === 'unsettled') {
+    if (observationOutcome === 'unsettled' || observationOutcome === 'socketCustodyDeferred') {
       outcome = 'unsettled';
       continue;
     }

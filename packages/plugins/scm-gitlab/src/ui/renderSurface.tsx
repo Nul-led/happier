@@ -114,7 +114,9 @@ import {
 } from './detail/reviewPublicationControls.js';
 import { chronologicalGitlabRowsV1, projectGitlabActivityTimelineV1 } from './detail/activityTimeline.js';
 import {
-  hasEarlierGitlabDiscussionRepliesV1,
+  GITLAB_DISCUSSION_REPLY_WINDOW_V1,
+  earlierGitlabDiscussionReplyCountV1,
+  expandGitlabDiscussionRepliesV1,
   projectGitlabDiscussionRepliesV1,
 } from './detail/discussionReplies.js';
 import { gitlabChangesEvidenceUrlV1 } from './detail/changeEvidence.js';
@@ -1030,30 +1032,53 @@ function DiscussionRow({ input, row, proposals }: Readonly<{
   proposals: ReviewCommentProposalReadV1;
 }>): React.ReactElement {
   const text = usePluginTranslation();
-  const [expanded, setExpanded] = React.useState(false);
-  const hasEarlier = hasEarlierGitlabDiscussionRepliesV1(row.notes);
-  const shown = projectGitlabDiscussionRepliesV1(row.notes, expanded);
-  const bodies = shown.map((note) => note.body).filter((body) => body !== '').join(' — ');
-  const subtitle = row.omittedNoteCount === 0
-    ? bodies
-    : `${bodies} ${text(
-      'plugins.gitlab.ui.discussion.omittedReplies',
-      '({count} further reply/replies were not published)',
-      { count: row.omittedNoteCount },
-    )}`;
+  const [visibleCount, setVisibleCount] = React.useState(GITLAB_DISCUSSION_REPLY_WINDOW_V1);
+  const earlierCount = earlierGitlabDiscussionReplyCountV1(row.notes, visibleCount);
+  const shown = projectGitlabDiscussionRepliesV1(row.notes, visibleCount);
+  const addedCount = Math.min(GITLAB_DISCUSSION_REPLY_WINDOW_V1, earlierCount);
   return (
     <Stack gap="small">
-      <Item title={discussionHeadline(text, row)} subtitle={subtitle} />
-      {hasEarlier ? (
+      <Item title={discussionHeadline(text, row)} />
+      {/* The control sits where the replies it reveals will appear: above the
+          ones already on screen, which keeps the thread chronological. */}
+      {earlierCount === 0 ? null : (
         <Button
-          title={expanded
-            ? text('plugins.gitlab.ui.discussion.showLatest', 'Show latest replies')
-            : text('plugins.gitlab.ui.discussion.showEarlier', 'Show earlier replies')}
+          title={text(
+            'plugins.gitlab.ui.discussion.showEarlier',
+            'Show {count} earlier replies',
+            { count: addedCount },
+          )}
           variant="plain"
-          onPress={() => setExpanded((value) => !value)}
+          onPress={() => {
+            setVisibleCount((current) => expandGitlabDiscussionRepliesV1(current, row.notes.length));
+          }}
         />
-      ) : null}
-      {row.individualNote ? null : <GitlabDiscussionResolutionControl input={input} discussionId={row.id} resolved={row.notes[0]?.resolved === true} />}
+      )}
+      {/* Each reply keeps its own author and body: a thread concatenated into
+          one line cannot be read as a conversation. */}
+      {shown.map((note) => (
+        <Item
+          key={note.id}
+          title={noteHeadline(text, note)}
+          {...(note.body === '' ? {} : { subtitle: note.body })}
+        />
+      ))}
+      {row.omittedNoteCount === 0 ? null : (
+        <Item
+          title={text(
+            'plugins.gitlab.ui.discussion.omittedReplies',
+            '({count} further reply/replies were not published)',
+            { count: row.omittedNoteCount },
+          )}
+        />
+      )}
+      {row.individualNote ? null : (
+        <GitlabDiscussionResolutionControl
+          input={input}
+          discussionId={row.id}
+          resolved={row.resolved}
+        />
+      )}
       {row.individualNote ? null : (
         <GitlabThreadReplyPublicationControl
           input={input}

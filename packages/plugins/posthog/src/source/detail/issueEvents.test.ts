@@ -170,6 +170,37 @@ describe('readPosthogSampledIssueEvents', () => {
         expect(outcome.value.events.length + outcome.value.omittedRowCount).toBeLessThanOrEqual(3);
     });
 
+    it('keeps each accepted row addressed by its own provider position across a skipped sibling', async () => {
+        // The selected-evidence reread and the code-variable reveal both re-request one
+        // exact offset. Deriving that offset from the compacted row array addresses the
+        // row a malformed sibling used to occupy, so every valid row after one becomes
+        // unreachable evidence — the UUID gate then correctly refuses, and the reader
+        // loses a control that should have worked.
+        const { client } = setup(() => json({
+            results: [
+                { notAnEvent: true },
+                { uuid: '00000000-0000-4000-8000-0000000000f1', properties: {} },
+                { uuid: '00000000-0000-4000-8000-0000000000f2', properties: {} },
+            ],
+            hasMore: false,
+            limit: 3,
+            offset: 20,
+        }));
+
+        const outcome = await readPosthogSampledIssueEvents(client, {
+            teamRouteId: 4821,
+            issueId: ISSUE_ID,
+            detailWindow: DETAIL_WINDOW,
+            limit: 3,
+            offset: 20,
+        }, {});
+
+        expect(outcome.ok).toBe(true);
+        if (!outcome.ok) return;
+        expect(outcome.value.events.map((event) => event.providerOffset)).toEqual([21, 22]);
+        expect(outcome.value.omittedRowCount).toBe(1);
+    });
+
     it('claims a following page only when the provider offset actually advances, and says so when it did not', async () => {
         const advancing = await (async () => {
             const { client } = setup(() => json(queryIssueEventsPage));

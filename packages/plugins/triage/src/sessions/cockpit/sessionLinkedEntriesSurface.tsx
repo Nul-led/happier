@@ -87,9 +87,9 @@ function rowTone(row: TriageSessionLinkedEntryRowV1): 'neutral' | 'muted' | 'war
 function LinkedEntryRow(props: Readonly<{
     row: TriageSessionLinkedEntryRowV1;
     sessionId: string;
-    onUnlinked: () => void;
+    onRefresh: () => void;
 }>): React.ReactElement {
-    const { row, sessionId, onUnlinked } = props;
+    const { row, sessionId, onRefresh } = props;
     const text = usePluginTranslation();
     const host = usePluginHostApi();
     const durable = useTriageDurableAccount();
@@ -131,7 +131,7 @@ function LinkedEntryRow(props: Readonly<{
                     return;
                 }
                 setPhase('idle');
-                onUnlinked();
+                onRefresh();
             } catch {
                 // A mount with no reachable transport at all, or a refused
                 // dispatch. The row says so instead of pretending the link is
@@ -139,7 +139,7 @@ function LinkedEntryRow(props: Readonly<{
                 setPhase('failed');
             }
         })();
-    }, [entryRef, onUnlinked, sessionId, transport]);
+    }, [entryRef, onRefresh, sessionId, transport]);
 
     return (
         <List.Item
@@ -163,7 +163,13 @@ function LinkedEntryRow(props: Readonly<{
                 : {})}
             {...(entryRef === null ? {} : { onPress: open })}
             accessoryOutsidePressable
-            accessory={entryRef === null ? undefined : (
+            accessory={presentation.kind === 'unreadable' ? (
+                <Button
+                    title={text('plugins.triage.surface.refresh', 'Refresh')}
+                    variant="secondary"
+                    onPress={onRefresh}
+                />
+            ) : entryRef === null ? undefined : (
                 <Button
                     titleKey="plugins.triage.sessionLinks.unlink"
                     title={text('plugins.triage.sessionLinks.unlink', 'Unlink')}
@@ -202,7 +208,7 @@ function TriageSessionLinkedEntriesPanel(
     }, [loadMore, loadingMore]);
     const renderRow = React.useCallback(
         (row: TriageSessionLinkedEntryRowV1): React.ReactElement => (
-            <LinkedEntryRow row={row} sessionId={props.sessionId} onUnlinked={onRefresh} />
+            <LinkedEntryRow row={row} sessionId={props.sessionId} onRefresh={onRefresh} />
         ),
         [onRefresh, props.sessionId],
     );

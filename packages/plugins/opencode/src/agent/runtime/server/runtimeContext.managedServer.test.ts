@@ -16,6 +16,7 @@ describe('OpenCode managed-service runtime context', () => {
       signal: new AbortController().signal,
       services: {
         managedServices,
+        exec: { systemTools: { resolve: vi.fn() } },
         logger: {
           debug: vi.fn(),
           info: vi.fn(),

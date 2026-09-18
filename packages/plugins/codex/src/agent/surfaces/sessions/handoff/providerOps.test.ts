@@ -35,6 +35,35 @@ describe('codex handoff provider surface', () => {
     vi.unstubAllEnvs();
   });
 
+  it('exports the vendor session id byte-exact and rejects a blank one', async () => {
+    // Codex mints this id; the exported bundle is matched back against the
+    // vendor's own rollout identity, so trimming exports the wrong session.
+    const exactRemoteSessionId = '  provider\nses/AB+cd==  ';
+    const codexHome = await mkdtemp(join(tmpdir(), 'happier-codex-handoff-exact-id-'));
+    vi.stubEnv('CODEX_HOME', codexHome);
+    const rolloutDir = join(codexHome, 'sessions', '2026', '06', '22');
+    await mkdir(rolloutDir, { recursive: true });
+    await writeFile(
+      join(rolloutDir, 'rollout-2026-06-22T10-00-00-exact.jsonl'),
+      nativeRolloutContent({ sessionId: exactRemoteSessionId, body: { event: 'current' } }),
+    );
+
+    expect(await codexHandoffSurface.exportBundle({
+      sessionId: exactRemoteSessionId,
+      metadata: { path: '/repo', codexBackendMode: 'appServer' },
+      directory: '/active-server',
+    }, handoffContext())).toMatchObject({
+      ok: true,
+      value: { bundle: { agentId: 'codex', remoteSessionId: exactRemoteSessionId } },
+    });
+
+    expect(await codexHandoffSurface.exportBundle({
+      sessionId: ' \n\t ',
+      metadata: { path: '/repo', codexBackendMode: 'appServer' },
+      directory: '/active-server',
+    }, handoffContext())).toMatchObject({ ok: false, code: 'bundle_invalid' });
+  });
+
   it('exports the exact host-admitted Session id instead of a stale generic metadata id', async () => {
     const codexHome = await mkdtemp(join(tmpdir(), 'happier-codex-handoff-provider-export-id-'));
     vi.stubEnv('CODEX_HOME', codexHome);

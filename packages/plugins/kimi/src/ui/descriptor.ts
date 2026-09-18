@@ -18,6 +18,7 @@ export const KIMI_UI_DESCRIPTOR = Object.freeze({
       uiVendorResumeIdLabelKey: 'sessionInfo.kimiSessionId',
       uiVendorResumeIdCopiedKey: 'sessionInfo.kimiSessionIdCopied',
     },
+    localControl: true,
     toolRendering: {
       hideUnknownToolsByDefault: true,
     },
@@ -33,6 +34,7 @@ export const KIMI_UI_DESCRIPTOR = Object.freeze({
     },
     icon: { assetId: 'kimi' },
   },
+  capabilityStates: { mcpDelivery: 'supported', modelSelection: 'experimental', resume: 'supported' },
   behavior: {},
   components: { slots: [] },
   assets: {

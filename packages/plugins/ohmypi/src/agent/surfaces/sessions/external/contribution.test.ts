@@ -1041,7 +1041,7 @@ describe('Oh My Pi public External Sessions contribution', () => {
       }, {
         type: 'message',
         id: 'initial',
-        parentId: remoteSessionId,
+        parentId: null,
         timestamp: '2026-07-23T10:00:01.000Z',
         message: { role: 'assistant', content: 'initial' },
       }],

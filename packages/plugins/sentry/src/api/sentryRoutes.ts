@@ -97,6 +97,13 @@ export function buildSentryIssueUrl(input: SentryIssueRouteInputV1): string {
 
 export type SentryIssueEventsRouteInputV1 = SentryIssueRouteInputV1 & Readonly<{
   perPage: number;
+  /**
+   * The reader's explicit "show a spread" choice (`SENTRY.md` §7.4).
+   *
+   * `[SCHEMA]` `sample=true` is a pseudo-random deterministic ORDERING of the
+   * same retained events, not a statistical sample of the issue's occurrences.
+   */
+  sample?: boolean;
   /** Taken verbatim from a validated `rel="next"` link; never composed here. */
   cursor?: string;
 }>;
@@ -114,6 +121,9 @@ export function buildSentryIssueEventsUrl(input: SentryIssueEventsRouteInputV1):
   url.searchParams.set('per_page', String(assertPageSize(input.perPage)));
   url.searchParams.set('full', 'false');
   url.searchParams.set('statsPeriod', SENTRY_DETAIL_STATS_PERIOD);
+  // Absent is the ordinary walk, so a declined spread sends nothing rather than
+  // an explicit `false` the provider would have to interpret.
+  if (input.sample === true) url.searchParams.set('sample', 'true');
   if (input.cursor !== undefined) url.searchParams.set('cursor', input.cursor);
   return url.toString();
 }

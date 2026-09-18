@@ -4,6 +4,7 @@ import type {
 } from '@happier-dev/plugin-sdk/agents/runtime';
 import type { RuntimeConfigUpdateOutcomeV1 } from '@happier-dev/plugin-sdk/agents/runtime';
 
+import { readClaudeProviderIdentityValue } from '../../protocol/providerIdentity.js';
 import type { ClaudeProviderEvent } from './providerEvents.js';
 
 /**
@@ -39,7 +40,7 @@ export type ClaudeProviderConfigurationOutcome = Readonly<{
 }>;
 
 export function readClaudePendingLocalId(value: unknown): string | null {
-  return typeof value === 'string' && value.trim().length > 0 ? value : null;
+  return readClaudeProviderIdentityValue(value);
 }
 
 export type ClaudeProviderDisposeReason = Exclude<

@@ -54,6 +54,7 @@ import type {
     AgentPreflightSessionControlsContributionV1,
     AgentPreflightSessionControlsModelsV1,
     AgentTerminalPromptSubmitVerificationPolicyV1,
+    AgentTerminalSurface,
     AgentProviderBindingAdapter,
     AgentDaemonSpawnHooks,
     AgentProviderCliAttachDeclarationV1,
@@ -97,6 +98,7 @@ type PluginRegistrationRequiredField =
     | 'factory'
     | 'sessionRunnerFactory'
     | 'cliAuth'
+    | 'terminal'
     | 'externalSessions'
     | ComposerAttachmentRuntimeRegistrationFieldV1;
 
@@ -151,6 +153,7 @@ type StagedAgentRuntimeRegistration = Readonly<{
     factory?: AgentRuntimeFactory;
     options?: AgentRuntimeRegistrationOptions;
     cliAuth?: AgentCliAuthContributionV1;
+    terminal?: AgentTerminalSurface;
     externalSessions?: AgentExternalSessionsContribution;
     externalSessionHooks?: AgentExternalSessionHooksContribution;
     externalSessionObservation?: AgentExternalSessionObservationContribution;
@@ -438,12 +441,12 @@ function snapshotAgentProviderCliAttachDeclaration(
             receiver.createArgs,
             'Agent provider CLI attach declaration.createArgs',
         ),
-        buildHealthUrl: bindAgentRegistrationCallback<
-            AgentProviderCliAttachDeclarationV1['buildHealthUrl']
+        resolveReachability: bindAgentRegistrationCallback<
+            AgentProviderCliAttachDeclarationV1['resolveReachability']
         >(
             receiver,
-            receiver.buildHealthUrl,
-            'Agent provider CLI attach declaration.buildHealthUrl',
+            receiver.resolveReachability,
+            'Agent provider CLI attach declaration.resolveReachability',
         ),
     });
 }
@@ -1285,6 +1288,27 @@ function snapshotAgentExternalSessionTakeoverContribution(
     return validateAgentExternalSessionTakeoverContribution(contribution);
 }
 
+function snapshotAgentTerminalContribution(
+    contribution: AgentTerminalSurface,
+): AgentTerminalSurface {
+    const receiver = readAgentRegistrationObject(
+        contribution,
+        'Agent terminal contribution',
+    );
+    rejectUnknownEnumerableCallableOperations(
+        receiver,
+        new Set(['resolveLaunch']),
+        'Agent terminal contribution',
+    );
+    return Object.freeze({
+        resolveLaunch: bindAgentRegistrationCallback<AgentTerminalSurface['resolveLaunch']>(
+            receiver,
+            receiver.resolveLaunch,
+            'Agent terminal contribution.resolveLaunch',
+        ),
+    });
+}
+
 function snapshotAgentRuntimeRegistration(
     staged: StagedAgentRuntimeRegistration,
 ): PluginAgentRuntimeRegistration {
@@ -1325,6 +1349,9 @@ function snapshotAgentRuntimeRegistration(
             : {}),
         ...(options.vendorResumeSupport !== undefined
             ? { vendorResumeSupport: options.vendorResumeSupport }
+            : {}),
+        ...(staged.terminal !== undefined
+            ? { terminal: snapshotAgentTerminalContribution(staged.terminal) }
             : {}),
         ...(staged.externalSessions !== undefined
             ? { externalSessions: snapshotAgentExternalSessionsContribution(staged.externalSessions) }
@@ -1723,6 +1750,7 @@ export function createPluginRegistrationScope(
         if ((fields.factory !== undefined && current?.factory !== undefined)
             || (fields.options !== undefined && current?.options !== undefined)
             || (fieldsDeclareCliAuth && currentDeclaresCliAuth)
+            || (fields.terminal !== undefined && current?.terminal !== undefined)
             || (fields.externalSessions !== undefined && current?.externalSessions !== undefined)
             || (fields.externalSessionHooks !== undefined
                 && current?.externalSessionHooks !== undefined)
@@ -1736,6 +1764,7 @@ export function createPluginRegistrationScope(
             ...(current?.factory !== undefined ? { factory: current.factory } : {}),
             ...(current?.options !== undefined ? { options: current.options } : {}),
             ...(current?.cliAuth !== undefined ? { cliAuth: current.cliAuth } : {}),
+            ...(current?.terminal !== undefined ? { terminal: current.terminal } : {}),
             ...(current?.externalSessions !== undefined
                 ? { externalSessions: current.externalSessions }
                 : {}),
@@ -1805,6 +1834,13 @@ export function createPluginRegistrationScope(
                     id,
                     Object.freeze({ cliAuth: contribution }),
                     'Agent CLI auth contribution',
+                );
+            },
+            registerTerminal: (id: string, contribution: AgentTerminalSurface) => {
+                return registerAgentFields(
+                    id,
+                    Object.freeze({ terminal: contribution }),
+                    'Agent terminal contribution',
                 );
             },
             registerExternalSessions: (id: string, contribution: AgentExternalSessionsContribution) => {
@@ -2068,6 +2104,12 @@ export function createPluginRegistrationScope(
                 }
                 if (!right.requiredFields.includes('cliAuth') && value?.cliAuth !== undefined) {
                     fail(`Plugin '${params.pluginId}' registered an undeclared Agent CLI auth contribution for 'agents/${right.localId}'`);
+                }
+                if (right.requiredFields.includes('terminal') && value?.terminal === undefined) {
+                    fail(`Plugin '${params.pluginId}' activation is missing Agent terminal contribution for 'agents/${right.localId}'`);
+                }
+                if (!right.requiredFields.includes('terminal') && value?.terminal !== undefined) {
+                    fail(`Plugin '${params.pluginId}' registered an undeclared Agent terminal contribution for 'agents/${right.localId}'`);
                 }
                 if (right.requiredFields.includes('externalSessions') && value?.externalSessions === undefined) {
                     fail(`Plugin '${params.pluginId}' activation is missing Agent External Sessions contribution for 'agents/${right.localId}'`);

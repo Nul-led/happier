@@ -95,16 +95,19 @@ const ROOT_RUNTIME_EXPORTS = [
     'ScmRefreshPolicySchema',
     'ScmSelectedMutationPathSchema',
     'ScmWorkingSnapshotSchema',
+    'buildWorktreeRelativePath',
     'createScmCapabilities',
     'encodeCompareRef',
     'evaluateScmRemoteMutationPolicy',
     'evaluateScmRemoteMutationPreconditions',
+    'hasForbiddenGitRefName',
     'isScmPatchBoundToPath',
     'normalizeScmBranchSourceRef',
     'normalizeScmHostingRepositoryIdentity',
     'normalizeScmRemoteName',
     'normalizeScmRemoteRequest',
     'normalizeScmRemoteUrl',
+    'normalizeWorktreeDisplayName',
     'parseScmRemoteUrl',
     'resolveScmScopedChangedPaths',
     'sameScmHostingRepositoryIdentity',
@@ -121,7 +124,6 @@ const TRANSITIVE_DECLARATION_CLOSURE_TYPES = [
 ] as const;
 
 const ROOT_TYPE_EXPORTS = [
-    'ParsedScmRemoteUrl',
     'PluginScmRegistrationApi',
     'ScmBranchCheckoutRequest',
     'ScmBranchCheckoutResponse',
@@ -228,6 +230,7 @@ const ROOT_TYPE_EXPORTS = [
     'ScmStashShowResponse',
     'ScmStatusSnapshotRequest',
     'ScmStatusSnapshotResponse',
+    'ScmTransportIdentityV1',
     'ScmWorkingEntry',
     'ScmWorkingSnapshot',
     'ScmWorktree',
@@ -258,6 +261,7 @@ const PORTABLE_VALUE_PROJECTIONS = [
             'createScmCapabilitiesFromBackendCapabilities',
             'mapGitScmErrorCode',
             'mapSaplingScmErrorCode',
+            'resolveScmBackendCapabilities',
             'supportedCapability',
             'unsupportedCapability',
         ],
@@ -377,7 +381,6 @@ function moduleTypeReexports(
 }
 
 type RootProjectionTypes = [
-    scmProjection.ParsedScmRemoteUrl,
     scmProjection.PluginScmRegistrationApi,
     scmProjection.ScmBranchCheckoutRequest,
     scmProjection.ScmBranchCheckoutResponse,
@@ -488,6 +491,7 @@ type RootProjectionTypes = [
     scmProjection.ScmStashShowResponse,
     scmProjection.ScmStatusSnapshotRequest,
     scmProjection.ScmStatusSnapshotResponse,
+    scmProjection.ScmTransportIdentityV1,
     scmProjection.ScmWorkingEntry,
     scmProjection.ScmWorkingSnapshot,
     scmProjection.ScmWorktree,

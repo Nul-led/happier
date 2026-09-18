@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { isCanonicalAbsolutePathInsideRoot } from '@happier-dev/plugin-sdk/fs';
 import { compareExternalSessionCandidatePrecedence } from '@happier-dev/plugin-sdk/sessions/external';
 
+import { readClaudeProviderIdentityValue } from '../../../../protocol/providerIdentity.js';
 import { resolveClaudeConfigDir, type ClaudeExternalSessionSource } from './source.js';
 
 export type ResolvedClaudeJsonlSessionFile = Readonly<{
@@ -382,7 +383,7 @@ export async function resolveClaudeJsonlSessionFile(params: Readonly<{
     signal?: AbortSignal;
 }>): Promise<ResolvedClaudeJsonlSessionFile | null> {
     throwIfAborted(params.signal);
-    const remoteSessionId = String(params.remoteSessionId ?? '').trim();
+    const remoteSessionId = readClaudeProviderIdentityValue(params.remoteSessionId) ?? '';
     if (!isSafeClaudeJsonlPathSegment(remoteSessionId)) return null;
 
     const configDir = resolveClaudeConfigDir({ source: params.source, env: params.env });
@@ -451,7 +452,7 @@ export async function findClaudeJsonlSessionsById(params: Readonly<{
     signal?: AbortSignal;
 }>): Promise<ClaudeJsonlSessionIdSnapshot> {
     throwIfAborted(params.signal);
-    const remoteSessionId = String(params.remoteSessionId ?? '').trim();
+    const remoteSessionId = readClaudeProviderIdentityValue(params.remoteSessionId) ?? '';
     if (!isSafeClaudeJsonlPathSegment(remoteSessionId)) {
         return {
             matches: [],

@@ -32,6 +32,7 @@ import {
     PosthogIssueActivityResultV1Schema,
 } from './detail/issueActivityContract.js';
 import { PosthogCodeVariablesResultV1Schema } from './detail/codeVariablesContract.js';
+import { PosthogNativeOverviewResultV1Schema } from './detail/nativeOverviewContract.js';
 import {
     POSTHOG_FAILURE_CODES,
     createPosthogCodeVariablesReader,
@@ -40,6 +41,7 @@ import {
     createPosthogSampledEventsReader,
     createPosthogSourceEntryReader,
     getPosthogSourceEntry,
+    readPosthogNativeOverview,
     listPosthogInstances,
     readPosthogCodeVariablesForIssue,
     readPosthogConfigurationDirectory,
@@ -47,7 +49,7 @@ import {
     scanPosthogSource,
     toTriageSourceFailure,
 } from './operations.js';
-import { encodePosthogConfiguration } from './instance.js';
+import { decodePosthogConfiguration, encodePosthogConfiguration } from './instance.js';
 import { deriveTriageConfiguredSourceInstanceDigestV1 } from '@happier-dev/triage-sources/runtime';
 
 // The purpose doubles as this plugin's connected-account contribution id, so the
@@ -230,6 +232,48 @@ describe('PostHog Triage source operations', () => {
         // The valid rows on that page are still published: a pagination field this
         // parser could not read is not a reason to discard an organization it could.
         expect(result.candidates).toHaveLength(1);
+    });
+
+    it('still offers an editable candidate when a whole discovered environment set cannot fit one configuration', async () => {
+        // The configuration token is bounded, and a real organization can expose more
+        // environments than one token holds. Dropping the organization leaves a
+        // first-time reader with no row, so no draft, so no way to open the native
+        // editor and choose the smaller subset that would fit — a dead end that no
+        // amount of retrying escapes. The bound itself is correct and stays.
+        const environments = Array.from({ length: 12 }, (_unused, index) => ({
+            id: 5000 + index,
+            uuid: `00000000-0000-4000-8000-0000000000${(0xd0 + index).toString(16)}`,
+            organization: '00000000-0000-4000-8000-0000000000b1',
+            project_id: 4820,
+            name: `Storefront environment ${String(index).padStart(2, '0')}`,
+        }));
+        const host = context([
+            { ...organizationsPage, next: null },
+            { count: environments.length, next: null, previous: null, results: environments },
+        ]);
+
+        const result = await listPosthogInstances({ v: 1 }, host.value);
+
+        expect(() => TriageListInstancesResultV1Schema.parse(result)).not.toThrow();
+        if (result.kind === 'failed') throw new Error('discovery must still publish candidates');
+        expect(result.candidates).toHaveLength(1);
+        const draft = result.candidates[0];
+        if (draft === undefined) throw new Error('the over-bound organization must stay selectable');
+        const decoded = decodePosthogConfiguration(draft.configuration);
+        expect(decoded).not.toBeNull();
+        expect(decoded?.organizationUuid).toBe('00000000-0000-4000-8000-0000000000b1');
+        // A bounded starting subset the user can widen or narrow in the editor, not the
+        // whole set and not nothing.
+        expect(decoded?.environments.length).toBeGreaterThan(0);
+        expect(decoded?.environments.length).toBeLessThan(environments.length);
+        // The draft is smaller than what discovery saw, so the listing is not complete
+        // and says which condition made it partial.
+        expect(result.kind).toBe('incomplete');
+        if (result.kind !== 'incomplete') return;
+        expect(result.failure).toEqual({
+            class: 'unknown',
+            code: POSTHOG_FAILURE_CODES.discoveryEnvironmentsBounded,
+        });
     });
 
     it('reads only the requested organization directory page and exposes the next page', async () => {
@@ -530,6 +574,30 @@ describe('PostHog Triage source operations', () => {
         });
         // The clean page's own rows are untouched by the caveat it carries.
         expect(second.observations.length).toBeGreaterThan(0);
+    });
+
+    it.each([
+        [200, undefined], [403, 'permission'], [404, 'unknown'], [429, 'rateLimit'], [500, 'transient'],
+    ] as const)('keeps native severity and typed enrichment status from the sole CRUD-first read (%s)', async (queryStatus, failureClass) => {
+        const host = context([crudIssueRead, queryStatus === 200 ? queryIssueDetail : {}], [200, queryStatus]);
+        const result = await readPosthogNativeOverview({
+            v: 1,
+            instance: configuredInstance(),
+            localRef: {
+                kindId: 'error-issue',
+                collisionScope: 'posthog:https://eu.posthog.com:00000000-0000-4000-8000-0000000000d1',
+                entryId: '00000000-0000-4000-8000-000000000001',
+            },
+        }, host.value);
+        expect(PosthogNativeOverviewResultV1Schema.parse(result)).toMatchObject({
+            observation: { kind: 'present' }, severity: 'high',
+        });
+        if (queryStatus === 200) expect(result).not.toHaveProperty('enrichmentFailure');
+        else expect(result.enrichmentFailure).toMatchObject({ class: failureClass });
+        expect(host.request.mock.calls.map(([input]) => input.method)).toEqual(['GET', 'POST']);
+        // The private result must never leak into the aggregate observation ABI.
+        expect(TriageGetResultV1Schema.parse(result.observation)).toEqual(result.observation);
+        expect(result.observation).not.toHaveProperty('enrichmentFailure');
     });
 
     it('performs CRUD-first get and returns one strict present observation', async () => {

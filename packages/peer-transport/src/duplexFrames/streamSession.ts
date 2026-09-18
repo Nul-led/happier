@@ -77,6 +77,7 @@ export function createPeerTcpTunnelStreamSession(input: Readonly<{
     let totalBytes = 0;
     let outboundSequence = 0;
     let closed = false;
+    let outboundEndRequested = false;
     let outboundHalfClosed = false;
     let outboundReadPaused = false;
     let drainingOutboundQueue = false;
@@ -85,6 +86,10 @@ export function createPeerTcpTunnelStreamSession(input: Readonly<{
     let idleTimer: ReturnType<typeof setTimeout> | undefined;
     let durationTimer: ReturnType<typeof setTimeout> | undefined;
     let localClosePromise: Promise<void> | null = null;
+    let pendingOutboundHalfClose: Readonly<{
+        reasonCode: string;
+        resolve: (result: PeerTcpTunnelStreamSessionResult) => void;
+    }> | null = null;
 
     function clearAckTimer(direction: PeerTcpTunnelDirectionV1): void {
         const timer = ackTimers[direction];
@@ -110,6 +115,12 @@ export function createPeerTcpTunnelStreamSession(input: Readonly<{
         }
     }
 
+    function settlePendingOutboundHalfClose(result: PeerTcpTunnelStreamSessionResult): void {
+        const pending = pendingOutboundHalfClose;
+        pendingOutboundHalfClose = null;
+        pending?.resolve(result);
+    }
+
     function closeLocally(
         pendingReasonCode: PeerTcpTunnelStreamSessionFailure['reasonCode'] = 'tunnel_closed',
     ): Promise<void> {
@@ -118,6 +129,7 @@ export function createPeerTcpTunnelStreamSession(input: Readonly<{
         clearAckTimers();
         clearLifecycleTimers();
         settlePendingOutboundChunks(pendingReasonCode);
+        settlePendingOutboundHalfClose({ ok: false, reasonCode: pendingReasonCode });
         localClosePromise = (async () => {
             let detachFailure: unknown;
             try {
@@ -344,14 +356,35 @@ export function createPeerTcpTunnelStreamSession(input: Readonly<{
                 next.resolve?.(sent);
                 if (!sent.ok) return;
             }
+            if (!closed && outboundEndRequested && !outboundHalfClosed && pendingOutboundChunks.length === 0) {
+                outboundHalfClosed = true;
+                accounting.markHalfClosed({ direction: outboundDirection });
+                const reasonCode = pendingOutboundHalfClose?.reasonCode ?? 'direction_half_closed';
+                const result = await sendSessionFrame({
+                    v: 1,
+                    kind: 'close',
+                    tunnelId: input.tunnelId,
+                    direction: outboundDirection,
+                    halfClose: true,
+                    reasonCode,
+                });
+                settlePendingOutboundHalfClose(result);
+                return;
+            }
             await resumeOutboundReads();
         } finally {
             drainingOutboundQueue = false;
+            // `endWrite()` can arrive while the final data frame is waiting on
+            // an asynchronous read-resume. Give that newly requested close a
+            // fresh drain pass after releasing the single-drainer guard.
+            if (!closed && outboundEndRequested && !outboundHalfClosed && pendingOutboundChunks.length === 0) {
+                void drainOutboundQueue();
+            }
         }
     }
 
     async function enqueueOutboundData(bytes: Uint8Array): Promise<void> {
-        if (closed || outboundHalfClosed || bytes.byteLength === 0) return;
+        if (closed || outboundEndRequested || outboundHalfClosed || bytes.byteLength === 0) return;
         queueOutboundData(bytes);
         await drainOutboundQueue();
     }
@@ -451,6 +484,7 @@ export function createPeerTcpTunnelStreamSession(input: Readonly<{
                         for (const pending of pendingOutboundChunks.splice(0)) {
                             pending.resolve?.({ ok: false, reasonCode: 'direction_half_closed' });
                         }
+                        settlePendingOutboundHalfClose({ ok: false, reasonCode: 'direction_half_closed' });
                         await pauseOutboundReads();
                     }
                     return { ok: true };
@@ -468,7 +502,7 @@ export function createPeerTcpTunnelStreamSession(input: Readonly<{
         },
         async write(bytes: Uint8Array): Promise<PeerTcpTunnelStreamSessionResult> {
             if (closed) return { ok: false, reasonCode: 'tunnel_closed' };
-            if (outboundHalfClosed) return { ok: false, reasonCode: 'direction_half_closed' };
+            if (outboundEndRequested || outboundHalfClosed) return { ok: false, reasonCode: 'direction_half_closed' };
             if (bytes.byteLength === 0) return { ok: true };
             return new Promise((resolve) => {
                 queueOutboundData(bytes, resolve);
@@ -477,16 +511,11 @@ export function createPeerTcpTunnelStreamSession(input: Readonly<{
         },
         async endWrite(reasonCode: string): Promise<PeerTcpTunnelStreamSessionResult> {
             if (closed) return { ok: false, reasonCode: 'tunnel_closed' };
-            if (outboundHalfClosed) return { ok: false, reasonCode: 'direction_half_closed' };
-            outboundHalfClosed = true;
-            accounting.markHalfClosed({ direction: outboundDirection });
-            return sendSessionFrame({
-                v: 1,
-                kind: 'close',
-                tunnelId: input.tunnelId,
-                direction: outboundDirection,
-                halfClose: true,
-                reasonCode,
+            if (outboundEndRequested || outboundHalfClosed) return { ok: false, reasonCode: 'direction_half_closed' };
+            outboundEndRequested = true;
+            return new Promise((resolve) => {
+                pendingOutboundHalfClose = { reasonCode, resolve };
+                void drainOutboundQueue();
             });
         },
         async abort(reasonCode: string): Promise<void> {

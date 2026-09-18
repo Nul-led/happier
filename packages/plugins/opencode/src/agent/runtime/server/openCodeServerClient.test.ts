@@ -8,8 +8,10 @@ import type {
 
 import {
   createOpenCodeServerClient as createOpenCodeServerClientUnderTest,
+  isOpenCodeServerUnsupportedOperation,
   OpenCodeServerHttpError,
 } from './openCodeServerClient.js';
+import type { OpenCodeServerDialect } from './dialect.js';
 import { createOpenCodeServerTransport } from './transport.js';
 
 const HEALTHY_MANAGED_SERVICE_SNAPSHOT = Object.freeze({
@@ -42,12 +44,14 @@ function healthyManagedService(
 function createClient(params: Readonly<{
   request: ManagedServiceHandle['request'];
   directory?: string | null;
+  dialect?: OpenCodeServerDialect;
 }>) {
   return createOpenCodeServerClientUnderTest({
     transport: createOpenCodeServerTransport({
       managedService: healthyManagedService(params.request),
     }),
     directory: params.directory,
+    dialect: params.dialect ?? 'v1',
   });
 }
 
@@ -154,6 +158,7 @@ describe('createOpenCodeServerClient', () => {
     const client = createOpenCodeServerClientUnderTest({
       transport,
       directory: '/tmp/opencode-project',
+      dialect: 'v1',
     });
 
     await client.providersList();
@@ -371,6 +376,27 @@ describe('createOpenCodeServerClient', () => {
       pathAndQuery: '/skill?directory=%2Frepo',
       headers: { 'content-type': 'application/json' },
     });
+  });
+
+  it('resolves every route directory through the one client owner, never the serializer', async () => {
+    // The query serializer encodes the bytes it is given, so a Happier-owned
+    // path is canonicalized by `resolveDirectory` before it gets there — and
+    // that owner is also what supplies the session directory when a call names
+    // none, exactly as the `/session/*` routes already behave.
+    const requests: ManagedServiceRequest[] = [];
+    const request = vi.fn<ManagedServiceHandle['request']>(async (input) => {
+      requests.push(input);
+      return createJsonResponse([]);
+    });
+    const client = createClient({ request, directory: '/repo' });
+
+    await client.appSkills({ directory: '  /other  ' });
+    await client.appSkills({});
+
+    expect(requests.map((entry) => entry.pathAndQuery)).toEqual([
+      '/skill?directory=%2Fother',
+      '/skill?directory=%2Frepo',
+    ]);
   });
 
   it('throws a typed auth failure for unauthorized server responses', async () => {
@@ -683,29 +709,32 @@ describe('createOpenCodeServerClient', () => {
     });
   });
 
-  it('reconnects the directory-scoped event stream after a read-idle timeout', async () => {
+  it('keeps a healthy directory-scoped event stream across a quiet interval', async () => {
     vi.useFakeTimers();
     const controller = new AbortController();
     const encoder = new TextEncoder();
-    const firstChunks = [
-      encoder.encode('id: evt-pre-boundary\ndata: {"type":"message.part.updated","properties":{"time":1,"part":{"type":"tool","sessionID":"ses-1","callID":"history-1","tool":"bash","state":{"status":"running"}}}}\n\n'),
-      encoder.encode('id: evt-boundary-1\ndata: {"type":"server.connected","properties":{}}\n\n'),
-      encoder.encode('id: evt-1\ndata: {"type":"session.updated","properties":{"sessionID":"ses-1"}}\n\n'),
-    ];
-    const firstStreamCancel = vi.fn();
-    const secondChunks = [
-      encoder.encode('id: evt-boundary-2\ndata: {"type":"server.connected","properties":{}}\n\n'),
-      encoder.encode('id: evt-2\ndata: {"type":"session.idle","properties":{"sessionID":"ses-1"}}\n\n'),
-    ];
-    const request = vi.fn<ManagedServiceHandle['request']>(async () => {
-      if (request.mock.calls.length === 1) {
-        return createSseResponse(firstChunks, {
-          keepOpen: true,
-          onCancel: firstStreamCancel,
-        });
-      }
-      return createSseResponse(secondChunks);
-    });
+    const request = vi.fn<ManagedServiceHandle['request']>(async () => ({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      headers: { 'content-type': 'text/event-stream' },
+      body: new ReadableStream<Uint8Array>({
+        start(streamController) {
+          streamController.enqueue(encoder.encode(
+            'id: evt-boundary-1\ndata: {"type":"server.connected","properties":{}}\n\n',
+          ));
+          streamController.enqueue(encoder.encode(
+            'id: evt-1\ndata: {"type":"session.updated","properties":{"sessionID":"ses-1"}}\n\n',
+          ));
+          setTimeout(() => {
+            streamController.enqueue(encoder.encode(
+              'id: evt-2\ndata: {"type":"session.idle","properties":{"sessionID":"ses-1"}}\n\n',
+            ));
+            streamController.close();
+          }, 31_000);
+        },
+      }),
+    }));
     const client = createClient({ request, directory: '/repo' });
     const events: Array<Readonly<{ event: unknown; delivery: unknown }>> = [];
 
@@ -717,16 +746,13 @@ describe('createOpenCodeServerClient', () => {
       },
     });
     await vi.advanceTimersByTimeAsync(30_051);
+    expect(request).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(950);
     await done;
 
-    expect(request).toHaveBeenCalledTimes(2);
-    expect(request.mock.calls.map(([input]) => input.pathAndQuery)).toEqual([
-      '/event?directory=%2Frepo',
-      '/event?directory=%2Frepo',
-    ]);
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request.mock.calls[0]?.[0].pathAndQuery).toBe('/event?directory=%2Frepo');
     expect(request.mock.calls[0]?.[0].headers).not.toHaveProperty('Last-Event-ID');
-    expect(request.mock.calls[1]?.[0].headers).not.toHaveProperty('Last-Event-ID');
-    expect(firstStreamCancel).toHaveBeenCalled();
     expect(events).toEqual([
       {
         event: {
@@ -741,13 +767,6 @@ describe('createOpenCodeServerClient', () => {
           properties: { sessionID: 'ses-1' },
         },
         delivery: expect.objectContaining({ provenance: 'accepted-live' }),
-      },
-      {
-        event: {
-          type: 'server.connected',
-          properties: {},
-        },
-        delivery: expect.objectContaining({ provenance: 'connection-boundary' }),
       },
       {
         event: {
@@ -906,5 +925,607 @@ describe('createOpenCodeServerClient', () => {
       name: 'OpenCodeSseHttpError',
       status: 401,
     }));
+  });
+});
+
+describe('createOpenCodeServerClient (OpenCode V2 beta dialect)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  // Route/body/envelope expectations below are the pinned standalone-V2
+  // contract at `10765ff2a9da8c3b88e4de873aa383a49c318912`:
+  // `comparators/opencode/packages/protocol/src/api.ts` composes only `/api/*`
+  // groups, `.../groups/location.ts` declares the deepObject `location` query
+  // that `packages/server/src/location.ts` reads as `location[directory]`, and
+  // `.../middleware/session-location.ts` resolves session-scoped routes from the
+  // stored session row instead of a query parameter.
+  it('creates a session through the V2 route, location body and data envelope', async () => {
+    const requests: ManagedServiceRequest[] = [];
+    const request = vi.fn<ManagedServiceHandle['request']>(async (input) => {
+      requests.push(input);
+      return createJsonResponse({ data: { id: 'ses-created', title: 'new' } });
+    });
+    const client = createClient({
+      request,
+      directory: '/tmp/opencode-project',
+      dialect: 'v2',
+    });
+
+    await expect(client.sessionCreate({ directory: '/tmp/opencode-project' }))
+      .resolves.toEqual({ id: 'ses-created' });
+
+    expect(requests.at(0)?.pathAndQuery).toBe('/api/session');
+    expect(requests.at(0)?.method).toBe('POST');
+    expect(readJsonRequestBody(requests.at(0))).toEqual({
+      location: { directory: '/tmp/opencode-project' },
+    });
+  });
+
+  it('selects the model on its own V2 route before admitting the prompt', async () => {
+    const requests: ManagedServiceRequest[] = [];
+    const request = vi.fn<ManagedServiceHandle['request']>(async (input) => {
+      requests.push(input);
+      if (input.pathAndQuery.endsWith('/model')) return createNoContentResponse();
+      return createJsonResponse({ data: { id: 'msg_1', admittedSeq: 4 } });
+    });
+    const client = createClient({ request, directory: '/repo', dialect: 'v2' });
+
+    // V2 `session.prompt` takes `{ id?, prompt, delivery?, resume? }` and carries
+    // no model, so a per-prompt model is a `session.switchModel` call first.
+    await expect(client.sessionPromptAsync({
+      sessionId: 'ses-1',
+      messageId: 'msg_1',
+      text: 'hello',
+      parts: [{ type: 'text', text: 'hello' }, { type: 'agent', name: 'reviewer' }],
+      model: { providerID: 'anthropic', modelID: 'claude-opus-5' },
+      variant: 'thinking',
+    })).resolves.toEqual({ id: 'msg_1', admittedSeq: 4 });
+
+    expect(requests.map((entry) => entry.pathAndQuery)).toEqual([
+      '/api/session/ses-1/model',
+      '/api/session/ses-1/prompt',
+    ]);
+    expect(readJsonRequestBody(requests.at(0))).toEqual({
+      model: { id: 'claude-opus-5', providerID: 'anthropic', variant: 'thinking' },
+    });
+    expect(readJsonRequestBody(requests.at(1))).toEqual({
+      id: 'msg_1',
+      prompt: { text: 'hello', agents: [{ name: 'reviewer' }] },
+    });
+  });
+
+  it('interrupts and compacts through the V2 session routes', async () => {
+    const requests: ManagedServiceRequest[] = [];
+    const request = vi.fn<ManagedServiceHandle['request']>(async (input) => {
+      requests.push(input);
+      return createNoContentResponse();
+    });
+    const client = createClient({ request, directory: '/repo', dialect: 'v2' });
+
+    await client.sessionAbort({ sessionId: 'ses-1' });
+    await client.sessionSummarize({
+      sessionId: 'ses-1',
+      model: { providerID: 'anthropic', modelID: 'claude-opus-5' },
+      auto: false,
+    });
+
+    expect(requests.map((entry) => entry.pathAndQuery)).toEqual([
+      '/api/session/ses-1/interrupt',
+      '/api/session/ses-1/compact',
+    ]);
+    // `session.compact` declares no payload; sending a model would be invented.
+    expect(readJsonRequestBody(requests.at(1))).toBeUndefined();
+  });
+
+  it('derives session busy/idle status from the V2 active-session drain list', async () => {
+    const request = vi.fn<ManagedServiceHandle['request']>(async () => createJsonResponse({
+      data: { 'ses-busy': { type: 'running' } },
+    }));
+    const client = createClient({ request, directory: '/repo', dialect: 'v2' });
+
+    await expect(client.sessionStatus({ sessionId: 'ses-busy' })).resolves.toEqual({ type: 'busy' });
+    await expect(client.sessionStatus({ sessionId: 'ses-other' })).resolves.toEqual({ type: 'idle' });
+    expect(request.mock.calls[0]?.[0].pathAndQuery).toBe('/api/session/active');
+  });
+
+  it('pages V2 session messages in order and normalizes them into the projection shape', async () => {
+    const requests: ManagedServiceRequest[] = [];
+    const request = vi.fn<ManagedServiceHandle['request']>(async (input) => {
+      requests.push(input);
+      if (input.pathAndQuery.includes('cursor=')) {
+        return createJsonResponse({
+          data: [{
+            id: 'msg_2',
+            type: 'assistant',
+            agent: 'build',
+            model: { id: 'claude-opus-5', providerID: 'anthropic' },
+            finish: 'stop',
+            content: [
+              { type: 'text', id: 'prt_1', text: '  done\n' },
+              { type: 'reasoning', id: 'prt_reasoning', text: '\tthink exactly  ' },
+              // Semantic text validates its type only: a non-string is omitted,
+              // never coerced into bytes the provider did not author.
+              { type: 'reasoning', id: 'prt_not_text', text: ['not', 'text'] },
+              {
+                type: 'tool',
+                id: 'call_1',
+                name: 'bash',
+                state: {
+                  status: 'completed',
+                  input: { command: 'ls' },
+                  content: [{ type: 'text', text: ' README.md\n' }],
+                  structured: {},
+                },
+                time: { created: 30, completed: 40 },
+              },
+            ],
+            time: { created: 30, completed: 40 },
+          }],
+          cursor: {},
+        });
+      }
+      return createJsonResponse({
+        data: [
+          // A user message whose `text` is not a string carries no text part.
+          { id: 'msg_0', type: 'user', text: 7, time: { created: 5 } },
+          { id: 'msg_1', type: 'user', text: '  hi\n', time: { created: 10 } },
+        ],
+        // The server minted this cursor; the continuation must send it back
+        // byte-for-byte, surrounding whitespace and newline included.
+        cursor: { next: '  cur/2==\n' },
+      });
+    });
+    const client = createClient({ request, directory: '/repo', dialect: 'v2' });
+
+    const messages = await client.sessionMessages({ sessionId: 'ses-1' });
+
+    expect(requests.map((entry) => entry.pathAndQuery)).toEqual([
+      '/api/session/ses-1/message?order=asc',
+      '/api/session/ses-1/message?cursor=++cur%2F2%3D%3D%0A',
+    ]);
+    expect(messages).toEqual([
+      {
+        info: { id: 'msg_0', role: 'user', sessionID: 'ses-1', time: { created: 5 } },
+        parts: [],
+      },
+      {
+        info: { id: 'msg_1', role: 'user', sessionID: 'ses-1', time: { created: 10 } },
+        parts: [{ type: 'text', text: '  hi\n' }],
+      },
+      {
+        info: {
+          id: 'msg_2',
+          role: 'assistant',
+          sessionID: 'ses-1',
+          // V2 carries no parentID; the ordered preceding user message is the
+          // only evidence for the anchor the current projection requires.
+          parentID: 'msg_1',
+          finish: 'stop',
+          time: { created: 30, completed: 40 },
+        },
+        parts: [
+          { type: 'text', text: '  done\n' },
+          { type: 'reasoning', text: '\tthink exactly  ' },
+          {
+            type: 'tool',
+            sessionID: 'ses-1',
+            messageID: 'msg_2',
+            callID: 'call_1',
+            tool: 'bash',
+            state: { status: 'completed', input: { command: 'ls' }, output: ' README.md\n' },
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('reads and answers V2 permission requests through their location and session routes', async () => {
+    const requests: ManagedServiceRequest[] = [];
+    const request = vi.fn<ManagedServiceHandle['request']>(async (input) => {
+      requests.push(input);
+      if (input.method === 'POST') return createNoContentResponse();
+      return createJsonResponse({
+        location: { directory: '/repo' },
+        data: [{
+          id: 'per_1',
+          sessionID: 'ses-1',
+          action: 'bash',
+          resources: ['ls *'],
+          metadata: { reason: 'listing' },
+        }],
+      });
+    });
+    const client = createClient({ request, directory: '/repo', dialect: 'v2' });
+
+    // V2 `action` is the permission name and `resources` replaces `patterns`;
+    // without that remap the permission bridge reads the request as malformed.
+    await expect(client.permissionList()).resolves.toEqual([{
+      id: 'per_1',
+      sessionID: 'ses-1',
+      permission: 'bash',
+      patterns: ['ls *'],
+      metadata: { reason: 'listing' },
+    }]);
+
+    await client.permissionReply({
+      sessionId: 'ses-1',
+      requestId: 'per_1',
+      reply: 'once',
+      message: 'ok',
+    });
+
+    expect(requests.map((entry) => entry.pathAndQuery)).toEqual([
+      '/api/permission/request?location%5Bdirectory%5D=%2Frepo',
+      '/api/session/ses-1/permission/per_1/reply',
+    ]);
+    expect(readJsonRequestBody(requests.at(1))).toEqual({ reply: 'once', message: 'ok' });
+  });
+
+  it('reads and answers V2 question requests through their location and session routes', async () => {
+    const requests: ManagedServiceRequest[] = [];
+    const request = vi.fn<ManagedServiceHandle['request']>(async (input) => {
+      requests.push(input);
+      if (input.method === 'POST') return createNoContentResponse();
+      return createJsonResponse({
+        location: { directory: '/repo' },
+        data: [{
+          id: 'que_1',
+          sessionID: 'ses-1',
+          questions: [{ question: 'Ship it?', header: 'Ship', options: [{ label: 'Yes', description: '' }] }],
+        }],
+      });
+    });
+    const client = createClient({ request, directory: '/repo', dialect: 'v2' });
+
+    await expect(client.questionList()).resolves.toEqual([{
+      id: 'que_1',
+      sessionID: 'ses-1',
+      questions: [{ question: 'Ship it?', header: 'Ship', options: [{ label: 'Yes', description: '' }] }],
+    }]);
+    await client.questionReply({ sessionId: 'ses-1', requestId: 'que_1', answers: [['Yes']] });
+    await client.questionReject({ sessionId: 'ses-1', requestId: 'que_1' });
+
+    expect(requests.map((entry) => entry.pathAndQuery)).toEqual([
+      '/api/question/request?location%5Bdirectory%5D=%2Frepo',
+      '/api/session/ses-1/question/que_1/reply',
+      '/api/session/ses-1/question/que_1/reject',
+    ]);
+    expect(readJsonRequestBody(requests.at(1))).toEqual({ answers: [['Yes']] });
+  });
+
+  it('reads V2 skills out of the location envelope', async () => {
+    const requests: ManagedServiceRequest[] = [];
+    const request = vi.fn<ManagedServiceHandle['request']>(async (input) => {
+      requests.push(input);
+      return createJsonResponse({
+        location: { directory: '/repo' },
+        data: [{ name: 'review', location: '/repo/.opencode/skills/review', content: '' }],
+      });
+    });
+    const client = createClient({ request, directory: '/repo', dialect: 'v2' });
+
+    await expect(client.appSkills({ directory: '/repo' })).resolves.toEqual([
+      { name: 'review', location: '/repo/.opencode/skills/review', content: '' },
+    ]);
+    expect(requests.at(0)?.pathAndQuery).toBe('/api/skill?location%5Bdirectory%5D=%2Frepo');
+  });
+
+  it('combines the separate V2 provider and model inventories into one provider list', async () => {
+    const requests: ManagedServiceRequest[] = [];
+    const request = vi.fn<ManagedServiceHandle['request']>(async (input) => {
+      requests.push(input);
+      if (input.pathAndQuery.startsWith('/api/model')) {
+        return createJsonResponse({
+          location: { directory: '/repo' },
+          data: [
+            { id: 'claude-opus-5', providerID: 'anthropic', name: 'Opus 5', status: 'active' },
+            { id: 'gpt-5', providerID: 'openai', name: 'GPT-5', status: 'active' },
+          ],
+        });
+      }
+      return createJsonResponse({
+        location: { directory: '/repo' },
+        data: [{ id: 'anthropic', name: 'Anthropic' }, { id: 'openai', name: 'OpenAI' }],
+      });
+    });
+    const client = createClient({ request, directory: '/repo', dialect: 'v2' });
+
+    // V2 `Provider.Info` carries no `models` map and no `env`; models are their
+    // own location-scoped inventory keyed back by `providerID`.
+    await expect(client.providersList()).resolves.toEqual([
+      {
+        id: 'anthropic',
+        models: {
+          'claude-opus-5': { id: 'claude-opus-5', providerID: 'anthropic', name: 'Opus 5', status: 'active' },
+        },
+      },
+      {
+        id: 'openai',
+        models: { 'gpt-5': { id: 'gpt-5', providerID: 'openai', name: 'GPT-5', status: 'active' } },
+      },
+    ]);
+    expect(requests.map((entry) => entry.pathAndQuery)).toEqual([
+      '/api/provider?location%5Bdirectory%5D=%2Frepo',
+      '/api/model?location%5Bdirectory%5D=%2Frepo',
+    ]);
+  });
+
+  it('fails V2-absent operations narrowly and typed instead of inventing a route', async () => {
+    const request = vi.fn<ManagedServiceHandle['request']>(async () => createJsonResponse({}));
+    const client = createClient({ request, directory: '/repo', dialect: 'v2' });
+
+    // None of these exist in the pinned V2 protocol: there is no MCP group, no
+    // fork route, no todo read route and no `/global/config`.
+    await expect(client.mcpAdd({ directory: '/repo', name: 'happier', config: {} }))
+      .rejects.toSatisfy((error: unknown) => (
+        isOpenCodeServerUnsupportedOperation(error, 'mcp_registration')
+      ));
+    await expect(client.sessionFork({ sessionId: 'ses-1' }))
+      .rejects.toSatisfy((error: unknown) => isOpenCodeServerUnsupportedOperation(error, 'session_fork'));
+    await expect(client.sessionTodo({ sessionId: 'ses-1' }))
+      .rejects.toSatisfy((error: unknown) => isOpenCodeServerUnsupportedOperation(error, 'session_todo'));
+    await expect(client.globalConfigGet())
+      .rejects.toSatisfy((error: unknown) => isOpenCodeServerUnsupportedOperation(error, 'global_config'));
+    await expect(client.sessionPromptAsync({
+      sessionId: 'ses-1',
+      text: 'hi',
+      config: { temperature: 0.2 },
+    })).rejects.toSatisfy((error: unknown) => (
+      isOpenCodeServerUnsupportedOperation(error, 'session_prompt_config')
+    ));
+    // A variant is a field of `Model.Ref`, so V2 cannot carry one without a
+    // model. Running the turn at an unchosen effort would be the silent option.
+    await expect(client.sessionPromptAsync({
+      sessionId: 'ses-1',
+      text: 'hi',
+      variant: 'high',
+    })).rejects.toSatisfy((error: unknown) => (
+      isOpenCodeServerUnsupportedOperation(error, 'session_prompt_config')
+    ));
+
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('admits an ordinary V2 prompt with neither a model nor a variant', async () => {
+    // The guards above must stay conditions, not a blanket V2 prompt block.
+    const requests: ManagedServiceRequest[] = [];
+    const request = vi.fn<ManagedServiceHandle['request']>(async (input) => {
+      requests.push(input);
+      return createJsonResponse({ data: { id: 'msg_1' } });
+    });
+    const client = createClient({ request, directory: '/repo', dialect: 'v2' });
+
+    await expect(client.sessionPromptAsync({ sessionId: 'ses-1', text: 'hi' }))
+      .resolves.toEqual({ id: 'msg_1' });
+    expect(requests.map((entry) => entry.pathAndQuery)).toEqual(['/api/session/ses-1/prompt']);
+    expect(readJsonRequestBody(requests.at(0))).toEqual({ prompt: { text: 'hi' } });
+  });
+
+  it('subscribes to the live V2 event stream and normalizes its exact upstream frame shape', async () => {
+    const controller = new AbortController();
+    const encoder = new TextEncoder();
+    // Exact pinned upstream frame shape
+    // (`comparators/opencode/packages/server/src/handlers/event.ts` at
+    // `10765ff2a9da8c3b88e4de873aa383a49c318912`): every event is encoded as
+    // `{ _tag: 'Event', event: 'message', id: undefined, data }`, merged with a
+    // 15-second `": heartbeat"` comment stream. No frame carries an SSE id — the
+    // event id exists only inside the JSON payload.
+    const request = vi.fn<ManagedServiceHandle['request']>(async () => createSseResponse([
+      encoder.encode('event: message\ndata: {"id":"evt_0","type":"server.connected","data":{}}\n\n'),
+      encoder.encode(': heartbeat\n\n'),
+      encoder.encode('event: message\ndata: {"id":"evt_1","type":"session.updated","data":{"sessionID":"ses-1"},"location":{"directory":"/repo"}}\n\n'),
+      encoder.encode('event: message\ndata: {"id":"evt_2","type":"session.idle","data":{"sessionID":"ses-9"},"location":{"directory":"/elsewhere"}}\n\n'),
+    ]));
+    const client = createClient({ request, directory: '/repo', dialect: 'v2' });
+    const events: Array<Readonly<{ event: unknown; delivery: unknown }>> = [];
+
+    const done = client.subscribeGlobalEvents({
+      signal: controller.signal,
+      onEvent: (event, delivery) => {
+        events.push({ event, delivery });
+        if (event.type === 'session.updated') controller.abort();
+      },
+    });
+    await done;
+
+    expect(request.mock.calls[0]?.[0].pathAndQuery).toBe('/api/event');
+    expect(request.mock.calls[0]?.[0].headers).not.toHaveProperty('last-event-id');
+    expect(events).toEqual([
+      {
+        event: { type: 'server.connected', properties: {} },
+        delivery: expect.objectContaining({ provenance: 'connection-boundary' }),
+      },
+      {
+        event: { type: 'session.updated', properties: { sessionID: 'ses-1' } },
+        delivery: expect.objectContaining({ provenance: 'accepted-live' }),
+      },
+    ]);
+  });
+
+  it('reconnects the V2 stream as a fresh live subscription with no event-id resume', async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const encoder = new TextEncoder();
+    // Adversarial fixture: these frames *do* carry SSE ids, which the pinned
+    // upstream handler never emits. Happier must still not send `Last-Event-ID`
+    // and must not treat a reconnect as a replay, because the upstream route
+    // reads no request header and subscribes a bounded live stream
+    // (`EventV2.allBounded(events, 256)`) with no backlog.
+    const request = vi.fn<ManagedServiceHandle['request']>(async () => {
+      if (request.mock.calls.length === 1) {
+        return createSseResponse([
+          encoder.encode('id: evt_0\ndata: {"id":"evt_0","type":"server.connected","data":{}}\n\n'),
+          encoder.encode('id: evt_7\ndata: {"id":"evt_7","type":"session.updated","data":{"sessionID":"ses-1"}}\n\n'),
+        ]);
+      }
+      return createSseResponse([
+        // A pre-boundary frame on the new connection is not admitted: nothing
+        // proves it belongs to this subscription's accepted-live window.
+        encoder.encode('id: evt_8\ndata: {"id":"evt_8","type":"session.updated","data":{"sessionID":"ses-stale"}}\n\n'),
+        encoder.encode('event: message\ndata: {"id":"evt_9","type":"server.connected","data":{}}\n\n'),
+        encoder.encode('event: message\ndata: {"id":"evt_10","type":"session.idle","data":{"sessionID":"ses-1"}}\n\n'),
+      ]);
+    });
+    const client = createClient({ request, directory: '/repo', dialect: 'v2' });
+    const events: unknown[] = [];
+
+    const done = client.subscribeGlobalEvents({
+      signal: controller.signal,
+      onEvent: (event) => {
+        events.push(event);
+        if (event.type === 'session.idle') controller.abort();
+      },
+    });
+    await vi.advanceTimersByTimeAsync(60);
+    await done;
+
+    expect(request).toHaveBeenCalledTimes(2);
+    // The transport normalizes header names through `Headers`, so a resume
+    // token would arrive lower-cased; neither casing may be present.
+    expect(request.mock.calls[1]?.[0].headers).not.toHaveProperty('last-event-id');
+    expect(request.mock.calls[1]?.[0].headers).not.toHaveProperty('Last-Event-ID');
+    expect(events).toEqual([
+      { type: 'server.connected', properties: {} },
+      { type: 'session.updated', properties: { sessionID: 'ses-1' } },
+      { type: 'server.connected', properties: {} },
+      { type: 'session.idle', properties: { sessionID: 'ses-1' } },
+    ]);
+  });
+});
+
+describe('createOpenCodeServerClient provider-minted identity', () => {
+  /**
+   * Bytes OpenCode minted. Surrounding whitespace, the embedded newline and the
+   * `/`, `+`, `=` punctuation are part of the identity: the transport hands the
+   * value back to the same server, so the client may decide presence only.
+   */
+  const PROVIDER_MINTED_SESSION_ID = '  provider\nses/AB+cd==  ';
+  const PROVIDER_MINTED_PARENT_SESSION_ID = '  provider\nses/parent+cd==  ';
+  const PROVIDER_MINTED_REQUEST_ID = '  provider\nreq/AB+cd==  ';
+
+  it('returns a created provider session id as the exact bytes the server minted', async () => {
+    const request = vi.fn<ManagedServiceHandle['request']>(async () => createJsonResponse({
+      id: PROVIDER_MINTED_SESSION_ID,
+    }));
+    const client = createClient({ request });
+
+    await expect(client.sessionCreate({ directory: '/repo' }))
+      .resolves.toEqual({ id: PROVIDER_MINTED_SESSION_ID });
+  });
+
+  it('refuses a whitespace-only session id rather than returning a blank identity', async () => {
+    const request = vi.fn<ManagedServiceHandle['request']>(async () => createJsonResponse({
+      id: '  \n ',
+    }));
+    const client = createClient({ request });
+
+    await expect(client.sessionCreate({ directory: '/repo' }))
+      .rejects.toThrow('OpenCode server response did not include a session id');
+  });
+
+  it('forks at the exact parent session bytes and returns the exact child bytes', async () => {
+    const request = vi.fn<ManagedServiceHandle['request']>(async () => createJsonResponse({
+      id: PROVIDER_MINTED_SESSION_ID,
+    }));
+    const client = createClient({ request, directory: '/repo' });
+
+    await expect(client.sessionFork({ sessionId: PROVIDER_MINTED_PARENT_SESSION_ID }))
+      .resolves.toEqual({ id: PROVIDER_MINTED_SESSION_ID });
+
+    expect(request.mock.calls[0]?.[0].pathAndQuery).toBe(
+      `/session/${encodeURIComponent(PROVIDER_MINTED_PARENT_SESSION_ID)}/fork?directory=%2Frepo`,
+    );
+  });
+
+  it('routes a V2 permission reply to the exact owning session and request bytes', async () => {
+    const request = vi.fn<ManagedServiceHandle['request']>(async () => createNoContentResponse());
+    const client = createClient({ request, directory: '/repo', dialect: 'v2' });
+
+    await client.permissionReply({
+      sessionId: PROVIDER_MINTED_SESSION_ID,
+      requestId: PROVIDER_MINTED_REQUEST_ID,
+      reply: 'once',
+    });
+
+    expect(request.mock.calls[0]?.[0].pathAndQuery).toBe(
+      `/api/session/${encodeURIComponent(PROVIDER_MINTED_SESSION_ID)}`
+      + `/permission/${encodeURIComponent(PROVIDER_MINTED_REQUEST_ID)}/reply`,
+    );
+  });
+
+  it('refuses a V2 permission reply whose owning session id is only whitespace', async () => {
+    const request = vi.fn<ManagedServiceHandle['request']>(async () => createNoContentResponse());
+    const client = createClient({ request, directory: '/repo', dialect: 'v2' });
+
+    await expect(client.permissionReply({
+      sessionId: '   ',
+      requestId: PROVIDER_MINTED_REQUEST_ID,
+      reply: 'once',
+    })).rejects.toThrow('OpenCode V2 permission replies require the owning session id');
+
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('normalizes V2 messages with byte-exact provider message and tool-call ids', async () => {
+    const userMessageId = '  provider\nmsg/user+cd==  ';
+    const assistantMessageId = '  provider\nmsg/assistant+cd==  ';
+    const callId = '  provider\ncall/AB+cd==  ';
+    const request = vi.fn<ManagedServiceHandle['request']>(async () => createJsonResponse({
+      data: [
+        { id: userMessageId, type: 'user', text: 'hi', time: { created: 10 } },
+        {
+          id: assistantMessageId,
+          type: 'assistant',
+          finish: 'stop',
+          content: [{
+            type: 'tool',
+            id: callId,
+            name: 'bash',
+            state: { status: 'completed' },
+          }],
+          time: { created: 30, completed: 40 },
+        },
+      ],
+      cursor: {},
+    }));
+    const client = createClient({ request, directory: '/repo', dialect: 'v2' });
+
+    const messages = await client.sessionMessages({ sessionId: PROVIDER_MINTED_SESSION_ID });
+
+    expect(request.mock.calls[0]?.[0].pathAndQuery).toBe(
+      `/api/session/${encodeURIComponent(PROVIDER_MINTED_SESSION_ID)}/message?order=asc`,
+    );
+    expect(messages).toEqual([
+      {
+        info: {
+          id: userMessageId,
+          role: 'user',
+          sessionID: PROVIDER_MINTED_SESSION_ID,
+          time: { created: 10 },
+        },
+        parts: [{ type: 'text', text: 'hi' }],
+      },
+      {
+        info: {
+          id: assistantMessageId,
+          role: 'assistant',
+          sessionID: PROVIDER_MINTED_SESSION_ID,
+          parentID: userMessageId,
+          finish: 'stop',
+          time: { created: 30, completed: 40 },
+        },
+        parts: [{
+          type: 'tool',
+          sessionID: PROVIDER_MINTED_SESSION_ID,
+          messageID: assistantMessageId,
+          callID: callId,
+          tool: 'bash',
+          state: { status: 'completed' },
+        }],
+      },
+    ]);
   });
 });

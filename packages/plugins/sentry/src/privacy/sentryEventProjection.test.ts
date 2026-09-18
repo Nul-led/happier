@@ -180,6 +180,52 @@ describe('Sentry event projection — what may leave this source', () => {
     });
   });
 
+  /**
+   * An empty `rem` is the absence of one kind of evidence, never a statement about the
+   * `err` or the redaction chunks recorded beside it. Answering on the first recognized
+   * key that merely *exists* let a positively annotated value render in full — which is
+   * why current upstream's own `AnnotatedTextValue` reads the redaction chunks
+   * independently of `rem` rather than after it.
+   */
+  it.each([
+    ['an empty `rem` beside a non-empty `err`', { rem: [], err: ['scrubbed'] }],
+    [
+      'an empty `rem` beside a redaction chunk',
+      { rem: [], chunks: [{ type: 'redaction', text: '[Filtered]' }] },
+    ],
+  ])('withholds a value annotated with %s', (_label, leaf) => {
+    const projected = projectSentryEventForDisplay({
+      ...exceptionEvent(),
+      user: { email: 'ada@example.com' },
+      _meta: { user: { email: { '': leaf } } },
+    });
+
+    expect(projected.user?.email).toBeNull();
+    expect(JSON.stringify(projected)).not.toContain('ada@example.com');
+    expect(projected.redactions).toContainEqual({
+      path: 'user.email',
+      reason: 'providerScrubbed',
+    });
+  });
+
+  it.each([
+    ['only an empty `rem`', { rem: [] }],
+    ['only empty `rem` and `err` arrays', { rem: [], err: [] }],
+    ['chunks that record no redaction', { rem: [], chunks: [{ type: 'text' }] }],
+  ])('renders a value whose leaf carries %s', (_label, leaf) => {
+    const projected = projectSentryEventForDisplay({
+      ...exceptionEvent(),
+      user: { email: 'ada@example.com' },
+      _meta: { user: { email: { '': leaf } } },
+    });
+
+    expect(projected.user?.email).toBe('ada@example.com');
+    expect(projected.redactions).not.toContainEqual({
+      path: 'user.email',
+      reason: 'providerScrubbed',
+    });
+  });
+
   it('honours a `_meta` annotation on an exception value and on a stack frame', () => {
     // The provider's own scrubbing rules reach far past tags and user: the
     // exception message and the frame that carries the reader's file paths are

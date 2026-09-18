@@ -13,6 +13,7 @@
  */
 
 import { definePlugin } from '@happier-dev/plugin-sdk';
+import { CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1 } from '@happier-dev/plugin-sdk/connected-accounts';
 import { withTriageSourceSettingsTranslationsV1 } from '@happier-dev/triage-sources/translations';
 import {
   TRIAGE_SOURCES_CONTRIBUTION_POINT_ID_V1,
@@ -679,6 +680,7 @@ export const AZURE_DEVOPS_PLUGIN = definePlugin({
           modes: [{
             id: AZURE_DEVOPS_MANUAL_MODE_ID,
             kind: 'manual',
+            directExport: { contractVersion: CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1 },
             title: {
               key: 'plugins.azureDevops.auth.manual.title',
               fallback: 'Azure DevOps personal access token',

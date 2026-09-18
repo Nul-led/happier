@@ -2,42 +2,46 @@ import {
     computeCanonicalDomainSeparatedDigest,
     MAX_PLUGIN_SEARCH_SUBTITLE_CODE_POINTS_V1,
     MAX_PLUGIN_SEARCH_TITLE_CODE_POINTS_V1,
-    type PluginInvocationContext,
+    PluginError,
 } from '@happier-dev/plugin-sdk';
-import type { ActionHandler } from '@happier-dev/plugin-sdk/actions';
+import type {
+    PluginClientActionHandler,
+} from '@happier-dev/plugin-sdk/actions';
 import type {
     PluginSearchItemV1,
     PluginSearchQueryV1,
     PluginSearchResultV1,
 } from '@happier-dev/plugin-sdk';
 
-import { bindCorpusCollections } from '../corpus/collections/bindCorpusCollections.js';
 import { entryReferenceComponents } from '../corpus/identity/components.js';
 import { buildTriageEntryDetailLaunchInput } from '../composer/entryDetailLaunchInput.js';
 import { TRIAGE_APP_PAGE_LOCAL_ID_V1 } from '../composer/openEntryDetails.js';
-import { requireTriageAccountStorage } from '../requiredAccountStorage.js';
-import { MAX_TRIAGE_LIST_WINDOW_ROWS_V1 } from '../projection/listWindow.js';
+import {
+    MAX_TRIAGE_LIST_WINDOW_ROWS_V1,
+    TRIAGE_LIST_DEFAULT_LENS_V1,
+    type TriageListRowV1,
+    type TriageListWindowV1,
+} from '../projection/listWindow.js';
 import { projectTriageEntryDisplay } from '../ui/window/entryDisplay.js';
 import { boundTriageDisplayText } from '../ui/window/boundDisplayText.js';
-import { TRIAGE_SOURCES_CONTRIBUTION_POINT_REF_V1 } from '../manifest.js';
 import {
-    assembleTriageListPass,
-    type TriageListEntriesDepsV1,
-} from './listEntries.js';
+    acquireTriageListWindow,
+    projectTriageListWindow,
+    readTriageListWindowSnapshot,
+    refreshTriageListWindow,
+} from '../ui/window/mountedWindow.js';
 
 /**
  * The Universal Search query Action.
  *
- * It is deliberately a SECOND Action over the SAME owners, not a second search.
- * The heavyweight list contract carries lenses, facets, lane health, coverage,
- * per-connection observations and paging frontiers; none of that is the bounded
- * `{ query, limit } → { items, truncated }` DTO the universal surface speaks,
- * and widening the list result to carry both would make one wire answer two
- * questions. So this Action assembles the SAME pass through
- * `assembleTriageListPass` — the same configured sources, the same scan, the
- * same canonical matcher in `entrySearch.ts`, the same fold and the same
- * `smart` order — and projects it with the SAME display owner the list and the
- * Composer picker read.
+ * It is deliberately a SECOND Action over the SAME retained acquisition, not a
+ * second search. The heavyweight list contract carries lenses, facets, lane
+ * health, coverage, per-connection observations and paging frontiers; none of
+ * that is the bounded `{ query, limit } → { items, truncated }` DTO the
+ * universal surface speaks. This client Action therefore acquires the existing
+ * Account/plugin/generation window, cold-refreshes it only when absent, and
+ * projects its retained observations through the same matcher, fold, `smart`
+ * order and display owner used by the list and Composer picker.
  *
  * Activation is the incumbent open owner: every row carries an `openSurface`
  * command for the one Triage app-page destination, holding the exact strict
@@ -45,15 +49,9 @@ import {
  * navigation path, and the host never learns a Triage route.
  */
 
-export type TriageSearchEntriesDepsV1 = TriageListEntriesDepsV1;
-
-type TriageAssembledRow = Awaited<
-    ReturnType<typeof assembleTriageListPass>
->['window']['rows'][number];
-
 const TRIAGE_SEARCH_RESULT_ID_DOMAIN_V1 = 'happier:triage:search-result-id:v1';
 
-function deriveTriageSearchResultId(row: TriageAssembledRow): string {
+function deriveTriageSearchResultId(row: TriageListRowV1): string {
     return computeCanonicalDomainSeparatedDigest(
         TRIAGE_SEARCH_RESULT_ID_DOMAIN_V1,
         entryReferenceComponents(row.entryRef),
@@ -69,7 +67,7 @@ function deriveTriageSearchResultId(row: TriageAssembledRow): string {
  * search result is worse than an absent one.
  */
 function toSearchItem(
-    row: TriageAssembledRow,
+    row: TriageListRowV1,
 ): readonly PluginSearchItemV1[] {
     if (row.selected.kind !== 'selected') return [];
     const display = projectTriageEntryDisplay(row);
@@ -95,29 +93,41 @@ function toSearchItem(
     }];
 }
 
-export async function searchTriageEntries(
+async function waitForRefreshOrAbort(
+    refresh: Promise<void>,
+    signal: AbortSignal,
+): Promise<void> {
+    if (signal.aborted) throw new PluginError({ code: 'plugin_action_aborted' });
+    await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const finish = (settle: () => void) => {
+            if (settled) return;
+            settled = true;
+            signal.removeEventListener('abort', onAbort);
+            settle();
+        };
+        const onAbort = () => finish(() => reject(new PluginError({ code: 'plugin_action_aborted' })));
+        signal.addEventListener('abort', onAbort, { once: true });
+        refresh.then(
+            () => finish(resolve),
+            (error) => finish(() => reject(error)),
+        );
+    });
+}
+
+export function searchTriageEntries(
     input: PluginSearchQueryV1,
-    deps: TriageSearchEntriesDepsV1,
-): Promise<PluginSearchResultV1> {
+    window: TriageListWindowV1,
+): PluginSearchResultV1 {
     const limit = Math.max(1, Math.min(input.limit, MAX_TRIAGE_LIST_WINDOW_ROWS_V1));
-    const pass = await assembleTriageListPass({
-        v: 1,
-        sources: { kind: 'allConfigured' },
-        limit,
-        // The reader typed a query, so relevance is what they asked for; `smart`
-        // is the canonical ranked order and its default policy is the one the
-        // ranker owns.
-        order: 'smart',
-        query: input.query,
-    }, deps);
-    const openableItems = pass.window.rows.flatMap(toSearchItem);
+    const openableItems = window.rows.flatMap(toSearchItem);
     const items = openableItems.slice(0, limit);
     return {
         items,
         // Honest bounding: a window whose lanes have not all exhausted has more
         // to give, and an openable row cut by the bound is one the reader has
         // not seen.
-        truncated: pass.window.coverage !== 'complete'
+        truncated: window.coverage !== 'complete'
             || openableItems.length > items.length,
     };
 }
@@ -126,27 +136,43 @@ export async function searchTriageEntries(
  * The registered handler. It binds the owner above to the invocation context
  * exactly as the list Action does, and adds no dispatch, cache or registry.
  */
-export function createTriageSearchEntriesActionHandler(): ActionHandler<
+export function createTriageSearchEntriesActionHandler(): PluginClientActionHandler<
     PluginSearchQueryV1,
     PluginSearchResultV1
 > {
-    return async (input, context: PluginInvocationContext) => await searchTriageEntries(input, {
-        sourceInstances: bindCorpusCollections(requireTriageAccountStorage(context)).sourceInstances,
-        readAdmittedSources: async (options) => {
-            const observation = context.services.targetedContributions.observeForSelf(
-                TRIAGE_SOURCES_CONTRIBUTION_POINT_REF_V1,
-                { onInvalidated: () => {} },
-            );
-            try {
-                const snapshot = await observation.readCurrent(options);
-                return snapshot.contributions;
-            } finally {
-                observation.dispose();
+    return async (input, context) => {
+        const scope = context.ephemeralSharedScope;
+        if (scope === null) {
+            throw new PluginError({ code: 'plugin_ephemeral_shared_scope_unavailable' });
+        }
+        const host = context.ui;
+        const lease = acquireTriageListWindow(host, scope);
+        try {
+            if (context.signal.aborted) {
+                throw new PluginError({ code: 'plugin_action_aborted' });
             }
-        },
-        executeScan: async (operation, scanInput, options) => await context.services.actions
-            .executeAdmittedTargetedOperation(operation, scanInput, options ?? {}),
-        nowMs: () => Date.now(),
-        signal: context.signal,
-    });
+            if (readTriageListWindowSnapshot(host, scope).window === undefined) {
+                await waitForRefreshOrAbort(
+                    refreshTriageListWindow('view', host, scope),
+                    context.signal,
+                );
+            }
+            if (context.signal.aborted) {
+                throw new PluginError({ code: 'plugin_action_aborted' });
+            }
+            const limit = Math.max(1, Math.min(input.limit, MAX_TRIAGE_LIST_WINDOW_ROWS_V1));
+            const window = projectTriageListWindow({
+                ...TRIAGE_LIST_DEFAULT_LENS_V1,
+                query: input.query,
+                order: 'smart',
+                limit,
+            }, host, scope);
+            if (window === undefined) {
+                throw new PluginError({ code: 'plugin_triage_window_unavailable' });
+            }
+            return searchTriageEntries(input, window);
+        } finally {
+            lease.release();
+        }
+    };
 }

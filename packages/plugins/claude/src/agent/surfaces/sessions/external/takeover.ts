@@ -4,6 +4,7 @@ import type {
     AgentExternalSessionTakeoverResolveLaunchRequest,
 } from '@happier-dev/plugin-sdk/sessions/external';
 
+import { readClaudeProviderIdentityValue } from '../../../../protocol/providerIdentity.js';
 type ClaudeExternalSessionTakeoverIdentity =
     Pick<
         AgentExternalSessionTakeoverResolveLaunchRequest,
@@ -19,7 +20,7 @@ function readNonEmptyString(value: unknown): string | null {
 export function resolveClaudeExternalSessionTakeoverPlan(
     identity: ClaudeExternalSessionTakeoverIdentity,
 ): AgentExternalSessionTakeoverLaunchPlan | null {
-    const remoteSessionId = readNonEmptyString(identity.remoteSessionId);
+    const remoteSessionId = readClaudeProviderIdentityValue(identity.remoteSessionId);
     const configDir = readNonEmptyString(identity.source.configDir);
     const sourceProjectId = readNonEmptyString(identity.source.projectId);
     const linkedProjectId = readNonEmptyString(identity.linkData.projectId);

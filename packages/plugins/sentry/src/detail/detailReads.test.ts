@@ -121,6 +121,52 @@ describe('Sentry issue projections', () => {
     expect(result.failure.code).toBe('sentry-response-unparseable');
   });
 
+  /**
+   * The merge comparison the canonical `get` performs is not optional for the
+   * detail plane. Sentry serves a merged-away id with the SURVIVING issue's body
+   * under a plain `200`, so every projection here would otherwise render issue
+   * B's state, releases, tags and activity beneath issue A's still-mounted
+   * identity — and the detail body has no `merged` arm to say so.
+   */
+  it('refuses a 200 issue body whose id is not the issue the detail asked for', async () => {
+    for (const projection of ['overview', 'tags', 'activity'] as const) {
+      const harness = client(respond({
+        id: '9999',
+        status: 'resolved',
+        count: '99',
+        userCount: 3,
+        tags: [],
+        activity: [],
+      }));
+      const result = await readSentryIssueProjection(harness.client, {
+        instance: INSTANCE,
+        entryId: '1234',
+        projection,
+        nowMs: 0,
+      });
+
+      expect(result.ok, projection).toBe(false);
+      if (result.ok) continue;
+      expect(result.failure.code, projection).toBe('sentry-issue-identity-mismatch');
+    }
+  });
+
+  it('settles an issue body carrying no id as an unreadable response', async () => {
+    for (const body of [{ status: 'resolved' }, { id: '' }, { id: 1234 }]) {
+      const harness = client(respond(body));
+      const result = await readSentryIssueProjection(harness.client, {
+        instance: INSTANCE,
+        entryId: '1234',
+        projection: 'overview',
+        nowMs: 0,
+      });
+
+      expect(result.ok, JSON.stringify(body)).toBe(false);
+      if (result.ok) continue;
+      expect(result.failure.code, JSON.stringify(body)).toBe('sentry-response-unparseable');
+    }
+  });
+
   it('classifies a permission refusal as its own visible outcome', async () => {
     const harness = client(respond({ detail: 'no' }, {}, 403));
     const result = await readSentryIssueProjection(harness.client, {
@@ -218,6 +264,40 @@ describe('Sentry issue events page', () => {
     expect(result.value.nextPage).toEqual({ kind: 'end' });
     // A provider-stated empty page is a real page, not a failure.
     expect(result.value.rows).toEqual([]);
+  });
+
+  /**
+   * The panel renders "these are all of them" from `end` alone, so `end` must
+   * mean the provider said so. Pagination metadata this source cannot read is a
+   * walk that stopped short, with the rows it already read intact.
+   */
+  it('never ends the walk on pagination metadata it could not read', async () => {
+    for (const link of [
+      'not a link',
+      `<https://us.sentry.io${EVENTS_PATH}?cursor=0:100:0>; rel="previous"; results="false"`,
+      `<https://us.sentry.io${EVENTS_PATH}?cursor=0:100:0>; rel="next"`,
+      `<https://us.sentry.io${EVENTS_PATH}?cursor=0:100:0>; rel="next"; results="maybe"`,
+    ]) {
+      const harness = client(respond(
+        [{ eventID: 'e9', title: 'boom', dateCreated: '2026-01-02T00:00:00.000Z' }],
+        { Link: link },
+      ));
+      const result = await readSentryIssueEventsPage(harness.client, {
+        instance: INSTANCE,
+        entryId: '1234',
+        limit: 100,
+        position: null,
+        nowMs: 0,
+      });
+
+      expect(result.ok, link).toBe(true);
+      if (!result.ok) continue;
+      expect(result.value.nextPage, link).toEqual({
+        kind: 'stoppedShort',
+        reason: 'paginationCursorMalformed',
+      });
+      expect(result.value.rows, link).toHaveLength(1);
+    }
   });
 
   it('stops short when the next cursor names a position this walk already requested', async () => {
@@ -352,8 +432,30 @@ describe('Sentry tag values page', () => {
 });
 
 describe('Sentry selected-event read', () => {
+  it.each(['event', 'representative'] as const)('refuses %s evidence that now belongs to a successor issue', async (kind) => {
+    const eventId = 'b'.repeat(32);
+    const harness = client(respond({ groupID: '9999', eventID: eventId, title: 'successor evidence' }));
+    const result = await readSentryEventProjection(harness.client, {
+      instance: INSTANCE,
+      entryId: '1234',
+      selector: kind === 'event' ? { kind, eventId } : { kind },
+      nowMs: 0,
+    });
+    expect(result).toMatchObject({ ok: false, failure: { code: 'sentry-issue-identity-mismatch' } });
+    expect(JSON.stringify(result)).not.toContain('successor evidence');
+  });
+
+  it.each([undefined, null, '', 1234])('refuses evidence without a characterized issue membership (%s)', async (groupID) => {
+    const harness = client(respond({ groupID, eventID: 'b'.repeat(32) }));
+    const result = await readSentryEventProjection(harness.client, {
+      instance: INSTANCE, entryId: '1234', selector: { kind: 'representative' }, nowMs: 0,
+    });
+    expect(result).toMatchObject({ ok: false, failure: { code: 'sentry-response-unparseable' } });
+  });
+
   it('asks for the representative occurrence and never for an LLM rendering', async () => {
     const harness = client(respond({
+      groupID: '1234',
       eventID: 'b'.repeat(32),
       title: 'ChargeDeclined',
       entries: [{
@@ -386,13 +488,14 @@ describe('Sentry selected-event read', () => {
   });
 
   it('addresses the exact selected occurrence', async () => {
-    const harness = client(respond({ eventID: 'c'.repeat(32) }));
-    await readSentryEventProjection(harness.client, {
+    const harness = client(respond({ groupID: '1234', eventID: 'c'.repeat(32) }));
+    const result = await readSentryEventProjection(harness.client, {
       instance: INSTANCE,
       entryId: '1234',
       selector: { kind: 'event', eventId: 'c'.repeat(32) },
       nowMs: 0,
     });
+    expect(result.ok).toBe(true);
     expect(harness.request.mock.calls[0]?.[0]).toEqual({
       url: `https://us.sentry.io/api/0/organizations/42/issues/1234/events/${'c'.repeat(32)}/`,
       operation: 'event',
@@ -401,7 +504,7 @@ describe('Sentry selected-event read', () => {
 
   it('refuses a valid body whose id is not the exact selected occurrence', async () => {
     const selectedEventId = 'c'.repeat(32);
-    const harness = client(respond({ eventID: 'd'.repeat(32), title: 'another event' }));
+    const harness = client(respond({ groupID: '1234', eventID: 'd'.repeat(32), title: 'another event' }));
     const result = await readSentryEventProjection(harness.client, {
       instance: INSTANCE,
       entryId: '1234',
@@ -416,6 +519,7 @@ describe('Sentry selected-event read', () => {
 
   it('never lets a raw event body leave this call frame', async () => {
     const harness = client(respond({
+      groupID: '1234',
       eventID: 'd'.repeat(32),
       user: { email: 'ada@example.com', geo: { city: 'London' } },
       contexts: { device: { name: 'Ada’s laptop' } },
@@ -438,6 +542,35 @@ describe('Sentry selected-event read', () => {
     expect(encoded).not.toContain('session=notatoken');
     expect(encoded).not.toContain('London');
     expect(encoded).not.toContain('Ada’s laptop');
+  });
+
+  it('withholds a value the provider annotated beside an empty `rem` array', async () => {
+    // The read handler is where a provider body first becomes renderable, so the
+    // mixed-annotation case has to be settled here and not only in the projector's
+    // own unit: an empty `rem` next to a positive sibling annotation is ordinary
+    // provider output, and the value it names must never reach a controller.
+    const harness = client(respond({
+      eventID: 'd'.repeat(32),
+      title: 'ChargeDeclined',
+      groupID: '1234',
+      user: { email: 'ada@example.com' },
+      _meta: { user: { email: { '': { rem: [], err: ['scrubbed'] } } } },
+    }));
+
+    const result = await readSentryEventProjection(harness.client, {
+      instance: INSTANCE,
+      entryId: '1234',
+      selector: { kind: 'representative' },
+      nowMs: 0,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(JSON.stringify(result.value)).not.toContain('ada@example.com');
+    expect(result.value.redactions).toContainEqual({
+      path: 'user.email',
+      reason: 'providerScrubbed',
+    });
   });
 
   it('refuses an event id it could not address, without sending a request', async () => {

@@ -1,3 +1,5 @@
+import { readClaudeProviderIdentityValue } from '../../protocol/providerIdentity.js';
+
 export type ClaudeTaskNotification = Readonly<{
   taskId: string | null;
   toolUseId: string | null;
@@ -56,7 +58,9 @@ export function parseClaudeTaskNotification(value: unknown): ClaudeTaskNotificat
   const text = readEnvelopeText(row);
   if (!text || !/^\s*<task-notification\b/i.test(text)) return null;
 
-  const sourceSessionId = readString(row.session_id) ?? readString(row.sessionId) ?? undefined;
+  const sourceSessionId = readClaudeProviderIdentityValue(row.session_id)
+    ?? readClaudeProviderIdentityValue(row.sessionId)
+    ?? undefined;
   const uuid = readString(row.uuid) ?? undefined;
   return {
     taskId: readXmlTag(text, 'task-id'),

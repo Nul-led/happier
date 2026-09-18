@@ -382,20 +382,27 @@ export function projectGithubChecksSurface(input: Readonly<{
     passing += 1;
   }
 
+  // A whole-suite verdict is a claim about checks this walk never read. `allPassing`
+  // over a known-incomplete collection is the dangerous one: it reads as "CI is
+  // green" while the unread pages may be exactly where the failures are. Observed
+  // failures and observed in-flight runs are positive evidence and survive; the
+  // suite-wide breakdown does not, for the same reason an unreadable suite's does
+  // not — a rendered `0 failing` nobody could compute is a fabricated fact.
   const rowState: GithubChecksRowStateV1 | null = observations.length === 0
     ? null
     : failing > 0
       ? Object.freeze({ kind: 'failing', failingCount: failing })
       : running > 0
         ? Object.freeze({ kind: 'running' })
-        : passing > 0 ? Object.freeze({ kind: 'allPassing' }) : null;
+        : passing > 0 && !knownIncomplete ? Object.freeze({ kind: 'allPassing' }) : null;
 
+  const countsUnavailable = observations.length === 0 || knownIncomplete;
   return Object.freeze({
     state,
     observations,
-    failingCount: observations.length === 0 ? null : failing,
-    runningCount: observations.length === 0 ? null : running,
-    passingCount: observations.length === 0 ? null : passing,
+    failingCount: countsUnavailable ? null : failing,
+    runningCount: countsUnavailable ? null : running,
+    passingCount: countsUnavailable ? null : passing,
     checkRunsFailure: null,
     commitStatusFailure: null,
     rowState,

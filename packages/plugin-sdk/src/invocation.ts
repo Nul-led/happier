@@ -78,6 +78,8 @@ export type PluginInvocationCaller =
         kind: 'plugin';
         pluginId: string;
         contribution: PluginInvocationContributionIdentity;
+        /** Immutable installed generation for the immediate caller. */
+        immutableGenerationId: string;
         /** Current host-stamped materialization for the immediate caller. */
         materialization: PluginMachineMaterializationRefV1;
         originSurface?: PluginInvocationOriginSurface;
@@ -132,6 +134,26 @@ export interface PluginInvocationContext {
     readonly services: PluginServices;
     readonly ui?: PresentationService;
 }
+
+/** Exact host-stamped execution custody for run-capable invocation contracts. */
+export type PluginExecutionScopeV1 =
+    | Readonly<{ kind: 'session'; sessionId: string }>
+    | Readonly<{ kind: 'execution_run'; executionRunId: string }>;
+
+/**
+ * Additive run-capable context. The incumbent PluginInvocationContext remains
+ * unchanged for V1 callbacks; this type prevents detached Runs from exposing
+ * a fabricated `context.session`.
+ */
+export type PluginScopedInvocationContextV1 =
+    | (PluginInvocationContext & Readonly<{
+        scope: Extract<PluginExecutionScopeV1, Readonly<{ kind: 'session' }>>;
+        session: Readonly<{ id: string }>;
+    }>)
+    | (Omit<PluginInvocationContext, 'session'> & Readonly<{
+        scope: Extract<PluginExecutionScopeV1, Readonly<{ kind: 'execution_run' }>>;
+        session?: never;
+    }>);
 
 export interface AgentRuntimeFactoryContext {
     readonly plugin: PluginIdentity;

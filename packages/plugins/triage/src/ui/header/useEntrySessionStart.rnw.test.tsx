@@ -13,12 +13,18 @@ import {
 } from '@happier-dev/triage-protocol/v1';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import {
+    TRIAGE_START_ENTRY_SESSION_ACTION_LOCAL_ID_V1,
+    type TriageStartEntrySessionInputV1,
+    type TriageStartEntrySessionResultV1,
+} from '../../actions/entrySessionProtocol.js';
 import { buildTriageEntryAttachmentPresentation } from '../../composer/mutationPlan.js';
 import {
     TESTKIT_OBSERVED_REVISION,
     testkitConfiguredInstance,
 } from '../../sessions/testkit/entrySessionTestkit.test-support.js';
 import { testkitLocator } from '../../corpus/testkit/observations.test-support.js';
+import { describeTriageEntrySessionPhaseV1 } from './sessionStartOutcome.js';
 import { useTriageEntrySessionStart } from './useEntrySessionStart.js';
 
 /**
@@ -100,10 +106,62 @@ const PREPARED_REVIEW_START_REQUEST = Object.freeze({
     },
 });
 
+const SEND_START_REQUEST = Object.freeze({
+    ...START_REQUEST,
+    action: {
+        ...START_REQUEST.action,
+        actionId: 'send-in-checkout',
+        label: 'Send in checkout',
+        target: {
+            kind: 'agent',
+            promptInvocationId: null,
+            delivery: 'send',
+            seededFallbackInstruction: 'Repair the failing parser test.',
+        },
+    },
+});
+
+const PREPARED_REVIEW_SEND_REQUEST = Object.freeze({
+    ...PREPARED_REVIEW_START_REQUEST,
+    action: {
+        ...PREPARED_REVIEW_START_REQUEST.action,
+        actionId: 'send-prepared-review',
+        target: {
+            kind: 'agent',
+            promptInvocationId: null,
+            delivery: 'send',
+            seededFallbackInstruction: 'Review the selected pull request.',
+        },
+    },
+});
+
+/**
+ * What the canonical creator answers a REPEATED creation key: the same Session,
+ * rejoined, with its one already-admitted Message
+ * (`apps/cli/src/session/services/createSpawnedSession.ts` authenticates the
+ * creation tag and the immutable recipe before rejoining).
+ */
+const REJOINED_RESULT = {
+    v: 1,
+    type: 'opened',
+    sessionId: 'session-a',
+    disposition: 'rejoined',
+    delivery: 'alreadyAccepted',
+} as const satisfies TriageStartEntrySessionResultV1;
+
 let activeStartRequest = START_REQUEST;
+let mintedKeys: string[] = [];
+let notice: string | null = null;
 
 const startProbeSurface = defineUiSurface(function StartProbe(_context: RenderContext): React.ReactElement {
-    const controller = useTriageEntrySessionStart({ mintCreationKey: () => 'unused-for-compose' });
+    const controller = useTriageEntrySessionStart({
+        mintCreationKey: () => {
+            const key = `minted-key-${mintedKeys.length + 1}`;
+            mintedKeys.push(key);
+            return key;
+        },
+    });
+    notice = describeTriageEntrySessionPhaseV1(controller.phase)?.labelKey ?? null;
     return (
         <Button
             title="Compose in worktree"
@@ -116,30 +174,72 @@ const mounted: PluginUiTestkit[] = [];
 let seeds: unknown[] = [];
 let preparedSelections: unknown[] = [];
 let openedPreparations: unknown[] = [];
+let startInputs: TriageStartEntrySessionInputV1[] = [];
+/** The transient settlement each start Action actually travelled with. */
+let startCarriers: unknown[] = [];
+/** Every New Session settlement question this mount asked the host. */
+let draftRequests: unknown[] = [];
+
+describe('terminal structured-input presentation', () => {
+    it.each(['failed', 'cancelled'] as const)(
+        'does not present a %s action as a successful start',
+        (status) => {
+            expect(describeTriageEntrySessionPhaseV1({
+                kind: 'settled',
+                result: {
+                    v: 1,
+                    type: 'opened',
+                    sessionId: 'session-a',
+                    disposition: 'created',
+                    delivery: status,
+                },
+                delivery: { kind: 'send', status },
+            })?.labelKey).toBe('plugins.triage.surface.session.deliveryFailed');
+        },
+    );
+});
+
+/** How the host settles the source's own selection question, press by press. */
+type ScriptedSelection = 'submitted' | 'cancelled' | 'refused';
 
 async function mountProbe(input: Readonly<{
     request?: typeof START_REQUEST;
     seedResult?: unknown;
+    /** What this plugin's own start Action answers, press by press. */
+    startResults?: readonly ('lost' | TriageStartEntrySessionResultV1)[];
+    /** How the host answers the source selection, in order. Default: submitted. */
+    selectionResults?: readonly ScriptedSelection[];
 }> = {}): Promise<Readonly<{
     fixture: PluginUiTestkit;
     actionCalls: readonly string[];
 }>> {
     activeStartRequest = input.request ?? START_REQUEST;
+    const startResults = [...(input.startResults ?? [])];
+    const selectionResults = [...(input.selectionResults ?? [])];
     const actionCalls: string[] = [];
     const fixture = await createPluginUiTestkit({
-        identity: {
-            pluginId: 'happier.triage',
-            pluginVersion: '0.0.0',
-            viewId: 'entry-session-start-checkout',
-            generation: 'entry-session-start-checkout-test',
-        },
+        identity: { instanceId: 'fixture-instance-190', mountNonce: 'fixture-mount-190' },
+        authorPlugin: { id: 'happier.triage', version: '0.0.0' },
         surface: startProbeSurface,
         surfaceContext: createSurfaceContextFixture(),
         adapter: createPluginUiRnwSemanticSurfaceAdapter(),
         handlers: {
-            executeAction: async ({ action }) => {
+            executeAction: async ({ action, input: actionInput, selectedActionInput }) => {
                 const actionId = String(action);
                 actionCalls.push(actionId);
+                if (actionId === TRIAGE_START_ENTRY_SESSION_ACTION_LOCAL_ID_V1) {
+                    startInputs.push(actionInput as unknown as TriageStartEntrySessionInputV1);
+                    // The fixture host already refused a settlement that is not
+                    // the active one; recording it is what proves WHICH one
+                    // travelled.
+                    startCarriers.push(selectedActionInput ?? null);
+                    const next = startResults.shift();
+                    if (next === undefined) throw new Error('No scripted start result remains');
+                    // The host emitted the exact daemon Action and never learned
+                    // what it settled on (`plugin_ui_action_outcome_unknown`).
+                    if (next === 'lost') throw new Error('plugin_ui_action_outcome_unknown');
+                    return next as unknown as never;
+                }
                 if (actionId === 'sessions.spawn.profiles.list') {
                     return {
                         items: [{
@@ -159,7 +259,22 @@ async function mountProbe(input: Readonly<{
                 if (input.seedResult !== undefined) throw new Error('New Session unavailable');
             },
             selectActionInput: async ({ request }) => {
-                if (!('operation' in request)) throw new Error('Unexpected Session draft selection');
+                if (!('operation' in request)) {
+                    draftRequests.push(request);
+                    return {
+                        kind: 'serverStartDraft' as const,
+                        draft: {
+                            executionTarget: { serverId: 'server-a', machineId: 'machine-a' },
+                            agentTarget: {
+                                kind: 'agent' as const,
+                                identity: { pluginId: 'happier.test.agent', localId: 'agent' },
+                            },
+                            directory: '/workspaces/example',
+                        },
+                    };
+                }
+                const scripted = selectionResults.shift() ?? 'submitted';
+                if (scripted === 'cancelled') return { kind: 'cancelled' as const };
                 const selected = {
                     kind: 'submitted' as const,
                     action: request.operation.action,
@@ -169,7 +284,22 @@ async function mountProbe(input: Readonly<{
                         point: request.operation.point,
                         contributor: request.operation.contributor,
                     },
-                    connectedAccount: { kind: 'none' as const },
+                    connectedAccount: scripted === 'refused'
+                        ? { kind: 'none' as const }
+                        : {
+                            kind: 'selected' as const,
+                            fieldPath: 'instance.binding.account',
+                            ref: testkitConfiguredInstance().binding.account,
+                        },
+                    // The host stamps what the reader actually saw beside their
+                    // choice; the canonical result schema requires it. The label
+                    // is stamped per question here so two settlements of the same
+                    // operation are distinguishable — the fixture host retains
+                    // exactly one and refuses any other.
+                    presentation: {
+                        connectedAccountLabel: `Account selection ${preparedSelections.length + 1}`,
+                        machineDisplayName: 'Development Mac',
+                    },
                 };
                 preparedSelections.push(selected);
                 return selected;
@@ -190,6 +320,11 @@ afterEach(async () => {
     seeds = [];
     preparedSelections = [];
     openedPreparations = [];
+    startInputs = [];
+    startCarriers = [];
+    draftRequests = [];
+    mintedKeys = [];
+    notice = null;
     activeStartRequest = START_REQUEST;
     for (const fixture of mounted.splice(0)) await fixture.dispose();
 });
@@ -240,5 +375,261 @@ describe('single-entry compose checkout handoff', () => {
             result: preparedSelections[0],
         }]);
         expect(actionCalls).toEqual(['sessions.spawn.profiles.list', 'projects.list']);
+    });
+});
+
+/**
+ * The first press's OUTER response can be lost while the daemon Action it
+ * carried already ran (`pluginSurfaceActionDispatch.ts` returns
+ * `plugin_ui_action_outcome_unknown` for exactly that). Custody used to be
+ * assigned only from the settled result, so the press that lost its reply left
+ * nothing behind and the next press minted a second creation key and a second
+ * delivery key — a second Session and a second Message for one intent.
+ */
+describe('a start whose own response never arrived', () => {
+    it('retries the identical creation and delivery identity rather than starting a second session', async () => {
+        const { fixture } = await mountProbe({
+            request: SEND_START_REQUEST,
+            startResults: ['lost', {
+                v: 1,
+                type: 'opened',
+                sessionId: 'session-a',
+                disposition: 'rejoined',
+                delivery: 'alreadyAccepted',
+            }],
+        });
+        const press = await fixture.getByRole('button', { name: 'Compose in worktree' });
+
+        await act(async () => { await fixture.press(press); });
+        await settle();
+
+        expect(startInputs).toHaveLength(1);
+        // "Nothing was started" would be a claim this screen cannot make.
+        expect(notice).toBe('plugins.triage.surface.session.creationUnknown');
+
+        await act(async () => { await fixture.press(press); });
+        await settle();
+
+        expect(startInputs).toHaveLength(2);
+        const [first, second] = startInputs;
+        expect(second?.destination).toEqual(first?.destination);
+        expect(second?.delivery?.idempotencyKey).toBe(first?.delivery?.idempotencyKey);
+        // One creation key and one delivery key for one logical start, both
+        // presses together.
+        expect(mintedKeys).toHaveLength(2);
+    });
+
+    /**
+     * A prepared-review start is the one shape whose recovery needs something
+     * back from the host: its preparation runs inside the start Action, under an
+     * authorization carrier the host releases before the Action leaves
+     * (`hostedWebAdapter.ts`, `reactNative/hostApi.ts`, CLI `actions.ts`). So the
+     * spent carrier can never be replayed — but asking the SAME question again
+     * for the SAME retained materialization request can, and it is the only way
+     * the retained creation key ever reaches the canonical creator's rejoin.
+     */
+    it('authorizes the retained prepared request again rather than replaying the spent carrier', async () => {
+        const { fixture } = await mountProbe({
+            request: PREPARED_REVIEW_SEND_REQUEST,
+            startResults: ['lost', REJOINED_RESULT],
+        });
+        const press = await fixture.getByRole('button', { name: 'Compose in worktree' });
+
+        await act(async () => { await fixture.press(press); });
+        await settle();
+        expect(notice).toBe('plugins.triage.surface.session.creationUnknown');
+
+        await act(async () => { await fixture.press(press); });
+        await settle();
+
+        expect(startInputs).toHaveLength(2);
+        // One logical request, both presses: the same destination and creation
+        // key, the same delivery key, no second mint and no second New Session
+        // question.
+        expect(startInputs[1]?.destination).toEqual(startInputs[0]?.destination);
+        expect(startInputs[1]?.delivery?.idempotencyKey).toBe(startInputs[0]?.delivery?.idempotencyKey);
+        expect(mintedKeys).toHaveLength(2);
+        expect(draftRequests).toHaveLength(1);
+        // A fresh settlement of the same question, and the dispatch travelled
+        // with THAT one. The fixture host retains exactly one active settlement
+        // per operation, so a replayed carrier would have been refused outright.
+        expect(preparedSelections).toHaveLength(2);
+        expect(startCarriers[1]).toEqual({
+            operation: PREPARED_OPERATION,
+            result: preparedSelections[1],
+        });
+        expect(startCarriers[1]).not.toEqual(startCarriers[0]);
+        expect(startInputs[1]).toHaveProperty('prepareReviewWorkspaceSelection');
+        // The Session the first press may already have made is the one this
+        // rejoined, and its one Message was already admitted.
+        expect(notice).toBeNull();
+    });
+
+    it('keeps the unresolved identity when a recovery attempt is refused, and rejoins on the next press', async () => {
+        const { fixture } = await mountProbe({
+            request: PREPARED_REVIEW_SEND_REQUEST,
+            startResults: [
+                'lost',
+                // A later preparation refusal describes THAT attempt. It cannot
+                // establish that the first dispatch — whose own response never
+                // arrived — created nothing.
+                { v: 1, type: 'workspacePreparationFailed', reason: 'refused', retryable: false },
+                REJOINED_RESULT,
+            ],
+        });
+        const press = await fixture.getByRole('button', { name: 'Compose in worktree' });
+
+        await act(async () => { await fixture.press(press); });
+        await settle();
+        await act(async () => { await fixture.press(press); });
+        await settle();
+
+        // The refusal answered to the RECOVERY is not this screen's verdict on
+        // the logical request. "Nothing was created" is exactly the claim that
+        // cannot be made while the first dispatch's outcome is unknown, so the
+        // reader is told what is actually true — and that pressing again
+        // resumes the same Session rather than starting a second.
+        expect(notice).toBe('plugins.triage.surface.session.creationUnknown');
+
+        await act(async () => { await fixture.press(press); });
+        await settle();
+
+        expect(startInputs).toHaveLength(3);
+        const destinations = startInputs.map((sent) => sent.destination);
+        expect(destinations[1]).toEqual(destinations[0]);
+        expect(destinations[2]).toEqual(destinations[0]);
+        expect(new Set(startInputs.map((sent) => sent.delivery?.idempotencyKey)).size).toBe(1);
+        // Three presses, one creation key and one delivery key: the third press
+        // is still the first logical request rather than a second Session.
+        expect(mintedKeys).toHaveLength(2);
+        expect(draftRequests).toHaveLength(1);
+        expect(preparedSelections).toHaveLength(3);
+        expect(startCarriers[2]).toEqual({
+            operation: PREPARED_OPERATION,
+            result: preparedSelections[2],
+        });
+        expect(notice).toBeNull();
+    });
+
+    /**
+     * The other half of the same rule, and the strongest false claim of the
+     * two: `creationFailed` is opaque by the orchestrator's own rule — a
+     * creation conflict discloses no Session id — so "This session could not be
+     * created" would deny a Session the first dispatch may have created.
+     * `rejected` reaches the identical branch and is not exercised separately.
+     */
+    it('never reports a recovery creation failure as the logical request failing', async () => {
+        const { fixture } = await mountProbe({
+            request: PREPARED_REVIEW_SEND_REQUEST,
+            startResults: ['lost', { v: 1, type: 'creationFailed' }, REJOINED_RESULT],
+        });
+        const press = await fixture.getByRole('button', { name: 'Compose in worktree' });
+
+        await act(async () => { await fixture.press(press); });
+        await settle();
+        await act(async () => { await fixture.press(press); });
+        await settle();
+
+        expect(startInputs).toHaveLength(2);
+        expect(notice).toBe('plugins.triage.surface.session.creationUnknown');
+
+        await act(async () => { await fixture.press(press); });
+        await settle();
+
+        expect(startInputs[2]?.destination).toEqual(startInputs[0]?.destination);
+        expect(mintedKeys).toHaveLength(2);
+        expect(notice).toBeNull();
+    });
+
+    /**
+     * The presentation rule is scoped to an unresolved EARLIER dispatch. A first
+     * dispatch's own refusal answers for itself: nothing was created, the reader
+     * is told so, and the next press is a new logical request.
+     */
+    it('still reports a first dispatch’s own refusal as the terminal verdict it is', async () => {
+        const { fixture } = await mountProbe({
+            request: PREPARED_REVIEW_SEND_REQUEST,
+            startResults: [
+                { v: 1, type: 'workspacePreparationFailed', reason: 'refused', retryable: false },
+                REJOINED_RESULT,
+            ],
+        });
+        const press = await fixture.getByRole('button', { name: 'Compose in worktree' });
+
+        await act(async () => { await fixture.press(press); });
+        await settle();
+        expect(notice).toBe('plugins.triage.surface.session.workspaceRefused');
+
+        await act(async () => { await fixture.press(press); });
+        await settle();
+
+        // No identity was retained, so the second press resolves and mints its
+        // own — one refused start is not custody of a Session that never existed.
+        expect(startInputs).toHaveLength(2);
+        expect(startInputs[1]?.destination).not.toEqual(startInputs[0]?.destination);
+        expect(draftRequests).toHaveLength(2);
+        expect(mintedKeys).toHaveLength(4);
+    });
+
+    it('reports a cancelled or refused recovery authorization as still unknown', async () => {
+        const { fixture } = await mountProbe({
+            request: PREPARED_REVIEW_SEND_REQUEST,
+            selectionResults: ['submitted', 'cancelled', 'refused', 'submitted'],
+            startResults: ['lost', REJOINED_RESULT],
+        });
+        const press = await fixture.getByRole('button', { name: 'Compose in worktree' });
+
+        await act(async () => { await fixture.press(press); });
+        await settle();
+
+        await act(async () => { await fixture.press(press); });
+        await settle();
+        // Cancelling the recovery cancels the recovery. Returning to idle here
+        // would say nothing was started, and releasing the retained keys would
+        // let the next press mint a second identity for the Session the first
+        // press may already have created.
+        expect(startInputs).toHaveLength(1);
+        expect(notice).toBe('plugins.triage.surface.session.creationUnknown');
+
+        await act(async () => { await fixture.press(press); });
+        await settle();
+        expect(startInputs).toHaveLength(1);
+        expect(notice).toBe('plugins.triage.surface.session.creationUnknown');
+
+        await act(async () => { await fixture.press(press); });
+        await settle();
+
+        expect(startInputs).toHaveLength(2);
+        expect(startInputs[1]?.destination).toEqual(startInputs[0]?.destination);
+        expect(startInputs[1]?.delivery?.idempotencyKey).toBe(startInputs[0]?.delivery?.idempotencyKey);
+        expect(mintedKeys).toHaveLength(2);
+        expect(draftRequests).toHaveLength(1);
+        expect(notice).toBeNull();
+    });
+
+    it('spends nothing when the reader cancels the first prepared authorization', async () => {
+        const { fixture } = await mountProbe({
+            request: PREPARED_REVIEW_SEND_REQUEST,
+            selectionResults: ['cancelled', 'submitted'],
+            startResults: [{ ...REJOINED_RESULT, disposition: 'created', delivery: 'accepted' }],
+        });
+        const press = await fixture.getByRole('button', { name: 'Compose in worktree' });
+
+        await act(async () => { await fixture.press(press); });
+        await settle();
+
+        // Nothing left this surface, so there is no identity to retain: this is
+        // the one cancellation that genuinely started nothing.
+        expect(startInputs).toHaveLength(0);
+        expect(notice).toBeNull();
+
+        await act(async () => { await fixture.press(press); });
+        await settle();
+
+        expect(startInputs).toHaveLength(1);
+        expect(draftRequests).toHaveLength(2);
+        const destination = startInputs[0]?.destination;
+        if (destination?.kind !== 'new') throw new Error('expected a new-Session destination');
+        expect(destination.creationKey).not.toBe(mintedKeys[0]);
     });
 });

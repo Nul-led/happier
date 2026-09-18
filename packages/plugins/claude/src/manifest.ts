@@ -344,6 +344,7 @@ export const CLAUDE_PLUGIN = definePlugin({
           surfaces: ['externalSessions'],
           sessions: {
             open: ['create', 'resume'],
+            executionRunContext: { versions: [1] },
             delivery: ['newTurn', 'steer', 'followUp'],
             cancel: true,
             configuration: true,

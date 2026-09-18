@@ -1,4 +1,4 @@
-import type { PluginActionInputById } from '@happier-dev/plugin-sdk/actions';
+import type { PluginActionInputById, PluginActionResultById } from '@happier-dev/plugin-sdk/actions';
 import type { SessionId } from '@happier-dev/plugin-sdk/sessions';
 import type { TriageEntryRefV1 } from '@happier-dev/triage-protocol/v1';
 
@@ -70,11 +70,12 @@ export type TriageEntrySessionDeliveryRequestV1 = Readonly<{
 }>;
 
 /**
- * The canonical Session-input admission answer, carried out unchanged, plus the
- * two arms that mean the send never reached admission.
+ * The canonical Session Message-send answer, carried out unchanged, plus the
+ * two local arms that mean no send was requested or planned.
  *
- * `accepted | alreadyAccepted | rejected | outcomeUnknown` is the real union
- * (`packages/protocol/src/sessions/messages/sessionInputAdmission.ts`). The
+ * The canonical result includes admission answers and the terminal `failed` /
+ * `cancelled` outcomes produced when the caller waited for the exact admitted
+ * input (`packages/protocol/src/sessions/messages/sessionInputAdmission.ts`). The
  * previous surface awaited the call, discarded its value and reported every
  * resolved promise as sent — so a refusal and an unknown outcome both arrived
  * at the reader as success. Reporting work that did not happen is worse than
@@ -85,10 +86,7 @@ export type TriageEntrySessionDeliveryOutcomeV1 =
     | 'notRequested'
     /** A delivery was requested and had neither text nor a placeable attachment. */
     | 'none'
-    | 'accepted'
-    | 'alreadyAccepted'
-    | 'rejected'
-    | 'outcomeUnknown';
+    | PluginActionResultById['session.message.send']['status'];
 
 /** Builds the one structured input shared by creation and existing-Session delivery. */
 export function planEntrySessionInput(
@@ -140,7 +138,7 @@ export async function deliverEntrySessionInput(input: Readonly<{
             } as SessionMessageSendInput,
             input.signal ? { signal: input.signal } : undefined,
         );
-        // The admission owner's own verdict, carried out unchanged. Collapsing
+        // The Message-send owner's own verdict, carried out unchanged. Collapsing
         // `rejected` into success is the defect this whole phase exists to fix,
         // so there is deliberately no default arm to collapse it into.
         return result.status;

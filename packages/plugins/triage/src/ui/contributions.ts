@@ -33,6 +33,9 @@ export const TRIAGE_ENTRIES_COMPACT_ARTIFACT_ID_V1 = 'triage-entries-compact-nat
 export const TRIAGE_SESSION_ENTRIES_RENDERER_ID_V1 = 'session-entries-panel';
 export const TRIAGE_SESSION_ENTRIES_ARTIFACT_ID_V1 = 'triage-session-entries-native';
 
+/** Client-targeted Universal Search Action module; mounted by no renderer. */
+export const TRIAGE_SEARCH_ACTION_ARTIFACT_ID_V1 = 'triage-search-action-native';
+
 /** The one Session-targeted view local id. */
 export const TRIAGE_SESSION_ENTRIES_VIEW_ID_V1 = 'session-entries';
 

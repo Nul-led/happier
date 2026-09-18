@@ -47,6 +47,17 @@ export type HostingProviderContribution = {
 export type HostingProviderRemoteDetectionInput = Readonly<{
     remoteName: string | null;
     remoteUrl: string;
+    /**
+     * The host-normalized, credential-free configured service bases owned by the Connected
+     * Accounts bound to this hosting provider's `authService`, exactly as the Connected Account
+     * owner publishes them (origin plus any path segment the deployment lives beneath).
+     *
+     * A provider whose deployments have no product-owned hostname — a self-managed install — can
+     * only recognize its own remotes by resolving them against these configured bases. The host
+     * supplies them; a provider never infers a deployment from a remote's authority, and an
+     * absent or empty list simply means no configured deployment is recognizable.
+     */
+    connectedAccountBases?: readonly string[];
 }>;
 
 export type HostingProviderResolvedRemote = Readonly<{
@@ -80,6 +91,17 @@ export type HostingProviderCompareUrlInput = Readonly<{
     provider: ScmHostingProviderRef;
     base: string;
     head: string;
+    /**
+     * The host-normalized, credential-free configured service bases owned by the Connected
+     * Accounts bound to this hosting provider's `authService`, exactly as the Connected Account
+     * owner publishes them (origin plus any path segment the deployment lives beneath).
+     *
+     * A provider whose deployments have no product-owned hostname — a self-managed install — can
+     * only recognize its own remotes by resolving them against these configured bases. The host
+     * supplies them; a provider never infers a deployment from a remote's authority, and an
+     * absent or empty list simply means no configured deployment is recognizable.
+     */
+    connectedAccountBases?: readonly string[];
 }>;
 
 export type HostingProviderRuntimeTokenMaterializationResult =

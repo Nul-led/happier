@@ -28,7 +28,6 @@ import {
   TriageListEntriesResultV1Schema,
 } from './actions/listEntriesProtocol.js';
 import { createTriageReadConfiguredSourceInstancesActionHandler } from './actions/readConfiguredSourceInstances.js';
-import { createTriageSearchEntriesActionHandler } from './actions/searchEntries.js';
 import {
   TRIAGE_SEARCH_ENTRIES_ACTION_LOCAL_ID_V1,
   TRIAGE_SEARCH_PROVIDER_LOCAL_ID_V1,
@@ -128,6 +127,7 @@ import {
   TRIAGE_SESSION_ENTRIES_ARTIFACT_ID_V1,
   TRIAGE_SESSION_ENTRIES_RENDERER_ID_V1,
   TRIAGE_SESSION_ENTRIES_VIEW_ID_V1,
+  TRIAGE_SEARCH_ACTION_ARTIFACT_ID_V1,
 } from './ui/contributions.js';
 import { TRIAGE_UI_TRANSLATION_BUNDLES } from './ui/translations.js';
 import { PLUGIN_TARGETED_CONTRIBUTION_POINT_DEFINITIONS } from './targetedContributions.js';
@@ -214,15 +214,19 @@ function createTriagePlugin() {
         // command-palette entry, and the manifest owner refuses one that is.
         placementBindings: [],
         dangerLevel: 'safe',
-        execution: { target: 'daemon' },
+        execution: {
+          target: 'client',
+          client: {
+            artifactId: TRIAGE_SEARCH_ACTION_ARTIFACT_ID_V1,
+            modulePath: './searchEntries',
+            exportName: 'createTriageSearchEntriesActionHandler',
+          },
+          platforms: ['web', 'ios', 'android'],
+        },
         // The one canonical search contract, imported rather than restated, so
         // the declaration and the host's parse cannot describe two shapes.
         inputSchema: PluginSearchQueryV1Schema,
         resultSchema: PluginSearchResultV1Schema,
-        // The one Collection it touches is `source-instances`, read-only —
-        // exactly the list read it shares its pass with.
-        hostAccess: ['account-storage'],
-        run: createTriageSearchEntriesActionHandler(),
       },
       [TRIAGE_SET_ENTRY_PINNED_ACTION_LOCAL_ID_V1]: {
         title: 'Pin or unpin an entry',

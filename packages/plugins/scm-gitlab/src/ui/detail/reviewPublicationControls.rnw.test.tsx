@@ -147,12 +147,8 @@ async function mountControl(kind: MountedControl): Promise<PluginUiTestkit> {
   let fixture!: PluginUiTestkit;
   await act(async () => {
     fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: GITLAB_PLUGIN_ID,
-        pluginVersion: '0.0.0',
-        viewId: 'gitlab-publication-test',
-        generation: `gitlab-publication-${kind}`,
-      },
+      identity: { instanceId: 'fixture-instance-196', mountNonce: 'fixture-mount-196' },
+      authorPlugin: { id: GITLAB_PLUGIN_ID, version: '0.0.0' },
       surface: defineUiSurface(() => (
         <TriagePostMutationCompletionProvider onComplete={async () => { completed += 1; }}>
           {kind === 'merge-request'
@@ -181,12 +177,8 @@ async function mountRenderedDetail(input: TriageDetailSurfaceInputV1): Promise<P
   let fixture!: PluginUiTestkit;
   await act(async () => {
     fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: GITLAB_PLUGIN_ID,
-        pluginVersion: '0.0.0',
-        viewId: 'gitlab-detail',
-        generation: 'gitlab-publication-real-surface',
-      },
+      identity: { instanceId: 'fixture-instance-197', mountNonce: 'fixture-mount-197' },
+      authorPlugin: { id: GITLAB_PLUGIN_ID, version: '0.0.0' },
       surface: (context) => (
         <TriagePostMutationCompletionProvider onComplete={async () => { completed += 1; }}>
           {renderSurface(context) as React.ReactNode}
@@ -231,6 +223,7 @@ async function mountRenderedDetail(input: TriageDetailSurfaceInputV1): Promise<P
               rows: [{
                 id: 'discussion-7',
                 individualNote: false,
+                resolved: false,
                 notes: [{ id: 'note-1', body: 'Please keep this in one owner.', system: false }],
                 omittedNoteCount: 0,
               }],

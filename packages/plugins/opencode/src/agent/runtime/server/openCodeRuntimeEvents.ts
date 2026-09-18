@@ -1,7 +1,31 @@
 import type {
+  AgentSessionRuntimeEvent,
+} from '@happier-dev/plugin-sdk/agents/runtime';
+import type {
   OpenCodeRuntimeEvent,
   OpenCodeRuntimeIssue,
+  OpenCodeRuntimeScope,
 } from './runtimeEvents.js';
+
+export function projectOpenCodeTurnCancellationCause(
+  reason: string | undefined,
+): Extract<AgentSessionRuntimeEvent, { kind: 'turn-cancelled' }>['cause'] {
+  return reason === 'host_shutdown'
+    ? 'hostShutdown'
+    : reason === 'session_dispose'
+      ? 'sessionDispose'
+      : reason === 'runtime_recovery'
+        ? 'runtimeRecovery'
+        : reason === 'user'
+          ? 'user'
+          : 'providerCancelled';
+}
+
+export function projectOpenCodeRuntimeScope(scope: OpenCodeRuntimeScope) {
+  return scope.kind === 'session'
+    ? { sessionId: scope.sessionId }
+    : { executionRunId: scope.executionRunId };
+}
 
 export function buildOpenCodeRuntimeIssue(params: Readonly<{
   code: string;
@@ -30,21 +54,21 @@ export async function publishOpenCodeRuntimeEvent(
 
 export async function publishOpenCodeTurnFailed(params: Readonly<{
   publishRuntimeEvent: (event: OpenCodeRuntimeEvent) => void;
-  sessionId: string;
+  scope: OpenCodeRuntimeScope;
   turnId: string;
   issue: OpenCodeRuntimeIssue;
   emittedAtMs: number;
 }>): Promise<void> {
   await publishOpenCodeRuntimeEvent(params.publishRuntimeEvent, {
     kind: 'turn-failed',
-    sessionId: params.sessionId,
+    ...projectOpenCodeRuntimeScope(params.scope),
     turnId: params.turnId,
     emittedAtMs: params.emittedAtMs,
     issue: params.issue,
   });
   await publishOpenCodeRuntimeEvent(params.publishRuntimeEvent, {
     kind: 'transcript-agent-message-committed',
-    sessionId: params.sessionId,
+    ...projectOpenCodeRuntimeScope(params.scope),
     emittedAtMs: params.emittedAtMs,
     agentId: 'opencode',
     localId: `${params.turnId}:turn_failed`,
@@ -57,21 +81,21 @@ export async function publishOpenCodeTurnFailed(params: Readonly<{
 
 export async function publishOpenCodeTurnCancelled(params: Readonly<{
   publishRuntimeEvent: (event: OpenCodeRuntimeEvent) => void;
-  sessionId: string;
+  scope: OpenCodeRuntimeScope;
   turnId: string;
   reason?: string;
   emittedAtMs: number;
 }>): Promise<void> {
   await publishOpenCodeRuntimeEvent(params.publishRuntimeEvent, {
     kind: 'turn-cancelled',
-    sessionId: params.sessionId,
+    ...projectOpenCodeRuntimeScope(params.scope),
     turnId: params.turnId,
     emittedAtMs: params.emittedAtMs,
     ...(params.reason ? { reason: params.reason } : {}),
   });
   await publishOpenCodeRuntimeEvent(params.publishRuntimeEvent, {
     kind: 'transcript-agent-message-committed',
-    sessionId: params.sessionId,
+    ...projectOpenCodeRuntimeScope(params.scope),
     emittedAtMs: params.emittedAtMs,
     agentId: 'opencode',
     localId: `${params.turnId}:turn_cancelled`,

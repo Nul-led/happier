@@ -1,5 +1,6 @@
 import {
   AgentNativeResumeIdentityV1Schema,
+  readNonBlankOpaqueIdentifier,
   isBackendTargetDisabledByAccountSettings,
   readRuntimeDescriptorV1FromMetadata,
   type AgentNativeResumeIdentityV1,
@@ -116,10 +117,10 @@ export function resolveVendorResumeIdFromSessionMetadata(agentId: AgentId, metad
   const resume = getAgentResumeConfig(agentId);
   const field = resume && 'vendorResumeIdField' in resume ? resume.vendorResumeIdField ?? null : null;
   if (field) {
-    const raw = record[field];
-    if (typeof raw === 'string' && raw.trim()) {
-      return raw.trim();
-    }
+    // The Agent minted this id and is its only reader: presence decides, the
+    // bytes are returned exactly as persisted.
+    const raw = readNonBlankOpaqueIdentifier(record[field]);
+    if (raw) return raw;
   }
 
   return resolveCanonicalNativeResumeId(agentId, record);

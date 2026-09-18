@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { AgentRuntimeJsonValueV1Schema } from '@happier-dev/protocol';
+import { PluginSearchQueryV1Schema, PluginSearchResultV1Schema } from '@happier-dev/plugin-sdk';
 import {
     EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES,
     measureExternalActionResultResponseEnvelopeUtf8BytesV1,
@@ -95,6 +96,8 @@ import {
  * Values whose schema has a finite structural maximum.
  */
 const structurallyBoundedSchemas = {
+    searchEntriesInput: PluginSearchQueryV1Schema,
+    searchEntriesResult: PluginSearchResultV1Schema,
     readEntryDetailInput: TriageReadEntryDetailInputV1Schema,
     readEntryDetailResult: TriageReadEntryDetailResultV1Schema,
     reobserveEntryInput: TriageReobserveEntryInputV1Schema,
@@ -107,7 +110,6 @@ const structurallyBoundedSchemas = {
     linkEntryToSessionResult: TriageLinkEntryToSessionActionResultV1Schema,
     unlinkEntryFromSessionInput: TriageUnlinkEntryFromSessionActionInputV1Schema,
     unlinkEntryFromSessionResult: TriageUnlinkEntryFromSessionActionResultV1Schema,
-    startPullRequestReviewResult: TriageStartPullRequestReviewResultV1Schema,
     readSavedViewsInput: TriageReadSavedViewsInputV1Schema,
     readActionsInput: TriageReadActionsInputV1Schema,
     // The two caller-bound source Actions are declared by this manifest, so
@@ -159,9 +161,13 @@ const structurallyUnboundedSchemas = {
     startEntrySessionInput: TriageStartEntrySessionInputV1Schema,
     startEntrySessionResult: TriageStartEntrySessionResultV1Schema,
     // The review request deliberately carries an unbounded engine selection
-    // and provider-owned pull-request JSON. Its result remains structurally
-    // bounded and is measured above.
+    // and provider-owned pull-request JSON. Its result reports what became of
+    // each engine in that same selection — every requested id appears exactly
+    // once, across the started and failed halves — so it inherits precisely
+    // that one unbounded dimension and no other. Bounding it would mean
+    // inventing an engine-count quota no owner establishes.
     startPullRequestReviewInput: TriageStartPullRequestReviewInputV1Schema,
+    startPullRequestReviewResult: TriageStartPullRequestReviewResultV1Schema,
     listEntriesInput: TriageListEntriesInputV1Schema,
     administerSavedViewInput: TriageAdministerSavedViewInputV1Schema,
     administerActionInput: TriageAdministerActionInputV1Schema,

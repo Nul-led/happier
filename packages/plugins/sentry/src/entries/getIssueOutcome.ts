@@ -25,7 +25,10 @@ import {
   type SentryInvokedInstanceV1,
 } from '../instances/sentryCollisionScope.js';
 
-import { mapSentryIssueForInvokedInstance } from './sentryIssueMapping.js';
+import {
+  admitSentryIssueResponseIdentity,
+  mapSentryIssueForInvokedInstance,
+} from './sentryIssueMapping.js';
 import type { SentryIssueSnapshotV1, SentryLocalRefV1 } from './sentryIssueTypes.js';
 
 export type SentryGetOutcomeInputV1 = Readonly<{
@@ -87,12 +90,14 @@ export function resolveSentryGetOutcome(input: SentryGetOutcomeInputV1): SentryG
     return unresolved(classifySentryFailure({ kind: 'unparseable', operation: 'issue' }));
   }
 
-  const returnedId = typeof body.id === 'string' && body.id.trim() !== '' ? body.id : null;
-  if (returnedId === null) {
+  // One owner performs this comparison for every issue response this source
+  // reads; `get` is the plane that can name the successor, so it is the plane
+  // that reports `merged`.
+  const identity = admitSentryIssueResponseIdentity(body, input.requestedEntryId);
+  if (identity.kind === 'unreadable') {
     return unresolved(classifySentryFailure({ kind: 'unparseable', operation: 'issue' }));
   }
-
-  if (returnedId !== input.requestedEntryId) {
+  if (identity.kind === 'superseded') {
     // The successor scope is derived from the exact invoked instance. It is
     // never recomputed from the response body's project, which is locator and
     // presentation data only.
@@ -102,7 +107,7 @@ export function resolveSentryGetOutcome(input: SentryGetOutcomeInputV1): SentryG
       successor: Object.freeze({
         kindId: 'error-issue' as const,
         collisionScope,
-        entryId: returnedId,
+        entryId: identity.returnedEntryId,
       }),
     });
   }

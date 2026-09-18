@@ -510,15 +510,15 @@ describe('normal supported package surface', () => {
         ).toBeDefined();
     });
 
-    it('fails a missing inventory with the file path and a runnable regeneration command', async () => {
+    it('fails a missing tracked inventory with the canonical regeneration and check commands', async () => {
         expect(requireApiSurfaceInventory({
             status: 'available',
             inventory: { entrypoints: [], symbols: [] },
         })).toEqual({ entrypoints: [], symbols: [] });
 
-        // A clean clone has no inventory at all, so the loud failure is the only
-        // thing a developer sees. It has to name the missing file and a command
-        // that produces it, or the developer is left guessing.
+        // The tracked generated artifact can still be missing or unavailable in
+        // a working tree. The diagnostic must describe that state accurately and
+        // point to the package-owned regeneration and currentness checks.
         expect(() => requireApiSurfaceInventory({ status: 'missing' }))
             .toThrowError(/packages\/plugin-sdk\/api-surface\.json/u);
 
@@ -531,6 +531,15 @@ describe('normal supported package surface', () => {
         } catch (error) {
             message = error instanceof Error ? error.message : String(error);
         }
+        expect(message).toContain('tracked generated artifact');
+        expect(message).toContain('packages/plugin-sdk/api-surface.json');
+        expect(message).toContain(
+            '`yarn workspace @happier-dev/plugin-sdk api-surface --write`',
+        );
+        expect(message).toContain(
+            '`yarn workspace @happier-dev/plugin-sdk api-surface --check`',
+        );
+        expect(message).not.toMatch(/not tracked|untracked|clean clone never receives/iu);
         const named = [...message.matchAll(
             /`yarn workspace @happier-dev\/plugin-sdk ([a-z0-9:-]+)[^`]*`/gu,
         )].map((match) => match[1]);

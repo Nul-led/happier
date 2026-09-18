@@ -518,4 +518,29 @@ describe('Codex rollout candidate discovery', () => {
       searchMode: 'full',
     })).toBe(25_000);
   });
+
+  it('reports a metadata-derived candidate session id with exact provider bytes', async () => {
+    // The filename carries no parseable id here, so session_meta is the identity
+    // source. Its bytes must reach the candidate unchanged, or the candidate the
+    // user picks names a session the rollout inventory cannot match.
+    const exactRemoteSessionId = '  provider\nses/AB+cd==  ';
+    const root = await mkdtemp(join(tmpdir(), 'happier-codex-candidate-exact-id-'));
+    const codexHome = join(root, 'codex-home');
+    const sessionsDir = join(codexHome, 'sessions');
+    await mkdir(sessionsDir, { recursive: true });
+    await writeFile(
+      join(sessionsDir, 'rollout-child.jsonl'),
+      sessionMetaLine({ id: exactRemoteSessionId }),
+      'utf8',
+    );
+
+    const chunk = await scanCodexRolloutCandidateChunk({
+      source: { kind: 'codexHome', home: 'user' },
+      env: { CODEX_HOME: codexHome },
+      limit: 10,
+    });
+
+    expect(chunk.entries.map((entry) => entry.remoteSessionId))
+      .toEqual([exactRemoteSessionId]);
+  });
 });

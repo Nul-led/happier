@@ -32,9 +32,12 @@ export type FsAtomicWriteJsonInputV1 = FsAtomicWriteJsonInput;
 
 export type { FileSystemService } from './services/io.js';
 export type {
+    SecureTempDirectoryInputV1 as SecureTempDirectoryInput,
+    SecureTempDirectoryV1 as SecureTempDirectory,
     SecureTempTextFileInputV1 as SecureTempTextFileInput,
 } from './runtime/tempTextFile.js';
-export { writeSecureTempTextFileSync } from './runtime/tempTextFile.js';
+export { createSecureTempDirectorySync, writeSecureTempTextFileSync } from './runtime/tempTextFile.js';
+export { createAbsolutePathSymlink } from './runtime/createAbsolutePathSymlink.js';
 export {
   canonicalizePath,
   canonicalizePathSync,

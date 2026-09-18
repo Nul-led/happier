@@ -6,6 +6,7 @@ import type {
   ConnectedAccountMaterialization,
   ConnectedAccountMetadataList,
 } from '@happier-dev/plugin-sdk/connected-accounts';
+import { isPluginActionApprovalRequestCreated } from '@happier-dev/plugin-sdk/actions';
 import type {
   ActionsService,
   PluginActionInputById,
@@ -533,7 +534,18 @@ function settle(
   outcome: 'finished' | 'page' | 'failed' | 'cancelled',
   failure: TriageSourceFailureV1 | null,
 ): TriageScanResultV1 {
-  if (failure !== null && state.observations.length === 0) {
+  // `CONTRACT.md` §5.1/§5.2 and `sources/SCM.md` A7: a scan rate limit settles as the strict
+  // `failed` result however much the walk already answered, and only a `TriageSourceFailureV1`
+  // can carry the deadline a provider stated. Being throttled and being told when to come back
+  // are SEPARATE facts: Azure routinely 429s with no usable `Retry-After`, and the rate-limit
+  // resolver correctly invents no deadline for it. Discriminating on the deadline instead of the
+  // failure class turned exactly that response into a partial `complete`, which loses the rate
+  // limit and invites the next view to ask again immediately. The aggregate keeps its last-known
+  // rows across a failed scan, and the next invocation restarts at `page: 'initial'` anyway.
+  if (failure !== null
+    && (state.observations.length === 0
+      || failure.class === 'rateLimit'
+      || failure.retryNotBeforeMs !== undefined)) {
     return { kind: 'failed', failure };
   }
   if (failure !== null) {
@@ -1086,6 +1098,7 @@ async function executeAzureReviewWorkspaceScmAction(input: Readonly<{
       { signal: input.signal },
     );
     input.signal.throwIfAborted();
+    if (isPluginActionApprovalRequestCreated(result)) return null;
     return result;
   } catch (error) {
     input.signal.throwIfAborted();

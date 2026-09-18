@@ -18,5 +18,17 @@ export const createGrokAgentRuntime: AgentRuntimeFactory = () => ({
         extensions: createGrokAcpRuntimeExtensions(context),
       });
     },
+    executionRunContextV1: {
+      async open(request, context) {
+        return await context.protocols.acp.openExecutionRunV1(request, {
+          transport: {
+            kind: 'stdio',
+            executable: { kind: 'systemTool', id: 'grok-cli' },
+            args: ['--no-auto-update', 'agent', 'stdio'],
+          },
+          definition: buildGrokAcpRuntimeDefinition(request.launchEnvironment?.values ?? {}),
+        });
+      },
+    },
   },
 });

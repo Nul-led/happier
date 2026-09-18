@@ -177,6 +177,7 @@ describe('git pull request checkout operations', () => {
                 sourcePath: '/repo',
                 displayName: 'feature/scm-pr-7',
                 baseRef: 'feature/scm-pr-7',
+                branchMode: 'existing',
                 targetPath: null,
             },
         });

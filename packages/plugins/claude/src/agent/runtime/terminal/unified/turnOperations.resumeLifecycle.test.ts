@@ -458,4 +458,42 @@ describe('Claude unified native-resume lifecycle integration', () => {
       await envelope.operations.resetOrDisposeRuntime().catch(() => undefined);
     }
   });
+  it('resumes a provider session whose id carries padding, without rewriting its bytes', async () => {
+    // The requested resume id is compared against the id Claude reports back on the
+    // SessionStart hook. Canonicalizing one side and not the other turns a correct
+    // resume into an identity mismatch, and adopting the rewritten id would publish
+    // a resume id Claude never minted.
+    const providerSessionId = '  provider\nses/AB+cd==  ';
+    const terminalHost = createTerminalHostFixture();
+    const events = createEventsFixture();
+    const ctx = createPluginContextFixture(terminalHost.service, events.service);
+    const envelope = expectRuntimeEnvelope(createClaudeUnifiedTerminalTurnOperations({
+      ctx,
+      directory: '/tmp/claude-project',
+      happierSessionId: 'happy-session-exact-resume-id',
+      hostPreference: 'zellij',
+      launchEnv: {},
+      permissionMode: 'default',
+      launchIntent: {
+        kind: 'resume_native',
+        providerSessionId,
+      },
+    }));
+
+    try {
+      await envelope.operations.startProviderSession();
+
+      const hookRequest = vi.mocked(ctx.agentRuntime.sessionHooks.startServer).mock.calls[0]?.[0];
+      if (!hookRequest?.onSessionHook) throw new Error('session hook server was not started');
+      await hookRequest.onSessionHook(providerSessionId, {
+        hook_event_name: 'SessionStart',
+        session_id: providerSessionId,
+        source: 'resume',
+      });
+
+      expect(envelope.operations.readSessionIdentity()).toEqual({ sessionId: providerSessionId });
+    } finally {
+      await envelope.operations.resetOrDisposeRuntime().catch(() => undefined);
+    }
+  });
 });

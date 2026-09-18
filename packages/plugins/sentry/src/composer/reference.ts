@@ -23,6 +23,7 @@ import {
   decodeSentryEvidenceCandidate,
   deriveSentryEvidenceInstanceDigest,
   sentryEvidenceCandidateLabel,
+  summarizeSentryEvidenceDisclosure,
 } from './candidate.js';
 
 export {
@@ -52,17 +53,6 @@ function timestampText(timestampMs: number | null): string | null {
   // when it is outside that range instead of making evidence resolution throw.
   const timestamp = new Date(timestampMs);
   return Number.isNaN(timestamp.getTime()) ? String(timestampMs) : timestamp.toISOString();
-}
-
-function retainedUserFieldCount(projection: SentryEventProjectionV1): number {
-  if (projection.user === null) return 0;
-  return [
-    projection.user.id,
-    projection.user.email,
-    projection.user.username,
-    projection.user.ipAddress,
-    projection.user.name,
-  ].filter((value) => value !== null).length;
 }
 
 function evidenceChunks(projection: SentryEventProjectionV1): readonly EvidenceChunk[] {
@@ -157,14 +147,13 @@ function selectedEvidenceContext(
   const occurredAt = timestampText(projection.dateCreatedMs);
   if (occurredAt !== null) lines.push(`Occurred: ${occurredAt}`);
   lines.push(...selected.map((chunk) => chunk.text));
-  const providerScrubbed = projection.redactions.filter(
-    (redaction) => redaction.reason === 'providerScrubbed',
-  ).length;
-  const pluginWithheld = projection.redactions.length - providerScrubbed;
+  // The same summary the mounted confirmation was built from, so what the reader
+  // approved and what the model is told about it cannot drift apart.
+  const disclosure = summarizeSentryEvidenceDisclosure(projection);
   lines.push(
-    `Evidence disclosure: ${String(providerScrubbed)} provider-scrubbed field(s), `
-      + `${String(pluginWithheld)} plugin-withheld field(s), `
-      + `${String(projection.sensitivePaths.length)} sensitive projected path(s).`,
+    `Evidence disclosure: ${String(disclosure.providerScrubbed)} provider-scrubbed field(s), `
+      + `${String(disclosure.pluginWithheld)} plugin-withheld field(s), `
+      + `${String(disclosure.sensitivePaths)} sensitive projected path(s).`,
   );
   const counted = (count: number, noun: string): string => (
     `${String(count)} ${noun}${count === 1 ? '' : 's'}`
@@ -173,7 +162,7 @@ function selectedEvidenceContext(
   const notAdmitted = (kind: EvidenceChunkKind): number => all.filter(
     (chunk) => chunk.kind === kind && !selectedSet.has(chunk),
   ).length;
-  const userFields = retainedUserFieldCount(projection);
+  const userFields = disclosure.userFields;
   const omissions = [
     projection.omitted.frames + notAdmitted('frame') === 0
       ? null : counted(projection.omitted.frames + notAdmitted('frame'), 'frame'),

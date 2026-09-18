@@ -13,6 +13,9 @@ import {
   TRIAGE_SESSION_ENTRIES_ARTIFACT_ID,
   TRIAGE_SESSION_ENTRIES_REPACK_MODULE_IDENTITY,
   TRIAGE_SESSION_ENTRIES_SOURCE_ENTRY,
+  TRIAGE_SEARCH_ACTION_ARTIFACT_ID,
+  TRIAGE_SEARCH_ACTION_REPACK_MODULE_IDENTITY,
+  TRIAGE_SEARCH_ACTION_SOURCE_ENTRY,
   TRIAGE_UI_BUILD_OUT_DIR,
 } from './uiBuildIdentity.mjs';
 
@@ -56,6 +59,12 @@ export const pluginUiBuildConfig = defineBuildConfig({
     kind: 'reactNative',
     platforms: ['web', 'ios', 'android'],
     module: TRIAGE_SESSION_ENTRIES_REPACK_MODULE_IDENTITY,
+  }, {
+    rendererId: TRIAGE_SEARCH_ACTION_ARTIFACT_ID,
+    entry: TRIAGE_SEARCH_ACTION_SOURCE_ENTRY,
+    kind: 'reactNative',
+    platforms: ['web', 'ios', 'android'],
+    module: TRIAGE_SEARCH_ACTION_REPACK_MODULE_IDENTITY,
   }],
 });
 

@@ -59,14 +59,6 @@
       "types": "./dist/agent/runtime/appServer/work/goalControl.d.ts",
       "default": "./dist/agent/runtime/appServer/work/goalControl.js"
     },
-    "./agent/runtime/appServer/turns/rollbackPlan": {
-      "types": "./dist/agent/runtime/appServer/turns/rollbackPlan.d.ts",
-      "default": "./dist/agent/runtime/appServer/turns/rollbackPlan.js"
-    },
-    "./agent/runtime/appServer/turns/rollbackTracker": {
-      "types": "./dist/agent/runtime/appServer/turns/rollbackTracker.d.ts",
-      "default": "./dist/agent/runtime/appServer/turns/rollbackTracker.js"
-    },
     "./agent/runtime/appServer/turns/failure": {
       "types": "./dist/agent/runtime/appServer/turns/failure.d.ts",
       "default": "./dist/agent/runtime/appServer/turns/failure.js"
@@ -385,10 +377,12 @@
   },
   "dependencies": {
     "@happier-dev/plugin-sdk": "0.0.0",
+    "ws": "8.21.1",
     "zod": "4.3.6"
   },
   "devDependencies": {
     "@happier-dev/protocol": "0.0.0",
+    "@types/ws": "8.18.1",
     "esbuild": "^0.27.2",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4"

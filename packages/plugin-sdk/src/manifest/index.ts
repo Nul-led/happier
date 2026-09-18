@@ -52,6 +52,8 @@ export type { PluginManifest } from '../manifest.js';
 export type { PluginManifestDiagnostic } from '../manifest.js';
 export type { PluginManifestParseResult } from '../manifest.js';
 export type { PluginRequestInterceptorContribution } from '../manifest.js';
+export type { PluginSystemToolAcpFingerprintV1 } from '../manifest.js';
+export type { PluginSystemToolReadinessV1 } from '../manifest.js';
 export type { PluginTestkitManifest } from '../manifest.js';
 export type { PublicHostAccessCapability } from '../manifest.js';
 export { compilePluginJsonSchema } from '../manifest.js';

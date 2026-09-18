@@ -1311,6 +1311,62 @@ describe('Azure DevOps Triage scan', () => {
     expect(result.failure.retryNotBeforeMs).toBe(1_760_000_030_000);
   });
 
+  it('still reports the provider retry deadline when a lane throttles after observed rows', async () => {
+    const recorder = createRecorder((request) => {
+      if (request.url.includes('_apis/connectionData')) return { body: CONNECTION_DATA };
+      if (request.url.includes('_apis/projects')) return page([project()]);
+      if (request.url.includes('_apis/git/repositories?')) return page([repository()]);
+      if (request.url.includes('searchCriteria.creatorId')) return page([pullRequest(17)]);
+      if (request.url.includes('searchCriteria.reviewerId')) {
+        return { status: 429, headers: { 'retry-after': '60' }, body: { message: 'Throttled.' } };
+      }
+      throw new Error(`unexpected request: ${request.url}`);
+    }, { now: 1_760_000_000_000 });
+
+    // Wide enough that the reviewer lane is actually reached after the authored lane's row,
+    // rather than the walk settling on its own projection budget first.
+    const result = await runAzureTriageScan({
+      services: recorder.services,
+      request: { v: 1, instance: configuredInstance(), page: { kind: 'initial', limit: 32 } },
+      signal: new AbortController().signal,
+    });
+
+    expect(TriageScanResultV1Schema.parse(result)).toEqual(result);
+    // `CONTRACT.md` §5.1/§5.2: no successful arm can express a retry deadline, so settling this
+    // walk as a partial `complete` would silently delete the provider's own retry floor.
+    if (result.kind !== 'failed') throw new Error('a throttled walk must state its retry floor');
+    expect(result.failure.class).toBe('rateLimit');
+    expect(result.failure.retryNotBeforeMs).toBe(1_760_000_060_000);
+  });
+
+  it('still fails a lane throttled after observed rows when no header states a deadline', async () => {
+    const recorder = createRecorder((request) => {
+      if (request.url.includes('_apis/connectionData')) return { body: CONNECTION_DATA };
+      if (request.url.includes('_apis/projects')) return page([project()]);
+      if (request.url.includes('_apis/git/repositories?')) return page([repository()]);
+      if (request.url.includes('searchCriteria.creatorId')) return page([pullRequest(17)]);
+      if (request.url.includes('searchCriteria.reviewerId')) {
+        // Azure throttles without `Retry-After` and without a usable reset header.
+        return { status: 429, headers: {}, body: { message: 'Throttled.' } };
+      }
+      throw new Error(`unexpected request: ${request.url}`);
+    }, { now: 1_760_000_000_000 });
+
+    const result = await runAzureTriageScan({
+      services: recorder.services,
+      request: { v: 1, instance: configuredInstance(), page: { kind: 'initial', limit: 32 } },
+      signal: new AbortController().signal,
+    });
+
+    expect(TriageScanResultV1Schema.parse(result)).toEqual(result);
+    // Being throttled and being told when to come back are separate facts. The
+    // resolver correctly invents no deadline here, and that absence must not
+    // convert a rate limit into a partial success the next view retries at once.
+    if (result.kind !== 'failed') throw new Error('a throttled walk must state its rate limit');
+    expect(result.failure.class).toBe('rateLimit');
+    expect(result.failure.retryNotBeforeMs).toBeUndefined();
+  });
+
   it('refuses a configuration token that does not decode rather than guessing a route', async () => {
     const recorder = createRecorder(happyPath());
     const result = await runAzureTriageScan({

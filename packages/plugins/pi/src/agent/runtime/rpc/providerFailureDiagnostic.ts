@@ -6,6 +6,7 @@ import { classifyProviderLimitEvidence } from '@happier-dev/plugin-sdk/first-par
 
 const PI_PROVIDER_TOKEN_PATTERN = /\bsk-[A-Za-z0-9][A-Za-z0-9_-]{12,}\b/gu;
 const SAFE_PROVIDER_CODE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u;
+const SAFE_PROVIDER_IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/+@-]{0,255}$/u;
 
 export type PiProviderFailureDiagnostic = Readonly<{
   classification: 'pi_provider_failure';
@@ -13,6 +14,80 @@ export type PiProviderFailureDiagnostic = Readonly<{
   sanitizedPreview: string;
   piRetryable: boolean;
 }>;
+
+export type PiProviderFailureLogEvidence = Readonly<{
+  record: Readonly<Record<string, string | number | boolean | null>>;
+  messageShape?: Readonly<Record<string, string | number | boolean | null>>;
+}>;
+
+const SAFE_FAILURE_RECORD_KEYS = [
+  'type',
+  'code',
+  'errorCode',
+  'error_code',
+  'status',
+  'statusCode',
+  'success',
+  'retryable',
+  'willRetry',
+  'attempt',
+  'maxAttempts',
+  'provider',
+  'model',
+  'modelId',
+  'turnId',
+] as const;
+
+const SAFE_FAILURE_MESSAGE_KEYS = [
+  'role',
+  'provider',
+  'model',
+  'modelId',
+  'stopReason',
+  'stop_reason',
+] as const;
+
+function normalizeProviderIdentifier(value: unknown): string | null {
+  return typeof value === 'string' && SAFE_PROVIDER_IDENTIFIER_PATTERN.test(value)
+    ? value
+    : null;
+}
+
+function readSafeScalar(
+  key: string,
+  value: unknown,
+): string | number | boolean | null | undefined {
+  if (value === null || typeof value === 'boolean') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+  if (key === 'provider' || key === 'model' || key === 'modelId') {
+    return normalizeProviderIdentifier(value) ?? undefined;
+  }
+  return normalizeCode(value) ?? undefined;
+}
+
+function projectSafeScalars(
+  source: Readonly<Record<string, unknown>>,
+  keys: readonly string[],
+): Readonly<Record<string, string | number | boolean | null>> {
+  const result: Record<string, string | number | boolean | null> = {};
+  for (const key of keys) {
+    const value = readSafeScalar(key, source[key]);
+    if (value !== undefined) result[key] = value;
+  }
+  return Object.freeze(result);
+}
+
+/** Safe structured context for default-on logs; prompt/content/error bodies never enter it. */
+export function buildPiProviderFailureLogEvidence(
+  record: Readonly<Record<string, unknown>>,
+): PiProviderFailureLogEvidence {
+  const message = isRecord(record.message) ? record.message : null;
+  const messageShape = message ? projectSafeScalars(message, SAFE_FAILURE_MESSAGE_KEYS) : null;
+  return Object.freeze({
+    record: projectSafeScalars(record, SAFE_FAILURE_RECORD_KEYS),
+    ...(messageShape && Object.keys(messageShape).length > 0 ? { messageShape } : {}),
+  });
+}
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -30,6 +105,10 @@ function sanitizeText(value: unknown): string | null {
 function normalizeCode(value: unknown): string | null {
   const code = typeof value === 'string' ? value.trim() : '';
   return SAFE_PROVIDER_CODE_PATTERN.test(code) ? code : null;
+}
+
+function hasProviderTimeoutEvidence(...values: Array<string | null>): boolean {
+  return values.some((value) => value !== null && /\b(?:timeout|timed out|etimedout)\b/iu.test(value));
 }
 
 function parseProviderError(value: string): Readonly<Record<string, unknown>> | null {
@@ -50,45 +129,94 @@ function readLeadingHttpStatus(value: string): number | null {
   return Number(match[1]);
 }
 
+function isRetryablePiProviderFailure(params: Readonly<{
+  code: string | null;
+  message: string | null;
+  evidence: unknown;
+}>): boolean {
+  const limitEvidence = classifyProviderLimitEvidence(params.evidence);
+  return hasProviderTimeoutEvidence(params.code, params.message)
+    || limitEvidence.piRetryable === true
+    || (
+      limitEvidence.confidence === 'high'
+      && (limitEvidence.category === 'capacity' || limitEvidence.category === 'rate_limit')
+    );
+}
+
+function readProviderFailureFields(
+  record: Readonly<Record<string, unknown>>,
+  message: Readonly<Record<string, unknown>> | null,
+): Readonly<{
+  code: string | null;
+  message: string | null;
+  parsed: Readonly<Record<string, unknown>> | null;
+  httpStatus: number | null;
+}> {
+  const raw = [
+    message?.happierRequestAuthProviderDiagnostic,
+    message?.errorMessage,
+    message?.error_message,
+    record.errorMessage,
+    record.error_message,
+  ].find((value): value is string => typeof value === 'string' && value.trim().length > 0);
+  const parsed = raw ? parseProviderError(raw) : null;
+  const parsedError = isRecord(parsed?.error) ? parsed.error : null;
+  const nestedError = isRecord(record.error) ? record.error : null;
+  const nestedData = isRecord(record.data) ? record.data : null;
+  return Object.freeze({
+    code: [
+      parsedError?.code,
+      parsed?.code,
+      record.code,
+      record.errorCode,
+      record.error_code,
+      nestedError?.code,
+      nestedData?.code,
+    ].map(normalizeCode).find((value): value is string => value !== null) ?? null,
+    message: [
+      parsedError?.message,
+      parsedError?.errorMessage,
+      parsed?.message,
+      nestedError?.message,
+      nestedError?.errorMessage,
+      nestedData?.message,
+      record.detail,
+      typeof record.error === 'string' ? record.error : null,
+      raw,
+    ].map(sanitizeText).find((value): value is string => value !== null) ?? null,
+    parsed,
+    httpStatus: raw ? readLeadingHttpStatus(raw) : null,
+  });
+}
+
 export function readPiProviderFailureDiagnostic(
   record: Readonly<Record<string, unknown>>,
 ): PiProviderFailureDiagnostic | null {
   const message = isRecord(record.message) ? record.message : null;
-  if (message?.role !== 'assistant') return null;
-  const stopReason = typeof (message.stopReason ?? message.stop_reason) === 'string'
-    ? String(message.stopReason ?? message.stop_reason).trim()
+  const isTurnFailed = record.type === 'turn_failed';
+  if (!isTurnFailed && message?.role !== 'assistant') return null;
+  const rawStopReason = message?.stopReason ?? message?.stop_reason;
+  const stopReason = typeof rawStopReason === 'string'
+    ? rawStopReason.trim()
     : '';
-  const raw = [
-    message.happierRequestAuthProviderDiagnostic,
-    message.errorMessage,
-    message.error_message,
-    record.errorMessage,
-    record.error_message,
-  ].find((value): value is string => typeof value === 'string' && value.trim().length > 0);
-  if (stopReason !== 'error' && !raw) return null;
+  const fields = readProviderFailureFields(record, message);
+  if (!isTurnFailed && stopReason !== 'error' && !fields.parsed && !fields.message) return null;
 
-  const parsed = raw ? parseProviderError(raw) : null;
-  const parsedError = isRecord(parsed?.error) ? parsed.error : null;
-  const code = normalizeCode(parsedError?.code)
-    ?? normalizeCode(parsed?.code)
-    ?? 'pi_provider_session_error';
-  const sanitizedPreview = sanitizeText(
-    parsedError?.message
-      ?? parsedError?.errorMessage
-      ?? parsed?.message,
-  ) ?? 'Pi provider session failed';
-  const httpStatus = raw ? readLeadingHttpStatus(raw) : null;
-  const limitEvidence = classifyProviderLimitEvidence(parsed
-    ? { ...parsed, ...(httpStatus === null ? {} : { status: httpStatus }) }
-    : record);
+  const isTimeout = hasProviderTimeoutEvidence(fields.code, fields.message);
+  const code = fields.code ?? (isTimeout ? 'provider_timeout' : 'pi_provider_session_error');
+  const sanitizedPreview = fields.message ?? 'Pi provider session failed';
+  const retryEvidence = fields.parsed
+    ? { ...record, ...fields.parsed, ...(fields.httpStatus === null ? {} : { status: fields.httpStatus }) }
+    : record;
   return Object.freeze({
     classification: 'pi_provider_failure',
     code,
     sanitizedPreview,
-    piRetryable: limitEvidence.piRetryable === true || (
-      limitEvidence.confidence === 'high'
-      && (limitEvidence.category === 'capacity' || limitEvidence.category === 'rate_limit')
-    ),
+    piRetryable: isRetryablePiProviderFailure({
+      code,
+      message: fields.message,
+      evidence: retryEvidence,
+    }),
   });
 }
 
@@ -104,12 +232,16 @@ export function readPiPromptRejectionDiagnostic(
   const parsedMessage = sanitizeText(parsedError?.message ?? parsed?.message);
   const rawMessage = /^provider session failed$/iu.test(raw.trim()) ? null : sanitizeText(raw);
   const message = parsedMessage ?? rawMessage;
+  const httpStatus = readLeadingHttpStatus(raw);
+  const retryEvidence = parsed
+    ? { ...parsed, ...(httpStatus === null ? {} : { status: httpStatus }) }
+    : { ...(httpStatus === null ? {} : { status: httpStatus }), message: raw };
   return Object.freeze({
     classification: 'pi_provider_failure',
     code,
     sanitizedPreview: message
       ? `Pi provider rejected the prompt before acceptance: ${message}`
       : 'Pi provider rejected the prompt before acceptance without details',
-    piRetryable: false,
+    piRetryable: isRetryablePiProviderFailure({ code, message, evidence: retryEvidence }),
   });
 }

@@ -5,7 +5,10 @@ import type {
 import { open } from 'node:fs/promises';
 import { z } from 'zod';
 
-import { buildCodexAgentRuntimeDescriptor } from '../../../../protocol/runtimeDescriptorV1.js';
+import {
+  buildCodexAgentRuntimeDescriptor,
+  readExactCodexProviderSessionId,
+} from '../../../../protocol/runtimeDescriptorV1.js';
 import { parseCodexSessionMetaLine } from '../../../rollout/discovery/indexData.js';
 import {
   CodexExternalSessionHandoffSourceSchema,
@@ -105,10 +108,6 @@ function invalidCodexHandoffBundle(message: string): never {
   throw new CodexSessionHandoffBundleValidationError(message);
 }
 
-function readNonEmptyString(value: unknown): string | null {
-  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
-}
-
 function decodeCanonicalBase64(value: string, relativePath: string): Buffer {
   if (
     value.length === 0
@@ -170,8 +169,8 @@ function classifyCodexHandoffRolloutLine(params: Readonly<{
   firstLine: string | null;
 }>): 'root' | 'sidechain' {
   const metadata = params.firstLine ? parseCodexSessionMetaLine(params.firstLine) : null;
-  const sessionId = readNonEmptyString(metadata?.id);
-  const rootSessionId = readNonEmptyString(metadata?.session_id);
+  const sessionId = readExactCodexProviderSessionId(metadata?.id);
+  const rootSessionId = readExactCodexProviderSessionId(metadata?.session_id);
   if (!sessionId) {
     return invalidCodexHandoffBundle(
       `Codex handoff rollout has no native session metadata: ${params.relativePath}`,

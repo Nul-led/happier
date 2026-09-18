@@ -92,9 +92,44 @@ function emptyListResult(): TriageListEntriesResultV1 {
     });
 }
 
-async function executeAction(action: string, exposeDurableState: boolean): Promise<JsonValue> {
+/**
+ * The ordinary state this page spends its life in: a pass answered, and a
+ * connection is configured. It is the state in which **Configure sources** is
+ * gone and **Manage sources** is the only source-administration entry point
+ * left (`core/SURFACE.md` §1.4).
+ */
+function configuredListResult(): TriageListEntriesResultV1 {
+    return TriageListEntriesResultV1Schema.parse({
+        v: 1,
+        configuredSources: [{
+            sourceInstanceId: '00000000-0000-4000-8000-000000000002',
+            source: { pluginId: SOURCE_PLUGIN_ID, localId: 'example-forge' },
+            displayLabel: 'Example account',
+            available: true,
+        }],
+        configuredSourcesStatus: 'complete',
+        window: {
+            v: 1,
+            rows: [],
+            lanes: [{
+                sourceInstanceId: '00000000-0000-4000-8000-000000000002',
+                source: { pluginId: SOURCE_PLUGIN_ID, localId: 'example-forge' },
+                health: { kind: 'walkFinished' },
+                exhausted: true,
+            }],
+            coverage: 'complete',
+            assembledAtMs: 1_760_000_100_000,
+        },
+    });
+}
+
+async function executeAction(
+    action: string,
+    exposeDurableState: boolean,
+    configured: boolean,
+): Promise<JsonValue> {
     if (action === TRIAGE_LIST_ENTRIES_ACTION_LOCAL_ID_V1) {
-        return emptyListResult() as unknown as JsonValue;
+        return (configured ? configuredListResult() : emptyListResult()) as unknown as JsonValue;
     }
     if (action === TRIAGE_LIST_PINNED_ENTRIES_ACTION_LOCAL_ID_V1) return {
         v: 1,
@@ -127,18 +162,16 @@ async function mountShell(options: Readonly<{
     canOpenSurface?: boolean;
     openRefuses?: boolean;
     exposeDurableState?: boolean;
+    /** Answer the pass with a configured connection: the ordinary list state. */
+    configured?: boolean;
 }> = {}): Promise<PluginUiTestkit> {
     opened = [];
     const ephemeralSharedScope = createTriageEphemeralSharedScopeFixture();
     let fixture!: PluginUiTestkit;
     await act(async () => {
         fixture = await createPluginUiTestkit({
-            identity: {
-                pluginId: 'happier.triage',
-                pluginVersion: '0.0.0',
-                viewId: 'triage',
-                generation: 'target-generation-a',
-            },
+            identity: { instanceId: 'fixture-instance-182', mountNonce: 'fixture-mount-182' },
+            authorPlugin: { id: 'happier.triage', version: '0.0.0' },
             surface: renderShellSurface,
             surfaceContext: createSurfaceContextFixture({
                 mount: {
@@ -156,6 +189,7 @@ async function mountShell(options: Readonly<{
                 executeAction: async ({ action }) => await executeAction(
                     action,
                     options.exposeDurableState === true,
+                    options.configured === true,
                 ),
                 replacePageLocation: ({ subPath }) => subPath,
                 ...(options.canOpenSurface === false ? {} : {
@@ -243,5 +277,72 @@ describe('the unconfigured PRs & Issues screen', () => {
         // control refuses to be.
         await expect(shell.getByText('Example Forge settings could not be opened'))
             .resolves.toBeDefined();
+    });
+});
+
+/**
+ * The other half of `core/SURFACE.md` §1.4.
+ *
+ * **Configure sources** is the compact action of the screen with nothing usable
+ * configured; it disappears the moment a connection exists. From then on
+ * **Manage sources** is the ONLY source-administration entry point this page
+ * has, and §1.4 routes it through the same generic Plugin Settings destination —
+ * so a reader who has configured one connection must be able to add a second,
+ * or repair the first, without removing what they already have and returning to
+ * the unconfigured screen to get the offer back.
+ */
+describe('Manage sources on the ordinary list screen', () => {
+    it('reaches the source-owned settings page beside the sources it lists', async () => {
+        const shell = await mountShell({ settingsPageId: 'triage-sources', configured: true });
+
+        // The unconfigured screen — and its own Configure offer — is gone.
+        await expect(shell.queryByText('No sources are configured')).resolves.toBeUndefined();
+        await expect(shell.queryByRole('button', { name: 'Configure Example Forge' }))
+            .resolves.toBeUndefined();
+
+        await act(async () => {
+            await shell.press(await shell.getByRole('button', { name: 'Manage sources' }));
+        });
+
+        const configure = await shell.getByRole('button', { name: 'Configure Example Forge' });
+        await act(async () => { await shell.press(configure); });
+        await act(async () => { await Promise.resolve(); });
+
+        // The same admitted destination the unconfigured screen opens, from the
+        // one offer owner: no second navigation path and no Triage-owned form.
+        expect(opened).toHaveLength(1);
+        expect(opened[0]?.view).toEqual({ pluginId: SOURCE_PLUGIN_ID, localId: 'triage-sources' });
+        expect(opened[0]?.input).toBeUndefined();
+        expect(opened[0]?.subPath).toBeUndefined();
+    });
+
+    it('says so when the host refuses the destination it offered', async () => {
+        const shell = await mountShell({
+            settingsPageId: 'triage-sources',
+            configured: true,
+            openRefuses: true,
+        });
+
+        await act(async () => {
+            await shell.press(await shell.getByRole('button', { name: 'Manage sources' }));
+        });
+        await act(async () => {
+            await shell.press(await shell.getByRole('button', { name: 'Configure Example Forge' }));
+        });
+        await act(async () => { await Promise.resolve(); });
+
+        await expect(shell.getByText('Example Forge settings could not be opened'))
+            .resolves.toBeDefined();
+    });
+
+    it('offers no destination for a source that named no page', async () => {
+        const shell = await mountShell({ configured: true });
+
+        await act(async () => {
+            await shell.press(await shell.getByRole('button', { name: 'Manage sources' }));
+        });
+
+        await expect(shell.queryByRole('button', { name: 'Configure Example Forge' }))
+            .resolves.toBeUndefined();
     });
 });

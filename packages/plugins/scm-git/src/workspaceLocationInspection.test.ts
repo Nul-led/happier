@@ -40,6 +40,7 @@ describe('inspectGitWorkspaceLocation', () => {
             await runGit(repoRoot, ['worktree', 'add', worktreeRoot, 'feature']);
 
             const resolvedWorktreePath = await runGit(worktreeRoot, ['rev-parse', '--path-format=absolute', '--show-toplevel']);
+            const repositoryIdentityPath = await realpath(join(repoRoot, '.git'));
 
             await expect(inspectGitWorkspaceLocation({
                 context: {
@@ -54,7 +55,11 @@ describe('inspectGitWorkspaceLocation', () => {
             })).resolves.toEqual({
                 rootPath: worktreeRoot,
                 scmProvider: 'git',
-                checkoutDiscovery: [{ kind: 'git_worktree', path: resolvedWorktreePath }],
+                checkoutDiscovery: [{
+                    kind: 'git_worktree',
+                    path: resolvedWorktreePath,
+                    repositoryIdentityPath,
+                }],
             });
         } finally {
             await rm(repoRoot, { recursive: true, force: true });
@@ -85,6 +90,7 @@ describe('inspectGitWorkspaceLocation', () => {
                 'utf8',
             );
             const registeredWorktreePath = await realpath(originalWorktreeRoot);
+            const repositoryIdentityPath = await realpath(join(repoRoot, '.git'));
 
             await expect(inspectGitWorkspaceLocation({
                 context: {
@@ -99,7 +105,11 @@ describe('inspectGitWorkspaceLocation', () => {
             })).resolves.toEqual({
                 rootPath: restoredWorktreeRoot,
                 scmProvider: 'git',
-                checkoutDiscovery: [{ kind: 'git_worktree', path: registeredWorktreePath }],
+                checkoutDiscovery: [{
+                    kind: 'git_worktree',
+                    path: registeredWorktreePath,
+                    repositoryIdentityPath,
+                }],
             });
         } finally {
             await rm(repoRoot, { recursive: true, force: true });

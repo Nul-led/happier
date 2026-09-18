@@ -1,30 +1,12 @@
 import { projectAgentCapabilitiesV2FromDefinition } from '@happier-dev/plugin-sdk/agents';
 import { definePlugin } from '@happier-dev/plugin-sdk';
-import type { HookHandler } from '@happier-dev/plugin-sdk/hooks';
 
+import { antigravityExternalSessionsContribution } from './agent/cliPrint/externalSessions.js';
 import { antigravityExternalSessionObservationContribution } from './agent/cliPrint/observation.js';
-import { antigravityConnectedServiceStateSharingDescriptor } from './agent/connectedServices/descriptor.js';
 import { AGENT_DEFINITION } from './agent/definition.js';
-import { ANTIGRAVITY_PREFLIGHT_SESSION_CONTROLS } from './agent/preflight/models.js';
-import { ANTIGRAVITY_BACKEND_ID } from './agent/install/cliRuntime.js';
-import { resolveAntigravityDaemonSpawnPrerequisites } from './agent/lifecycle/spawnHooks.js';
-import {
-  antigravityExternalSessionsContribution,
-  createAntigravityAgentRuntime,
-} from './agent/runtime/factory.js';
+import { ANTIGRAVITY_ACP_SERVER_INSTALL_ID, ANTIGRAVITY_BACKEND_ID } from './agent/install/cliRuntime.js';
 import { ANTIGRAVITY_CLI_SYSTEM_TOOL_ID } from './agent/systemTool.js';
-import { ANTIGRAVITY_AGENT_SETTINGS_CONTRIBUTION } from './agentSettings/definition.js';
-import {
-  ANTIGRAVITY_LOCALHARNESS_INSTALLABLE_KEY,
-} from './agent/localharness/installable.js';
-
-const resolveAntigravityDaemonSpawnPrerequisitesHook: HookHandler = (event, context) =>
-  resolveAntigravityDaemonSpawnPrerequisites(event, context);
-
-const {
-  id: ANTIGRAVITY_AGENT_SETTINGS_CONTRIBUTION_ID,
-  ...ANTIGRAVITY_AGENT_SETTINGS_DECLARATION
-} = ANTIGRAVITY_AGENT_SETTINGS_CONTRIBUTION;
+import { createAntigravityNativeTerminalSurface } from './agent/terminal/nativeSurface.js';
 
 export const ANTIGRAVITY_PLUGIN = definePlugin({
   id: 'happier.agent.antigravity',
@@ -42,10 +24,10 @@ export const ANTIGRAVITY_PLUGIN = definePlugin({
         access: ['read'],
       },
     }, {
-      id: 'localharness-process',
+      id: 'antigravity-acp-process',
       capability: 'process',
-      reason: 'Launch the managed Antigravity localharness through host-mediated execution.',
-      scope: { executables: [{ kind: 'managedDependency', id: 'localharness' }] },
+      reason: 'Launch the pinned official Antigravity ACP server through host-mediated execution.',
+      scope: { executables: [{ kind: 'managedDependency', id: 'agy-acp-server' }] },
     }, {
       id: 'antigravity-cli-process',
       capability: 'process',
@@ -58,7 +40,14 @@ export const ANTIGRAVITY_PLUGIN = definePlugin({
     [ANTIGRAVITY_BACKEND_ID]: {
       declaration: {
         title: 'Antigravity',
-        runtime: { kind: 'custom' },
+        runtime: {
+          kind: 'acp',
+          transport: {
+            kind: 'stdio',
+            executable: { kind: 'managedDependency', id: 'agy-acp-server' },
+          },
+          definition: { mcp: { policy: 'pass_through' } },
+        },
         cli: {
           displayName: 'Antigravity CLI',
           executable: {
@@ -110,7 +99,12 @@ export const ANTIGRAVITY_PLUGIN = definePlugin({
         }],
         capabilities: projectAgentCapabilitiesV2FromDefinition(AGENT_DEFINITION.core, {
           surfaces: ['externalSessions'],
-          sessions: { open: ['create', 'resume'], delivery: ['newTurn'], cancel: true },
+          sessions: {
+            open: ['create', 'resume'],
+            delivery: ['newTurn'],
+            cancel: true,
+            executionRunContext: { versions: [1] },
+          },
         }),
         surfaces: {
           externalSession: {
@@ -136,50 +130,52 @@ export const ANTIGRAVITY_PLUGIN = definePlugin({
           },
         },
       },
-      factory: createAntigravityAgentRuntime,
-      connectedAccountLaunch: {
-        stateSharingDescriptor: antigravityConnectedServiceStateSharingDescriptor,
-      },
-      preflightSessionControls: ANTIGRAVITY_PREFLIGHT_SESSION_CONTROLS,
-      cliSessionCommand: {
-        sessionRuntimeId: 'antigravity',
-        accountSettingsAgentId: 'antigravity',
-        infoCommandPrefixes: [['models']],
-      },
-      sessionRunnerFactory: {
-        module: './agent/runtime/factory',
-        export: 'createAntigravityAgentRuntime',
-        runtimeApiVersion: 1,
-        externalSessionsExport: 'antigravityExternalSessionsContribution',
-      },
       externalSessions: antigravityExternalSessionsContribution,
       externalSessionObservation: antigravityExternalSessionObservationContribution,
+      terminal: createAntigravityNativeTerminalSurface(),
     },
   },
   managedDependencies: {
-    localharness: {
-      title: 'Antigravity localharness',
-      description: 'Google Antigravity structured local runtime.',
+    'agy-acp-server': {
+      title: 'Antigravity ACP server',
+      description: 'Official pinned Antigravity ACP server.',
       sources: [{
-        kind: 'managedPypiWheelAsset',
-        installId: ANTIGRAVITY_LOCALHARNESS_INSTALLABLE_KEY,
-        distribution: 'google-antigravity',
-        versionSpecifier: '>=0.1.4,<0.2.0',
-        assetPathByPlatform: {
-          'darwin-arm64': 'google/antigravity/bin/localharness',
-          'linux-x64': 'google/antigravity/bin/localharness',
-          'linux-arm64': 'google/antigravity/bin/localharness',
-          'win32-x64': 'google/antigravity/bin/localharness.exe',
-          'win32-arm64': 'google/antigravity/bin/localharness.exe',
+        kind: 'pinnedArchive',
+        installId: ANTIGRAVITY_ACP_SERVER_INSTALL_ID,
+        version: '1.1.1',
+        assetsByPlatform: {
+          'darwin-arm64': {
+            archiveUrl: 'https://dl.google.com/agy-extensions/releases/macos/agy-acp-server-agy_acp_server_1.1.1-darwin-arm64.zip',
+            sha256: 'fdfa915652cdb7ba8085cc8fffed072cbe009251aa2c951aabdda07a8c28a189',
+            executableSubpath: 'agy_acp_server.par',
+          },
+          'linux-x64': {
+            archiveUrl: 'https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-agy_acp_server_1.1.1-linux-x86_64.zip',
+            sha256: '38f62d01b32deb0907b3d39a71ec301fd36369f6ffd1cf262d4af385177f79df',
+            executableSubpath: 'agy_acp_server.par',
+            args: ['--uid='],
+          },
+          'linux-arm64': {
+            archiveUrl: 'https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-agy_acp_server_1.1.1-linux-arm64.zip',
+            sha256: 'ed69e64b308fcb123ab54bf3277bf9cb0d651064f885ea5aab0ff520c7175398',
+            executableSubpath: 'agy_acp_server.par',
+            args: ['--uid='],
+          },
+          'win32-x64': {
+            archiveUrl: 'https://dl.google.com/agy-extensions/releases/windows/agy-acp-server-agy_acp_server_1.1.1-windows-x86_64.zip',
+            sha256: '47cb50eef14f0a4655d78cfcfda869bcea7aaee5f9787e936bc2935ea612c3b8',
+            executableSubpath: 'agy_acp_server.exe',
+          },
+          'win32-arm64': {
+            archiveUrl: 'https://dl.google.com/agy-extensions/releases/windows/agy-acp-server-agy_acp_server_1.1.1-windows-arm64.zip',
+            sha256: '35f4b1f47ba6a3fea7b0a3e30010df5ea73a64b4f0e7cf991cddc673ddfbcafc',
+            executableSubpath: 'agy_acp_server.exe',
+          },
         },
-        executable: true,
-        compatibilityProbe: 'antigravity-localharness-v1',
-        installConsent: 'host_managed_required',
-        autoUpdateMode: 'notify',
-        trustedPublisher: 'Google',
       }],
       platforms: ['macos', 'linux', 'windows'],
-      executable: 'localharness',
+      architectures: ['arm64', 'x64'],
+      executable: 'agy_acp_server',
     },
   },
   systemTools: {
@@ -187,22 +183,6 @@ export const ANTIGRAVITY_PLUGIN = definePlugin({
       title: 'Antigravity CLI',
       executableNames: ['agy'],
     },
-  },
-  hooks: {
-    'resolve-prerequisites': {
-      declaration: {
-        on: 'agent.resolvePrerequisites',
-        hookApiVersion: 1,
-        category: 'decision',
-        scope: 'agent',
-        filters: { agentId: 'antigravity' },
-        executionKind: 'decide',
-      },
-      handler: resolveAntigravityDaemonSpawnPrerequisitesHook,
-    },
-  },
-  settings: {
-    [ANTIGRAVITY_AGENT_SETTINGS_CONTRIBUTION_ID]: ANTIGRAVITY_AGENT_SETTINGS_DECLARATION,
   },
 });
 

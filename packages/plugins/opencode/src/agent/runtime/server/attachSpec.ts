@@ -1,4 +1,6 @@
 import type { ManagedServiceSpec } from '@happier-dev/plugin-sdk/managed-services';
+import { OPEN_CODE_MANAGED_SERVER_STARTUP_TIMEOUT_MS } from './timeoutPolicy.js';
+import { openCodeServerHealthPath } from './dialect.js';
 
 /**
  * The settings field holding the `OPENCODE_SERVER_PASSWORD` of a server the
@@ -49,13 +51,21 @@ export function buildOpenCodeManagedServerAttachSpec(params: Readonly<{
     },
     healthCheck: {
       kind: 'http',
-      target: { kind: 'servicePath', path: '/global/health' },
+      target: { kind: 'servicePath', path: openCodeServerHealthPath('v1') },
       timeoutMs: 5_000,
     },
     healthPolicy: {
       intervalMs: 10_000,
       consecutiveFailures: 3,
     },
+    // An attached server is one Happier never launched, so there is no resolved
+    // executable to read the generation from — the only signal is the user's own
+    // `HAPPIER_OPENCODE_SERVER_DIALECT` request, and a request is not evidence
+    // about the listening process. Moving readiness onto `/api/health` on that
+    // basis would break an opted-in user whose own server predates the `/api`
+    // surface, so the legacy route stays. A user-run standalone V2 server, which
+    // mounts no `/global` group at all, therefore cannot be attached yet.
+    //
     // A password-protected OpenCode server answers `/global/health` with 401
     // exactly like `/session`, so the probe has to carry the credential too or
     // the service can never become healthy.
@@ -64,6 +74,6 @@ export function buildOpenCodeManagedServerAttachSpec(params: Readonly<{
       username: OPENCODE_SERVER_BASIC_USERNAME,
       passwordSecretId: OPENCODE_SERVER_PASSWORD_SETTING_ID,
     },
-    startupTimeoutMs: 30_000,
+    startupTimeoutMs: OPEN_CODE_MANAGED_SERVER_STARTUP_TIMEOUT_MS,
   };
 }

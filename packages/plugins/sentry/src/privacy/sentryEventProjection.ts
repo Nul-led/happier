@@ -283,15 +283,20 @@ function isProviderScrubbed(meta: unknown, segments: SentryPathV1): boolean {
   if (!isRecord(leaf)) return true;
 
   const { rem, err, chunks } = leaf;
-  if (rem !== undefined) return Array.isArray(rem) ? rem.length > 0 : true;
-  if (err !== undefined) return Array.isArray(err) ? err.length > 0 : true;
-  if (chunks !== undefined) {
-    if (!Array.isArray(chunks)) return true;
-    return chunks.some((chunk) => !isRecord(chunk) || chunk['type'] === 'redaction');
-  }
   // A leaf with none of the three recognized keys is an annotation shape this build
   // does not understand, and an unrecognized annotation is not a clean-data claim.
-  return true;
+  if (rem === undefined && err === undefined && chunks === undefined) return true;
+  // Every recognized key present is weighed, because an empty `rem` is the absence of
+  // one kind of evidence and never a statement about the `err` or redaction chunks
+  // recorded beside it. Answering on the first key that merely exists rendered a
+  // positively annotated value in full.
+  if (rem !== undefined && (!Array.isArray(rem) || rem.length > 0)) return true;
+  if (err !== undefined && (!Array.isArray(err) || err.length > 0)) return true;
+  if (chunks !== undefined && (
+    !Array.isArray(chunks)
+    || chunks.some((chunk) => !isRecord(chunk) || chunk['type'] === 'redaction')
+  )) return true;
+  return false;
 }
 
 /**

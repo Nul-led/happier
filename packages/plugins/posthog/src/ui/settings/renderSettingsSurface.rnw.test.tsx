@@ -133,12 +133,8 @@ async function mountSettings(): Promise<PluginUiTestkit> {
   let fixture!: PluginUiTestkit;
   await act(async () => {
     fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: POSTHOG_PLUGIN_ID,
-        pluginVersion: '0.0.0',
-        viewId: 'triage-sources',
-        generation: 'triage-sources-mount',
-      },
+      identity: { instanceId: 'triage-sources', mountNonce: 'triage-sources-mount' },
+      authorPlugin: { id: POSTHOG_PLUGIN_ID, version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createSurfaceContextFixture(),
       adapter: createPluginUiRnwSemanticSurfaceAdapter(),

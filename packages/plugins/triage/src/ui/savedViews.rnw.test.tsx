@@ -149,6 +149,7 @@ function createHarness(
     } satisfies TriageScanResultV1);
 
     let minted = 0;
+    let failNextWrite = false;
     const viewDeps = {
         catalog: accountKv.catalog(TRIAGE_SAVED_VIEWS_ACCOUNT_KV_KEY_V1),
         mintViewId: () => {
@@ -173,6 +174,10 @@ function createHarness(
             );
         }
         if (action === TRIAGE_ADMINISTER_SAVED_VIEW_ACTION_LOCAL_ID_V1) {
+            if (failNextWrite) {
+                failNextWrite = false;
+                throw new Error('account write unavailable');
+            }
             return await administerTriageSavedView(
                 TriageAdministerSavedViewInputV1Schema.parse(request.input),
                 viewDeps,
@@ -196,6 +201,7 @@ function createHarness(
         executeAction,
         accountKv,
         enableViewsRead: () => { viewsReadUnavailable = false; },
+        failNextWrite: () => { failNextWrite = true; },
     };
 }
 
@@ -212,6 +218,7 @@ async function mountShell(options: Readonly<{
     locations: readonly string[];
     accountKv: ReturnType<typeof createTestkitAccountKv>;
     enableViewsRead: () => void;
+    failNextWrite: () => void;
 }>> {
     const harness = createHarness(
         options.selectedViewId ?? null,
@@ -223,12 +230,8 @@ async function mountShell(options: Readonly<{
     let fixture!: PluginUiTestkit;
     await act(async () => {
         fixture = await createPluginUiTestkit({
-            identity: {
-                pluginId: 'happier.triage',
-                pluginVersion: '0.0.0',
-                viewId: 'triage',
-                generation: 'triage-saved-views-mount',
-            },
+            identity: { instanceId: 'fixture-instance-189', mountNonce: 'fixture-mount-189' },
+            authorPlugin: { id: 'happier.triage', version: '0.0.0' },
             surface: renderShellSurface,
             surfaceContext: createSurfaceContextFixture(),
             adapter: createPluginUiRnwSemanticSurfaceAdapter({ ephemeralSharedScope }),
@@ -255,6 +258,7 @@ async function mountShell(options: Readonly<{
         locations,
         accountKv: harness.accountKv,
         enableViewsRead: harness.enableViewsRead,
+        failNextWrite: harness.failNextWrite,
     };
 }
 
@@ -270,11 +274,53 @@ function storedValue(accountKv: ReturnType<typeof createTestkitAccountKv>) {
     };
 }
 
+/** Exercise RNW's real text-input event boundary; the semantic testkit exposes presses only. */
+async function editViewName(value: string): Promise<void> {
+    const input = document.querySelector<HTMLInputElement>('input[aria-label="View name"]');
+    if (input === null) throw new Error('View name input is missing');
+    await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, value);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+}
+
 afterEach(async () => {
     for (const fixture of mounted.splice(0)) await fixture.dispose();
 });
 
 describe('the PRs & Issues saved-view lens', () => {
+    it.each(['create', 'rename'] as const)('retains the exact %s name after a conflict and retries it', async (kind) => {
+        const { shell, accountKv } = await mountShell({ selectedViewId: VIEW_ID });
+        await act(async () => {
+            await shell.press(await shell.getByRole('button', {
+                name: kind === 'create' ? 'Save as new view' : 'Rename',
+            }));
+        });
+        const label = 'My exact naming draft';
+        await editViewName(label);
+        accountKv.seed(TRIAGE_SAVED_VIEWS_ACCOUNT_KV_KEY_V1, {
+            ...storedSetting(VIEW_ID),
+            views: [{ ...storedSetting(VIEW_ID).views[0], label: 'Renamed elsewhere' }],
+        });
+        await act(async () => { await shell.press(await shell.getByRole('button', { name: 'Save view' })); });
+        expect((await shell.getByRole('textbox', { name: 'View name' })).value).toBe(label);
+        expect(storedValue(accountKv).views.some((view) => view.label === label)).toBe(false);
+        await act(async () => { await shell.press(await shell.getByRole('button', { name: 'Save view' })); });
+        expect(storedValue(accountKv).views.some((view) => view.label === label)).toBe(true);
+        expect(await shell.queryByRole('textbox', { name: 'View name' })).toBeUndefined();
+    });
+
+    it('preserves a create draft through a failed write and Account recovery', async () => {
+        const { shell, accountKv, failNextWrite } = await mountShell();
+        await act(async () => { await shell.press(await shell.getByRole('button', { name: 'Save as new view' })); });
+        await editViewName('Retry this name');
+        failNextWrite();
+        await act(async () => { await shell.press(await shell.getByRole('button', { name: 'Save view' })); });
+        expect((await shell.getByRole('textbox', { name: 'View name' })).value).toBe('Retry this name');
+        await act(async () => { await shell.press(await shell.getByRole('button', { name: 'Retry' })); });
+        await act(async () => { await shell.press(await shell.getByRole('button', { name: 'Save view' })); });
+        expect(storedValue(accountKv).views.some((view) => view.label === 'Retry this name')).toBe(true);
+    });
     it('offers an explicit retry when the Account read is transiently unavailable', async () => {
         const { shell, enableViewsRead } = await mountShell({ viewsReadUnavailable: true });
 

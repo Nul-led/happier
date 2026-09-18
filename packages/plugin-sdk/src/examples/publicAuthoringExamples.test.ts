@@ -824,15 +824,20 @@ function publishedAuthoringDocumentationKey(documentPath: string): string {
 }
 
 /**
- * Complete documentation examples may name a real, separately compiled
- * companion leaf. Stage that maintained source beside the extracted package
- * root so this source-level contract exercises the same ESM resolution an
- * author uses, rather than replacing the import with a test-only stub.
+ * Documentation examples may name a separately compiled companion leaf.
+ * Stage maintained source beside the extracted package root for real ESM
+ * resolution. Generated-output fixtures prove only declaration compilation;
+ * the corresponding composed runtime lane proves the generated document.
  */
 const documentedSnippetSupportFiles = new Map<string, readonly Readonly<{
-    source: string;
     destination: string;
-}>[]>([
+} & ({ source: string } | { content: string })>[]>([
+    ['ui/hosted-web.mdx#1', [{
+        destination: 'ui/summaryDocument.ts',
+        // Models the author's generated string module for declaration compilation,
+        // not a guest runtime or evidence of the ready/bootstrap lifecycle.
+        content: 'export const html: string = "<!doctype html><html><body>Summary</body></html>";\n',
+    }]],
     ['surfaces/external-sessions.mdx#0', [{
         source: 'advanced-package-root/agent/reviewAgent.ts',
         destination: 'agent/reviewAgent.ts',
@@ -1502,6 +1507,39 @@ describe('public SDK authoring examples', { timeout: 60_000 }, () => {
         );
         expect(sourceManifest.manifest).toEqual(manifest);
         expect(sourceManifest.manifest.entrypoints?.daemon).toBe('./dist/daemon.js');
+        expect(sourceManifest.manifest.contributes.ui?.views).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                id: 'review-services-hosted-html',
+                container: 'servicesPanel',
+                target: { kind: 'services' },
+                renderer: 'review-services-hosted-html-renderer',
+            }),
+            expect.objectContaining({
+                id: 'review-project-hosted-html',
+                container: 'rightSidebarTab',
+                target: { kind: 'project' },
+                renderer: 'review-project-hosted-html-renderer',
+            }),
+            expect.objectContaining({
+                id: 'review-status-widget',
+                container: 'sessionWidget',
+                target: { kind: 'session' },
+                renderer: 'review-native',
+                fallbackRenderers: ['review-web'],
+            }),
+        ]));
+        expect(sourceManifest.manifest.contributes.ui?.renderers).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                id: 'review-services-hosted-html-renderer',
+                kind: 'hostedHtml',
+                source: { kind: 'html', html: expect.stringContaining('Review service') },
+            }),
+            expect.objectContaining({
+                id: 'review-project-hosted-html-renderer',
+                kind: 'hostedHtml',
+                source: { kind: 'html', html: expect.stringContaining('Project review') },
+            }),
+        ]));
         // The owner test must consume the entry's exports, rather than a local
         // reapplication of its definition that can bypass entry wiring.
         expect(publicAuthoringEntry.manifest).toBe(actualPublicAuthoringEntry.manifest);
@@ -1618,6 +1656,9 @@ describe('public SDK authoring examples', { timeout: 60_000 }, () => {
         const openSurface = vi.fn<PluginClientActionContext['ui']['openSurface']>(
             async () => undefined,
         );
+        const executeAction = (async () => {
+            throw new Error('This example does not execute a nested Action.');
+        }) satisfies PluginClientActionContext['ui']['executeAction'];
         const context = {
             plugin: { id: 'example.public-authoring', version: '1.0.0' },
             contribution: {
@@ -1626,7 +1667,8 @@ describe('public SDK authoring examples', { timeout: 60_000 }, () => {
             },
             invocationSurface: 'voice',
             signal: new AbortController().signal,
-            ui: { openSurface },
+            ui: { executeAction, openSurface },
+            ephemeralSharedScope: null,
         } satisfies PluginClientActionContext;
         await handler({}, context);
         expect(openSurface).toHaveBeenCalledOnce();
@@ -2720,13 +2762,8 @@ describe('public SDK authoring examples', { timeout: 60_000 }, () => {
         let observedStat: unknown;
         let observedRead: unknown;
         const fixture = await createPluginUiTestkit({
-            identity: {
-                pluginId: manifest.id,
-                pluginVersion: manifest.version,
-                viewId: 'review-openable-content',
-                generation: 'public-authoring-openable-test',
-                sessionId: 'session-1',
-            },
+            identity: { instanceId: 'fixture-instance-66', mountNonce: 'fixture-mount-66' },
+            authorPlugin: { id: manifest.id, version: manifest.version },
             surface: { kind: 'public-authoring-openable-test' },
             surfaceContext: createSurfaceContextFixture({
                 mount: {
@@ -2896,13 +2933,8 @@ describe('public SDK authoring examples', { timeout: 60_000 }, () => {
                 bytes: new TextEncoder().encode(summary),
             });
             const uiFixture = await createPluginUiTestkit({
-                identity: {
-                    pluginId: manifest.id,
-                    pluginVersion: manifest.version,
-                    viewId: 'review-session-status-details',
-                    generation: 'public-authoring-session-resource-test',
-                    sessionId: 'session-1',
-                },
+                identity: { instanceId: 'fixture-instance-67', mountNonce: 'fixture-mount-67' },
+                authorPlugin: { id: manifest.id, version: manifest.version },
             surface: { kind: 'public-authoring-session-resource-test' },
             surfaceContext: createSurfaceContextFixture({
                 mount: {
@@ -3093,13 +3125,8 @@ describe('public SDK authoring examples', { timeout: 60_000 }, () => {
 
             const accountBoundary = createReviewSessionStatusAccountStorage('Check the authorization boundary.');
             const uiFixture = await createPluginUiTestkit({
-                identity: {
-                    pluginId: manifest.id,
-                    pluginVersion: manifest.version,
-                    viewId: 'project-companion-dashboard',
-                    generation: 'public-authoring-project-companion-dashboard-test',
-                    sessionId: 'session-1',
-                },
+                identity: { instanceId: 'fixture-instance-68', mountNonce: 'fixture-mount-68' },
+                authorPlugin: { id: manifest.id, version: manifest.version },
                 surface: { kind: 'public-authoring-project-companion-dashboard-test' },
                 surfaceContext: createSurfaceContextFixture({
                     mount: {
@@ -3198,13 +3225,8 @@ describe('public SDK authoring examples', { timeout: 60_000 }, () => {
         }>;
         const openSurface = vi.fn();
         const fixture = await createPluginUiTestkit({
-            identity: {
-                pluginId: manifest.id,
-                pluginVersion: manifest.version,
-                viewId: 'project-companion-activity-log',
-                generation: 'public-authoring-project-companion-open-details-test',
-                sessionId: 'session-1',
-            },
+            identity: { instanceId: 'fixture-instance-69', mountNonce: 'fixture-mount-69' },
+            authorPlugin: { id: manifest.id, version: manifest.version },
             surface: { kind: 'public-authoring-project-companion-open-details-test' },
             surfaceContext: createSurfaceContextFixture({
                 mount: {
@@ -3396,13 +3418,8 @@ describe('public SDK authoring examples', { timeout: 60_000 }, () => {
             execute: invokeCurrentUiCommand,
         }];
         const uiFixture = await createPluginUiTestkit({
-            identity: {
-                pluginId: manifest.id,
-                pluginVersion: manifest.version,
-                viewId: 'project-companion-activity-log',
-                generation: 'public-authoring-voice-host-test',
-                sessionId: 'session-1',
-            },
+            identity: { instanceId: 'fixture-instance-70', mountNonce: 'fixture-mount-70' },
+            authorPlugin: { id: manifest.id, version: manifest.version },
             surface: { kind: 'public-authoring-voice-host-test' },
             surfaceContext: createSurfaceContextFixture({
                 mount: {
@@ -4140,7 +4157,8 @@ describe('public SDK authoring examples', { timeout: 60_000 }, () => {
                 for (const supportFile of documentedSnippetSupportFiles.get(snippet.key) ?? []) {
                     const destination = join(sourcePath, '..', supportFile.destination);
                     mkdirSync(join(destination, '..'), { recursive: true });
-                    cpSync(join(copiedRoot, supportFile.source), destination);
+                    if ('source' in supportFile) cpSync(join(copiedRoot, supportFile.source), destination);
+                    else writeFileSync(destination, supportFile.content, 'utf8');
                 }
                 sourceFiles.push(relative(copiedRoot, sourcePath));
             }
@@ -4427,7 +4445,7 @@ describe('public SDK authoring examples', { timeout: 60_000 }, () => {
                 right: Readonly<{ rendererId: string }>,
             ): number => left.rendererId.localeCompare(right.rendererId);
             const executableRenderers = manifest.contributes.ui.renderers
-                .filter((renderer) => renderer.kind !== 'declarative')
+                .filter((renderer) => renderer.kind === 'reactNative' || renderer.kind === 'hostedWeb')
                 .map((renderer) => ({ rendererId: renderer.id, kind: renderer.kind }))
                 .sort(byRendererId);
             const targets = module.pluginUiBuildConfig?.targets ?? [];

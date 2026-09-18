@@ -12,7 +12,11 @@ import {
   type OpenCodeGlobalEventDelivery,
   subscribeOpenCodeGlobalEvents,
 } from '../../../runtime/server/openCodeServerClient.js';
-import { asRecord, normalizeString } from '../../../runtime/server/openCodeParsing.js';
+import {
+  asRecord,
+  normalizeString,
+  readNonBlankOpaqueIdentifier,
+} from '../../../runtime/server/openCodeParsing.js';
 import {
   createOpenCodeExternalSessionClient,
   type OpenCodeExternalSessionSource,
@@ -161,12 +165,18 @@ function resourceMatchesLinkedSource(
   return hashOpaqueIdentity(linkedSource.baseUrl) === resource.endpointIdentity;
 }
 
+/**
+ * The link key is the identity of one observed OpenCode session. The directory
+ * is Happier-canonicalized, but the session id is bytes OpenCode minted, so it
+ * is hashed exactly -- re-minting it collides two distinct provider sessions
+ * onto one link.
+ */
 function buildLinkKey(directory: string | null, remoteSessionId: string): string {
-  const normalizedSessionId = normalizeString(remoteSessionId);
-  if (!normalizedSessionId) {
+  const admittedSessionId = readNonBlankOpaqueIdentifier(remoteSessionId);
+  if (!admittedSessionId) {
     throw new Error('OpenCode observation requires a native session id');
   }
-  const identity = JSON.stringify([directory, normalizedSessionId]);
+  const identity = JSON.stringify([directory, admittedSessionId]);
   return `${LINK_KEY_PREFIX}${createHash('sha256').update(identity, 'utf8').digest('base64url')}`;
 }
 
@@ -221,10 +231,11 @@ function readEventTranscriptChange(event: OpenCodeGlobalEvent):
     return null;
   }
   const directory = normalizeString(event.directory);
-  const remoteSessionId = normalizeString(payload.properties?.sessionID)
-    || normalizeString(asRecord(payload.properties?.session)?.id)
-    || normalizeString(asRecord(payload.properties?.part)?.sessionID)
-    || normalizeString(asRecord(payload.properties?.info)?.sessionID);
+  const remoteSessionId = readNonBlankOpaqueIdentifier(payload.properties?.sessionID)
+    ?? readNonBlankOpaqueIdentifier(asRecord(payload.properties?.session)?.id)
+    ?? readNonBlankOpaqueIdentifier(asRecord(payload.properties?.part)?.sessionID)
+    ?? readNonBlankOpaqueIdentifier(asRecord(payload.properties?.info)?.sessionID)
+    ?? '';
   return directory && remoteSessionId
     ? { kind: 'correlated', directory, remoteSessionId }
     : { kind: 'reconcile' };
@@ -340,7 +351,7 @@ export function createOpenCodeExternalSessionObservationContribution(params: Rea
           }
           try {
             const linkedSource = normalizedSourceOrThrow(link.linkedSource, env);
-            const remoteSessionId = normalizeString(link.linkedSource.remoteSessionId);
+            const remoteSessionId = readNonBlankOpaqueIdentifier(link.linkedSource.remoteSessionId) ?? '';
             if (
               !resourceMatchesLinkedSource(resource, linkedSource)
               || !remoteSessionId
@@ -402,7 +413,7 @@ export function createOpenCodeExternalSessionObservationContribution(params: Rea
       for (const [index, link] of request.links.entries()) {
         try {
           const linkedSource = normalizedSourceOrThrow(link.linkedSource, env);
-          const remoteSessionId = normalizeString(link.linkedSource.remoteSessionId);
+          const remoteSessionId = readNonBlankOpaqueIdentifier(link.linkedSource.remoteSessionId) ?? '';
           if (
             !resourceMatchesLinkedSource(resource, linkedSource)
             || !remoteSessionId
@@ -436,6 +447,16 @@ export function createOpenCodeExternalSessionObservationContribution(params: Rea
           try {
             const client = await createOpenCodeExternalSessionClient({
               source: directoryGroup.source,
+              // Observation reconciliation is the one External Sessions read the
+              // host does not hand an `ExecService`
+              // (`AgentExternalSessionObservationReconcileResourceRequest`), so
+              // no resolved-executable fact reaches here and the proven legacy
+              // route is the only safe choice. Against a V2 server the status
+              // read fails and every link in the group becomes a retrieval
+              // failure — degraded, never a wrong turn phase. Making this
+              // generation-aware means the host stamping execution authority on
+              // the observation request too.
+              dialect: 'v1',
               env,
               baseUrlAuthority: 'canonical',
               managedEndpointRead: request.managedEndpointRead,

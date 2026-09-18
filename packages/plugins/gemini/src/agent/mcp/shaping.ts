@@ -1,6 +1,5 @@
+import { createSecureTempDirectorySync } from '@happier-dev/plugin-sdk/fs';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 type GeminiMcpEnvironmentReader = Readonly<{
   list(): Readonly<Record<string, string>>;
@@ -172,7 +171,8 @@ export async function prepareGeminiMcpShaping(ctx: GeminiMcpShapingContext) {
 export async function prepareGeminiNativeMcpShaping(
   sourceEnv: EnvLike = process.env,
 ) {
-  const cliHomeDir = await mkdtemp(join(tmpdir(), 'happier-gemini-mcp-home-'));
+  const tempDirectory = createSecureTempDirectorySync({ prefix: 'happier-gemini-mcp-home' });
+  const cliHomeDir = tempDirectory.path;
   const baseEnv = {
     GEMINI_CLI_HOME: cliHomeDir,
     HOME: cliHomeDir,
@@ -188,7 +188,7 @@ export async function prepareGeminiNativeMcpShaping(
     async cleanup() {
       if (cleaned) return;
       cleaned = true;
-      await rm(cliHomeDir, { recursive: true, force: true });
+      tempDirectory.cleanup();
     },
   };
 }

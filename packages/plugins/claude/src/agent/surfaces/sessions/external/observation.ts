@@ -10,6 +10,7 @@ import type {
     AgentExternalSessionObservationLinkEvidenceBatchV1,
 } from '@happier-dev/plugin-sdk/sessions/external';
 
+import { readClaudeProviderIdentityValue } from '../../../../protocol/providerIdentity.js';
 import {
     isSafeClaudeJsonlPathSegment,
     resolveClaudeJsonlSessionFile,
@@ -69,10 +70,10 @@ function resolveIdentity(
     ) {
         throw new Error('Claude observation source and link project ids disagree');
     }
-    const remoteSessionId = readRequiredPathSegment(
-        identity.remoteSessionId,
-        'native session id',
-    );
+    const remoteSessionId = readClaudeProviderIdentityValue(identity.remoteSessionId);
+    if (!remoteSessionId || !isSafeClaudeJsonlPathSegment(remoteSessionId)) {
+        throw new Error('Claude observation requires a valid native session id');
+    }
     const source: ClaudeExternalSessionSource = {
         kind: 'claudeConfig',
         ...(typeof identity.source.configDir === 'string'

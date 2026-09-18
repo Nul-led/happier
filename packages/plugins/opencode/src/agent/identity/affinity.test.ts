@@ -22,11 +22,13 @@ describe('OpenCode session affinity metadata', () => {
   it('writes provider session and runtime affinity metadata', () => {
     expect(applyOpenCodeSessionAffinityMetadata({
       backendMode: 'server',
+      // OpenCode minted this id, so its exact bytes are persisted; the server
+      // URL beside it is a Happier-normalized value and keeps its own rules.
       providerSessionId: ' oc-session ',
       serverBaseUrl: 'http://127.0.0.1:49196',
       serverBaseUrlExplicit: true,
     })).toEqual({
-      opencodeSessionId: 'oc-session',
+      opencodeSessionId: ' oc-session ',
       opencodeBackendMode: 'server',
       opencodeServerBaseUrl: 'http://127.0.0.1:49196',
       opencodeServerBaseUrlExplicit: true,

@@ -168,6 +168,8 @@ describe('single-declaration Action contracts', () => {
                 void context.signal;
                 void context.invocationSurface;
                 void context.currentUiContext;
+                void context.ephemeralSharedScope;
+                await context.ui.executeAction('openDetails');
                 await context.ui.openSurface('details');
                 // @ts-expect-error Client Action handlers never receive daemon services.
                 void context.services;

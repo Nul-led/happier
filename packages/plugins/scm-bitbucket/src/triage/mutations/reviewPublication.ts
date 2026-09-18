@@ -14,7 +14,10 @@ import type { TriageSourceFailureV1 } from '@happier-dev/triage-protocol/v1';
 
 import type { BitbucketTriageApiClient } from '../apiClient.js';
 import { walkBitbucketCollection } from '../collection.js';
-import type { BitbucketTriageFailure } from '../failures.js';
+import {
+  isBitbucketPossiblyAppliedFailure,
+  type BitbucketTriageFailure,
+} from '../failures.js';
 import { buildBitbucketPullRequestUrl } from '../pullRequests.js';
 import type { BitbucketEntryRouteV1 } from '../source/invocationAdmission.js';
 import type { BitbucketEntryObservationV1 } from '../source/observeEntry.js';
@@ -40,6 +43,14 @@ export type BitbucketReviewPublicationOutcomeV1 =
   | Readonly<{
     kind: 'settled';
     publication: ReviewCommentPublicationResultV1;
+    /**
+     * Present only when the canonical Reviews settlement could not be recorded.
+     *
+     * External publication truth and Happier-side persistence are separate facts. The entries
+     * below are still exactly what Bitbucket did; this says the canonical claim was not closed,
+     * so nothing may read the result as a durably settled publication.
+     */
+    settlement?: 'unrecorded';
     observation?: Extract<BitbucketEntryObservationV1['observation'], { kind: 'present' }>;
     failure?: TriageSourceFailureV1;
   }>
@@ -163,8 +174,37 @@ function failedOutcome(failure: BitbucketTriageFailure): ProviderEffect {
   };
 }
 
-function isAmbiguous(failure: BitbucketTriageFailure): boolean {
-  return failure.class === 'transient' || failure.class === 'cancelled';
+/**
+ * The canonical Reviews settlement, recorded without letting its transport decide what Bitbucket
+ * did.
+ *
+ * By the time this runs the provider effects are established and, where they are `published`, the
+ * exact external reference is already in hand. A rejected settlement leaves the canonical claim
+ * open — the conservative side, which is why nothing is retried or re-dispatched here — but
+ * throwing would discard those references and skip the mandatory post-mutation observation, losing
+ * facts no later invocation can reconstruct. So the failure is reported as itself, beside the
+ * result it could not record.
+ */
+const SETTLEMENT_UNRECORDED: BitbucketTriageFailure = {
+  class: 'transient',
+  code: 'review-publication-settlement-unrecorded',
+};
+
+async function recordSettlement(
+  settle: ((
+    claim: ReviewCommentClaimPublicationDispatchResponseV1,
+    result: ReviewCommentPublicationResultV1,
+  ) => Promise<void>) | undefined,
+  claim: ReviewCommentClaimPublicationDispatchResponseV1,
+  publication: ReviewCommentPublicationResultV1,
+): Promise<BitbucketTriageFailure | null> {
+  if (settle === undefined) return null;
+  try {
+    await settle(claim, publication);
+    return null;
+  } catch {
+    return SETTLEMENT_UNRECORDED;
+  }
 }
 
 async function writeComment(
@@ -326,7 +366,7 @@ export async function publishBitbucketReviewComment(
     );
     if (written.ok) {
       outcome = { kind: 'published', externalRef: written.externalRef };
-    } else if (isAmbiguous(written.failure)) {
+    } else if (isBitbucketPossiblyAppliedFailure(written.failure)) {
       const after = await reconcileOne(dependencies, marker);
       outcome = after.kind === 'found'
         ? { kind: 'published', externalRef: after.externalRef }
@@ -347,15 +387,19 @@ export async function publishBitbucketReviewComment(
     }],
     verdict: { kind: 'notRequested' },
   });
-  await input.settle?.(claim, publication);
+  const unrecorded = await recordSettlement(input.settle, claim, publication);
+  // The final observation is owed after every potentially effective outcome, and it runs under
+  // this invocation's existing signal: an already-cancelled lifetime simply answers unresolved.
   const latest = await dependencies.observe();
+  const reported = failure
+    ?? (unrecorded === null ? undefined : dependencies.toTriageFailure(unrecorded))
+    ?? (latest.observation.kind === 'unresolved' ? latest.observation.failure : undefined);
   return {
     kind: 'settled',
     publication,
+    ...(unrecorded === null ? {} : { settlement: 'unrecorded' as const }),
     ...(latest.observation.kind === 'present' ? { observation: latest.observation } : {}),
-    ...(failure !== undefined
-      ? { failure }
-      : latest.observation.kind === 'unresolved' ? { failure: latest.observation.failure } : {}),
+    ...(reported === undefined ? {} : { failure: reported }),
   };
 }
 
@@ -467,7 +511,7 @@ export async function publishBitbucketReview(
       );
       if (written.ok) {
         outcome = { kind: 'published', externalRef: written.externalRef };
-      } else if (isAmbiguous(written.failure)) {
+      } else if (isBitbucketPossiblyAppliedFailure(written.failure)) {
         const after = await reconcileOne(dependencies, marker);
         if (after.kind === 'found') outcome = { kind: 'published', externalRef: after.externalRef };
         else {
@@ -528,7 +572,7 @@ export async function publishBitbucketReview(
         `${input.plan.verdict.body}\n\n${marker}`,
       ].join('\n\n'));
       if (summary.ok) summaryRef = summary.externalRef;
-      else if (isAmbiguous(summary.failure)) {
+      else if (isBitbucketPossiblyAppliedFailure(summary.failure)) {
         const after = await reconcileSummary(dependencies, summaryMarkers);
         if (after.kind === 'found') summaryRef = after.externalRef;
         else summaryFailure = summary.failure;
@@ -537,7 +581,7 @@ export async function publishBitbucketReview(
     const summaryEffect: ProviderEffect = summaryFailure !== undefined
       ? summaryReconciliationFailed
         || claim.instructions.verdict === 'reconcile'
-        || isAmbiguous(summaryFailure)
+        || isBitbucketPossiblyAppliedFailure(summaryFailure)
         ? { kind: 'uncertain' }
         : failedOutcome(summaryFailure)
       : summaryRef === null
@@ -550,7 +594,7 @@ export async function publishBitbucketReview(
         publicationCorrelationId: claim.verdict.publicationCorrelationId,
         outcome: summaryReconciliationFailed
           || claim.instructions.verdict === 'reconcile'
-          || isAmbiguous(summaryFailure)
+          || isBitbucketPossiblyAppliedFailure(summaryFailure)
           ? { kind: 'uncertain' }
           : failedOutcome(summaryFailure),
       };
@@ -596,7 +640,7 @@ export async function publishBitbucketReview(
           firstFailure ??= dependencies.toTriageFailure(written.failure);
           verdict = {
             publicationCorrelationId: claim.verdict.publicationCorrelationId,
-            outcome: isAmbiguous(written.failure)
+            outcome: isBitbucketPossiblyAppliedFailure(written.failure)
               ? { kind: 'uncertain', externalRef: summaryRef }
               : { kind: 'failed', code: written.failure.code, externalRef: summaryRef },
           };
@@ -623,14 +667,18 @@ export async function publishBitbucketReview(
     entries: entries as ReviewCommentPublicationResultV1['entries'],
     verdict,
   });
-  await input.settle?.(claim, publication);
+  const unrecorded = await recordSettlement(input.settle, claim, publication);
+  // The final observation is owed after every potentially effective outcome, and it runs under
+  // this invocation's existing signal: an already-cancelled lifetime simply answers unresolved.
   const latest = await dependencies.observe();
+  const reported = firstFailure
+    ?? (unrecorded === null ? undefined : dependencies.toTriageFailure(unrecorded))
+    ?? (latest.observation.kind === 'unresolved' ? latest.observation.failure : undefined);
   return {
     kind: 'settled',
     publication,
+    ...(unrecorded === null ? {} : { settlement: 'unrecorded' as const }),
     ...(latest.observation.kind === 'present' ? { observation: latest.observation } : {}),
-    ...(firstFailure === undefined
-      ? latest.observation.kind === 'unresolved' ? { failure: latest.observation.failure } : {}
-      : { failure: firstFailure }),
+    ...(reported === undefined ? {} : { failure: reported }),
   };
 }

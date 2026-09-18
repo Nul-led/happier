@@ -60,6 +60,7 @@ function context(
       kind: 'plugin',
       pluginId: 'happier.channels',
       contribution: { id: 'test', qualifiedId: 'happier.channels/actions/test' },
+      immutableGenerationId: 'telegram-automation-events-fixture-generation',
       materialization: {
         machineId: 'telegram-automation-events-fixture-machine',
         materializationId: 'telegram-automation-events-fixture-materialization',

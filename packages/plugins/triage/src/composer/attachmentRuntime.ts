@@ -1,8 +1,10 @@
 import type { PluginInvocationContext } from '@happier-dev/plugin-sdk';
 import type {
     ComposerAttachmentResolveRequestV1,
+    ComposerAttachmentResolveRequestV2,
     ComposerAttachmentResolveResultV1,
     ComposerAttachmentRuntime,
+    PluginScopedInvocationContextV1,
 } from '@happier-dev/plugin-sdk';
 
 import { bindCorpusCollections } from '../corpus/collections/bindCorpusCollections.js';
@@ -20,11 +22,10 @@ import { resolveTriageEntryForDispatch } from './resolveForDispatch.js';
  * the user as an attached entry the model silently never sees.
  */
 export function createTriageEntryAttachmentRuntime(): ComposerAttachmentRuntime {
-    return {
-        async resolveForDispatch(
-            request: ComposerAttachmentResolveRequestV1,
-            context: PluginInvocationContext,
-        ): Promise<ComposerAttachmentResolveResultV1> {
+    const resolve = async (
+        request: ComposerAttachmentResolveRequestV1 | ComposerAttachmentResolveRequestV2,
+        context: PluginInvocationContext | PluginScopedInvocationContextV1,
+    ): Promise<ComposerAttachmentResolveResultV1> => {
             const collections = bindCorpusCollections(requireTriageAccountStorage(context));
             return await resolveTriageEntryForDispatch({ attachments: request.attachments }, {
                 sourceInstances: collections.sourceInstances,
@@ -45,6 +46,9 @@ export function createTriageEntryAttachmentRuntime(): ComposerAttachmentRuntime 
                     .executeAdmittedTargetedOperation(operation, getInput, options ?? {}),
                 ...(context.signal === undefined ? {} : { signal: context.signal }),
             });
-        },
+    };
+    return {
+        resolveForDispatch: resolve,
+        resolveForDispatchV2: resolve,
     };
 }

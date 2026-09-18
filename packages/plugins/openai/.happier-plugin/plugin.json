@@ -17,6 +17,9 @@
           "defaultModeId": "api-key",
           "modes": [
             {
+              "directExport": {
+                "contractVersion": "happier.team-credential-manual-connected-account-direct.v1"
+              },
               "fields": [
                 {
                   "id": "token",

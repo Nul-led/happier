@@ -80,6 +80,7 @@ const sourceAliases = [
     ['@happier-dev/protocol/tools/v2/subAgentFamilies', '../../protocol/src/tools/v2/subAgentFamilies.ts'],
     ['@happier-dev/protocol/tools/v2', '../../protocol/src/tools/v2/index.ts'],
     ['@happier-dev/protocol/actions/actionSpecs', '../../protocol/src/actions/actionSpecs.ts'],
+    ['@happier-dev/protocol/actions/actionExecutionResult', '../../protocol/src/actions/actionExecutionResult.ts'],
     ['@happier-dev/protocol/actions/actionInputHintsRuntime', '../../protocol/src/actions/actionInputHintsRuntime.ts'],
     ['@happier-dev/protocol/actions/externalActionLimits', '../../protocol/src/actions/externalActionLimits.ts'],
     ['@happier-dev/protocol/plugins/settings/accountSettingsLimits', '../../protocol/src/plugins/settings/accountSettingsLimits.ts'],

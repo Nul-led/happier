@@ -342,17 +342,69 @@ describe('createClaudeSubscriptionQuotaFetcher', () => {
 
         expect(snapshot?.meters.find((meter) => meter.meterId === 'seven_day_fable')).toMatchObject({
             label: 'Weekly (Fable)',
+            providerLimitId: 'seven_day_fable',
+            modelId: null,
             utilizationPct: 22,
             resetsAt: Date.parse('2026-07-07T19:59:59.748308+00:00'),
             status: 'ok',
         });
         expect(snapshot?.meters.find((meter) => meter.meterId === 'five_hour')).toMatchObject({
+            providerLimitId: 'five_hour',
             utilizationPct: 63,
         });
         expect(snapshot?.meters.find((meter) => meter.meterId === 'seven_day')).toMatchObject({
+            providerLimitId: 'seven_day',
             utilizationPct: 12,
         });
         expect(snapshot?.meters.some((meter) => meter.meterId === 'weekly_scoped')).toBe(false);
+    });
+
+    it('keeps repeated scoped allowance kinds independently selectable without treating display names as model ids', async () => {
+        const now = 1_768_000_000_000;
+        vi.stubGlobal('fetch', vi.fn(async () => ({
+            ok: true,
+            status: 200,
+            statusText: 'OK',
+            headers: new Headers(),
+            json: async () => ({
+                    limits: [
+                        {
+                            kind: 'weekly_scoped',
+                            group: 'weekly',
+                            scope: { model: { id: null, display_name: 'Fable' } },
+                            utilization: 20,
+                        },
+                        {
+                            kind: 'weekly_scoped',
+                            group: 'weekly',
+                            scope: { model: { id: 'claude-opus-4-1', display_name: 'Opus' } },
+                            utilization: 30,
+                        },
+                    ],
+            }),
+            text: async () => '',
+            arrayBuffer: async () => new ArrayBuffer(0),
+        } as Response)));
+        const fetcher = createClaudeSubscriptionQuotaFetcher();
+
+        const snapshot = await fetcher.loadQuota({
+            record: buildClaudeOAuthRecord(now),
+            now,
+            signal: new AbortController().signal,
+        });
+
+        expect(snapshot?.meters).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                meterId: 'seven_day_fable',
+                providerLimitId: 'seven_day_fable',
+                modelId: null,
+            }),
+            expect.objectContaining({
+                meterId: 'seven_day_opus',
+                providerLimitId: 'seven_day_opus',
+                modelId: 'claude-opus-4-1',
+            }),
+        ]));
     });
 
     it('canonicalizes common Anthropic usage-window aliases before labeling model limits', async () => {

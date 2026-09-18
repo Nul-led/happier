@@ -176,9 +176,12 @@ export type PosthogOccurrenceControllerV1 = Readonly<{
 /**
  * The exact selected row and the frozen native query geometry that produced it.
  *
- * Pages can begin at a nonzero provider offset after "Load more", so a selected row
- * must carry its own absolute offset rather than asking the evidence resolver to infer
- * it from the page start or a later, mutable list position.
+ * The offset comes from the row itself, which is the only place it survives. A page can
+ * begin at a nonzero provider offset after "Load more", a malformed sibling shortens the
+ * accepted array without renumbering the provider's rows, and the Action envelope may
+ * drop a suffix — so counting positions from the list is counting the wrong thing. A row
+ * whose source never stated its position is not addressed by guessing one: it discloses
+ * nothing, and the dispatch-time UUID equality gate remains unchanged beneath it.
  */
 export function resolvePosthogSelectedEvidence(state: PosthogSampleStateV1): Readonly<{
     event: PosthogProjectedIssueEvent;
@@ -191,11 +194,13 @@ export function resolvePosthogSelectedEvidence(state: PosthogSampleStateV1): Rea
         selectedIndex >= candidate.start && selectedIndex < candidate.end
     ));
     const event = state.rows[selectedIndex];
-    if (page === undefined || event === undefined) return undefined;
+    if (page === undefined || event === undefined || event.providerOffset === undefined) {
+        return undefined;
+    }
     return Object.freeze({
         event,
         frozenRequest: page.request,
-        selectedAbsoluteOffset: page.request.offset + selectedIndex - page.start,
+        selectedAbsoluteOffset: event.providerOffset,
     });
 }
 

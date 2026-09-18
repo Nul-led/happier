@@ -84,6 +84,8 @@ export function buildGitSnapshot(input: {
     statusOutput: string;
     includedNumStatOutput: string;
     pendingNumStatOutput: string;
+    includedNumStatSuccess?: boolean;
+    pendingNumStatSuccess?: boolean;
     untrackedStatsByPath?: Record<string, { pendingAdded: number; isBinary: boolean }>;
     worktreesOutput?: string;
     remotesOutput?: string;
@@ -115,6 +117,9 @@ export function buildGitSnapshot(input: {
                 pendingAdded: pendingStats?.insertions ?? 0,
                 pendingRemoved: pendingStats?.deletions ?? 0,
                 isBinary: Boolean(includedStats?.binary || pendingStats?.binary),
+                ...((isMeaningfulStatus(statusEntry.index) && input.includedNumStatSuccess === false)
+                    || (isMeaningfulStatus(statusEntry.workingDir) && input.pendingNumStatSuccess === false)
+                    ? { isComplete: false } : {}),
             },
         });
     }
@@ -136,6 +141,7 @@ export function buildGitSnapshot(input: {
                 pendingAdded: untrackedStats ? Math.max(0, Number(untrackedStats.pendingAdded) || 0) : 0,
                 pendingRemoved: 0,
                 isBinary: untrackedStats ? Boolean(untrackedStats.isBinary) : false,
+                ...(untrackedStats ? {} : { isComplete: false }),
             },
         });
     }
@@ -213,6 +219,7 @@ export function buildGitSnapshot(input: {
         hasConflicts: sortedEntries.some((entry) => entry.kind === 'conflicted'),
         entries: sortedEntries,
         totals: {
+            ...(sortedEntries.some((entry) => entry.stats.isComplete === false) ? { isComplete: false } : {}),
             includedFiles: sortedEntries.filter((entry) => entry.hasIncludedDelta).length,
             pendingFiles: sortedEntries.filter((entry) => entry.hasPendingDelta).length,
             untrackedFiles: sortedEntries.filter((entry) => entry.kind === 'untracked').length,

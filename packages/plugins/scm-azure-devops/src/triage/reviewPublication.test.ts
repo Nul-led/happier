@@ -367,18 +367,51 @@ describe('Azure DevOps Reviews publication', () => {
     expect(threadWrites(requests)).toHaveLength(0);
   });
 
-  it('does not report settled when the canonical publication settlement fails', async () => {
+  it('keeps confirmed effects and still rereads when the canonical settlement fails', async () => {
+    const landed = { value: [thread(70, [{ id: 71, content: marker('A'.repeat(43)) }])] };
     const { context, requests } = harness({
-      threadReads: [
-        { value: [] },
-        { value: [{ id: 'not-an-integer', comments: [{ id: 4, content: 'possibly the marker' }] }] },
-      ],
+      threadReads: [{ value: [] }, { value: [] }, landed],
       settlementError: new Error('canonical settlement unavailable'),
     });
 
-    await expect(submitAzureDevOpsPullRequestReview(request(plan()), context))
-      .rejects.toThrow('canonical settlement unavailable');
-    expect(threadWrites(requests)).toHaveLength(0);
+    const result = AzureReviewPublicationResultV1Schema.parse(
+      await submitAzureDevOpsPullRequestReview(request(plan()), context),
+    );
+
+    // The comment is on the pull request and the marker reread proved it. Losing that result
+    // because Happier's own settlement call failed would report a published comment as nothing
+    // at all, and would skip the mandatory post-mutation observation entirely.
+    expect(result).toMatchObject({
+      kind: 'settled',
+      publication: { entries: [{ outcome: { kind: 'published', externalRef: '70:71' } }] },
+      failure: { code: 'azure-devops/publication-settlement-unconfirmed' },
+    });
+    expect(threadWrites(requests)).toHaveLength(1);
+    // §3.9.3: the authoritative reread runs after every outcome that may have changed provider
+    // state, and an internal settlement failure is not an exception.
+    expect(new URL(requests.at(-1)!.url).pathname.toLowerCase())
+      .toMatch(/\/pullrequests\/17$/u);
+  });
+
+  it('reports an accepted but undecodable entry write as uncertain, never as failed', async () => {
+    const { context, requests } = harness({
+      // Azure accepted the thread and answered `201`; only the ids this build needs are absent,
+      // so whether the comment exists is UNKNOWN rather than decided.
+      respond: ({ method, url }) => method === 'POST'
+        && new URL(url).pathname.toLowerCase().endsWith('/threads')
+        ? { status: 201, body: { id: 8, comments: [] } }
+        : undefined,
+    });
+
+    const result = AzureReviewPublicationResultV1Schema.parse(
+      await submitAzureDevOpsPullRequestReview(request(plan()), context),
+    );
+
+    expect(result).toMatchObject({
+      kind: 'settled',
+      publication: { entries: [{ outcome: { kind: 'uncertain' } }] },
+    });
+    expect(threadWrites(requests)).toHaveLength(1);
   });
 
   it('treats duplicate exact entry and verdict markers as uncertain and emits no duplicate write', async () => {
@@ -533,7 +566,41 @@ describe('Azure DevOps Reviews publication', () => {
       threadContext: { filePath: 'src/index.ts' },
       pullRequestThreadContext: {
         changeTrackingId: 42,
-        iterationContext: { firstComparingIteration: 1, secondComparingIteration: 3 },
+        iterationContext: { firstComparingIteration: 3, secondComparingIteration: 3 },
+      },
+    });
+  });
+
+  it('anchors a before-side comment to the common base after the first iteration', async () => {
+    const original = entry('comment-1');
+    const landed = { value: [thread(70, [{ id: 71, content: marker('A'.repeat(43)) }])] };
+    const { context, requests } = harness({ threadReads: [{ value: [] }, { value: [] }, landed] });
+    const result = AzureReviewPublicationResultV1Schema.parse(
+      await submitAzureDevOpsPullRequestReview(request(plan({
+        entries: [{
+          ...original,
+          anchor: { kind: 'line', filePath: 'src/index.ts', line: 7, side: 'before' },
+          snapshot: {
+            ...original.snapshot,
+            fileLength: 20,
+            diffContext: { side: 'before', baseSha: BASE_COMMIT, headSha: HEAD_COMMIT },
+          },
+        }],
+      })), context),
+    );
+
+    expect(result).toMatchObject({ kind: 'settled', publication: { entries: [{ outcome: { kind: 'published' } }] } });
+    const changes = requests.find((candidate) => new URL(candidate.url).pathname.endsWith('/iterations/3/changes'));
+    expect(new URL(changes!.url).searchParams.get('$compareTo')).toBe('0');
+    // REST 7.1: equal iteration ids select the common-base left file, not iteration one's file.
+    expect(threadWrites(requests)[0]?.body).toMatchObject({
+      threadContext: {
+        leftFileStart: { line: 7, offset: 1 },
+        leftFileEnd: { line: 7, offset: 1 },
+      },
+      pullRequestThreadContext: {
+        changeTrackingId: 42,
+        iterationContext: { firstComparingIteration: 3, secondComparingIteration: 3 },
       },
     });
   });

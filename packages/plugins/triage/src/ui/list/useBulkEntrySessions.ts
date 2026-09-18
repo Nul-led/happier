@@ -4,6 +4,7 @@ import type { PluginUiHostApi } from '@happier-dev/plugin-sdk/ui';
 
 import type { TriageStartEntrySessionResultV1 } from '../../actions/entrySessionProtocol.js';
 import { mintTriageOpaqueIdV1 } from '../../opaqueId.js';
+import { resolvesTriageUnknownSessionStartV1 } from '../header/sessionStartOutcome.js';
 import { planTriageActionDeliveryV1 } from '../../sessions/actionDelivery.js';
 import {
     readTriageActionExecutionPlacementV1,
@@ -232,7 +233,9 @@ export function mergeTriageBulkRetryResultsV1(
         // they must never erase a Session id or a successfully linked/delivered
         // entry the previous answer already established.
         if (result.status === 'settled' && replacement.status !== 'settled') return result;
-        if (result.status === 'unknownOutcome' && replacement.status === 'notStarted') return result;
+        if (result.status === 'unknownOutcome'
+            && (replacement.status !== 'settled'
+                || !resolvesTriageUnknownSessionStartV1(replacement.outcome.start))) return result;
         if (result.status !== 'settled' || replacement.status !== 'settled') return replacement;
         return Object.freeze({
             ...replacement,
@@ -261,7 +264,10 @@ function startKnowledgeRank(result: TriageStartEntrySessionResultV1): number {
 
 function readStartDelivery(
     result: TriageStartEntrySessionResultV1,
-): 'accepted' | 'alreadyAccepted' | 'outcomeUnknown' | 'rejected' | 'none' | 'notRequested' | undefined {
+): Extract<
+    TriageStartEntrySessionResultV1,
+    Readonly<{ type: 'opened' | 'linked' | 'openPending' }>
+>['delivery'] | undefined {
     return result.type === 'opened' || result.type === 'linked' || result.type === 'openPending'
         ? result.delivery
         : result.type === 'linkPending'
@@ -274,7 +280,8 @@ function deliveryKnowledgeRank(
 ): number {
     if (delivery === 'accepted' || delivery === 'alreadyAccepted') return 3;
     if (delivery === 'outcomeUnknown') return 2;
-    if (delivery === 'rejected' || delivery === 'none' || delivery === 'notRequested') return 1;
+    if (delivery === 'rejected' || delivery === 'failed' || delivery === 'cancelled'
+        || delivery === 'none' || delivery === 'notRequested') return 1;
     return 0;
 }
 
@@ -406,7 +413,7 @@ export function resolveTriageBulkStartRouteV1(
     // it cannot invent the task. Entry attachments supply facts, not intent;
     // promptless Ask remains on the authoring destination.
     if (instruction === null || instruction.trim().length === 0) return 'refusedCompose';
-    return checkoutIntent === 'none' || checkoutIntent === 'reuseWorkspace'
+    return checkoutIntent === 'none' || checkoutIntent === 'reuseWorkspace' || checkoutIntent === 'preparedReviewWorkspace'
         ? 'direct'
         : 'refusedCheckout';
 }
@@ -561,29 +568,21 @@ type TriageBulkRetryContextV1 = Readonly<{
     action: TriageActionV1;
     destination: Exclude<TriageBulkSessionDestinationV1, 'attachAllToNewSession'>;
     promptText: string | null;
-    settlements: readonly Readonly<{ creationKey: string; settlement: unknown }>[];
+    settlements: readonly Readonly<{
+        creationKey: string;
+        settlement: unknown;
+        placementCandidates: readonly ReturnType<typeof projectTriageSessionPlacementCandidateV1>[];
+    }>[];
 }>;
-
-function sameTriageBulkRepositoryV1(
-    left: NonNullable<TriageBulkSelectedEntryV1['repository']>,
-    right: NonNullable<TriageBulkSelectedEntryV1['repository']>,
-): boolean {
-    return left.kind === right.kind
-        && left.deployment === right.deployment
-        && left.repository === right.repository;
-}
 
 /** Whether one workspace can truthfully represent every entry in a shared unit. */
 export function isTriageBulkSharedPlacementCompatibleV1(input: Readonly<{
     workspaceMode: TriageActionV1['workspaceMode'];
     entries: readonly Pick<TriageBulkSelectedEntryV1, 'repository'>[];
 }>): boolean {
-    if (input.workspaceMode === 'reference_only') return true;
-    if (input.workspaceMode === 'pull_request') return input.entries.length === 1;
-    const first = input.entries[0]?.repository;
-    return first !== undefined
-        && input.entries.every((entry) => entry.repository !== undefined
-            && sameTriageBulkRepositoryV1(first, entry.repository));
+    // Repository identity can prefill placement, but an explicit project choice
+    // also supports entries from different repositories or without a repository.
+    return input.workspaceMode !== 'pull_request' || input.entries.length === 1;
 }
 
 /**
@@ -793,9 +792,14 @@ export function useTriageBulkEntrySessions(
                 // never silently reused for repository B. All choices settle
                 // before the first side effect; cancellation therefore still
                 // has an honest "nothing started" outcome.
-                const settlements: Array<Readonly<{ creationKey: string; settlement: unknown }>> = [];
+                const settlements: Array<TriageBulkRetryContextV1['settlements'][number]> = [];
                 for (const unit of plan.units) {
                     const placement = placementFor(unit.entries);
+                    const placementCandidates = placement.kind === 'candidates'
+                        ? placement.candidates.map(projectTriageSessionPlacementCandidateV1)
+                        : placement.kind === 'exact' && placement.candidate !== undefined
+                            ? [projectTriageSessionPlacementCandidateV1(placement.candidate)]
+                            : [];
                     setPhase(CHOOSING);
                     const draft = await requestTriageNewSessionDraft(
                         host,
@@ -828,6 +832,10 @@ export function useTriageBulkEntrySessions(
                         creationKey: unit.creationKey,
                         settlement: draft.settlement,
                         ...(action.profileId === null ? {} : { profileId: action.profileId }),
+                        ...(unit.entries[0]?.reviewWorkspace === undefined ? {} : {
+                            reviewWorkspace: unit.entries[0].reviewWorkspace.preparation,
+                        }),
+                        placementCandidates,
                     }).status === 'refused') {
                         setPhase(unavailable('newSessionUnavailable'));
                         return;
@@ -835,6 +843,7 @@ export function useTriageBulkEntrySessions(
                     settlements.push(Object.freeze({
                         creationKey: unit.creationKey,
                         settlement: draft.settlement,
+                        placementCandidates,
                     }));
                 }
 
@@ -862,6 +871,10 @@ export function useTriageBulkEntrySessions(
                     promptText,
                     settlement: settlements[0]?.settlement,
                     settlementForUnit,
+                    placementCandidatesForUnit: (unit) => settlements.find(
+                        (candidate) => candidate.creationKey === unit.creationKey,
+                    )?.placementCandidates ?? [],
+                    onPreparationCancelled: () => controller.abort(),
                     signal: controller.signal,
                     onStarted: () => {
                         started += 1;
@@ -920,6 +933,10 @@ export function useTriageBulkEntrySessions(
                     settlementForUnit: (unit) => context.settlements.find(
                         (candidate) => candidate.creationKey === unit.creationKey,
                     )?.settlement,
+                    placementCandidatesForUnit: (unit) => context.settlements.find(
+                        (candidate) => candidate.creationKey === unit.creationKey,
+                    )?.placementCandidates ?? [],
+                    onPreparationCancelled: () => controller.abort(),
                     signal: controller.signal,
                     previousResults: prior.results,
                     onStarted: () => {

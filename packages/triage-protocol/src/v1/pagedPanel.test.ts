@@ -83,6 +83,56 @@ describe('triage paged panel state', () => {
         expect(inFlight.rows).toEqual([{ id: 'a' }]);
     });
 
+    it('stops waiting for an abandoned request without dropping the settled pages', () => {
+        const abandoned = reduce(
+            initial(),
+            { kind: 'requestStarted', token: 1 },
+            {
+                kind: 'pageSettled',
+                token: 1,
+                page: {
+                    rows: [{ id: 'a' }],
+                    omittedRowCount: 0,
+                    projectionTruncated: false,
+                    continuation: 'cursor-1',
+                    incomplete: null,
+                },
+            },
+            { kind: 'requestStarted', token: 2 },
+            { kind: 'walkAbandoned' },
+        );
+        // The aborted request can never answer, so nothing is pending. What it
+        // was reading on top of is untouched, and the position it never reached
+        // is offered again rather than left behind a permanently busy control.
+        expect(abandoned.pending).toBe(false);
+        expect(abandoned.refreshing).toBe(false);
+        expect(abandoned.kind).toBe('ready');
+        expect(abandoned.rows).toEqual([{ id: 'a' }]);
+        expect(abandoned.continuation).toBe('cursor-1');
+        expect(abandoned.canLoadMore).toBe(true);
+        // It is not a failure: the provider refused nothing.
+        expect(abandoned.failure).toBeNull();
+    });
+
+    it('leaves a walk with no request in flight exactly as it was', () => {
+        const settled = reduce(
+            initial(),
+            { kind: 'requestStarted', token: 1 },
+            {
+                kind: 'pageSettled',
+                token: 1,
+                page: {
+                    rows: [{ id: 'a' }],
+                    omittedRowCount: 0,
+                    projectionTruncated: false,
+                    continuation: null,
+                    incomplete: null,
+                },
+            },
+        );
+        expect(reduce(settled, { kind: 'walkAbandoned' })).toBe(settled);
+    });
+
     it('ignores a FAILURE belonging to a request the panel already replaced', () => {
         const settled = reduce(
             initial(),

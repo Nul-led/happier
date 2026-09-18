@@ -51,9 +51,8 @@ import {
 } from '@happier-dev/plugin-ui';
 import {
     TriageDetailSurfaceInputV1Schema,
-    TriageSourceObservationV1Schema,
     type TriageDetailSurfaceInputV1,
-    type TriageSourceObservationV1,
+    type TriageSourceFailureV1,
 } from '@happier-dev/triage-protocol/v1';
 // The presentation rules used below are projections of the Triage contract's own
 // closed fact and failure vocabularies, so they are consumed from the one published
@@ -66,11 +65,14 @@ import {
 } from '@happier-dev/triage-protocol/v1';
 
 import { POSTHOG_ACTION_IDS, POSTHOG_PLUGIN_ID } from '../posthogContracts.js';
+import { PosthogNativeOverviewResultV1Schema } from '../source/detail/nativeOverviewContract.js';
 import { createPosthogEvidenceCandidate } from '../composer/candidate.js';
 import {
     buildPosthogDetailGetRequest,
     projectPosthogDetailSurface,
     type PosthogDetailFieldV1,
+    type PosthogDetailLiveReadV1,
+    type PosthogDetailReadV1,
     type PosthogDetailSurfaceModelV1,
 } from './detail/model.js';
 import {
@@ -118,31 +120,40 @@ function useActiveDerivation<T>(compute: () => T, deps: React.DependencyList): T
     return next.value;
 }
 
-type LiveEntry =
-    | Readonly<{ status: 'pending' }>
-    | Readonly<{ status: 'settled'; observation: TriageSourceObservationV1 }>
-    | Readonly<{ status: 'failed' }>;
+const LIVE_READ_REFUSED: TriageSourceFailureV1 = Object.freeze({
+    class: 'unsupportedContract',
+    code: 'posthog/detail-get-refused',
+});
+
+const LIVE_RESULT_UNREADABLE: TriageSourceFailureV1 = Object.freeze({
+    class: 'unsupportedContract',
+    code: 'posthog/detail-get-unreadable',
+});
 
 /**
- * Materializes the mounted entry through this source's own `get`.
+ * Materializes the mounted entry through the native projection of canonical `get`.
  *
  * The applied observation is a bounded list projection that may already be stale, so the
  * detail body always asks the source for the current entry. It runs once per exact
  * instance/entry and is aborted with the surface: a late result cannot replace the body
- * of a detail the reader has already left.
+ * of a detail the reader has already left. A read that did not answer names itself, in
+ * the same typed vocabulary the sampled panels use.
  */
-function useLiveEntry(input: TriageDetailSurfaceInputV1, signal: AbortSignal): LiveEntry {
+function useLiveEntry(
+    input: TriageDetailSurfaceInputV1,
+    signal: AbortSignal,
+): PosthogDetailLiveReadV1 {
     const action = React.useMemo(
-        () => ({ pluginId: POSTHOG_PLUGIN_ID, localId: POSTHOG_ACTION_IDS.get }),
+        () => ({ pluginId: POSTHOG_PLUGIN_ID, localId: POSTHOG_ACTION_IDS.nativeOverview }),
         [],
     );
     const { execute } = useExecutePluginAction(action);
-    const [live, setLive] = React.useState<LiveEntry>({ status: 'pending' });
+    const [live, setLive] = React.useState<PosthogDetailLiveReadV1>({ kind: 'pending' });
     const request = React.useMemo(() => buildPosthogDetailGetRequest(input), [input]);
 
     React.useEffect(() => {
         if (request.kind !== 'ready') {
-            setLive({ status: 'failed' });
+            setLive({ kind: 'failed', failure: LIVE_READ_REFUSED });
             return undefined;
         }
         const controller = new AbortController();
@@ -154,13 +165,21 @@ function useLiveEntry(input: TriageDetailSurfaceInputV1, signal: AbortSignal): L
             const execution = await execute(request.input, { signal: controller.signal });
             if (controller.signal.aborted) return;
             if (execution.status !== 'success') {
-                setLive({ status: 'failed' });
+                setLive({
+                    kind: 'failed',
+                    failure: {
+                        class: execution.status === 'error' ? 'transient' : 'unknown',
+                        code: execution.status === 'idle' || execution.status === 'pending'
+                            ? 'posthog/detail-get-not-dispatched'
+                            : execution.code,
+                    },
+                });
                 return;
             }
-            const parsed = TriageSourceObservationV1Schema.safeParse(execution.result);
+            const parsed = PosthogNativeOverviewResultV1Schema.safeParse(execution.result);
             setLive(parsed.success
-                ? { status: 'settled', observation: parsed.data }
-                : { status: 'failed' });
+                ? { kind: 'settled', ...parsed.data }
+                : { kind: 'failed', failure: LIVE_RESULT_UNREADABLE });
         })();
         return () => {
             signal.removeEventListener('abort', abort);
@@ -186,6 +205,23 @@ function posthogFactLabel(field: PosthogDetailFieldV1, text: PluginTranslate): s
         case 'posthog/severity': return text('plugins.posthog.ui.fact.severity', field.label);
         default: return field.label;
     }
+}
+
+/**
+ * Why the facts on screen are the last observation rather than a confirmed read.
+ *
+ * A live read carries a typed code and names it; a refused one has no provider outcome
+ * to name and states the standing sentence alone.
+ */
+function lastObservationDescription(
+    read: Extract<PosthogDetailReadV1, { kind: 'unavailable' | 'refused' }>,
+    text: PluginTranslate,
+): string {
+    const sentence = text(
+        'plugins.posthog.ui.lastObservation.description',
+        'PostHog could not be read just now, so these facts are the ones this issue was last observed with.',
+    );
+    return read.kind === 'unavailable' ? `${sentence} (${read.failure.code})` : sentence;
 }
 
 function OverviewPanel({
@@ -221,16 +257,29 @@ function OverviewPanel({
     return (
         <ScrollArea>
             <Stack gap="large">
-                {model.read.kind === 'unavailable'
+                {/*
+                    Anything but a settled live read leaves these facts unconfirmed, and
+                    a body that says nothing presents them as current. `unavailable`
+                    names the typed reason it carries; a refused read has none to name
+                    and states the standing sentence alone.
+                */}
+                {model.read.kind === 'unavailable' || model.read.kind === 'refused'
                     ? (
                         <Banner
                             tone="warning"
                             title="Showing the last observation"
                             titleKey="plugins.posthog.ui.lastObservation"
-                            description="PostHog could not be read just now, so these facts are the ones this issue was last observed with."
-                            descriptionKey="plugins.posthog.ui.lastObservation.description"
+                            description={lastObservationDescription(model.read, text)}
                         />
                     )
+                    : null}
+                {model.read.kind === 'materialized' && model.read.enrichmentFailure !== undefined
+                    ? <Banner
+                        tone="warning"
+                        title="Query enrichment is unavailable"
+                        titleKey="plugins.posthog.ui.enrichmentUnavailable"
+                        description={model.read.enrichmentFailure.code}
+                    />
                     : null}
                 {model.nativeStateNow === null
                     ? null
@@ -335,6 +384,49 @@ function OverviewPanel({
 const SAMPLE_DISCLOSURE
     = 'PostHog returns a sample of this issue’s exceptions, never all of them.';
 
+/**
+ * The one screen the three sampled consumers show when the read itself did not answer.
+ *
+ * Occurrences, Stack Trace and Affected Sessions read one controller, so a failed sample
+ * is one fact with three readers rather than three panel-local conclusions. Without it, a
+ * failure reaches a reader as "no frames" or "no sessions in this sample" — statements
+ * about the issue that the read never established.
+ */
+function SampledUnavailable({
+    failure,
+}: Readonly<{ failure: TriageSourceFailureV1 | null }>): React.ReactElement {
+    const text = usePluginTranslation();
+    return (
+        <ErrorState
+            title="Sampled occurrences are unavailable"
+            titleKey="plugins.posthog.ui.samplesUnavailable"
+            description={failure === null
+                ? text('plugins.posthog.ui.readFailed', 'PostHog could not complete this read.')
+                : failure.code}
+        />
+    );
+}
+
+/**
+ * The failure that arrived after rows were already visible.
+ *
+ * The shared paged rule keeps those rows, which is right — and leaves a list that has
+ * silently stopped offering more. That shape is indistinguishable from an exhausted
+ * sample, so the failure is stated beside the rows it did not take away.
+ */
+function SampledFailureNotice({
+    failure,
+}: Readonly<{ failure: TriageSourceFailureV1 }>): React.ReactElement {
+    return (
+        <Banner
+            tone="warning"
+            title="Showing the sample read so far"
+            titleKey="plugins.posthog.ui.partialSample"
+            description={failure.code}
+        />
+    );
+}
+
 function SampleFooter({
     controller,
 }: Readonly<{ controller: PosthogOccurrenceControllerV1 }>): React.ReactElement {
@@ -391,7 +483,6 @@ function OccurrencesPanel({
     locale: string;
     nowMs: number;
 }>): React.ReactElement {
-    const text = usePluginTranslation();
     const rows = useActiveDerivation(
         () => posthogOccurrenceRows(controller.state.rows),
         [controller.state.rows],
@@ -401,15 +492,7 @@ function OccurrencesPanel({
         return <LoadingState title="Reading sampled occurrences" titleKey="plugins.posthog.ui.readingSamples" />;
     }
     if (controller.state.kind === 'unavailable') {
-        return (
-            <ErrorState
-                title="Sampled occurrences are unavailable"
-                titleKey="plugins.posthog.ui.samplesUnavailable"
-                description={controller.state.failure === null
-                    ? text('plugins.posthog.ui.readFailed', 'PostHog could not complete this read.')
-                    : controller.state.failure.code}
-            />
-        );
+        return <SampledUnavailable failure={controller.state.failure} />;
     }
 
     return (
@@ -422,6 +505,9 @@ function OccurrencesPanel({
                 selectedKey: controller.state.selectedUuid,
                 onSelectedKeyChange: controller.select,
             }}
+            {...(controller.state.failure === null
+                ? {}
+                : { header: <SampledFailureNotice failure={controller.state.failure} /> })}
             empty={(
                 <EmptyState
                     title="No sampled occurrences"
@@ -506,6 +592,11 @@ function StackTracePanel({
     if (controller.state.kind === 'loading') {
         return <LoadingState title="Reading the sampled stack" titleKey="plugins.posthog.ui.readingStack" />;
     }
+    // The frames come from the same sample. A read that never answered has no selected
+    // occurrence to have carried no frames.
+    if (controller.state.kind === 'unavailable') {
+        return <SampledUnavailable failure={controller.state.failure} />;
+    }
 
     return (
         <List
@@ -515,6 +606,9 @@ function StackTracePanel({
             keyForItem={(frame) => frame.id}
             header={(
                 <Stack gap="small">
+                    {controller.state.failure === null
+                        ? null
+                        : <SampledFailureNotice failure={controller.state.failure} />}
                     {trace.exceptionLabel === null
                         ? (
                             <Text
@@ -631,28 +725,64 @@ function AffectedSessionsPanel({
     controller: PosthogOccurrenceControllerV1;
 }>): React.ReactElement {
     const text = usePluginTranslation();
-    const rows = useActiveDerivation(
-        () => posthogAffectedSessionRows(controller.state.rows),
-        [controller.state.rows],
+    const { active } = useTabPanelActivity();
+    const rows = React.useMemo(
+        () => active ? posthogAffectedSessionRows(controller.state.rows) : [],
+        [active, controller.state.rows],
     );
+    // Only anonymous row geometry survives leave. Keeping the List and its row count
+    // preserves its window/anchor without retaining session correlations or URLs.
+    const retainedGeometry = React.useRef<readonly boolean[]>([]);
+    if (active) retainedGeometry.current = rows.map((row) => row.url !== null);
+    const items: ReadonlyArray<{
+        key: string;
+        row: (typeof rows)[number] | null;
+        hasSubtitle: boolean;
+    }> = active
+        ? rows.map((row, index) => ({ key: String(index), row, hasSubtitle: row.url !== null }))
+        : retainedGeometry.current.map((hasSubtitle, index) => ({ key: String(index), row: null, hasSubtitle }));
 
     if (controller.state.kind === 'loading') {
         return <LoadingState title="Deriving affected sessions" titleKey="plugins.posthog.ui.derivingSessions" />;
+    }
+    // These rows are derived from the sample, so an unanswered read is not a sample that
+    // named no session.
+    if (controller.state.kind === 'unavailable') {
+        return <SampledUnavailable failure={controller.state.failure} />;
     }
 
     return (
         <List
             accessibilityLabel="PostHog sessions this sample named"
             accessibilityLabelKey="plugins.posthog.ui.sessionsLabel"
-            items={rows}
-            keyForItem={(row) => row.sessionId}
+            items={items}
+            keyForItem={(item) => item.key}
             header={(
-                <Text
-                    variant="caption"
-                    tone="neutral"
-                    valueKey="plugins.posthog.ui.sampledSessions.description"
-                    fallback="These are the PostHog sessions the sampled occurrences named. A session here is not a claim that a recording exists."
-                />
+                <Stack gap="small">
+                    {controller.state.failure === null
+                        ? null
+                        : <SampledFailureNotice failure={controller.state.failure} />}
+                    <Text
+                        variant="caption"
+                        tone="neutral"
+                        valueKey="plugins.posthog.ui.sampledSessions.description"
+                        fallback="These are the PostHog sessions the sampled occurrences named. A session here is not a claim that a recording exists."
+                    />
+                    {/*
+                        The replay disposition is stated, not implied by the absence of a
+                        control. This source has no characterized PostHog replay permalink
+                        producer, so no candidate can be opened — and a row that simply
+                        does nothing reads as a recording nobody bothered to link.
+                        Constructing a URL, or probing for a recording to find out, is
+                        exactly what this refuses to do.
+                    */}
+                    <Text
+                        variant="caption"
+                        tone="warning"
+                        valueKey="plugins.posthog.ui.sampledSessions.replayUnavailable"
+                        fallback="This build cannot open a PostHog session replay, and a sampled session is not a recording."
+                    />
+                </Stack>
             )}
             empty={(
                 <EmptyState
@@ -662,14 +792,24 @@ function AffectedSessionsPanel({
                     descriptionKey="plugins.posthog.ui.noSessions.description"
                 />
             )}
-            renderItem={(row) => (
+            renderItem={({ row, hasSubtitle }) => (
                 <Item
                     title={text('plugins.posthog.ui.sampledSession', 'Sampled session')}
-                    {...(row.url === null ? {} : { subtitle: row.url })}
-                    detail={text(
+                    {...(hasSubtitle ? { subtitle: row?.url ?? '\u00a0' } : {})}
+                    detail={row === null ? '\u00a0' : text(
                         'plugins.posthog.ui.sampledOccurrences',
                         '{count} sampled occurrence(s)',
                         { count: row.occurrenceCount },
+                    )}
+                    // Every candidate carries its own outcome, so a reader scanning rows
+                    // never has to infer availability from a missing affordance.
+                    accessory={(
+                        <Badge
+                            value={text(
+                                'plugins.posthog.ui.replayUnavailable',
+                                'Replay unavailable',
+                            )}
+                        />
                     )}
                 />
             )}
@@ -883,10 +1023,7 @@ function PosthogDetailBody({
     const live = useLiveEntry(input, signal);
     const controller = usePosthogOccurrenceController(input, signal);
     const model = React.useMemo(
-        () => projectPosthogDetailSurface(
-            input,
-            live.status === 'settled' ? live.observation : null,
-        ),
+        () => projectPosthogDetailSurface(input, live),
         [input, live],
     );
 

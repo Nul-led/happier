@@ -1171,7 +1171,7 @@ test('SDK source inventory assigns client realm ownership to client Action servi
   ]);
 });
 
-test('SDK source inventory closes Agent daemon spawn hook author signatures through the runtime entrypoint', async () => {
+test('SDK source inventory closes Agent runtime signature dependencies through the runtime entrypoint', async () => {
   const report = await readCurrentPackageSourceReport();
   const runtimeTypeExports = report.inventory.symbols
     .filter((symbol) => symbol.specifier === './agents/runtime' && symbol.kind === 'type')
@@ -1180,6 +1180,9 @@ test('SDK source inventory closes Agent daemon spawn hook author signatures thro
   assert.equal(runtimeTypeExports.includes('AgentDaemonSpawnHooks'), true);
   assert.equal(runtimeTypeExports.includes('AgentDaemonSpawnRuntimeSelectionV1'), true);
   assert.equal(runtimeTypeExports.includes('AgentDaemonSpawnConnectedServicesV1'), true);
+  assert.equal(runtimeTypeExports.includes('PluginAgentAcpNativeSessionMcpConfigV2'), true);
+  assert.equal(runtimeTypeExports.includes('AgentExecutionRunHostServicesV1'), true);
+  assert.equal(runtimeTypeExports.includes('AgentExecutionRunHooksServiceV1'), true);
 });
 
 test('SDK source inventory publishes the structural fixture testkit contract without an operation issuer', async () => {
@@ -2377,6 +2380,72 @@ test('browser and any value closures resolve legacy package entry targets withou
         await rm(workspaceRoot, { recursive: true, force: true });
       }
     });
+  }
+});
+
+test('daemon value closures resolve trailing-slash legacy package root imports', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'plugin-sdk-api-surface-legacy-root-slash-'));
+  const root = join(workspaceRoot, 'packages/plugin-sdk');
+  const packageName = 'portable-legacy-root-slash';
+  const installedRoot = join(workspaceRoot, 'node_modules', packageName);
+  try {
+    await writeFixtureFile(workspaceRoot, 'package.json', `${JSON.stringify({
+      private: true,
+      workspaces: { packages: ['packages/plugin-sdk'] },
+    }, null, 2)}\n`);
+    await createPackageFixture(root);
+    await addPortableValueFixture(
+      root,
+      'daemon',
+      `import { installedValue } from '${packageName}/';\nexport const PortableValue = installedValue;\n`,
+    );
+    await writeFixtureFile(installedRoot, 'package.json', `${JSON.stringify({
+      name: packageName,
+      type: 'module',
+      main: 'entry.js',
+    }, null, 2)}\n`);
+    await writeFixtureFile(installedRoot, 'entry.js', 'export const installedValue = 1;\n');
+
+    const result = runJsonCli(root);
+
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
+test('package exports maps do not reinterpret trailing-slash imports as package roots', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'plugin-sdk-api-surface-exported-root-slash-'));
+  const root = join(workspaceRoot, 'packages/plugin-sdk');
+  const packageName = 'portable-exported-root-slash';
+  const installedRoot = join(workspaceRoot, 'node_modules', packageName);
+  try {
+    await writeFixtureFile(workspaceRoot, 'package.json', `${JSON.stringify({
+      private: true,
+      workspaces: { packages: ['packages/plugin-sdk'] },
+    }, null, 2)}\n`);
+    await createPackageFixture(root);
+    await addPortableValueFixture(
+      root,
+      'daemon',
+      `import { installedValue } from '${packageName}/';\nexport const PortableValue = installedValue;\n`,
+    );
+    await writeFixtureFile(installedRoot, 'package.json', `${JSON.stringify({
+      name: packageName,
+      type: 'module',
+      exports: { '.': './entry.js' },
+    }, null, 2)}\n`);
+    await writeFixtureFile(installedRoot, 'entry.js', 'export const installedValue = 1;\n');
+
+    const result = runJsonCli(root);
+
+    assert.equal(result.status, 1);
+    assert.match(
+      result.stderr,
+      /cannot resolve runtime package export portable-exported-root-slash\//u,
+    );
+  } finally {
+    await rm(workspaceRoot, { recursive: true, force: true });
   }
 });
 

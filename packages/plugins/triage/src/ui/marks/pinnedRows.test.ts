@@ -75,6 +75,7 @@ describe('the pinned-row overlay', () => {
     expect(projected).toMatchObject({
       title: 'A change this device has not read',
       scopeLabel: 'example/other',
+      identifierLabel: 'example/other · 17',
       detail: 'Not yet synchronized',
       pinned: true,
       materialized: false,

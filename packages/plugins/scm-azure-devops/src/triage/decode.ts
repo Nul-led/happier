@@ -66,6 +66,34 @@ export function readAbsoluteUrl(raw: unknown): string | null {
 }
 
 /**
+ * The strict Azure collection envelope, read before a single row is decoded.
+ *
+ * `sources/SCM.md` §2.9 puts strictness on the provider page envelope and tolerance on its rows:
+ * an unknown body shape is not evidence of an empty collection, and substituting `[]` for it
+ * turns a broken response into a healthy, complete, empty surface — the REQ-04 failure mode. Every
+ * external Azure collection read — scan pages, detail planes and publication anchor reads — asks
+ * this one owner whether it was handed a collection at all.
+ */
+export function readAzureCollectionRows(raw: unknown): readonly unknown[] | null {
+  const record = readRecord(raw);
+  if (record === null) return null;
+  return Array.isArray(record.value) ? record.value : null;
+}
+
+/**
+ * The same rule for the iteration-changes model, whose documented member is `changeEntries`.
+ *
+ * `value` remains accepted because a Server that answers the ordinary collection shape is still
+ * making a definite claim about its rows; only an unrecognized body is refused.
+ */
+export function readAzureChangeEntryRows(raw: unknown): readonly unknown[] | null {
+  const record = readRecord(raw);
+  if (record === null) return null;
+  if (Array.isArray(record.changeEntries)) return record.changeEntries;
+  return Array.isArray(record.value) ? record.value : null;
+}
+
+/**
  * Decode one provider page.
  *
  * The envelope is strict — a response without a `value` array is not a page. Each raw row is
@@ -77,10 +105,8 @@ export function decodeAzureRowPage<TRow>(
   raw: unknown,
   decodeRow: (row: unknown) => TRow | null,
 ): Readonly<{ rows: readonly TRow[]; rawCardinality: number; undecodable: number }> | null {
-  const record = readRecord(raw);
-  if (record === null) return null;
-  const value = record.value;
-  if (!Array.isArray(value)) return null;
+  const value = readAzureCollectionRows(raw);
+  if (value === null) return null;
 
   const rows: TRow[] = [];
   for (const entry of value) {

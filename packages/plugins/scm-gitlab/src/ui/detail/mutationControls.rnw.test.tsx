@@ -116,12 +116,8 @@ async function mountDetail(input: JsonValue = launchInput()): Promise<PluginUiTe
   let fixture!: PluginUiTestkit;
   await act(async () => {
     fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: GITLAB_PLUGIN_ID,
-        pluginVersion: '0.0.0',
-        viewId: 'gitlab-detail',
-        generation: 'gitlab-detail-mount',
-      },
+      identity: { instanceId: 'fixture-instance-195', mountNonce: 'fixture-mount-195' },
+      authorPlugin: { id: GITLAB_PLUGIN_ID, version: '0.0.0' },
       surface: (context) => (
         <TriagePostMutationCompletionProvider
           onComplete={async () => { completedMutations += 1; }}

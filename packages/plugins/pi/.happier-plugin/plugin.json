@@ -17,6 +17,11 @@
               "steer",
               "followUp"
             ],
+            "executionRunContext": {
+              "versions": [
+                1
+              ]
+            },
             "open": [
               "create",
               "resume"

@@ -17,13 +17,7 @@ import { createSurfaceContextFixture } from './surfaceContext.fixture.js';
 
 const surface: SurfaceContext = createSurfaceContextFixture();
 
-const identity = {
-    pluginId: 'com.acme.fixture',
-    pluginVersion: '1.0.0',
-    viewId: 'review',
-    generation: 'generation-2',
-    sessionId: 'session-1',
-} as const;
+const identity = { instanceId: 'mount-1', mountNonce: 'nonce-1' } as const;
 
 const preparedOperation = {
     // Grammar-valid local id: the Protocol contribution-id grammar admits
@@ -43,7 +37,7 @@ const preparedSelection = {
     action: preparedOperation.action,
     input: { repository: 'happier-dev/happier' },
     selection: {
-        target: { pluginId: identity.pluginId, immutableGenerationId: identity.generation },
+        target: { pluginId: 'com.acme.fixture', immutableGenerationId: 'generation-2' },
         point: preparedOperation.point,
         contributor: preparedOperation.contributor,
     },
@@ -62,6 +56,7 @@ describe('plugin UI domain client transport adapter', () => {
         let receive: ((message: unknown) => void) | undefined;
         const controller = new AbortController();
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             createRequestId: () => 'open-new-session-request',
             transport: {
@@ -111,6 +106,7 @@ describe('plugin UI domain client transport adapter', () => {
     it('uses the shared exact confirmation decoder used by the direct-native carrier', async () => {
         let receive: ((message: unknown) => void) | undefined;
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             createRequestId: () => 'confirm-response-request',
             transport: {
@@ -137,6 +133,7 @@ describe('plugin UI domain client transport adapter', () => {
         const sent: PluginUiHostApiWireEnvelopeV1[] = [];
         let receive: ((message: unknown) => void) | undefined;
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             createRequestId: () => 'open-prepared-session-request',
             transport: {
@@ -195,6 +192,7 @@ describe('plugin UI domain client transport adapter', () => {
         let receive: ((message: unknown) => void) | undefined;
         let requestSequence = 0;
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             createRequestId: () => `surface-context-request-${++requestSequence}`,
             createSubscriptionId: () => 'surface-context-subscription',
@@ -256,6 +254,7 @@ describe('plugin UI domain client transport adapter', () => {
         const sent: PluginUiHostApiWireEnvelopeV1[] = [];
         let receive: ((message: unknown) => void) | undefined;
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             transport: {
                 subscribe(listener) {
@@ -331,6 +330,7 @@ describe('plugin UI domain client transport adapter', () => {
         let nextId = 0;
         const sent: PluginUiHostApiWireEnvelopeV1[] = [];
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             createRequestId: () => `composer-request-${++nextId}`,
             createSubscriptionId: () => `composer-subscription-${++nextId}`,
@@ -491,6 +491,7 @@ describe('plugin UI domain client transport adapter', () => {
         let receive: ((message: unknown) => void) | undefined;
         const sent: PluginUiHostApiWireEnvelopeV1[] = [];
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             createRequestId: (() => {
                 let sequence = 0;
@@ -563,6 +564,7 @@ describe('plugin UI domain client transport adapter', () => {
         let oldHostReceive: ((message: unknown) => void) | undefined;
         const oldHostSent: PluginUiHostApiWireEnvelopeV1[] = [];
         const oldHost = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             transport: {
                 subscribe(listener) { oldHostReceive = listener; return { dispose: () => undefined }; },
@@ -592,6 +594,7 @@ describe('plugin UI domain client transport adapter', () => {
         const sent: PluginUiHostApiWireEnvelopeV1[] = [];
         let receive: ((message: unknown) => void) | undefined;
         const clientPromise = createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             transport: {
                 send(message) {
@@ -640,6 +643,7 @@ describe('plugin UI domain client transport adapter', () => {
     it('fails closed when a host omits the direct context result instead of reusing negotiation state', async () => {
         let receive: ((message: unknown) => void) | undefined;
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             createRequestId: () => 'missing-context-result',
             transport: {
@@ -708,6 +712,7 @@ describe('plugin UI domain client transport adapter', () => {
         const activities: boolean[] = [];
         const sent: PluginUiHostApiWireEnvelopeV1[] = [];
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             onContextActivity: (activity) => activities.push(activity.active),
             createRequestId: () => `request-${++nextRequestId}`,
@@ -849,6 +854,7 @@ describe('plugin UI domain client transport adapter', () => {
         const sent: PluginUiHostApiWireEnvelopeV1[] = [];
         let receive: ((message: unknown) => void) | undefined;
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             apiRange: '^1.0.0',
             transport: {
@@ -983,6 +989,7 @@ describe('plugin UI domain client transport adapter', () => {
         let receive: ((message: unknown) => void) | undefined;
         let selectionIndex = 0;
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             transport: {
                 subscribe(listener) { receive = listener; return { dispose: () => undefined }; },
@@ -1143,6 +1150,7 @@ describe('plugin UI domain client transport adapter', () => {
         let receive: ((message: unknown) => void) | undefined;
         const selectionLifetime = new AbortController();
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             createRequestId: () => 'selection-lifetime-request',
             transport: {
@@ -1206,6 +1214,7 @@ describe('plugin UI domain client transport adapter', () => {
         };
         let receive: ((message: unknown) => void) | undefined;
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             transport: {
                 send(message) {
@@ -1249,6 +1258,7 @@ describe('plugin UI domain client transport adapter', () => {
         const sent: PluginUiHostApiWireEnvelopeV1[] = [];
         let receive: ((message: unknown) => void) | undefined;
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             transport: {
                 send(message) {
@@ -1283,7 +1293,7 @@ describe('plugin UI domain client transport adapter', () => {
             },
         });
 
-        await expect(api.executeAction('plugins.reload', { pluginId: identity.pluginId })).resolves.toBeNull();
+        await expect(api.executeAction('plugins.reload', { pluginId: 'com.acme.fixture' })).resolves.toBeNull();
 
         const request = sent.find((message) => (
             message.kind === 'request' && message.method === 'executeAction'
@@ -1297,6 +1307,7 @@ describe('plugin UI domain client transport adapter', () => {
         const sent: PluginUiHostApiWireEnvelopeV1[] = [];
         let receive: ((message: unknown) => void) | undefined;
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             transport: {
                 send(message) {
@@ -1349,6 +1360,7 @@ describe('plugin UI domain client transport adapter', () => {
         const readMount = async (surfaceContext: unknown) => {
             let receive: ((message: unknown) => void) | undefined;
             const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
                 identity,
                 transport: {
                     send(message) {
@@ -1401,6 +1413,7 @@ describe('plugin UI domain client transport adapter', () => {
         const readSurface = async (surfaceContext: unknown) => {
             let receive: ((message: unknown) => void) | undefined;
             const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
                 identity,
                 transport: {
                     send(message) {
@@ -1456,6 +1469,7 @@ describe('plugin UI domain client transport adapter', () => {
         const sent: PluginUiHostApiWireEnvelopeV1[] = [];
         let transportDisposals = 0;
         const apiPromise = createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             createRequestId: () => 'request-1',
             transport: {
@@ -1500,6 +1514,7 @@ describe('plugin UI domain client transport adapter', () => {
         let nextId = 0;
         const sent: PluginUiHostApiWireEnvelopeV1[] = [];
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             createRequestId: () => `request-${++nextId}`,
             createSubscriptionId: () => 'subscription-1',
@@ -1560,6 +1575,7 @@ describe('plugin UI domain client transport adapter', () => {
         let nextId = 0;
         const sent: PluginUiHostApiWireEnvelopeV1[] = [];
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             createRequestId: () => `request-${++nextId}`,
             createSubscriptionId: () => 'subscription-ordered',
@@ -1614,6 +1630,7 @@ describe('plugin UI domain client transport adapter', () => {
         let nextId = 0;
         const sent: PluginUiHostApiWireEnvelopeV1[] = [];
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             createRequestId: () => `request-${++nextId}`,
             createSubscriptionId: () => 'subscription-denied',
@@ -1656,6 +1673,7 @@ describe('plugin UI domain client transport adapter', () => {
         const sent: PluginUiHostApiWireEnvelopeV1[] = [];
         const controller = new AbortController();
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             createRequestId: () => `request-${++nextId}`,
             createSubscriptionId: () => 'subscription-late',
@@ -1696,6 +1714,7 @@ describe('plugin UI domain client transport adapter', () => {
         let nextId = 0;
         const sent: PluginUiHostApiWireEnvelopeV1[] = [];
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             createRequestId: () => `request-${++nextId}`,
             createSubscriptionId: () => `subscription-${nextId}`,
@@ -1762,6 +1781,7 @@ describe('plugin UI domain client transport adapter', () => {
     it('fails boundedly when the host never completes negotiation', async () => {
         vi.useFakeTimers();
         const pending = createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             negotiationTimeoutMs: 25,
             transport: {
@@ -1776,6 +1796,7 @@ describe('plugin UI domain client transport adapter', () => {
 
     it('handles a sticky disconnect replayed during transport subscription', async () => {
         await expect(createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             transport: {
                 send: () => undefined,
@@ -1791,6 +1812,7 @@ describe('plugin UI domain client transport adapter', () => {
         let receive: ((message: unknown) => void) | undefined;
         const sent: PluginUiHostApiWireEnvelopeV1[] = [];
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             createRequestId: () => 'repeated',
             transport: {
@@ -1816,6 +1838,7 @@ describe('plugin UI domain client transport adapter', () => {
         let receive: ((message: unknown) => void) | undefined;
         const sent: PluginUiHostApiWireEnvelopeV1[] = [];
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             createRequestId: () => 'settled-id',
             transport: {
@@ -1839,6 +1862,7 @@ describe('plugin UI domain client transport adapter', () => {
     it('rejects unknown and malformed optional surface context fields during negotiation', async () => {
         let transportDisposals = 0;
         await expect(createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             transport: {
                 subscribe(listener) {
@@ -1860,6 +1884,7 @@ describe('plugin UI domain client transport adapter', () => {
         let receive: ((message: unknown) => void) | undefined;
         const sent: PluginUiHostApiWireEnvelopeV1[] = [];
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             negotiationTimeoutMs: 25,
             createRequestId: () => 'human-held-request',
@@ -1899,6 +1924,7 @@ describe('plugin UI domain client transport adapter', () => {
         const sent: PluginUiHostApiWireEnvelopeV1[] = [];
         const controller = new AbortController();
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             createRequestId: () => 'cancelled-request',
             transport: {
@@ -1967,6 +1993,7 @@ describe('plugin UI domain client transport adapter', () => {
         const controller = new AbortController();
         let requestSequence = 0;
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             createRequestId: () => `withdrawal-${method}-${++requestSequence}`,
             transport: {
@@ -2006,6 +2033,7 @@ describe('plugin UI domain client transport adapter', () => {
     it('preserves shared PluginError details, remediation, and diagnostics from the wire', async () => {
         let receive: ((message: unknown) => void) | undefined;
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             createRequestId: () => 'error-request',
             transport: {
@@ -2059,6 +2087,7 @@ describe('plugin UI domain client transport adapter', () => {
     it('does not correlate an error response to a request for a different method', async () => {
         let receive: ((message: unknown) => void) | undefined;
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             createRequestId: () => 'mismatched-error-request',
             transport: {
@@ -2087,6 +2116,7 @@ describe('plugin UI domain client transport adapter', () => {
     it('throws typed unavailability for subscriptions instead of returning a silent no-op', async () => {
         let receive: ((message: unknown) => void) | undefined;
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             transport: {
                 subscribe(listener) { receive = listener; return { dispose: () => undefined }; },
@@ -2106,7 +2136,12 @@ describe('plugin UI domain client transport adapter', () => {
     it('qualifies bare destinations to the caller and preserves explicit cross-plugin destinations for the host registry', async () => {
         const sent: PluginUiHostApiWireEnvelopeV1[] = [];
         let receive: ((message: unknown) => void) | undefined;
+        const embeddedSurface = createSurfaceContextFixture({
+            mount: { kind: 'embedded', role: 'detail', presentation: 'content' },
+            targetedContributions: { target: { pluginId: 'com.acme.target', immutableGenerationId: 'target-generation' }, points: [] },
+        });
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             transport: {
                 subscribe(listener) { receive = listener; return { dispose: () => undefined }; },
@@ -2115,7 +2150,7 @@ describe('plugin UI domain client transport adapter', () => {
                     if (message.kind === 'negotiate') {
                         receive?.({
                             wireVersion: 1, kind: 'negotiated', identity, apiVersion: '1.0.0',
-                            methods: ['openSurface'], surface,
+                            methods: ['openSurface'], surface: embeddedSurface,
                         });
                         return;
                     }
@@ -2137,7 +2172,7 @@ describe('plugin UI domain client transport adapter', () => {
             kind: 'request',
             method: 'openSurface',
             payload: {
-                destination: { pluginId: identity.pluginId, localId: 'detail' },
+                destination: { pluginId: 'com.acme.fixture', localId: 'detail' },
                 input: { itemId: 'item-7' },
                 subPath: 'nested/detail',
                 instanceKey: 'detail-7',
@@ -2151,11 +2186,11 @@ describe('plugin UI domain client transport adapter', () => {
             payload: { destination: { pluginId: 'com.acme.other', localId: 'detail' } },
         });
 
-        await api.openSurface({ pluginId: identity.pluginId, localId: 'same-plugin-detail' });
+        await api.openSurface({ pluginId: 'com.acme.fixture', localId: 'same-plugin-detail' });
         expect(sent.at(-1)).toMatchObject({
             kind: 'request',
             method: 'openSurface',
-            payload: { destination: { pluginId: identity.pluginId, localId: 'same-plugin-detail' } },
+            payload: { destination: { pluginId: 'com.acme.fixture', localId: 'same-plugin-detail' } },
         });
 
         // Absent input must not be sent as an explicit key: the host distinguishes
@@ -2164,15 +2199,42 @@ describe('plugin UI domain client transport adapter', () => {
         await api.openSurface('detail');
         const withoutInput = sent.at(-1) as Extract<PluginUiHostApiWireEnvelopeV1, { kind: 'request' }>;
         expect(withoutInput.payload).toEqual({
-            destination: { pluginId: identity.pluginId, localId: 'detail' },
+            destination: { pluginId: 'com.acme.fixture', localId: 'detail' },
         });
         expect(withoutInput.payload).not.toHaveProperty('input');
+    });
+
+    it('allows qualified destinations without inventing an installed author for local shorthand', async () => {
+        const sent: PluginUiHostApiWireEnvelopeV1[] = [];
+        let receive: ((message: unknown) => void) | undefined;
+        const api = await createPluginUiHostApiClientFromTransport({
+            identity,
+            transport: {
+                subscribe(listener) { receive = listener; return { dispose() {} }; },
+                send(message) {
+                    sent.push(message);
+                    if (message.kind === 'negotiate') receive?.({
+                        wireVersion: 1, kind: 'negotiated', identity, apiVersion: '1.0.0', methods: ['openSurface'], surface,
+                    });
+                    if (message.kind === 'request') receive?.({
+                        wireVersion: 1, kind: 'result', identity, requestId: message.requestId, method: message.method, result: null,
+                    });
+                },
+            },
+        });
+        await expect(api.openSurface('detail')).rejects.toMatchObject({ code: 'unavailable' });
+        expect(sent.filter((message) => message.kind === 'request')).toHaveLength(0);
+        await api.openSurface({ pluginId: 'com.acme.other', localId: 'detail' });
+        expect(sent.at(-1)).toMatchObject({
+            method: 'openSurface', payload: { destination: { pluginId: 'com.acme.other', localId: 'detail' } },
+        });
     });
 
     it('opens Connected Accounts through semantic service identity without exposing a host route', async () => {
         const sent: PluginUiHostApiWireEnvelopeV1[] = [];
         let receive: ((message: unknown) => void) | undefined;
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             transport: {
                 subscribe(listener) { receive = listener; return { dispose: () => undefined }; },
@@ -2217,6 +2279,7 @@ describe('plugin UI domain client transport adapter', () => {
         const sent: PluginUiHostApiWireEnvelopeV1[] = [];
         let receive: ((message: unknown) => void) | undefined;
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             transport: {
                 subscribe(listener) { receive = listener; return { dispose: () => undefined }; },
@@ -2267,6 +2330,7 @@ describe('plugin UI domain client transport adapter', () => {
     it('refuses a page-location settlement the host did not answer with a canonical location', async () => {
         let receive: ((message: unknown) => void) | undefined;
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             transport: {
                 subscribe(listener) { receive = listener; return { dispose: () => undefined }; },
@@ -2294,6 +2358,7 @@ describe('plugin UI domain client transport adapter', () => {
     it('does not expose the negotiated surface snapshot as an unadvertised context method', async () => {
         let receive: ((message: unknown) => void) | undefined;
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             transport: {
                 subscribe(listener) { receive = listener; return { dispose: () => undefined }; },
@@ -2310,6 +2375,7 @@ describe('plugin UI domain client transport adapter', () => {
 
     it('rejects a negotiated domain API major that the client cannot implement', async () => {
         await expect(createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             transport: {
                 subscribe(listener) {
@@ -2326,6 +2392,7 @@ describe('plugin UI domain client transport adapter', () => {
 
     it('fails closed when a transport tries to renegotiate the same generation', async () => {
         await expect(createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             transport: {
                 subscribe(listener) {
@@ -2346,6 +2413,7 @@ describe('plugin UI domain client transport adapter', () => {
         const sent: PluginUiHostApiWireEnvelopeV1[] = [];
         const ref = { kind: 'workspaceFile', handle: 'mount_ABC-123' } as const;
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             createRequestId: () => `openable-${++requestNumber}`,
             transport: {
@@ -2408,6 +2476,7 @@ describe('plugin UI domain client transport adapter', () => {
     it('rejects malformed resource bytes instead of silently decoding corrupted base64', async () => {
         let receive: ((message: unknown) => void) | undefined;
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             createRequestId: () => 'resource-request',
             transport: {
@@ -2434,6 +2503,7 @@ describe('plugin UI domain client transport adapter', () => {
         let subscriptionNumber = 0;
         const sent: PluginUiHostApiWireEnvelopeV1[] = [];
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             createRequestId: () => `resource-watch-request-${++requestNumber}`,
             createSubscriptionId: () => `resource-watch-subscription-${++subscriptionNumber}`,
@@ -2494,6 +2564,7 @@ describe('plugin UI domain client transport adapter', () => {
         let nextId = 0;
         const sent: PluginUiHostApiWireEnvelopeV1[] = [];
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             createRequestId: () => `strict-resource-${++nextId}`,
             createSubscriptionId: () => 'strict-resource-subscription',
@@ -2533,6 +2604,7 @@ describe('plugin UI domain client transport adapter', () => {
         const sent: PluginUiHostApiWireEnvelopeV1[] = [];
         let requestNumber = 0;
         const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             createRequestId: () => `subscription-request-${++requestNumber}`,
             createSubscriptionId: () => 'repeated-subscription',

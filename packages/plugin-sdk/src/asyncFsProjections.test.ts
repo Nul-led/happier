@@ -27,11 +27,21 @@ import type {
     FsAtomicWriteTextInput,
     FsAtomicWriteTextInputV1,
     FileSystemService,
+    SecureTempDirectory,
+    SecureTempDirectoryInput,
     SecureTempTextFileInput,
 } from './fs.js';
 import type { FileSystemService as RuntimeFileSystemService } from './runtime/index.js';
-import type { SecureTempTextFileInputV1 } from './runtime/tempTextFile.js';
-import { writeSecureTempTextFileSync as sourceWriteSecureTempTextFileSync } from './runtime/tempTextFile.js';
+import type {
+    SecureTempDirectoryInputV1,
+    SecureTempDirectoryV1,
+    SecureTempTextFileInputV1,
+} from './runtime/tempTextFile.js';
+import {
+    createSecureTempDirectorySync as sourceCreateSecureTempDirectorySync,
+    writeSecureTempTextFileSync as sourceWriteSecureTempTextFileSync,
+} from './runtime/tempTextFile.js';
+import { createAbsolutePathSymlink as sourceCreateAbsolutePathSymlink } from './runtime/createAbsolutePathSymlink.js';
 import { writeAtomicTextFileIfChanged as sourceWriteAtomicTextFileIfChanged } from './fs.js';
 import { writeAtomicFile as sourceWriteAtomicFile } from './fs.js';
 import type { FileSystemService as SourceFileSystemService } from './services/io.js';
@@ -78,6 +88,8 @@ type RetiredTimeoutService = never; /* @sdk-negative-type-case-end */
         expect(Object.keys(fsProjection).sort()).toEqual([
             'canonicalizePath',
             'canonicalizePathSync',
+            'createAbsolutePathSymlink',
+            'createSecureTempDirectorySync',
             'expandHomePath',
             'isCanonicalAbsolutePathInsideRoot',
             'resolveConfiguredPath',
@@ -91,6 +103,8 @@ type RetiredTimeoutService = never; /* @sdk-negative-type-case-end */
         ]);
         expect(fsProjection.canonicalizePath).toBe(sourceCanonicalizePath);
         expect(fsProjection.canonicalizePathSync).toBe(sourceCanonicalizePathSync);
+        expect(fsProjection.createAbsolutePathSymlink).toBe(sourceCreateAbsolutePathSymlink);
+        expect(fsProjection.createSecureTempDirectorySync).toBe(sourceCreateSecureTempDirectorySync);
         expect(fsProjection.expandHomePath).toBe(sourceExpandHomePath);
         expect(fsProjection.isCanonicalAbsolutePathInsideRoot).toBe(sourceIsCanonicalAbsolutePathInsideRoot);
         expect(fsProjection.resolveHomeDirFromEnvironment).toBe(sourceResolveHomeDirFromEnvironment);
@@ -106,6 +120,8 @@ type RetiredTimeoutService = never; /* @sdk-negative-type-case-end */
             .toEqualTypeOf<SourceFileSystemService>();
         expectTypeOf<RuntimeFileSystemService>()
             .toEqualTypeOf<SourceFileSystemService>();
+        expectTypeOf<SecureTempDirectory>().toEqualTypeOf<SecureTempDirectoryV1>();
+        expectTypeOf<SecureTempDirectoryInput>().toEqualTypeOf<SecureTempDirectoryInputV1>();
         expectTypeOf<SecureTempTextFileInput>().toEqualTypeOf<SecureTempTextFileInputV1>();
 
         const fsSource = readFileSync(new URL('./fs.ts', import.meta.url), 'utf8');

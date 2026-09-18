@@ -84,12 +84,8 @@ const mounted: PluginUiTestkit[] = [];
 
 async function mountMaximumDetailSpecimen(): Promise<PluginUiTestkit> {
   const page = await createPluginUiTestkit({
-    identity: {
-      pluginId: SENTRY_PLUGIN_ID,
-      pluginVersion: '0.0.0',
-      viewId: 'sentry-detail',
-      generation: 'sentry-detail-performance',
-    },
+    identity: { instanceId: 'fixture-instance-171', mountNonce: 'fixture-mount-171' },
+    authorPlugin: { id: SENTRY_PLUGIN_ID, version: '0.0.0' },
     surface: renderSurface,
     surfaceContext: createSurfaceContextFixture(),
     adapter: createPluginUiRnwSemanticSurfaceAdapter(),

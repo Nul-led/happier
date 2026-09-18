@@ -9,6 +9,7 @@ import {
 
 import type { GithubCheckObservationV1 } from '../checks.js';
 import { readGithubAbsoluteWebUrl } from '../locator.js';
+import { readGithubChangedFileImportSpecifiers } from './files/orderChangedFiles.js';
 
 import {
   GITHUB_CHANGED_FILES_PAGE_SIZE_V1,
@@ -473,6 +474,8 @@ export type GithubProjectedChangedFileRowV1 = Readonly<{
    * diff. The patch text itself never crosses this boundary.
    */
   diffAvailable: boolean;
+  /** Relative static imports observed in the available patch, not a full file graph. */
+  importSpecifiers?: readonly string[];
   truncated?: true;
 }>;
 
@@ -525,8 +528,10 @@ export function projectGithubChangedFileRows(
       || (blobSha?.truncated ?? false);
     projectionTruncated = projectionTruncated || truncated;
 
+    const importSpecifiers = readGithubChangedFileImportSpecifiers(path.value, entry['patch']);
     rows.push(Object.freeze({
       path: path.value,
+      ...(importSpecifiers.length === 0 ? {} : { importSpecifiers }),
       ...(previousPath === null ? {} : { previousPath: previousPath.value }),
       status: status.value,
       additions,

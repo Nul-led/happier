@@ -160,6 +160,7 @@ const USAGE_WINDOW_CONTAINER_KEYS = new Set([
 ]);
 
 const USAGE_WINDOW_ID_KEYS = [
+    'kind',
     'meter_id',
     'meterId',
     'provider_limit_id',
@@ -364,6 +365,23 @@ function readScopedUsageWindowModel(record: Record<string, unknown>): string | n
     ]);
 }
 
+function readScopedUsageWindowModelId(record: Record<string, unknown>): string | null {
+    const direct = readNonEmptyStringProperty(record, ['model_id', 'modelId']);
+    if (direct) return direct;
+    if (typeof record.model === 'string' && record.model.trim()) return record.model.trim();
+    if (isRecord(record.model)) {
+        const nestedId = readNonEmptyStringProperty(record.model, ['id', 'model_id', 'modelId']);
+        if (nestedId) return nestedId;
+    }
+    const scope = isRecord(record.scope) ? record.scope : null;
+    if (!scope) return null;
+    const scopedDirect = readNonEmptyStringProperty(scope, ['model_id', 'modelId']);
+    if (scopedDirect) return scopedDirect;
+    if (typeof scope.model === 'string' && scope.model.trim()) return scope.model.trim();
+    if (!isRecord(scope.model)) return null;
+    return readNonEmptyStringProperty(scope.model, ['id', 'model_id', 'modelId']);
+}
+
 function readFiniteNumberProperty(
     record: Record<string, unknown>,
     keys: readonly string[],
@@ -493,13 +511,21 @@ function buildUsageWindowMeter(
     return {
         meterId,
         label: resolveUsageWindowLabel(meterId),
+        providerLimitId: meterId,
+        modelId: window ? readScopedUsageWindowModelId(window) : null,
         used,
         limit,
         unit: resolveUsageWindowUnit(window),
         utilizationPct,
         resetsAt: resolveUsageWindowResetAtMs(window),
         status: utilizationPct === null ? 'unavailable' : 'ok',
-        details: {},
+        details: {
+            ...(window
+                ? {
+                    rawScope: readNonEmptyStringProperty(window, USAGE_WINDOW_ID_KEYS) ?? undefined,
+                }
+                : {}),
+        },
     };
 }
 
@@ -572,6 +598,8 @@ export function parseClaudeSubscriptionUsageMeters(
         meters.push({
             meterId: 'extra_usage',
             label: 'Extra usage',
+            providerLimitId: 'extra_usage',
+            modelId: null,
             used: typeof extra.used_credits === 'number' && Number.isFinite(extra.used_credits)
                 ? extra.used_credits
                 : null,
@@ -592,6 +620,8 @@ function buildQuotaUnknownMeter(meterId: string, label: string): AgentAccountUsa
     return {
         meterId,
         label,
+        providerLimitId: meterId,
+        modelId: null,
         used: null,
         limit: null,
         unit: 'unknown',

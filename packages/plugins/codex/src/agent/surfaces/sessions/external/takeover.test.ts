@@ -5,7 +5,65 @@ import {
   resolveCodexExternalSessionTakeoverPlan,
 } from './takeover.js';
 
+// Codex mints these ids; taking over `  x  ` must not resume `x`.
+const EXACT_PROVIDER_SESSION_ID = '  provider\nses/AB+cd==  ';
+
 describe('Codex External Sessions takeover launch derivation', () => {
+  it('carries the taken-over provider session id byte-exact and rejects blank', () => {
+    const codexSource = {
+      kind: 'codexHome',
+      home: 'user',
+      homePath: ' /srv/happier/codex-home ',
+    } as const;
+    const identity = (remoteSessionId: string) => ({
+      remoteSessionId,
+      source: codexSource,
+      linkData: {
+        source: {
+          kind: 'codexHome',
+          home: 'user',
+          homePath: '/srv/happier/codex-home',
+        },
+        runtimeDescriptorV1: {
+          v: 1,
+          agentId: 'codex',
+          agent: {
+            backendMode: 'appServer',
+            providerSessionId: remoteSessionId,
+            home: 'user',
+            homePath: '/srv/happier/codex-home',
+          },
+        },
+        codexBackendMode: 'appServer',
+      },
+      linkedDirectory: '/repo/project',
+    });
+
+    const plan = resolveCodexExternalSessionTakeoverPlan(
+      identity(EXACT_PROVIDER_SESSION_ID),
+    );
+
+    // Happier-owned home path stays trimmed; the provider id keeps its bytes.
+    expect(plan).toMatchObject({
+      runtimeDescriptorV1: {
+        agent: {
+          providerSessionId: EXACT_PROVIDER_SESSION_ID,
+          homePath: '/srv/happier/codex-home',
+        },
+      },
+      environmentVariables: { CODEX_HOME: '/srv/happier/codex-home' },
+    });
+
+    // A descriptor recorded against the trimmed id is a different session and
+    // must not satisfy a takeover of the exact id.
+    expect(resolveCodexExternalSessionTakeoverPlan({
+      ...identity(EXACT_PROVIDER_SESSION_ID),
+      linkData: identity(EXACT_PROVIDER_SESSION_ID.trim()).linkData,
+    })).toBeNull();
+
+    expect(resolveCodexExternalSessionTakeoverPlan(identity(' \n\t '))).toBeNull();
+  });
+
   it('returns only the fresh Codex home, native backend mode, and launch descriptor', () => {
     const plan = resolveCodexExternalSessionTakeoverPlan({
       remoteSessionId: 'native-session-current',

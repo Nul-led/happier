@@ -232,6 +232,13 @@ authoring sugar, not a second runtime. Generated registrations run before the
 optional `setup(api)` callback, and `setup` may return the module's one cleanup
 function.
 
+`defineProtocolString` and `defineProtocolUtf8String` are non-normalizing: an
+accepted string is returned byte-for-byte as authored. Patterns are ordinary
+ECMAScript regex sources and never acquire private semantics during cold schema
+rehydration. When canonical spelling matters, express it as an ordinary string
+constraint such as a pattern rather than a transform. The only Happier JSON
+Schema extensions are the UTF-8 byte and serialized UTF-8 byte ceilings.
+
 Daemon activation has an internal 30-second deadline for asynchronous
 `activate(api)` settlement. This deadline is host policy, not plugin
 configuration. It cannot preempt synchronous CPU or blocking work in the shared
@@ -510,8 +517,23 @@ fields include:
 Static prompt blocks and login-status resume-checklist inclusion belong in the
 Agent declaration's strict `catalog.codingPromptBehavior` and
 `catalog.resumeChecklist` fields. For a declarative ACP Agent, the optional
-strict `runtime.definition` carries only `modelConfigOptionId`, bounded
-`stderrRules`, and the MCP input policy; Kiro is the current positive consumer.
+strict `runtime.definition` carries `modelConfigOptionId`, bounded
+`stderrRules`, the permission-mode mapping, the MCP input policy, and two
+further data-only declarations the host executes on the Agent's behalf: Kiro is
+the current positive consumer of the base fields, and Devin of both additions.
+`mcp.nativeSessionConfig` declares that this Agent reads MCP servers from its
+own config file, so the host writes the merged server map into a
+session-private config root that links the user's real provider state and
+points the declared config-root variable at it for one launch; the input policy
+stays `drop` because those servers are already delivered. `models.suffixOption`
+declares that the Agent advertises one model per option value in the model id,
+so the host presents one model plus that canonical option and expands the
+selection back to the advertised id. Both stay data because the out-of-process
+Session runner rebuilds a declarative runtime from the attested manifest alone
+and never loads plugin code.
+The host owns authentication classification across ACP Agents;
+`stderrRules.authenticationErrorDetail` only customizes the resulting status
+message, while `suppress` and `statusErrors` cover other bounded stderr cases.
 For Session-capable Agents the host derives finite Runs from the registered
 Session factory. Plugin authors do not register or own a second Run lifecycle.
 

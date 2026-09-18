@@ -50,6 +50,7 @@ describe('readAfterOpenCodeTranscript', () => {
 
     const result = await readAfterOpenCodeTranscript({
       source: { kind: 'opencodeServer', baseUrl: 'http://127.0.0.1:4099' },
+      dialect: 'v1',
       providerSessionId: 'sess-1',
       cursor: encodeOpenCodeExternalAfterCursor({
         v: 3,
@@ -119,6 +120,7 @@ describe('readAfterOpenCodeTranscript', () => {
 
     const result = await readAfterOpenCodeTranscript({
       source: { kind: 'opencodeServer', baseUrl: 'http://127.0.0.1:4099' },
+      dialect: 'v1',
       providerSessionId: 'sess-1',
       cursor: encodeOpenCodeExternalAfterCursor({
         v: 3,
@@ -176,6 +178,7 @@ describe('readAfterOpenCodeTranscript', () => {
 
     const read = (cursor: string) => readAfterOpenCodeTranscript({
       source: { kind: 'opencodeServer', baseUrl: 'http://127.0.0.1:4099' },
+      dialect: 'v1',
       providerSessionId: 'sess-1',
       cursor,
       maxBytes: 100_000,
@@ -266,6 +269,7 @@ describe('readAfterOpenCodeTranscript', () => {
 
     const read = (cursor: string) => readAfterOpenCodeTranscript({
       source: { kind: 'opencodeServer', baseUrl: 'http://127.0.0.1:4099' },
+      dialect: 'v1',
       providerSessionId: 'sess-1',
       cursor,
       maxBytes: 100_000,
@@ -333,6 +337,7 @@ describe('readAfterOpenCodeTranscript', () => {
 
     await expect(readAfterOpenCodeTranscript({
       source: { kind: 'opencodeServer', baseUrl: 'http://127.0.0.1:4099' },
+      dialect: 'v1',
       providerSessionId: 'sess-1',
       cursor: encodeOpenCodeExternalAfterCursor({
         v: 3,
@@ -350,6 +355,7 @@ describe('readAfterOpenCodeTranscript', () => {
 
     await expect(readAfterOpenCodeTranscript({
       source: { kind: 'opencodeServer', baseUrl: 'http://127.0.0.1:4099' },
+      dialect: 'v1',
       providerSessionId: 'sess-1',
       cursor: encodeOpenCodeExternalAfterCursor({
         v: 3,
@@ -383,6 +389,7 @@ describe('readAfterOpenCodeTranscript', () => {
 
     await expect(readAfterOpenCodeTranscript({
       source: { kind: 'opencodeServer', baseUrl: 'http://127.0.0.1:4099' },
+      dialect: 'v1',
       providerSessionId: 'sess-1',
       cursor: encodeOpenCodeExternalAfterCursor({
         v: 3,
@@ -404,6 +411,7 @@ describe('readAfterOpenCodeTranscript', () => {
 
     await expect(readAfterOpenCodeTranscript({
       source: { kind: 'opencodeServer', baseUrl: 'http://127.0.0.1:4099' },
+      dialect: 'v1',
       providerSessionId: 'sess-1',
       cursor: legacyCursor,
       maxBytes: 100_000,

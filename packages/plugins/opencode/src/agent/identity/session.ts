@@ -1,3 +1,4 @@
+import { readNonBlankOpaqueIdentifier } from '../../protocol/opaqueIdentifier.js';
 import { readOpenCodeSessionRuntimeHandleFromMetadata } from './runtimeDescriptor.js';
 
 export const OPEN_CODE_PROVIDER_SESSION_ID_METADATA_KEY = 'opencodeSessionId';
@@ -7,8 +8,9 @@ export function readOpenCodeProviderSessionIdFromMetadata(metadata: unknown): st
 }
 
 export function writeOpenCodeProviderSessionIdMetadata(providerSessionId: string | null | undefined): Readonly<Record<string, unknown>> {
-  const value = typeof providerSessionId === 'string' ? providerSessionId.trim() : '';
-  if (!value) return {};
+  // OpenCode minted this id; persist its exact bytes, presence only.
+  const value = readNonBlankOpaqueIdentifier(providerSessionId);
+  if (value === null) return {};
   return { [OPEN_CODE_PROVIDER_SESSION_ID_METADATA_KEY]: value };
 }
 

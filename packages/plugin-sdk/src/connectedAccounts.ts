@@ -56,6 +56,7 @@ export type {
     PluginConnectedAccountConfigurationV2,
     PluginConnectedAccountDescriptorContributionV2,
 } from '@happier-dev/protocol/connect/plugin-connected-account-authentication-v2';
+export { CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1 } from '@happier-dev/protocol/connect/plugin-connected-account-authentication-v2';
 
 import {
     ConnectedServiceQuotaFetchError as QuotaFetchError,
@@ -489,6 +490,28 @@ export const classifyProviderLimitEvidence: (
 
 /** Runtime contract for one admitted connected-account implementation. */
 export interface ConnectedAccountRuntime {
+    /** Optional effectful capability; hosts never emulate it for older plugins. */
+    readonly recoveryCredits?: Readonly<{
+        read(
+            context: PluginConnectedAccountReadContext,
+            options?: Readonly<{ signal?: AbortSignal }>,
+        ): Promise<Readonly<{
+            observedAtMs: number;
+            availableCount: number;
+            credits: readonly Readonly<{
+                providerCreditId: string;
+                status: 'available' | 'unavailable';
+                expiresAtMs?: number;
+            }>[];
+        }>>;
+        consume(
+            request: Readonly<{ idempotencyKey: string; providerCreditId?: string }>,
+            context: PluginConnectedAccountReadContext,
+            options?: Readonly<{ signal?: AbortSignal }>,
+        ): Promise<Readonly<{
+            status: 'consumed' | 'already_consumed' | 'not_available' | 'nothing_to_reset';
+        }>>;
+    }>;
     refresh(
         context: PluginConnectedAccountMutationContext,
         options?: Readonly<{ signal?: AbortSignal }>,

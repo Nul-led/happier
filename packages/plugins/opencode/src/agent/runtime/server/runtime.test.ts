@@ -94,6 +94,11 @@ function createContextFixture(options?: Readonly<{
     logs.push({ level, message, ...(fields ? { fields } : {}) });
   };
   const ctx: OpenCodeRuntimeContext = {
+    exec: {
+      systemTools: {
+        resolve: async () => ({ executablePath: '/usr/local/bin/opencode' }),
+      },
+    },
     logger: {
       debug: (message, fields) => recordLog('debug', message, fields),
       info: (message, fields) => recordLog('info', message, fields),
@@ -259,6 +264,7 @@ async function createStartedRuntime(params?: Readonly<{
     requiredHappier: Readonly<
       | { status: 'ready' }
       | { status: 'failed'; error: unknown }
+      | { status: 'unsupported'; reason: string }
     >;
   }>>;
 }>): Promise<RuntimeWithProviderEvents> {
@@ -490,7 +496,7 @@ describe('createOpenCodeServerRuntime', () => {
       modelId: 'opencode/big-pickle',
     });
     await runtime.updateSessionRuntimeConfig({
-      configOption: { id: 'variant', value: ' high ' },
+      configOption: { id: 'reasoning_effort', value: ' high ' },
     });
     await runtime.updateSessionRuntimeConfig({
       configOption: { id: 'temperature', value: 0.2 },
@@ -853,6 +859,31 @@ describe('createOpenCodeServerRuntime', () => {
       kind: 'turn-failed',
       issue: expect.objectContaining({ code: 'opencode_prompt_submission_failed' }),
     }));
+  });
+
+  it('still admits a prompt when the server has no dynamic MCP registration route at all', async () => {
+    const { ctx, harness } = createContextFixture();
+    const client = createClientFixture();
+    const runtime = await createStartedRuntime({
+      ctx,
+      client,
+      harness,
+      mcpRegistration: Promise.resolve({
+        requiredHappier: {
+          status: 'unsupported',
+          reason: 'OpenCode V2 servers expose no dynamic MCP registration route',
+        },
+      }),
+    });
+
+    beginTestHostTurn(runtime);
+
+    // Absent capability is not a refused registration. Blanketing every V2
+    // prompt on a route the server never had would make core prompting unusable
+    // for a limitation that only costs Happier's own MCP-backed tools.
+    await expect(runtime.sendTurnPrompt('ordinary prompt on a server without dynamic MCP'))
+      .resolves.toMatchObject({ providerUserMessageId: expect.any(String) });
+    expect(client.sessionPromptAsync).toHaveBeenCalledTimes(1);
   });
 
   it('does not treat mutable snapshot endpoint metadata as request-currentness authority', async () => {
@@ -1667,6 +1698,7 @@ describe('createOpenCodeServerRuntime', () => {
     ]);
     expect(client.permissionReply).toHaveBeenCalledTimes(1);
     expect(client.permissionReply).toHaveBeenCalledWith({
+      sessionId: 'ses-1',
       requestId: 'per_123',
       reply: 'reject',
     });
@@ -1724,6 +1756,7 @@ describe('createOpenCodeServerRuntime', () => {
       }),
     ]);
     expect(client.permissionReply).toHaveBeenCalledWith({
+      sessionId: 'ses-1',
       requestId: 'per_after_reconnect',
       reply: 'once',
     });
@@ -1752,6 +1785,7 @@ describe('createOpenCodeServerRuntime', () => {
     });
 
     expect(client.permissionReply).toHaveBeenCalledWith({
+      sessionId: 'ses-1',
       requestId: 'per_fail_closed',
       reply: 'reject',
       message: expect.stringContaining('failed closed'),
@@ -1797,11 +1831,13 @@ describe('createOpenCodeServerRuntime', () => {
     expect(onPermissionDecision).not.toHaveBeenCalled();
     expect(client.permissionReply).toHaveBeenCalledTimes(2);
     expect(client.permissionReply).toHaveBeenNthCalledWith(1, {
+      sessionId: 'ses-1',
       requestId: 'per_malformed',
       reply: 'reject',
       message: 'OpenCode permission request was malformed or ambiguous.',
     });
     expect(client.permissionReply).toHaveBeenNthCalledWith(2, {
+      sessionId: 'ses-1',
       requestId: 'per_ambiguous',
       reply: 'reject',
       message: 'OpenCode permission request was malformed or ambiguous.',
@@ -1839,6 +1875,7 @@ describe('createOpenCodeServerRuntime', () => {
     await permissionAsk;
 
     expect(client.permissionReply).toHaveBeenCalledWith({
+      sessionId: 'ses-1',
       requestId: 'per_turnless',
       reply: 'once',
     });
@@ -2986,6 +3023,7 @@ describe('createOpenCodeServerRuntime', () => {
       }),
     ]);
     expect(client.permissionReply).toHaveBeenCalledWith({
+      sessionId: 'ses-1',
       requestId: 'per_late_busy',
       reply: 'once',
     });
@@ -3249,6 +3287,7 @@ describe('createOpenCodeServerRuntime', () => {
     await runtime.waitForTurnCompletion();
 
     expect(client.permissionReply).toHaveBeenCalledWith({
+      sessionId: 'ses-1',
       requestId: 'per_denied',
       reply: 'reject',
     });
@@ -3321,6 +3360,7 @@ describe('createOpenCodeServerRuntime', () => {
     await runtime.waitForTurnCompletion();
 
     expect(client.permissionReply).toHaveBeenCalledWith({
+      sessionId: 'ses-1',
       requestId: 'per_denied_no_history',
       reply: 'reject',
     });
@@ -3407,7 +3447,8 @@ describe('createOpenCodeServerRuntime', () => {
       resolvePermissionDecision?.({ decision: 'approved' });
       await permissionAsk;
       expect(client.permissionReply).toHaveBeenCalledWith({
-        requestId: 'per_delayed',
+        sessionId: 'ses-1',
+      requestId: 'per_delayed',
         reply: 'once',
       });
 
@@ -3578,7 +3619,7 @@ describe('createOpenCodeServerRuntime', () => {
       await flushMicrotasks();
     }
 
-    expect(client.sessionStatus).toHaveBeenCalledTimes(21);
+    expect(client.sessionStatus).toHaveBeenCalledTimes(3);
     expect(client.sessionMessages.mock.calls.length).toBeLessThanOrEqual(7);
     expect(runtime.isTurnInFlight()).toBe(true);
   });
@@ -4285,10 +4326,12 @@ describe('createOpenCodeServerRuntime', () => {
       }),
     ]);
     expect(client.permissionReply).toHaveBeenCalledWith({
+      sessionId: 'ses-1',
       requestId: 'per-authoritative',
       reply: 'once',
     });
     expect(client.questionReply).toHaveBeenCalledWith({
+      sessionId: 'ses-1',
       requestId: 'question-authoritative',
       answers: [['OK']],
     });
@@ -5516,5 +5559,135 @@ describe('createOpenCodeServerRuntime', () => {
       const recreatedEvents = runtimeEvents.slice(eventCountBeforeRecreate);
       expect(userTextEvents(recreatedEvents)).toHaveLength(0);
     }, 15_000);
+  });
+});
+
+/**
+ * Bytes OpenCode minted. Surrounding whitespace, the embedded newline and the
+ * `/`, `+`, `=` punctuation are part of the identity, and every hop between the
+ * host and the provider hands the value straight back, so no hop may re-mint it.
+ */
+const PROVIDER_MINTED_SESSION_ID = '  provider\nses/AB+cd==  ';
+const PROVIDER_MINTED_PARENT_SESSION_ID = '  provider\nses/parent+cd==  ';
+const PROVIDER_MINTED_CHECKPOINT_MESSAGE_ID = '  provider\nmsg/AB+cd==  ';
+
+describe('OpenCode provider-minted session identity', () => {
+  it('resumes, publishes and addresses events with the exact provider session bytes', async () => {
+    const { ctx, stateFieldWrites } = createContextFixture();
+    const client = createClientFixture();
+    const runtime = createOpenCodeServerRuntime({
+      ctx,
+      directory: '/repo',
+      happierSessionId: 'happy-resume-exact',
+      baseUrl: 'http://127.0.0.1:49196',
+      client,
+      mcpRegistration: readyMcpRegistration,
+    });
+
+    await expect(runtime.openSession({
+      kind: 'resume',
+      providerSessionId: PROVIDER_MINTED_SESSION_ID,
+    })).resolves.toBe(PROVIDER_MINTED_SESSION_ID);
+
+    expect(runtime.readSessionIdentity()).toEqual({ sessionId: PROVIDER_MINTED_SESSION_ID });
+    expect(stateFieldWrites).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        fieldId: 'identity.providerSessionId',
+        value: {
+          metadataKey: 'opencodeSessionId',
+          value: PROVIDER_MINTED_SESSION_ID,
+        },
+      }),
+    ]));
+    expect(client.sessionCreate).not.toHaveBeenCalled();
+    expect(client.sessionFork).not.toHaveBeenCalled();
+
+    await runtime.handleProviderEvent({
+      payload: {
+        type: 'todo.updated',
+        properties: { sessionID: PROVIDER_MINTED_SESSION_ID },
+      },
+    });
+
+    expect(client.sessionTodo).toHaveBeenCalledWith({ sessionId: PROVIDER_MINTED_SESSION_ID });
+  });
+
+  it('refuses a whitespace-only resume id instead of opening a blank provider session', async () => {
+    const { ctx } = createContextFixture();
+    const client = createClientFixture();
+    const runtime = createOpenCodeServerRuntime({
+      ctx,
+      directory: '/repo',
+      happierSessionId: 'happy-resume-blank',
+      baseUrl: 'http://127.0.0.1:49196',
+      client,
+      mcpRegistration: readyMcpRegistration,
+    });
+
+    await expect(runtime.openSession({
+      kind: 'resume',
+      providerSessionId: '  \n ',
+    })).rejects.toThrow('OpenCode session open did not produce a provider session id');
+
+    expect(client.sessionCreate).not.toHaveBeenCalled();
+    expect(client.sessionFork).not.toHaveBeenCalled();
+  });
+
+  it('forks from the exact parent and checkpoint bytes and adopts the exact child id', async () => {
+    const { ctx } = createContextFixture();
+    const client = createClientFixture();
+    (client.sessionFork as Mock<OpenCodeServerClient['sessionFork']>)
+      .mockResolvedValue({ id: PROVIDER_MINTED_SESSION_ID });
+    const runtime = createOpenCodeServerRuntime({
+      ctx,
+      directory: '/repo',
+      happierSessionId: 'happy-fork-exact',
+      baseUrl: 'http://127.0.0.1:49196',
+      client,
+      mcpRegistration: readyMcpRegistration,
+    });
+
+    await expect(runtime.openSession({
+      kind: 'fork',
+      source: {
+        providerSessionId: PROVIDER_MINTED_PARENT_SESSION_ID,
+        providerCheckpoint: {
+          kind: 'opencode_exclusive_message_id',
+          messageId: PROVIDER_MINTED_CHECKPOINT_MESSAGE_ID,
+        },
+      },
+    })).resolves.toBe(PROVIDER_MINTED_SESSION_ID);
+
+    expect(client.sessionFork).toHaveBeenCalledWith({
+      sessionId: PROVIDER_MINTED_PARENT_SESSION_ID,
+      messageId: PROVIDER_MINTED_CHECKPOINT_MESSAGE_ID,
+    });
+    expect(runtime.readSessionIdentity()).toEqual({ sessionId: PROVIDER_MINTED_SESSION_ID });
+  });
+
+  it('refuses a whitespace-only fork parent rather than forking a blank identity', async () => {
+    const { ctx } = createContextFixture();
+    const client = createClientFixture();
+    const runtime = createOpenCodeServerRuntime({
+      ctx,
+      directory: '/repo',
+      happierSessionId: 'happy-fork-blank',
+      baseUrl: 'http://127.0.0.1:49196',
+      client,
+      mcpRegistration: readyMcpRegistration,
+    });
+
+    await expect(runtime.openSession({
+      kind: 'fork',
+      source: {
+        providerSessionId: ' \t ',
+        providerCheckpoint: {
+          kind: 'opencode_exclusive_message_id',
+          messageId: PROVIDER_MINTED_CHECKPOINT_MESSAGE_ID,
+        },
+      },
+    })).rejects.toThrow('OpenCode fork requires a parent provider session id');
+
+    expect(client.sessionFork).not.toHaveBeenCalled();
   });
 });

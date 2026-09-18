@@ -16,6 +16,7 @@ type OhMyPiDaemonRunToolResult =
   }>
   | Readonly<{
     ok: false;
+    reasonCode?: string;
     errorMessage: string;
   }>;
 
@@ -114,6 +115,9 @@ export async function resolveOhMyPiDaemonSpawnPrerequisites(
   });
 
   if (!result.ok) {
+    if (result.reasonCode === 'timeout') {
+      return { decision: 'allow' };
+    }
     return denyOhMyPiSpawn('ohmypi_cli_unavailable', result.errorMessage);
   }
 

@@ -89,6 +89,33 @@ function createRuntime(options: Readonly<{
 }
 
 describe('createOpenCodeSessionRuntime', () => {
+  it('wakes an event-driven completion wait immediately on terminal provider events', async () => {
+    const { runtime, publish } = createRuntime();
+    publish({
+      kind: 'turn-start',
+      sessionId: 'happier-session-child',
+      turnId: 'turn-event-driven-completion',
+      emittedAtMs: 10,
+    });
+
+    const completion = runtime.waitForTurnCompletion();
+    await Promise.resolve();
+    publish({
+      kind: 'turn-complete',
+      sessionId: 'happier-session-child',
+      turnId: 'turn-event-driven-completion',
+      emittedAtMs: 11,
+    });
+    const outcome = await Promise.race([
+      completion.then(() => 'resolved' as const),
+      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 50)),
+    ]);
+
+    expect(outcome).toBe('resolved');
+    await completion;
+    await runtime.dispose();
+  });
+
   it('publishes exact host input acceptance before a synchronously emitted turn start', async () => {
     const { runtime, operations, publish } = createRuntime();
     const events: Array<{ kind: string; turnId?: string }> = [];
@@ -355,19 +382,41 @@ describe('createOpenCodeSessionRuntime', () => {
     await expect(runtime.updateConfiguration?.({
       mode: { value: null, updatedAtMs: 1 },
       model: { value: 'anthropic/sonnet', updatedAtMs: 1 },
-      permissionIntent: { value: 'safe-yolo', updatedAtMs: 1 },
-      options: {},
+      permissionIntent: { value: null, updatedAtMs: 1 },
+      options: {
+        opencodeBackendMode: { value: 'server', updatedAtMs: 1 },
+        reasoning_effort: { value: 'high', updatedAtMs: 1 },
+      },
     })).resolves.toEqual({
-      status: 'deferred',
-      changed: ['model', 'permissionIntent'],
+      status: 'applied',
+      changed: ['model', 'options.reasoning_effort'],
     });
-    expect(operations.updateSessionRuntimeConfig).toHaveBeenCalledWith({
-      modelId: 'anthropic/sonnet',
-      permissionMode: 'safe-yolo',
-    });
+    expect(operations.updateSessionRuntimeConfig.mock.calls).toEqual([
+      [{ modelId: 'anthropic/sonnet' }],
+      [{ configOption: { id: 'reasoning_effort', value: 'high' } }],
+    ]);
 
     await runtime.dispose();
     expect(disposeOperations).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects launch-only permission changes before applying otherwise valid live configuration', async () => {
+    const { runtime, operations } = createRuntime();
+
+    await expect(runtime.updateConfiguration?.({
+      mode: { value: null, updatedAtMs: 1 },
+      model: { value: 'anthropic/sonnet', updatedAtMs: 1 },
+      permissionIntent: { value: 'safe-yolo', updatedAtMs: 1 },
+      options: {
+        reasoning_effort: { value: 'high', updatedAtMs: 1 },
+      },
+    })).resolves.toMatchObject({
+      status: 'unsupported',
+      diagnostic: {
+        code: 'opencode_permission_intent_update_requires_provider_restart',
+      },
+    });
+    expect(operations.updateSessionRuntimeConfig).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -399,6 +448,35 @@ describe('createOpenCodeSessionRuntime', () => {
     })).resolves.toEqual({ status: 'notRunning' });
 
     expect(operations.cancelTurn).not.toHaveBeenCalled();
+  });
+
+  it('returns cancellation unavailable without claiming that the active turn was cancelled', async () => {
+    const { runtime, operations, publish } = createRuntime();
+    runtime.watch(() => undefined);
+    publish({
+      kind: 'turn-start',
+      sessionId: 'happier-session-child',
+      turnId: 'turn-cancel-failed',
+      emittedAtMs: 10,
+    });
+    operations.cancelTurn.mockRejectedValueOnce(new Error('provider abort failed'));
+
+    await expect(runtime.cancel?.({
+      turnId: 'turn-cancel-failed',
+      reason: 'user',
+    })).resolves.toMatchObject({
+      status: 'unavailable',
+      diagnostic: { code: 'opencode_cancellation_unavailable' },
+    });
+
+    await expect(runtime.cancel?.({
+      turnId: 'turn-cancel-failed',
+      reason: 'user',
+    })).resolves.toEqual({
+      status: 'requested',
+      turnId: 'turn-cancel-failed',
+    });
+    expect(operations.cancelTurn).toHaveBeenCalledTimes(2);
   });
 
   it('binds the private active skills reader to the host session and releases it on dispose', async () => {
@@ -439,7 +517,7 @@ describe('createOpenCodeSessionRuntime', () => {
     await expect(runtime.updateConfiguration?.({
       mode: { value: null, updatedAtMs: 1 },
       model: { value: 'missing/model', updatedAtMs: 1 },
-      permissionIntent: { value: 'default', updatedAtMs: 1 },
+      permissionIntent: { value: null, updatedAtMs: 1 },
       options: {},
     })).resolves.toMatchObject({
       status: 'rejected',

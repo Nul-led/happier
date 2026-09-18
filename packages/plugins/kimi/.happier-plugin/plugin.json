@@ -7,18 +7,28 @@
         "capabilities": {
           "sessions": {
             "cancel": true,
+            "configuration": true,
             "delivery": [
               "newTurn",
-              "steer",
               "followUp"
             ],
+            "executionRunContext": {
+              "versions": [
+                1
+              ]
+            },
             "open": [
               "create",
-              "resume"
+              "resume",
+              "fork"
             ]
           },
+          "surfaces": [
+            "terminal",
+            "externalSessions"
+          ],
           "tools": {
-            "delivery": "shell_bridge"
+            "delivery": "native_mcp"
           }
         },
         "catalog": {
@@ -38,17 +48,18 @@
             ],
             "support": "login_terminal"
           },
-          "displayName": "Kimi CLI",
+          "displayName": "Kimi Code CLI",
           "executable": {
             "binaryName": "kimi",
             "knownUserBinDirSuffixes": [
               ".local/bin"
             ],
-            "sourcePreference": "system-first"
+            "sourcePreference": "system-first",
+            "systemCommandResolutionStrategy": "path-first"
           },
           "install": {
-            "docsUrl": "https://code.kimi.com",
-            "guideUrl": "https://kimi.moonshot.cn/docs/cli",
+            "docsUrl": "https://moonshotai.github.io/kimi-code/",
+            "guideUrl": "https://moonshotai.github.io/kimi-code/docs/en/reference/kimi-command.html",
             "managed": null,
             "manual": {
               "kind": "vendor_recipe",
@@ -57,7 +68,7 @@
                   {
                     "args": [
                       "-lc",
-                      "curl -fsSL https://code.kimi.com/install.sh | bash"
+                      "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash"
                     ],
                     "cmd": "bash"
                   }
@@ -66,7 +77,7 @@
                   {
                     "args": [
                       "-lc",
-                      "curl -fsSL https://code.kimi.com/install.sh | bash"
+                      "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash"
                     ],
                     "cmd": "bash"
                   }
@@ -78,7 +89,7 @@
                       "-ExecutionPolicy",
                       "Bypass",
                       "-Command",
-                      "Invoke-RestMethod https://code.kimi.com/install.ps1 | Invoke-Expression"
+                      "Invoke-RestMethod https://code.kimi.com/kimi-code/install.ps1 | Invoke-Expression"
                     ],
                     "cmd": "powershell"
                   }
@@ -87,12 +98,76 @@
             }
           }
         },
+        "description": {
+          "fallback": "Kimi coding agent (experimental)",
+          "key": "profiles.aiBackend.kimiSubtitleExperimental"
+        },
         "id": "kimi",
         "primary": "sessions",
         "runtime": {
-          "kind": "custom"
+          "definition": {
+            "mcp": {
+              "policy": "pass_through"
+            },
+            "modelConfigOptionId": "model",
+            "stderrRules": {
+              "authenticationErrorDetail": "Authentication error. Run `kimi login` to re-authenticate, then retry."
+            }
+          },
+          "kind": "acp",
+          "transport": {
+            "args": [
+              "acp"
+            ],
+            "executable": {
+              "id": "kimi-cli",
+              "kind": "systemTool"
+            },
+            "kind": "stdio",
+            "timeouts": {
+              "idleMs": 500,
+              "initializeMs": 90000,
+              "toolCallMs": 120000
+            }
+          }
         },
-        "title": "Kimi"
+        "surfaces": {
+          "externalSession": {
+            "sources": [
+              {
+                "instances": [
+                  {
+                    "constants": {},
+                    "kind": "default"
+                  }
+                ],
+                "key": {
+                  "segments": [
+                    {
+                      "kind": "literal",
+                      "value": "kimiAcpSessionList"
+                    }
+                  ]
+                },
+                "resumeOnly": true,
+                "schema": {
+                  "fields": [
+                    {
+                      "kind": "literal",
+                      "name": "kind",
+                      "value": "kimiAcpSessionList"
+                    }
+                  ]
+                },
+                "sourceKind": "kimiAcpSessionList"
+              }
+            ]
+          }
+        },
+        "title": {
+          "fallback": "Kimi",
+          "key": "agentInput.agent.kimi"
+        }
       }
     ],
     "backgroundServices": [],
@@ -107,19 +182,7 @@
     "daemonDatabases": [],
     "events": [],
     "executionRunProfiles": [],
-    "hooks": [
-      {
-        "category": "decision",
-        "executionKind": "decide",
-        "filters": {
-          "agentId": "kimi"
-        },
-        "hookApiVersion": 1,
-        "id": "resolve-prerequisites",
-        "on": "agent.resolvePrerequisites",
-        "scope": "agent"
-      }
-    ],
+    "hooks": [],
     "managedDependencies": [],
     "mcp": {
       "discoverySources": [],
@@ -138,112 +201,55 @@
     "searchProviders": [],
     "sessionHeaderActions": [],
     "sessionInfoSections": [],
-    "settings": [
-      {
-        "actions": [],
-        "fields": [
-          {
-            "analytics": {
-              "identityScope": "person",
-              "privacy": "safe",
-              "trackChanges": true,
-              "trackCurrentState": true,
-              "valueKind": "enum"
-            },
-            "default": "auto",
-            "description": {
-              "fallback": "Choose how Happier starts Kimi ACP's Python stdio loop.",
-              "key": "settingsAgents.plugins.kimi.fields.kimiAcpPythonSelector.subtitle"
-            },
-            "id": "kimiAcpPythonSelector",
-            "presentation": {
-              "control": "select",
-              "options": [
-                {
-                  "description": {
-                    "fallback": "Use Kimi's default Python selector.",
-                    "key": "settingsAgents.plugins.kimi.fields.kimiAcpPythonSelector.options.auto.subtitle"
-                  },
-                  "title": {
-                    "fallback": "Automatic",
-                    "key": "settingsAgents.plugins.kimi.fields.kimiAcpPythonSelector.options.auto.title"
-                  },
-                  "value": "auto"
-                },
-                {
-                  "description": {
-                    "fallback": "Use poll() instead of epoll() for Kimi ACP stdio.",
-                    "key": "settingsAgents.plugins.kimi.fields.kimiAcpPythonSelector.options.poll.subtitle"
-                  },
-                  "title": {
-                    "fallback": "Compatibility mode",
-                    "key": "settingsAgents.plugins.kimi.fields.kimiAcpPythonSelector.options.poll.title"
-                  },
-                  "value": "poll"
-                }
-              ]
-            },
-            "schema": {
-              "description": "Kimi ACP Python stdio selector compatibility mode",
-              "enum": [
-                "auto",
-                "poll"
-              ],
-              "type": "string"
-            },
-            "title": {
-              "fallback": "Python stdio selector",
-              "key": "settingsAgents.plugins.kimi.fields.kimiAcpPythonSelector.title"
-            }
-          }
-        ],
-        "id": "agent-settings",
-        "presentation": {
-          "icon": {
-            "color": {
-              "kind": "theme",
-              "token": "green"
-            },
-            "ionName": "leaf-outline"
-          },
-          "sections": [
-            {
-              "description": {
-                "fallback": "Use compatibility mode only for Linux/container environments where Kimi ACP startup hangs.",
-                "key": "settingsAgents.plugins.kimi.sections.compatibility.footer"
-              },
-              "fields": [
-                "kimiAcpPythonSelector"
-              ],
-              "id": "kimi-compatibility",
-              "title": {
-                "fallback": "Compatibility",
-                "key": "settingsAgents.plugins.kimi.sections.compatibility.title"
-              }
-            }
-          ],
-          "subagentSections": []
-        },
-        "scope": "account",
-        "target": {
-          "agent": "kimi",
-          "kind": "agent"
-        },
-        "title": {
-          "fallback": "Kimi",
-          "key": "settingsAgents.plugins.kimi.title"
-        },
-        "version": 1
-      }
-    ],
+    "settings": [],
     "systemTools": [
       {
         "executableNames": [
-          "kimi",
-          "kimi-cli"
+          "kimi"
         ],
         "id": "kimi-cli",
-        "title": "Kimi CLI"
+        "readiness": {
+          "acpProbeArgs": [
+            "acp"
+          ],
+          "commandSurfaceArgs": [
+            "migrate",
+            "--help"
+          ],
+          "currentFingerprint": {
+            "absentSessionCapabilities": [],
+            "loadSession": true,
+            "mcpHttp": true,
+            "mcpSse": true,
+            "sessionCapabilities": [
+              "list",
+              "resume",
+              "close",
+              "delete",
+              "fork"
+            ]
+          },
+          "legacyExecutableNames": [
+            "kimi-cli"
+          ],
+          "legacyFingerprint": {
+            "absentSessionCapabilities": [
+              "close",
+              "delete",
+              "fork"
+            ],
+            "loadSession": true,
+            "mcpHttp": true,
+            "mcpSse": false,
+            "sessionCapabilities": [
+              "list",
+              "resume"
+            ]
+          },
+          "legacyGuidance": "Install the current Kimi Code CLI, then run `kimi migrate` manually. Happier never runs migration automatically.",
+          "unidentifiedGuidance": "Install the current Kimi Code CLI and retry."
+        },
+        "title": "Kimi Code CLI"
       }
     ],
     "targetedPluginContributions": [],
@@ -253,7 +259,116 @@
       "renderers": [],
       "settingsGroups": [],
       "settingsPages": [],
-      "translations": [],
+      "translations": [
+        {
+          "locale": "en",
+          "messages": {
+            "agentInput.agent.kimi": "Kimi",
+            "profiles.aiBackend.kimiSubtitleExperimental": "Kimi CLI (experimental)",
+            "sessionInfo.kimiSessionId": "Kimi session ID",
+            "sessionInfo.kimiSessionIdCopied": "Kimi session ID copied"
+          }
+        },
+        {
+          "locale": "de",
+          "messages": {
+            "agentInput.agent.kimi": "Kimi",
+            "profiles.aiBackend.kimiSubtitleExperimental": "Kimi CLI (experimentell)",
+            "sessionInfo.kimiSessionId": "Kimi-Sitzungs-ID",
+            "sessionInfo.kimiSessionIdCopied": "Kimi-Sitzungs-ID kopiert"
+          }
+        },
+        {
+          "locale": "ru",
+          "messages": {
+            "agentInput.agent.kimi": "Kimi",
+            "profiles.aiBackend.kimiSubtitleExperimental": "Kimi CLI (экспериментально)",
+            "sessionInfo.kimiSessionId": "Идентификатор сессии Kimi",
+            "sessionInfo.kimiSessionIdCopied": "Идентификатор сессии Kimi скопирован"
+          }
+        },
+        {
+          "locale": "pl",
+          "messages": {
+            "agentInput.agent.kimi": "Kimi",
+            "profiles.aiBackend.kimiSubtitleExperimental": "Kimi CLI (eksperymentalne)",
+            "sessionInfo.kimiSessionId": "Identyfikator sesji Kimi",
+            "sessionInfo.kimiSessionIdCopied": "Skopiowano identyfikator sesji Kimi"
+          }
+        },
+        {
+          "locale": "es",
+          "messages": {
+            "agentInput.agent.kimi": "Kimi",
+            "profiles.aiBackend.kimiSubtitleExperimental": "CLI de Kimi (experimental)",
+            "sessionInfo.kimiSessionId": "ID de sesión de Kimi",
+            "sessionInfo.kimiSessionIdCopied": "ID de sesión de Kimi copiado"
+          }
+        },
+        {
+          "locale": "fr",
+          "messages": {
+            "agentInput.agent.kimi": "Kimi",
+            "profiles.aiBackend.kimiSubtitleExperimental": "Kimi CLI (expérimental)",
+            "sessionInfo.kimiSessionId": "ID de session Kimi",
+            "sessionInfo.kimiSessionIdCopied": "ID de session Kimi copié"
+          }
+        },
+        {
+          "locale": "it",
+          "messages": {
+            "agentInput.agent.kimi": "Kimi",
+            "profiles.aiBackend.kimiSubtitleExperimental": "Kimi CLI (sperimentale)",
+            "sessionInfo.kimiSessionId": "ID sessione Kimi",
+            "sessionInfo.kimiSessionIdCopied": "ID sessione Kimi copiato"
+          }
+        },
+        {
+          "locale": "pt",
+          "messages": {
+            "agentInput.agent.kimi": "Kimi",
+            "profiles.aiBackend.kimiSubtitleExperimental": "CLI do Kimi (experimental)",
+            "sessionInfo.kimiSessionId": "ID da sessão Kimi",
+            "sessionInfo.kimiSessionIdCopied": "ID da sessão Kimi copiado"
+          }
+        },
+        {
+          "locale": "ca",
+          "messages": {
+            "agentInput.agent.kimi": "Kimi",
+            "profiles.aiBackend.kimiSubtitleExperimental": "CLI de Kimi (experimental)",
+            "sessionInfo.kimiSessionId": "ID de la sessió de Kimi",
+            "sessionInfo.kimiSessionIdCopied": "S’ha copiat l’ID de la sessió de Kimi"
+          }
+        },
+        {
+          "locale": "zh-Hans",
+          "messages": {
+            "agentInput.agent.kimi": "Kimi",
+            "profiles.aiBackend.kimiSubtitleExperimental": "Kimi 命令行（实验）",
+            "sessionInfo.kimiSessionId": "Kimi 会话 ID",
+            "sessionInfo.kimiSessionIdCopied": "已复制 Kimi 会话 ID"
+          }
+        },
+        {
+          "locale": "zh-Hant",
+          "messages": {
+            "agentInput.agent.kimi": "Kimi",
+            "profiles.aiBackend.kimiSubtitleExperimental": "Kimi CLI（實驗性）",
+            "sessionInfo.kimiSessionId": "Kimi 工作階段 ID",
+            "sessionInfo.kimiSessionIdCopied": "已複製 Kimi 工作階段 ID"
+          }
+        },
+        {
+          "locale": "ja",
+          "messages": {
+            "agentInput.agent.kimi": "Kimi",
+            "profiles.aiBackend.kimiSubtitleExperimental": "Kimi CLI（実験）",
+            "sessionInfo.kimiSessionId": "Kimi セッション ID",
+            "sessionInfo.kimiSessionIdCopied": "Kimi セッション ID をコピーしました"
+          }
+        }
+      ],
       "views": []
     },
     "voiceModelPacks": [],
@@ -275,10 +390,6 @@
         "id": "kimi-process",
         "reason": "Run the declared Kimi CLI executable.",
         "scope": {
-          "envKeys": [
-            "HAPPIER_KIMI_ACP_SELECTOR",
-            "PYTHONPATH"
-          ],
           "executables": [
             {
               "id": "kimi-cli",

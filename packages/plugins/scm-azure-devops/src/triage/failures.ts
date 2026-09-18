@@ -141,12 +141,24 @@ export function classifyAzureDevOpsTransportFailure(input: Readonly<{
  * decision needs no reconciliation. Entry mutations and review publication reconcile through this
  * one predicate, because two answers to "may this write have landed" would let a press retry in
  * one surface while the other still refuses to.
+ *
+ * An accepted-but-undecodable answer belongs here too, and its evidence is the response status
+ * Azure itself returned. `malformedResponse` is only ever raised against a 2xx — the classifier
+ * decides every other status first — so a write carrying one was **accepted** and merely answered
+ * something this build could not read. Calling that failed asserts the comment does not exist,
+ * which invites the duplicate manual retry §6.7 forbids; the effect is unknown until the
+ * caller's own confirming read says otherwise. A source-local `malformedResponse` with no status
+ * never reached a provider write and stays decided.
  */
 export function isAzureDevOpsAmbiguousWriteFailure(failure: AzureDevOpsFailure): boolean {
   return failure.class === 'timedOut'
     || failure.class === 'cancelled'
     || failure.class === 'transport'
-    || failure.class === 'server';
+    || failure.class === 'server'
+    || (failure.class === 'malformedResponse'
+      && failure.status !== null
+      && failure.status >= 200
+      && failure.status < 300);
 }
 
 export function createAzureDevOpsFailure(input: Readonly<{

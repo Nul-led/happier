@@ -1,8 +1,14 @@
 import { parseTimestampMs } from '@happier-dev/plugin-sdk';
 import type {
   AgentAccountUsageRecoveryCredit,
-  AgentAccountUsageRecoveryCredits,
 } from '@happier-dev/plugin-sdk/agents/runtime';
+
+// The Codex response mapper rejects missing IDs and omits unknown expiries.
+// Preserve those guarantees for consumers that can redeem individual credits.
+type CodexRateLimitResetCredit = Omit<AgentAccountUsageRecoveryCredit, 'id' | 'expiresAtMs'> & Readonly<{
+  id: string;
+  expiresAtMs?: number;
+}>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -54,7 +60,7 @@ function readUsageSummaryContainer(rawUsage: unknown): Record<string, unknown> |
   return summary;
 }
 
-function mapCredit(rawCredit: unknown): AgentAccountUsageRecoveryCredit | null {
+function mapCredit(rawCredit: unknown): CodexRateLimitResetCredit | null {
   const record = isRecord(rawCredit) ? rawCredit : null;
   if (!record) return null;
   const id = readString(record.id);
@@ -79,13 +85,16 @@ function mapCredit(rawCredit: unknown): AgentAccountUsageRecoveryCredit | null {
 export function mapCodexRateLimitResetCredits(params: Readonly<{
   rawUsage?: unknown;
   rawResetCredits?: unknown;
-}>): AgentAccountUsageRecoveryCredits | undefined {
+}>): Readonly<{
+  availableCount: number;
+  credits: CodexRateLimitResetCredit[];
+}> | undefined {
   const resetCredits = readCreditsContainer(params.rawResetCredits);
   const usageSummary = readUsageSummaryContainer(params.rawUsage);
   const rawCredits = Array.isArray(resetCredits?.credits) ? resetCredits.credits : [];
   const credits = rawCredits
     .map((credit) => mapCredit(credit))
-    .filter((credit): credit is AgentAccountUsageRecoveryCredit => credit !== null);
+    .filter((credit): credit is CodexRateLimitResetCredit => credit !== null);
   const availableCount =
     readNonNegativeInteger(resetCredits?.available_count ?? resetCredits?.availableCount)
     ?? readNonNegativeInteger(usageSummary?.available_count ?? usageSummary?.availableCount)

@@ -1,3 +1,4 @@
+import { readAzureChangeEntryRows, readAzureCollectionRows } from '../decode.js';
 import { createAzureDevOpsFailure } from '../failures.js';
 import type {
   AzureDevOpsApiClient,
@@ -37,6 +38,12 @@ import {
  *   iteration-changes collection hands back `nextSkip` and `nextTop` in the
  *   body. A self-incremented `$skip` is how a caller silently re-reads or skips
  *   files, so this source never computes one.
+ *
+ * This is also where the strict/tolerant split of `sources/SCM.md` §2.9 is
+ * decided: every external response is proved to BE a collection here, through
+ * the same envelope owner the scan pages and the publication anchor reads use,
+ * before its rows are handed to the tolerant projector. An unrecognized body is
+ * an attributed failure, never a healthy, complete, empty plane.
  */
 
 export type AzureDetailReadResultV1<T> =
@@ -57,16 +64,19 @@ export const AZURE_CHANGES_PAGE_SIZE_V1 = 100;
 /** One bounded policy-evaluation page. A short page ends the provider walk. */
 export const AZURE_POLICY_EVALUATIONS_PAGE_SIZE_V1 = 100;
 
-function collectionPageLength(body: unknown): number {
-  return typeof body === 'object'
-    && body !== null
-    && Array.isArray((body as Readonly<{ value?: unknown }>).value)
-    ? ((body as Readonly<{ value: readonly unknown[] }>).value.length)
-    : 0;
-}
-
 function malformed(detail: string): AzureDevOpsFailure {
   return createAzureDevOpsFailure({ failureClass: 'malformedResponse', detail });
+}
+
+/** The one strict-envelope gate every `{ count, value }` detail read passes through. */
+function readCollection(
+  body: unknown,
+  resource: string,
+): AzureDetailReadResultV1<readonly unknown[]> {
+  const rows = readAzureCollectionRows(body);
+  return rows === null
+    ? { ok: false, failure: malformed(`Azure DevOps returned an unusable ${resource} collection.`) }
+    : { ok: true, value: rows };
 }
 
 async function requestJson(
@@ -119,8 +129,10 @@ export async function readAzureIterations(
     pullRequestId: input.pullRequestId,
   });
   if (!response.ok) return response;
+  const collection = readCollection(response.value.body, 'iteration');
+  if (!collection.ok) return collection;
 
-  const projected = projectAzureIterationRows(response.value.body, AZURE_DETAIL_BOUNDS_V1);
+  const projected = projectAzureIterationRows(collection.value, AZURE_DETAIL_BOUNDS_V1);
   // The current iteration is the highest real id Azure returned. A pull request
   // whose iteration list is empty has none, and saying so beats guessing `1`.
   const currentIterationId = projected.rows.reduce<number | null>(
@@ -171,8 +183,10 @@ export async function readAzureCommitsPage(
     },
   );
   if (!response.ok) return response;
+  const collection = readCollection(response.value.body, 'commit');
+  if (!collection.ok) return collection;
 
-  const projected = projectAzureCommitRows(response.value.body, AZURE_DETAIL_BOUNDS_V1);
+  const projected = projectAzureCommitRows(collection.value, AZURE_DETAIL_BOUNDS_V1);
   const header = response.value.headers[AZURE_CONTINUATION_TOKEN_HEADER_V1];
   const continuationToken = typeof header === 'string' && header.trim() !== ''
     ? header.trim()
@@ -215,6 +229,14 @@ export async function readAzureIterationChangesPage(
     { $compareTo: 0, $skip: input.skip, $top: input.top },
   );
   if (!response.ok) return response;
+  // The iteration-changes model publishes its rows under `changeEntries`, and its position under
+  // `nextSkip`/`nextTop`, so the envelope is proved here while the projector still owns both.
+  if (readAzureChangeEntryRows(response.value.body) === null) {
+    return {
+      ok: false,
+      failure: malformed('Azure DevOps returned an unusable iteration-changes collection.'),
+    };
+  }
   const projected = projectAzureIterationChanges(response.value.body, AZURE_DETAIL_BOUNDS_V1);
   if (projected.continuationMalformed) {
     return {
@@ -267,7 +289,9 @@ export async function readAzurePoliciesSurface(
     pullRequestId: input.pullRequestId,
   });
   if (!statuses.ok) return statuses;
-  const projectedStatuses = projectAzureStatusRows(statuses.value.body, AZURE_DETAIL_BOUNDS_V1);
+  const statusCollection = readCollection(statuses.value.body, 'status');
+  if (!statusCollection.ok) return statusCollection;
+  const projectedStatuses = projectAzureStatusRows(statusCollection.value, AZURE_DETAIL_BOUNDS_V1);
 
   const artifactId =
     `vstfs:///CodeReview/CodeReviewId/${input.projectId}/${String(input.pullRequestId)}`;
@@ -276,6 +300,18 @@ export async function readAzurePoliciesSurface(
   let evaluationOmissions = 0;
   let evaluationProjectionTruncated = false;
   let skip = 0;
+  const surface = (
+    evaluationsPartial: boolean,
+  ): AzureDetailReadResultV1<AzurePoliciesReadV1> => ({
+    ok: true,
+    value: Object.freeze({
+      statuses: projectedStatuses.rows,
+      evaluations: Object.freeze([...projectedEvaluationRows]),
+      evaluationsPartial,
+      omittedRowCount: projectedStatuses.omittedRowCount + evaluationOmissions,
+      projectionTruncated: projectedStatuses.projectionTruncated || evaluationProjectionTruncated,
+    }),
+  });
 
   for (;;) {
     const evaluations = await requestJson(
@@ -297,21 +333,16 @@ export async function readAzurePoliciesSurface(
       }
       // The statuses are real evidence and are kept; only the evaluation half is
       // reported short. Failing both would hide policy state the reader can see.
-      return {
-        ok: true,
-        value: Object.freeze({
-          statuses: projectedStatuses.rows,
-          evaluations: Object.freeze(projectedEvaluationRows),
-          evaluationsPartial: true,
-          omittedRowCount: projectedStatuses.omittedRowCount + evaluationOmissions,
-          projectionTruncated:
-            projectedStatuses.projectionTruncated || evaluationProjectionTruncated,
-        }),
-      };
+      return surface(true);
     }
 
+    // An unrecognized evaluation envelope is a failed page, not an empty one: it neither proves
+    // this pull request has no evaluations nor licenses ending the walk as complete.
+    const evaluationRows = readAzureCollectionRows(evaluations.value.body);
+    if (evaluationRows === null) return surface(true);
+
     const projectedPage = projectAzurePolicyEvaluationRows(
-      evaluations.value.body,
+      evaluationRows,
       AZURE_DETAIL_BOUNDS_V1,
     );
     let addedRows = 0;
@@ -325,42 +356,21 @@ export async function readAzurePoliciesSurface(
     evaluationProjectionTruncated = evaluationProjectionTruncated
       || projectedPage.projectionTruncated;
 
-    const pageLength = collectionPageLength(evaluations.value.body);
     // The approved source contract owns one bounded native page and stops on Azure's short-page
     // signal. Issuing an extra empty-page request after a short page spends quota and can turn a
     // complete answer into a false partial failure when the unnecessary request fails.
-    if (pageLength < AZURE_POLICY_EVALUATIONS_PAGE_SIZE_V1) break;
+    if (evaluationRows.length < AZURE_POLICY_EVALUATIONS_PAGE_SIZE_V1) break;
     if (addedRows === 0) {
       // A Server that ignores `$skip` can legally keep returning a successful page. The
       // invocation-local identity set is only a progress witness: it neither persists provider
       // data nor invents a retry count. Retain the rows already proved and report the plane short
       // instead of spinning until the panel deadline and then discarding the whole result.
-      return {
-        ok: true,
-        value: Object.freeze({
-          statuses: projectedStatuses.rows,
-          evaluations: Object.freeze(projectedEvaluationRows),
-          evaluationsPartial: true,
-          omittedRowCount: projectedStatuses.omittedRowCount + evaluationOmissions,
-          projectionTruncated:
-            projectedStatuses.projectionTruncated || evaluationProjectionTruncated,
-        }),
-      };
+      return surface(true);
     }
-    skip += pageLength;
+    skip += evaluationRows.length;
   }
 
-  return {
-    ok: true,
-    value: Object.freeze({
-      statuses: projectedStatuses.rows,
-      evaluations: Object.freeze(projectedEvaluationRows),
-      evaluationsPartial: false,
-      omittedRowCount: projectedStatuses.omittedRowCount + evaluationOmissions,
-      projectionTruncated:
-        projectedStatuses.projectionTruncated || evaluationProjectionTruncated,
-    }),
-  };
+  return surface(false);
 }
 
 /* ------------------------------------------------------------------- threads */
@@ -403,5 +413,7 @@ export async function readAzureThreads(
       },
   );
   if (!response.ok) return response;
-  return { ok: true, value: projectAzureThreadRows(response.value.body, AZURE_DETAIL_BOUNDS_V1) };
+  const collection = readCollection(response.value.body, 'thread');
+  if (!collection.ok) return collection;
+  return { ok: true, value: projectAzureThreadRows(collection.value, AZURE_DETAIL_BOUNDS_V1) };
 }

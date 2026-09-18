@@ -244,12 +244,18 @@ export function fitSentryEventResult(projection: SentryEventProjectionV1): Sentr
 function resolveWalkPosition(
   continuation: string | undefined,
   limit: number,
+  sample = false,
 ): Readonly<{ ok: true; position: CursorCycleWalkV1 | null }> | Readonly<{ ok: false }> {
   if (continuation === undefined) {
     return Object.freeze({ ok: true as const, position: null });
   }
   const frontier = decodeSentryDetailContinuation(continuation);
-  if (frontier === null || frontier.limit !== limit) return Object.freeze({ ok: false as const });
+  // A position established under the other ordering is not a position in this
+  // walk: `[SCHEMA]` `sample=true` reorders the same retained events, so
+  // following that cursor here would page a collection this walk never entered.
+  if (frontier === null || frontier.limit !== limit || frontier.sample !== sample) {
+    return Object.freeze({ ok: false as const });
+  }
   return Object.freeze({
     ok: true as const,
     position: Object.freeze({ cursor: frontier.cursor, probe: frontier.probe }),
@@ -267,6 +273,7 @@ function resolveWalkPosition(
 function projectWalkPosition(
   nextPage: SentryNextPageV1,
   limit: number,
+  sample = false,
 ): Readonly<{ continuation?: string; incomplete?: SentryDetailIncompleteReasonV1 }> {
   if (nextPage.kind === 'stoppedShort') return { incomplete: nextPage.reason };
   if (nextPage.kind === 'end') return {};
@@ -274,6 +281,7 @@ function projectWalkPosition(
     v: 1,
     cursor: nextPage.walk.cursor,
     limit,
+    sample,
     probe: nextPage.walk.probe,
   });
   // The walk is open and the provider's cursor is intact; this source simply
@@ -355,7 +363,10 @@ export async function listSentryIssueEvents(
       return Object.freeze({ kind: 'unavailable' as const, failure: routed.failure });
     }
 
-    const walk = resolveWalkPosition(parsed.continuation, parsed.limit);
+    // The ordinary walk is the absence of a spread choice, and the choice a walk
+    // started under is frozen in every continuation it mints.
+    const sample = parsed.sample === true;
+    const walk = resolveWalkPosition(parsed.continuation, parsed.limit, sample);
     if (!walk.ok) {
       return Object.freeze({
         kind: 'unavailable' as const,
@@ -373,6 +384,7 @@ export async function listSentryIssueEvents(
       instance: routed.instance,
       entryId: parsed.localRef.entryId,
       limit: parsed.limit,
+      sample,
       position: walk.position,
       nowMs: Date.now(),
     });
@@ -383,7 +395,7 @@ export async function listSentryIssueEvents(
       });
     }
 
-    const position = projectWalkPosition(page.value.nextPage, parsed.limit);
+    const position = projectWalkPosition(page.value.nextPage, parsed.limit, sample);
     return fitActionResultPageV1(
       page.value.rows,
       position.continuation,

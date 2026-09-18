@@ -102,6 +102,14 @@ function changesResult(
   } as unknown as JsonValue;
 }
 
+/** The typed failure a GitLab Changes read returns when the provider refuses it. */
+function unavailableChanges(): JsonValue {
+  return {
+    kind: 'unavailable',
+    failure: { class: 'transient', code: 'gitlab-changes-page-refused' },
+  } as unknown as JsonValue;
+}
+
 const mounted: PluginUiTestkit[] = [];
 
 afterEach(async () => {
@@ -114,12 +122,8 @@ async function mountDetail(
   let detail!: PluginUiTestkit;
   await act(async () => {
     detail = await createPluginUiTestkit({
-      identity: {
-        pluginId: GITLAB_PLUGIN_ID,
-        pluginVersion: '0.0.0',
-        viewId: 'gitlab-detail',
-        generation: 'gitlab-panel-lifecycle',
-      },
+      identity: { instanceId: 'fixture-instance-194', mountNonce: 'fixture-mount-194' },
+      authorPlugin: { id: GITLAB_PLUGIN_ID, version: '0.0.0' },
       surface: (context) => (
         <TriagePostMutationCompletionProvider onComplete={async () => {}}>
           {renderSurface(context) as React.ReactNode}
@@ -159,10 +163,8 @@ describe('the mounted GitLab detail-panel lifecycle', () => {
       .toHaveLength(1);
   });
 
-  it('retains the Changes viewport mount but clears parsed rows and its cursor on leave', async () => {
+  it('returns to the Changes page model it already loaded instead of re-reading page one', async () => {
     const continuations: Array<string | undefined> = [];
-    let resolveRestart!: (value: JsonValue) => void;
-    const restartedFirstPage = new Promise<JsonValue>((resolve) => { resolveRestart = resolve; });
     const detail = await mountDetail(async ({ action, input }) => {
       const localId = (action as Readonly<{ localId?: string }>).localId ?? '';
       if (localId === GITLAB_TRIAGE_DETAIL_ACTION_IDS.readOverview) {
@@ -172,8 +174,8 @@ describe('the mounted GitLab detail-panel lifecycle', () => {
         const continuation = (input as Readonly<{ continuation?: string }>).continuation;
         continuations.push(continuation);
         if (continuations.length === 1) return changesResult('src/first.ts', 'changes-page-2');
-        if (continuations.length === 2) return changesResult('src/second.ts', null);
-        return restartedFirstPage;
+        if (continuations.length === 2) return changesResult('src/second.ts', 'changes-page-3');
+        return changesResult('src/third.ts', null);
       }
       throw new Error(`unexpected action ${localId}`);
     });
@@ -188,15 +190,117 @@ describe('the mounted GitLab detail-panel lifecycle', () => {
     await openTab(detail, 'Overview');
     await openTab(detail, 'Changes');
 
-    await expect(detail.getByText('Reading the changed files from GitLab')).resolves.toBeDefined();
-    await expect(detail.queryByText('src/first.ts')).resolves.toBeUndefined();
-    await expect(detail.queryByText('src/second.ts')).resolves.toBeUndefined();
-    expect(continuations).toEqual([undefined, 'changes-page-2', undefined]);
+    // §4.6 retains the parsed per-file page model. A reader who loaded a later
+    // file and glanced at Overview comes back to it, and the tab does not spend
+    // GitLab's budget re-reading what it already holds.
+    await expect(detail.getByText('src/first.ts')).resolves.toBeDefined();
+    await expect(detail.getByText('src/second.ts')).resolves.toBeDefined();
+    expect(continuations).toEqual([undefined, 'changes-page-2']);
 
+    // The retained cursor is the one that follows the retained pages, not a
+    // restart: the next request continues the walk.
     await act(async () => {
-      resolveRestart(changesResult('src/restarted.ts', null));
+      await detail.press(await detail.getByRole('button', { name: 'Show more files' }));
+    });
+    await expect(detail.getByText('src/third.ts')).resolves.toBeDefined();
+    expect(continuations).toEqual([undefined, 'changes-page-2', 'changes-page-3']);
+  });
+
+  it('keeps the Changes pages it settled when a later page failed and the reader returns', async () => {
+    const continuations: Array<string | undefined> = [];
+    const detail = await mountDetail(async ({ action, input }) => {
+      const localId = (action as Readonly<{ localId?: string }>).localId ?? '';
+      if (localId === GITLAB_TRIAGE_DETAIL_ACTION_IDS.readOverview) {
+        return overviewResult('Current provider description.');
+      }
+      if (localId === GITLAB_TRIAGE_DETAIL_ACTION_IDS.listChanges) {
+        continuations.push((input as Readonly<{ continuation?: string }>).continuation);
+        if (continuations.length === 1) return changesResult('src/retained.ts', 'changes-page-2');
+        if (continuations.length === 2) return unavailableChanges();
+        return changesResult('src/restarted.ts', null);
+      }
+      throw new Error(`unexpected action ${localId}`);
+    });
+
+    await openTab(detail, 'Changes');
+    await expect(detail.getByText('src/retained.ts')).resolves.toBeDefined();
+    await act(async () => {
+      await detail.press(await detail.getByRole('button', { name: 'Show more files' }));
+    });
+    await expect(detail.getByText('src/retained.ts')).resolves.toBeDefined();
+
+    await openTab(detail, 'Overview');
+    await openTab(detail, 'Changes');
+
+    // A later page that failed says nothing about the pages that settled. §4.6
+    // retains those, so the reader comes back to the file they already read
+    // rather than to a walk restarted from page one over GitLab's budget.
+    await expect(detail.getByText('src/retained.ts')).resolves.toBeDefined();
+    await expect(detail.queryByText('src/restarted.ts')).resolves.toBeUndefined();
+    expect(continuations).toEqual([undefined, 'changes-page-2']);
+  });
+
+  it('lets the reader retry the Changes continuation whose page failed', async () => {
+    const continuations: Array<string | undefined> = [];
+    const detail = await mountDetail(async ({ action, input }) => {
+      const localId = (action as Readonly<{ localId?: string }>).localId ?? '';
+      if (localId === GITLAB_TRIAGE_DETAIL_ACTION_IDS.readOverview) {
+        return overviewResult('Current provider description.');
+      }
+      if (localId === GITLAB_TRIAGE_DETAIL_ACTION_IDS.listChanges) {
+        continuations.push((input as Readonly<{ continuation?: string }>).continuation);
+        if (continuations.length === 1) return changesResult('src/first.ts', 'changes-page-2');
+        if (continuations.length === 2) return unavailableChanges();
+        return changesResult('src/second.ts', null);
+      }
+      throw new Error(`unexpected action ${localId}`);
+    });
+
+    await openTab(detail, 'Changes');
+    await expect(detail.getByText('src/first.ts')).resolves.toBeDefined();
+    await act(async () => {
+      await detail.press(await detail.getByRole('button', { name: 'Show more files' }));
+    });
+
+    // The position was never read, so the enabled control the reader is looking
+    // at must actually ask for it again instead of being inert.
+    await act(async () => {
+      await detail.press(await detail.getByRole('button', { name: 'Show more files' }));
+    });
+
+    await expect(detail.getByText('src/second.ts')).resolves.toBeDefined();
+    expect(continuations).toEqual([undefined, 'changes-page-2', 'changes-page-2']);
+  });
+
+  it('discards a Changes walk whose only read was still in flight when the reader left', async () => {
+    const continuations: Array<string | undefined> = [];
+    let resolveFirstPage!: (value: JsonValue) => void;
+    const firstPage = new Promise<JsonValue>((resolve) => { resolveFirstPage = resolve; });
+    const detail = await mountDetail(async ({ action, input }) => {
+      const localId = (action as Readonly<{ localId?: string }>).localId ?? '';
+      if (localId === GITLAB_TRIAGE_DETAIL_ACTION_IDS.readOverview) {
+        return overviewResult('Current provider description.');
+      }
+      if (localId === GITLAB_TRIAGE_DETAIL_ACTION_IDS.listChanges) {
+        continuations.push((input as Readonly<{ continuation?: string }>).continuation);
+        return continuations.length === 1 ? firstPage : changesResult('src/restarted.ts', null);
+      }
+      throw new Error(`unexpected action ${localId}`);
+    });
+
+    await openTab(detail, 'Changes');
+    await openTab(detail, 'Overview');
+    await act(async () => {
+      resolveFirstPage(changesResult('src/abandoned.ts', null));
       await Promise.resolve();
     });
+    await openTab(detail, 'Changes');
+
+    // The abandoned read settled nothing, so there is no page model to return
+    // to and the panel starts its walk again rather than waiting on a request
+    // that no longer exists.
     await expect(detail.getByText('src/restarted.ts')).resolves.toBeDefined();
+    await expect(detail.queryByText('src/abandoned.ts')).resolves.toBeUndefined();
+    expect(continuations).toEqual([undefined, undefined]);
   });
 });

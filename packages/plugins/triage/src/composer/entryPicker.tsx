@@ -14,13 +14,17 @@ import {
     usePluginTranslation,
     usePluginUiFocusTarget,
     useComposerView,
+    useSurfaceContext,
     type ComposerHandle,
     type ComposerRefV1,
 } from '@happier-dev/plugin-ui';
 
 import { TRIAGE_DISPLAY_NAME } from '../displayName.js';
+import { readTriageSourceDescriptorV1 } from '../ui/detail/sourceSurface.js';
+import { readTriageEntryRowContextV1 } from '../ui/window/entryDisplay.js';
 import { isHostCancellation } from '../hostCancellation.js';
 import type { TriageRefreshPacingReasonV1 } from '../refresh/refreshEligibility.js';
+import { useTriageRefreshEligibilityNowV1 } from '../ui/window/refreshEligibilityClock.js';
 import { useTriageListWindow } from '../ui/window/useTriageListWindow.js';
 import { selectTriageAttachedEntries, type TriageAttachedEntryV1 } from './attachedEntries.js';
 import { applyTriageEntryMutation } from './applyEntryMutation.js';
@@ -97,6 +101,13 @@ function TriagePickerRow(props: Readonly<{
 }>): React.ReactElement {
     const text = usePluginTranslation();
     const { row, handle, hostApi, onSettled, originComposer } = props;
+    const surfaceContext = useSurfaceContext();
+    const context = readTriageEntryRowContextV1({
+        kindId: row.entryRef.kindId,
+        scopeLabel: row.scopeLabel,
+        identifierLabel: row.identifierLabel,
+        lifecycleLabel: row.lifecycleLabel ?? null,
+    }, readTriageSourceDescriptorV1(surfaceContext, row.entryRef.source), row.entryRef.source);
     const [state, dispatch] = React.useReducer(
         reduceTriageRowInteraction,
         TRIAGE_ROW_INTERACTION_INITIAL_STATE_V1,
@@ -212,7 +223,7 @@ function TriagePickerRow(props: Readonly<{
     return (
         <List.Item
             title={row.title}
-            subtitle={row.scopeLabel}
+            subtitle={context.label}
             {...(status === null
                 ? {}
                 : failure === null
@@ -228,8 +239,8 @@ function TriagePickerRow(props: Readonly<{
             // is a name nothing can be pointed at.
             accessibilityLabel={row.title}
             accessibilityHint={status === null
-                ? row.scopeLabel
-                : `${row.scopeLabel}, ${status}`}
+                ? context.label
+                : `${context.label}, ${status}`}
             // The picker's own list is virtualized too, and its rows are the
             // same measured-average estimate the shell's are.
             titleNumberOfLines={2}
@@ -290,8 +301,11 @@ export function TriageEntryPicker(context: RenderContext): React.ReactElement {
     // Read once per render, and used only to decide whether a source-stated
     // retry deadline has passed. A slightly old value keeps **Refresh**
     // disabled a moment longer; it can never enable a refresh that is still
-    // barred, because the coordinator re-checks the same deadline.
-    const nowMs = Date.now();
+    // barred, because the coordinator re-checks the same deadline. The one
+    // shared eligibility clock also observes the deadline this surface prints
+    // arriving, so a picker left open past it offers the press again instead of
+    // waiting for unrelated state activity.
+    const nowMs = useTriageRefreshEligibilityNowV1(window.snapshot.refreshBlocked);
     const view = buildTriagePickerView({
         facts: projectTriagePickerCorpusFacts({ snapshot: window.snapshot, nowMs }),
         query,

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	sdkapi "github.com/router-for-me/CLIProxyAPI/v7/sdk/api"
 	cliproxy "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -70,9 +71,12 @@ func newGateway(
 	if err != nil {
 		return nil, err
 	}
-	leaseProvider, err := newLeaseRoundTripperProvider(config.AuthEntries, broker, upstream)
-	if err != nil {
-		return nil, err
+	var leaseProvider coreauth.RoundTripperProvider
+	if config.ProviderConnection == nil {
+		leaseProvider, err = newLeaseRoundTripperProvider(config.AuthEntries, broker, upstream)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	manager := coreauth.NewManager(nil, &coreauth.RoundRobinSelector{}, nil)
@@ -89,6 +93,17 @@ func newGateway(
 	}
 
 	upstreamConfig := managedSDKConfig(config)
+	middleware := []gin.HandlerFunc{
+		StrictServingMiddleware(routes),
+		StrictDownstreamBearerMiddleware(config.DownstreamBearer),
+		ManagedHealthIdentityMiddleware(
+			managedHealthIdentity(config, runtimeIdentity),
+			func() bool { return managedModelsRegistered(config) },
+		),
+	}
+	if config.ProviderConnection != nil {
+		middleware = append(middleware, ProviderConnectionPassThroughMiddleware(*config.ProviderConnection, upstream))
+	}
 	service, err := cliproxy.NewBuilder().
 		WithConfig(upstreamConfig).
 		WithConfigPath(filepath.Join(config.RuntimeDir, "managed-config-not-persisted.yaml")).
@@ -98,14 +113,7 @@ func newGateway(
 		WithWatcherFactory(func(string, string, func(*sdkconfig.Config)) (*cliproxy.WatcherWrapper, error) {
 			return &cliproxy.WatcherWrapper{}, nil
 		}).
-		WithServerOptions(sdkapi.WithMiddleware(
-			StrictServingMiddleware(routes),
-			StrictDownstreamBearerMiddleware(config.DownstreamBearer),
-			ManagedHealthIdentityMiddleware(
-				managedHealthIdentity(config, runtimeIdentity),
-				func() bool { return managedModelsRegistered(config) },
-			),
-		)).
+		WithServerOptions(sdkapi.WithMiddleware(middleware...)).
 		Build()
 	if err != nil {
 		return nil, fmt.Errorf("build pinned CLIProxyAPI service: %w", err)
@@ -114,7 +122,9 @@ func newGateway(
 	// Builder.Build installs its default provider unconditionally. The Happier
 	// provider must therefore be installed after Build so it is the final
 	// effective transport used after executor request shaping.
-	manager.SetRoundTripperProvider(leaseProvider)
+	if leaseProvider != nil {
+		manager.SetRoundTripperProvider(leaseProvider)
+	}
 	manager.SetCooldownStateStore(nil)
 	manager.SetRetryConfig(0, 0, 1)
 
@@ -126,6 +136,9 @@ func newGateway(
 }
 
 func managedModelsRegistered(config Config) bool {
+	if config.ProviderConnection != nil {
+		return true
+	}
 	for _, entry := range config.AuthEntries {
 		if len(cliproxy.GlobalModelRegistry().GetAvailableModelsByProvider(string(entry.Provider))) == 0 {
 			return false

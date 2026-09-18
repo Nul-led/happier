@@ -168,6 +168,8 @@ function createHarness(options: Readonly<{
   event?: JsonValue;
   eventSequence?: readonly JsonValue[];
   events?: JsonValue;
+  /** Successive answers to the occurrence walk, when a case needs them to differ. */
+  eventPageSequence?: readonly JsonValue[];
   tags?: JsonValue;
 }> = {}) {
   const invocations: Invocation[] = [];
@@ -185,6 +187,11 @@ function createHarness(options: Readonly<{
       return ISSUE_BODY;
     }
     if (localId === SENTRY_ACTION_IDS.listIssueEvents) {
+      const pageIndex = invocations.filter(
+        (entry) => entry.localId === SENTRY_ACTION_IDS.listIssueEvents,
+      ).length - 1;
+      const sequenced = options.eventPageSequence?.[pageIndex];
+      if (sequenced !== undefined) return sequenced;
       return options.events ?? {
         kind: 'events',
         rows: [
@@ -235,12 +242,8 @@ async function mountDetail(
   let fixture!: PluginUiTestkit;
   await act(async () => {
     fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: SENTRY_PLUGIN_ID,
-        pluginVersion: '0.0.0',
-        viewId: 'sentry-detail',
-        generation: 'sentry-detail-mount',
-      },
+      identity: { instanceId: 'fixture-instance-173', mountNonce: 'fixture-mount-173' },
+      authorPlugin: { id: SENTRY_PLUGIN_ID, version: '0.0.0' },
       surface: disclosure === undefined
         ? renderSurface
         : (context) => (
@@ -442,10 +445,83 @@ describe('the mounted Sentry issue detail body', () => {
     });
     expect(candidate?.candidate.id).not.toContain('https://us.sentry.io');
     expect(candidate).not.toHaveProperty('composer');
+    // The reader is approving evidence, so the confirmation describes the
+    // evidence. The selecting panel shows this occurrence's title and tags while
+    // dispatch also forwards its frames, source context lines and breadcrumbs;
+    // a confirmation that named only the action asked for approval of content it
+    // never mentioned (`SENTRY.md` §8.4).
+    const confirmation = String(confirm.mock.calls[0]?.[0]?.message);
+    expect(confirmation).toContain('Add selected occurrence to message');
+    expect(confirmation).toContain('1 stack frame(s)');
+    expect(confirmation).toContain('1 source context line(s)');
+    expect(confirmation).toContain('0 breadcrumb(s)');
+    expect(confirmation).toContain('frame local variables');
+    expect(confirmation).toContain('event user fields');
     expect(confirm).toHaveBeenCalledWith(expect.objectContaining({
-      message: 'Add selected occurrence to message',
       title: 'Selected occurrence',
     }));
+  });
+
+  /**
+   * A notice that spoke only of provider scrubbing said NOTHING for the case it
+   * matters most in: an occurrence whose frame locals this source withheld and
+   * whose event user fields it retained. Both are facts about the values on
+   * screen, and a reader deciding whether to forward them needs each.
+   */
+  it('discloses withheld values and retained sensitive fields, not only provider scrubbing', async () => {
+    const harness = createHarness({
+      event: eventProjection({
+        redactions: [
+          { path: 'entries[0].data.frames[0].vars', reason: 'pluginWithheld' },
+        ],
+        sensitivePaths: ['user.email'],
+      }),
+    });
+    const page = await mountDetail(harness);
+
+    await expect(page.getByText('Some values are withheld')).resolves.toBeDefined();
+    await expect(page.getByText(
+      '1 value(s) are withheld by Happier, including every frame’s local variables.'
+      + ' 1 sensitive value(s), such as event user fields and tag values, are shown here.',
+    )).resolves.toBeDefined();
+  });
+
+  /**
+   * `[SCHEMA]` `sample=true` reorders the retained events pseudo-randomly and
+   * deterministically. It is the reader's own choice (`SENTRY.md` §7.4), so it
+   * has a control, it is labelled as an ordering rather than a statistical
+   * sample, and choosing it restarts the walk instead of appending a differently
+   * ordered tail to the list already read.
+   */
+  it('offers the explicit spread of retained events and re-reads under that ordering', async () => {
+    const harness = createHarness();
+    const page = await mountDetail(harness);
+    await selectTab(page, 'Occurrences');
+
+    const eventPages = () => harness.invocations.filter(
+      (entry) => entry.localId === SENTRY_ACTION_IDS.listIssueEvents,
+    );
+    expect(eventPages()).toHaveLength(1);
+    expect(eventPages()[0]?.input).not.toHaveProperty('sample');
+
+    await act(async () => {
+      await page.press(await page.getByRole('button', { name: 'Show a spread of events' }));
+    });
+
+    expect(eventPages()).toHaveLength(2);
+    expect(eventPages()[1]?.input).toMatchObject({ sample: true });
+    // The spread replaces the list; it never continues the ordinary walk.
+    expect(eventPages()[1]?.input).not.toHaveProperty('continuation');
+    await expect(page.getByText(
+      'A spread is a pseudo-random deterministic ordering of the same retained events,'
+      + ' not a statistical sample.',
+    )).resolves.toBeDefined();
+
+    await act(async () => {
+      await page.press(await page.getByRole('button', { name: 'Show Sentry’s own order' }));
+    });
+    expect(eventPages()).toHaveLength(3);
+    expect(eventPages()[2]?.input).not.toHaveProperty('sample');
   });
 
   it('issues no selected-evidence candidate when disclosure confirmation is declined', async () => {
@@ -469,6 +545,48 @@ describe('the mounted Sentry issue detail body', () => {
     });
 
     expect(disclose).not.toHaveBeenCalled();
+  });
+
+  it('asks Sentry again for the occurrence page it refused', async () => {
+    const harness = createHarness({
+      eventPageSequence: [
+        {
+          kind: 'events',
+          rows: [{ eventId: 'b'.repeat(32), headline: 'card was declined' }],
+          omittedRowCount: 0,
+          projectionTruncated: false,
+          continuation: 'sentry-events-page-2',
+        },
+        { kind: 'unavailable', failure: { class: 'transient', code: 'sentry-page-refused' } },
+        {
+          kind: 'events',
+          rows: [{ eventId: 'c'.repeat(32), headline: 'card expired' }],
+          omittedRowCount: 0,
+          projectionTruncated: false,
+        },
+      ],
+    });
+    const page = await mountDetail(harness);
+    await selectTab(page, 'Occurrences');
+
+    const loadMore = async (): Promise<void> => {
+      await act(async () => {
+        await page.press(await page.getByRole('button', { name: 'Load more retained events' }));
+      });
+    };
+    await loadMore();
+    // The refused page keeps the events already read, and the control stays
+    // mounted and enabled — which is the walk offering a retry.
+    await expect(page.getByText('1 retained event(s) read.')).resolves.toBeDefined();
+    expect(harness.countOf(SENTRY_ACTION_IDS.listIssueEvents)).toBe(2);
+
+    await loadMore();
+
+    expect(harness.countOf(SENTRY_ACTION_IDS.listIssueEvents)).toBe(3);
+    expect(harness.invocations.filter(
+      (entry) => entry.localId === SENTRY_ACTION_IDS.listIssueEvents,
+    ).at(-1)?.input).toMatchObject({ continuation: 'sentry-events-page-2' });
+    await expect(page.getByText('2 retained event(s) read.')).resolves.toBeDefined();
   });
 
   it('states when an oversized provider continuation made the occurrence walk stop short', async () => {

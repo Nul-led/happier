@@ -997,6 +997,68 @@ describe('createClaudeUnifiedProviderTranscriptPublisher', () => {
     expect(observedRows).toEqual([rotatedRow]);
   });
 
+  it('rebinds the same main session when a later trusted hook reports a moved transcript path', async () => {
+    const { createClaudeUnifiedProviderTranscriptPublisher } = await loadSubject();
+    const ctx = createContext();
+    const publisher = createClaudeUnifiedProviderTranscriptPublisher({ ctx });
+    publishers.push(publisher);
+
+    await expect(publisher.bindFromSessionHook('claude-session-1', {
+      hook_event_name: 'SessionStart',
+      source: 'startup',
+      session_id: 'claude-session-1',
+      transcript_path: '/tmp/project-a/claude-session-1.jsonl',
+    })).resolves.toEqual({
+      status: 'bound',
+      binding: {
+        providerSessionId: 'claude-session-1',
+        transcriptPath: '/tmp/project-a/claude-session-1.jsonl',
+      },
+    });
+
+    await expect(publisher.bindFromSessionHook('claude-session-1', {
+      hook_event_name: 'PostToolUse',
+      session_id: 'claude-session-1',
+      transcript_path: '/tmp/project-b/claude-sidechain.jsonl',
+      agent_id: 'subagent-1',
+    })).resolves.toEqual({ status: 'ignored' });
+    expect(ctx.fileFollows).toHaveLength(1);
+
+    await expect(publisher.bindFromSessionHook('claude-session-1', {
+      hook_event_name: 'UserPromptSubmit',
+      session_id: 'claude-session-1',
+      transcript_path: '/tmp/project-b/claude-session-1.jsonl',
+    })).resolves.toEqual({
+      status: 'bound',
+      binding: {
+        providerSessionId: 'claude-session-1',
+        transcriptPath: '/tmp/project-b/claude-session-1.jsonl',
+      },
+    });
+
+    expect(ctx.fileFollows).toHaveLength(2);
+    expect(ctx.fileFollows[0]?.close).toHaveBeenCalledTimes(1);
+
+    const movedRow = {
+      type: 'assistant',
+      uuid: 'assistant-after-transcript-move',
+      message: { stop_reason: 'end_turn' },
+    };
+    await ctx.fileFollows[1]?.emit(jsonLine(movedRow));
+    expect(ctx.agentRuntime.sessionHooks.publishProviderTranscript).toHaveBeenCalledWith(expect.objectContaining({
+      providerSessionId: 'claude-session-1',
+      turnId: 'assistant-after-transcript-move',
+    }));
+
+    ctx.agentRuntime.sessionHooks.publishProviderTranscript.mockClear();
+    await ctx.fileFollows[0]?.emit(jsonLine({
+      type: 'assistant',
+      uuid: 'stale-assistant-before-transcript-move',
+      message: { stop_reason: 'end_turn' },
+    }));
+    expect(ctx.agentRuntime.sessionHooks.publishProviderTranscript).not.toHaveBeenCalled();
+  });
+
   it('suppresses rows replayed by a file reset until the first fresh transcript row arrives', async () => {
     const { ctx } = await createBoundPublisher();
     const replayedUser = {

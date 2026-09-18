@@ -78,7 +78,6 @@ export type AgentConnectedServicesProviderStateSharingPolicy = Readonly<{
 }>;
 
 export type AgentSessionProviderBinding = Readonly<{
-  connectionId: string;
   upstream: AgentSessionProviderBindingUpstream;
   model: Readonly<{
     id: string;
@@ -120,7 +119,17 @@ export type AgentSessionProviderBinding = Readonly<{
         rootPath: string;
         relativePaths: readonly string[];
       }>;
-}>;
+}> & (
+  | Readonly<{ connectionId: string; source?: never }>
+  | Readonly<{
+      connectionId?: never;
+      source: Readonly<{
+        kind: 'team_resource';
+        resourceId: string;
+        resourceRevision: number;
+      }>;
+    }>
+);
 
 export type AgentSessionProviderCheckpoint = JsonValue;
 

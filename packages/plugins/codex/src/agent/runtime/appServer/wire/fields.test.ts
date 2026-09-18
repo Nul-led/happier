@@ -9,12 +9,25 @@ import {
   readThreadId,
 } from './fields.js';
 
+// Codex mints thread/session ids; `/`, `+`, `=` and surrounding whitespace are
+// significant payload, so a trimming reader addresses a different thread.
+const EXACT_PROVIDER_SESSION_ID = '  provider\nses/AB+cd==  ';
+
 describe('Codex app-server wire fields', () => {
   it('reads thread ids from top-level and nested app-server responses', () => {
-    expect(readThreadId({ threadId: ' thread-1 ' })).toBe('thread-1');
     expect(readThreadId({ thread: { id: 'thread-2' } })).toBe('thread-2');
     expect(readThreadId({ thread: { threadId: 'thread-3' } })).toBe('thread-3');
     expect(readThreadId({ id: '   ' })).toBeNull();
+  });
+
+  it('carries a present provider thread id as its exact bytes and rejects blank', () => {
+    expect(readThreadId({ threadId: EXACT_PROVIDER_SESSION_ID })).toBe(EXACT_PROVIDER_SESSION_ID);
+    expect(readThreadId({ thread: { thread_id: EXACT_PROVIDER_SESSION_ID } }))
+      .toBe(EXACT_PROVIDER_SESSION_ID);
+    // A blank earlier candidate is absent, so the next present candidate wins.
+    expect(readThreadId({ threadId: ' \n ', thread: { id: EXACT_PROVIDER_SESSION_ID } }))
+      .toBe(EXACT_PROVIDER_SESSION_ID);
+    expect(readThreadId({ threadId: ' \n ' })).toBeNull();
   });
 
   it('requires lifecycle callers to opt in before treating top-level ids as provider turn ids', () => {

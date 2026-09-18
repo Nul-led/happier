@@ -229,15 +229,49 @@ describe('GitLab provider-native member deltas', () => {
   });
 });
 
+/**
+ * GitLab publishes thread resolution on `notes[]`, never on the discussion
+ * object. These fixtures are the documented response shape; a top-level
+ * `resolved` flag is one GitLab does not serve.
+ */
+function discussionBody(
+  notes: readonly Readonly<Record<string, unknown>>[],
+): Readonly<Record<string, unknown>> {
+  return { id: 'thread-1', individual_note: false, notes };
+}
+
+function reviewNote(
+  id: number,
+  overrides: Readonly<Record<string, unknown>> = {},
+): Readonly<Record<string, unknown>> {
+  return {
+    id,
+    type: 'DiscussionNote',
+    body: 'Please adjust',
+    resolvable: true,
+    resolved: false,
+    ...overrides,
+  };
+}
+
 describe('gitlab/merge-request/discussion-resolution', () => {
   it('uses the exact discussion PUT and proves the desired state with a fresh discussion read', async () => {
     const stub = transport({
       [`GET ${MR_URL}`]: [{ status: 200, body: mrBody() }],
       [`GET ${DISCUSSION_URL}`]: [
-        { status: 200, body: { id: 'thread-1', resolvable: true, resolved: false } },
-        { status: 200, body: { id: 'thread-1', resolvable: true, resolved: true } },
+        { status: 200, body: discussionBody([reviewNote(100), reviewNote(101)]) },
+        {
+          status: 200,
+          body: discussionBody([
+            reviewNote(100, { resolved: true }),
+            reviewNote(101, { resolved: true }),
+          ]),
+        },
       ],
-      [`PUT ${DISCUSSION_URL}`]: [{ status: 200, body: { id: 'thread-1', resolved: true } }],
+      [`PUT ${DISCUSSION_URL}`]: [{
+        status: 200,
+        body: discussionBody([reviewNote(100, { resolved: true })]),
+      }],
     });
 
     const result = await resolveGitlabMergeRequestDiscussion({
@@ -254,6 +288,102 @@ describe('gitlab/merge-request/discussion-resolution', () => {
       .toEqual({ resolved: true });
     expect(result).toMatchObject({
       kind: 'discussionStateChanged', discussion: { id: 'thread-1', resolved: true },
+    });
+  });
+
+  it('reopens a thread whose resolvable notes GitLab reports as resolved', async () => {
+    const stub = transport({
+      [`GET ${MR_URL}`]: [{ status: 200, body: mrBody() }],
+      [`GET ${DISCUSSION_URL}`]: [
+        { status: 200, body: discussionBody([reviewNote(100, { resolved: true })]) },
+        { status: 200, body: discussionBody([reviewNote(100)]) },
+      ],
+      [`PUT ${DISCUSSION_URL}`]: [{ status: 200, body: discussionBody([reviewNote(100)]) }],
+    });
+
+    const result = await resolveGitlabMergeRequestDiscussion({
+      v: 1,
+      instance: gitlabTestConfiguredInstance(),
+      localRef: MR_REF,
+      routingToken: ROUTING_TOKEN,
+      observedHeadSha: HEAD,
+      discussionId: 'thread-1',
+      resolved: false,
+    }, stub.context);
+
+    expect(requestBody(stub.requests.find((request) => request.method === 'PUT')))
+      .toEqual({ resolved: false });
+    expect(result).toMatchObject({
+      kind: 'discussionStateChanged', discussion: { id: 'thread-1', resolved: false },
+    });
+  });
+
+  it('treats a thread as open while any resolvable note is unresolved', async () => {
+    const stub = transport({
+      [`GET ${MR_URL}`]: [{ status: 200, body: mrBody() }],
+      [`GET ${DISCUSSION_URL}`]: [
+        {
+          status: 200,
+          body: discussionBody([
+            reviewNote(100, { resolved: true }),
+            reviewNote(101),
+            { id: 102, body: 'changed the description', system: true, resolvable: false },
+          ]),
+        },
+        {
+          status: 200,
+          body: discussionBody([
+            reviewNote(100, { resolved: true }),
+            reviewNote(101, { resolved: true }),
+            { id: 102, body: 'changed the description', system: true, resolvable: false },
+          ]),
+        },
+      ],
+      [`PUT ${DISCUSSION_URL}`]: [{ status: 200, body: discussionBody([reviewNote(100)]) }],
+    });
+
+    const result = await resolveGitlabMergeRequestDiscussion({
+      v: 1,
+      instance: gitlabTestConfiguredInstance(),
+      localRef: MR_REF,
+      routingToken: ROUTING_TOKEN,
+      observedHeadSha: HEAD,
+      discussionId: 'thread-1',
+      resolved: true,
+    }, stub.context);
+
+    expect(stub.requests.filter((request) => request.method === 'PUT')).toHaveLength(1);
+    expect(result).toMatchObject({
+      kind: 'discussionStateChanged', discussion: { id: 'thread-1', resolved: true },
+    });
+  });
+
+  it('never writes to a thread GitLab reports as unresolvable', async () => {
+    const stub = transport({
+      [`GET ${MR_URL}`]: [{ status: 200, body: mrBody() }],
+      [`GET ${DISCUSSION_URL}`]: [{
+        status: 200,
+        body: {
+          id: 'thread-1',
+          individual_note: true,
+          notes: [{ id: 100, body: 'A plain comment', resolvable: false }],
+        },
+      }],
+    });
+
+    const result = await resolveGitlabMergeRequestDiscussion({
+      v: 1,
+      instance: gitlabTestConfiguredInstance(),
+      localRef: MR_REF,
+      routingToken: ROUTING_TOKEN,
+      observedHeadSha: HEAD,
+      discussionId: 'thread-1',
+      resolved: true,
+    }, stub.context);
+
+    expect(stub.requests.filter((request) => request.method === 'PUT')).toHaveLength(0);
+    expect(result).toMatchObject({
+      kind: 'unavailable', failure: { code: 'gitlab-discussion-unavailable' },
     });
   });
 });

@@ -52,6 +52,10 @@ describe('Channels V1 public barrel', () => {
                 inputSchema: AutomationResultDeliveryInputV1JsonSchema,
                 resultSchema: AutomationResultDeliveryResultV1JsonSchema,
             },
+            permissionMediationSourceCurrentness: {
+                inputSchema: protocol.ConversationPermissionMediationSourceCurrentnessInputV1JsonSchema,
+                resultSchema: protocol.ConversationPermissionMediationSourceCurrentnessResultV1JsonSchema,
+            },
         });
         expect(protocol.compareCanonicalConversationResolutionCandidatesV1(
             { id: '1', label: 'Ada' },

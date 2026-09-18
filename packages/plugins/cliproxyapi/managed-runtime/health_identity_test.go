@@ -43,6 +43,7 @@ func TestManagedHealthIdentityMiddlewareReplacesSDKStatusWithExactTokenFreeLaunc
 		"protocols",
 		"purposes",
 		"modelListEnabled",
+		"sourceClass",
 	}
 	gotKeys := make([]string, 0, len(fields))
 	for key := range fields {
@@ -67,6 +68,7 @@ func TestManagedHealthIdentityMiddlewareReplacesSDKStatusWithExactTokenFreeLaunc
 			testPurpose("anthropic-upstream"),
 		},
 		ModelListEnabled: true,
+		SourceClass:      "connected_account",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("health identity = %#v, want %#v", got, want)

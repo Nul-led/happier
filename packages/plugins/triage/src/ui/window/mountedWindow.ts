@@ -242,6 +242,18 @@ export function readTriageListWindowSnapshot(
 }
 
 /**
+ * Project the retained shared acquisition through a caller lens without
+ * changing the shell/picker lens, paging depth, continuations, or subscribers.
+ */
+export function projectTriageListWindow(
+  lens: TriageListLensV1,
+  host: TriageListWindowHostV1,
+  scope: PluginUiEphemeralSharedScope | null,
+): TriageListWindowSnapshotV1['window'] {
+  return mountedFor(host, scope)?.shared.store.project(lens);
+}
+
+/**
  * The only path from a surface to provider work. Pacing, single-flight and
  * last-known-good retention all stay with the store and its coordinator.
  *

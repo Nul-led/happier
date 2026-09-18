@@ -119,6 +119,8 @@ export interface PluginUiHostApiClientTransport {
 
 export interface CreatePluginUiHostApiClientFromTransportOptions {
     readonly identity: PluginUiHostApiWireIdentityV1;
+    /** Installed source metadata used only to qualify author-local references. */
+    readonly authorPlugin?: Readonly<{ id: string; version: string }>;
     readonly transport: PluginUiHostApiClientTransport;
     readonly apiRange?: string;
     /**
@@ -1158,7 +1160,12 @@ export async function createPluginUiHostApiClientFromTransport(
         // values; this client only binds a bare local id to its own plugin. A
         // qualified destination stays intact for the host Surface Registry.
         openSurface: async (view, input, requestOptions) => {
-            const destination = qualifyPluginContributionReferenceV1(view, options.identity.pluginId);
+            if (typeof view === 'string' && options.authorPlugin === undefined) {
+                throw new PluginUiHostApiClientError('unavailable', 'A local destination requires an installed plugin source.');
+            }
+            const destination = typeof view === 'string'
+                ? qualifyPluginContributionReferenceV1(view, options.authorPlugin!.id)
+                : view;
             await request('openSurface', {
                 destination,
                 ...(input === undefined ? {} : { input }),

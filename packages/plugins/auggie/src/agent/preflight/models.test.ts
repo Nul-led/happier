@@ -18,14 +18,14 @@ describe('Auggie preflight model probing', () => {
     ]);
   });
 
-  it('declares only its native command and parses the host result', async () => {
+  it('declares only its native command and parses the host result', () => {
     const models = AUGGIE_PREFLIGHT_SESSION_CONTROLS.models;
     expect(models?.command).toEqual({ toolId: 'auggie-cli', args: ['model', 'list', '--json'] });
-    await expect(models?.parseOutput?.({
+    expect(models?.parseOutput?.({
       ok: true,
       stdout: JSON.stringify({ models: [{ displayName: 'Prism', shortName: 'prism-a' }] }),
       stderr: '',
       exitCode: 0,
-    })).resolves.toEqual([{ id: 'prism-a', name: 'Prism' }]);
+    })).toEqual([{ id: 'prism-a', name: 'Prism' }]);
   });
 });

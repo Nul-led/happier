@@ -19,6 +19,9 @@ export const AGENT_IDS = Object.freeze([
   'kimi',
   'kilo',
   'kiro',
+  'devin',
+  'fx',
+  'droid',
   'cursor',
   'ohMyPi',
   'pi',
@@ -46,6 +49,92 @@ export type BundledAgentId = (typeof AGENT_IDS)[number];
  * that produced the id, not to this type.
  */
 export type AgentId = BundledAgentId | (string & {});
+
+export const BUNDLED_AGENT_CONTRIBUTION_IDENTITIES: Readonly<Record<
+  BundledAgentId,
+  Readonly<{ pluginId: string; localId: string }>
+>> = Object.freeze({
+  'claude': Object.freeze({
+    pluginId: 'happier.agent.claude',
+    localId: 'claude',
+  }),
+  'codex': Object.freeze({
+    pluginId: 'happier.agent.codex',
+    localId: 'codex',
+  }),
+  'opencode': Object.freeze({
+    pluginId: 'happier.agent.opencode',
+    localId: 'opencode',
+  }),
+  'antigravity': Object.freeze({
+    pluginId: 'happier.agent.antigravity',
+    localId: 'antigravity',
+  }),
+  'gemini': Object.freeze({
+    pluginId: 'happier.agent.gemini',
+    localId: 'gemini',
+  }),
+  'grok': Object.freeze({
+    pluginId: 'happier.agent.grok',
+    localId: 'grok',
+  }),
+  'auggie': Object.freeze({
+    pluginId: 'happier.agent.auggie',
+    localId: 'auggie',
+  }),
+  'qwen': Object.freeze({
+    pluginId: 'happier.agent.qwen',
+    localId: 'qwen',
+  }),
+  'kimi': Object.freeze({
+    pluginId: 'happier.agent.kimi',
+    localId: 'kimi',
+  }),
+  'kilo': Object.freeze({
+    pluginId: 'happier.agent.kilo',
+    localId: 'kilo',
+  }),
+  'kiro': Object.freeze({
+    pluginId: 'happier.agent.kiro',
+    localId: 'kiro',
+  }),
+  'devin': Object.freeze({
+    pluginId: 'happier.agent.devin',
+    localId: 'devin',
+  }),
+  'fx': Object.freeze({
+    pluginId: 'happier.agent.fx',
+    localId: 'fx',
+  }),
+  'droid': Object.freeze({
+    pluginId: 'happier.agent.droid',
+    localId: 'droid',
+  }),
+  'cursor': Object.freeze({
+    pluginId: 'happier.agent.cursor',
+    localId: 'cursor',
+  }),
+  'ohMyPi': Object.freeze({
+    pluginId: 'happier.agent.ohmypi',
+    localId: 'ohmypi',
+  }),
+  'pi': Object.freeze({
+    pluginId: 'happier.agent.pi',
+    localId: 'pi',
+  }),
+  'copilot': Object.freeze({
+    pluginId: 'happier.agent.copilot',
+    localId: 'copilot',
+  }),
+  'coderabbit': Object.freeze({
+    pluginId: 'happier.review.coderabbit',
+    localId: 'coderabbit',
+  }),
+  'deepsec': Object.freeze({
+    pluginId: 'happier.review.deepsec',
+    localId: 'deepsec',
+  }),
+});
 
 const BUNDLED_AGENT_ID_SET: ReadonlySet<string> = new Set(AGENT_IDS);
 

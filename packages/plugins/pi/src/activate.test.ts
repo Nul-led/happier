@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type {
+  AgentExecutionRunRuntimeContextV1,
   AgentRuntimeFactoryContext,
   AgentSessionRuntimeContext,
 } from '@happier-dev/plugin-sdk/agents/runtime';
@@ -13,6 +14,7 @@ import { createPluginTestkit } from '@happier-dev/plugin-sdk/testing';
 import { describe, expect, it, vi } from 'vitest';
 
 import { activate } from './activate.js';
+import { createPiAgentRuntime } from './agent/runtime/engine.js';
 import { piExternalSessionsContribution } from './agent/externalSessions/contribution.js';
 import { PLUGIN_MANIFEST } from './manifest.js';
 import {
@@ -71,6 +73,26 @@ function createContext(
           command: 'get_session_stats',
           success: true,
           data: { contextUsage: null },
+        });
+        return;
+      }
+      if (typeof record.id === 'string' && record.type === 'get_state') {
+        await capture.listener?.({
+          type: 'response',
+          id: record.id,
+          command: 'get_state',
+          success: true,
+          data: { sessionId: `${sessionId}-provider` },
+        });
+        return;
+      }
+      if (typeof record.id === 'string' && record.type === 'get_available_models') {
+        await capture.listener?.({
+          type: 'response',
+          id: record.id,
+          command: 'get_available_models',
+          success: true,
+          data: { models: [] },
         });
         return;
       }
@@ -153,6 +175,25 @@ function createContext(
       session: { id: sessionId, services: sessionServices },
       workState: {},
     } as AgentSessionRuntimeContext,
+    executionRun: {
+      ...common,
+      scope: { kind: 'execution_run', executionRunId: sessionId },
+      executionRun: {
+        id: sessionId,
+        services: {
+          features: { isEnabled: () => false },
+          hooks: {},
+          fileFollow: {},
+          mcp: { resolveServers: async () => [] },
+          toolExecution: {
+            before: async (request: { input: JsonValue }) => ({
+              status: 'continue' as const,
+              input: request.input,
+            }),
+          },
+        },
+      },
+    } as unknown as AgentExecutionRunRuntimeContextV1,
   };
 }
 
@@ -269,7 +310,7 @@ describe('activate', () => {
     }
   });
 
-  it('registers the native Pi Session factory and leaves finite Run derivation to the host', async () => {
+  it('registers the native Pi Session factory and truthful detached Run facet', async () => {
     const activation = await createPluginTestkit({
       manifest: PLUGIN_MANIFEST,
       module: { activate },
@@ -322,10 +363,66 @@ describe('activate', () => {
     const runtime = await registration.factory(context.factory);
     expect(runtime.sessions).toEqual({
       open: expect.any(Function),
+      executionRunContextV1: { open: expect.any(Function) },
       usageLimitRecovery: undefined,
     });
     expect(runtime.executionRuns).toBeUndefined();
     await activation.dispose();
+  });
+
+  it('executes a detached Run without manufacturing a Happier Session', async () => {
+    const capture: Capture = { specs: [], written: [] };
+    const context = createContext(capture, 'pi-detached-run-1');
+    const runtime = await createPiAgentRuntime(context.factory);
+
+    expect(PLUGIN_MANIFEST.contributes.agents[0]?.capabilities.sessions.executionRunContext)
+      .toEqual({ versions: [1] });
+    const runFactory = runtime.sessions?.executionRunContextV1;
+    expect(runFactory).toBeDefined();
+    if (!runFactory) throw new Error('Expected Pi execution-run context v1');
+
+    const opening = runFactory.open({
+      kind: 'create',
+      runId: 'pi-detached-run-1',
+      cwd: '/tmp/pi-workspace',
+      profile: { pluginId: 'happier.agent.pi', localId: 'pi' },
+      input: { text: 'Answer from a detached run.' },
+      localInputId: 'pi-detached-input-1',
+    }, context.executionRun);
+    const promptIndex = await waitForWrittenType(capture, 'prompt');
+    await ack(capture, promptIndex);
+    const opened = await opening;
+    const events: unknown[] = [];
+    opened.watch((event) => events.push(event));
+
+    await capture.listener?.({ type: 'turn_start', turnId: 'pi-provider-turn-1' });
+    await capture.listener?.({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', delta: 'Detached answer.' },
+    });
+    await capture.listener?.({ type: 'agent_end', turnId: 'pi-provider-turn-1' });
+
+    await vi.waitFor(() => expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'checkpoint',
+        runId: 'pi-detached-run-1',
+        checkpointId: 'pi-detached-run-1-provider',
+      }),
+      expect.objectContaining({
+        kind: 'output-delta',
+        runId: 'pi-detached-run-1',
+        channel: 'assistant',
+        text: 'Detached answer.',
+      }),
+      expect.objectContaining({ kind: 'run-complete', runId: 'pi-detached-run-1' }),
+    ])));
+    expect(capture.specs[0]).not.toHaveProperty('launch.args', expect.arrayContaining([
+      'pi-detached-run-1',
+    ]));
+    expect(events.every((event) => (
+      typeof event !== 'object' || event === null || !('sessionId' in event)
+    ))).toBe(true);
+    await opened.dispose();
   });
 
   it('routes an exact Session cancellation request to Pi abort', async () => {
@@ -343,8 +440,6 @@ describe('activate', () => {
       input: { text: 'Run until cancelled.' },
       delivery: { kind: 'newTurn', turnId: 'pi-session-cancel-turn' },
     });
-    const stateIndex = await waitForWrittenType(capture, 'get_state');
-    await ack(capture, stateIndex, { sessionId: 'pi-session-cancel-provider' });
     const promptIndex = await waitForWrittenType(capture, 'prompt');
     await ack(capture, promptIndex);
     await expect(sending).resolves.toEqual({ status: 'admitted' });
@@ -562,17 +657,17 @@ describe('activate', () => {
         'anthropic-api-key',
       ]);
       expect(connectedAccounts.getBinding.mock.calls).toEqual([
-        ['anthropic-model-request', { signal: context.session.signal }],
-        ['openai-codex-model-request', { signal: context.session.signal }],
-        ['openai-api-key', { signal: context.session.signal }],
-        ['anthropic-api-key', { signal: context.session.signal }],
+        ['anthropic-model-request', { signal: expect.any(AbortSignal) }],
+        ['openai-codex-model-request', { signal: expect.any(AbortSignal) }],
+        ['openai-api-key', { signal: expect.any(AbortSignal) }],
+        ['anthropic-api-key', { signal: expect.any(AbortSignal) }],
       ]);
       expect(connectedAccounts.materialize.mock.calls).toEqual([
         [
           'openai-api-key',
           { kind: 'environment', keys: ['OPENAI_API_KEY'] },
           {
-            signal: context.session.signal,
+            signal: expect.any(AbortSignal),
             expectedAccount: {
               service: { pluginId: 'happier.voice.openai', localId: 'openai' },
               accountId: 'openai-account',
@@ -583,7 +678,7 @@ describe('activate', () => {
           'anthropic-api-key',
           { kind: 'environment', keys: ['ANTHROPIC_API_KEY'] },
           {
-            signal: context.session.signal,
+            signal: expect.any(AbortSignal),
             expectedAccount: {
               service: { pluginId: 'happier.agent.claude', localId: 'anthropic' },
               accountId: 'anthropic-account',
@@ -837,7 +932,7 @@ describe('activate', () => {
         'anthropic-model-request',
         { kind: 'environment', keys: ['CLAUDE_CODE_OAUTH_TOKEN'] },
         {
-          signal: context.session.signal,
+          signal: expect.any(AbortSignal),
           expectedAccount: {
             service: { pluginId: 'happier.agent.claude', localId: 'claude-subscription' },
             accountId: 'claude-subscription-account',
@@ -1019,7 +1114,7 @@ describe('activate', () => {
           'anthropic-model-request',
           { kind: 'environment', keys: ['CLAUDE_CODE_OAUTH_TOKEN'] },
           {
-            signal: context.session.signal,
+            signal: expect.any(AbortSignal),
             expectedAccount: {
               service: { pluginId: 'happier.agent.claude', localId: 'claude-subscription' },
               accountId: 'claude-oauth-account',
@@ -1030,7 +1125,7 @@ describe('activate', () => {
           'openai-api-key',
           { kind: 'environment', keys: ['OPENAI_API_KEY'] },
           {
-            signal: context.session.signal,
+            signal: expect.any(AbortSignal),
             expectedAccount: {
               service: { pluginId: 'happier.voice.openai', localId: 'openai' },
               accountId: 'openai-api-key-account',
@@ -1109,7 +1204,7 @@ describe('activate', () => {
         'anthropic-model-request',
         { kind: 'environment', keys: ['CLAUDE_CODE_OAUTH_TOKEN'] },
         {
-          signal: context.session.signal,
+          signal: expect.any(AbortSignal),
           expectedAccount: {
             service: { pluginId: 'happier.agent.claude', localId: 'claude-subscription' },
             accountId: 'claude-unselected-refusal-account',

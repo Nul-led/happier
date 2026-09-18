@@ -7,6 +7,7 @@ import {
   measureOpenCodeTranscriptItemBytes,
   readOpenCodeTranscriptForwardWindow,
 } from '../../../runtime/server/transcript/indexedTranscript.js';
+import type { OpenCodeServerDialect } from '../../../runtime/server/dialect.js';
 import {
   createOpenCodeExternalSessionClient,
   type OpenCodeExternalSessionSource,
@@ -114,6 +115,7 @@ function gap(): OpenCodeExternalReadAfterOutcome {
 
 export async function readAfterOpenCodeTranscript(params: Readonly<{
   source: OpenCodeExternalSessionSource;
+  dialect: OpenCodeServerDialect;
   providerSessionId: string;
   cursor: string;
   maxBytes: number;
@@ -124,6 +126,7 @@ export async function readAfterOpenCodeTranscript(params: Readonly<{
 }>): Promise<OpenCodeExternalReadAfterOutcome> {
   const client = await createOpenCodeExternalSessionClient({
     source: params.source,
+    dialect: params.dialect,
     maxResponseBytes: params.maxBytes,
     ...(params.env ? { env: params.env } : {}),
     ...(params.managedEndpointRead ? { managedEndpointRead: params.managedEndpointRead } : {}),

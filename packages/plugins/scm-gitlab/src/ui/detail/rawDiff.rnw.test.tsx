@@ -73,12 +73,8 @@ describe('the mounted GitLab raw-diff evidence read', () => {
     let detail!: PluginUiTestkit;
     await act(async () => {
       detail = await createPluginUiTestkit({
-        identity: {
-          pluginId: GITLAB_PLUGIN_ID,
-          pluginVersion: '0.0.0',
-          viewId: 'gitlab-detail',
-          generation: 'gitlab-raw-diff',
-        },
+        identity: { instanceId: 'fixture-instance-193', mountNonce: 'fixture-mount-193' },
+        authorPlugin: { id: GITLAB_PLUGIN_ID, version: '0.0.0' },
         surface: (context) => (
           <TriagePostMutationCompletionProvider onComplete={async () => {}}>
             {renderSurface(context) as React.ReactNode}

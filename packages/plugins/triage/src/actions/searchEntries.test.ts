@@ -1,3 +1,4 @@
+import type { PluginClientActionContext } from '@happier-dev/plugin-sdk/actions';
 import type { PluginInvocationContext } from '@happier-dev/plugin-sdk';
 import type { PluginAccountCollectionDefinition } from '@happier-dev/plugin-sdk/collections';
 import { PluginSearchResultV1Schema } from '@happier-dev/protocol';
@@ -7,7 +8,7 @@ import {
     TriageConfiguredSourceInstanceV1Schema,
     type TriageScanResultV1,
 } from '@happier-dev/triage-protocol/v1';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { CORPUS_SOURCE_INSTANCES_COLLECTION_ID, CORPUS_SOURCE_INSTANCE_LIFECYCLE } from '../corpus/collections/ids.js';
 import { toCorpusStoredValue } from '../corpus/collections/rowCodec.js';
@@ -15,6 +16,15 @@ import { createTestkitCorpusCollections } from '../corpus/testkit/corpusCollecti
 import { testkitLocator, testkitSnapshot, testkitViewer } from '../corpus/testkit/observations.test-support.js';
 import { parseTriageEntryDetailLaunchInput } from '../composer/entryDetailLaunchInput.js';
 import { TRIAGE_APP_PAGE_LOCAL_ID_V1 } from '../composer/openEntryDetails.js';
+import { TRIAGE_LIST_DEFAULT_LENS_V1 } from '../projection/listWindow.js';
+import { createTriageEphemeralSharedScopeFixture } from '../ui/window/ephemeralSharedScope.test-support.js';
+import {
+    acquireTriageListWindow,
+    readTriageListWindowSnapshot,
+    refreshTriageListWindow,
+    setTriageListWindowLens,
+} from '../ui/window/mountedWindow.js';
+import { createTriageListEntriesActionHandler } from './listEntries.js';
 import { createTriageSearchEntriesActionHandler } from './searchEntries.js';
 import type { TriageAdmittedSourceV1 } from './listEntries.js';
 
@@ -32,7 +42,7 @@ import type { TriageAdmittedSourceV1 } from './listEntries.js';
 const SOURCE = Object.freeze({ pluginId: 'happier.example.source', localId: 'example-forge' });
 const INSTANCE_ID = '11111111-1111-4111-8111-111111111111';
 
-function createContext(snapshots: readonly Readonly<{
+function createDaemonContext(snapshots: readonly Readonly<{
     entryId: string;
     title: string;
     collisionScope?: string;
@@ -141,7 +151,92 @@ function createContext(snapshots: readonly Readonly<{
     } as unknown as PluginInvocationContext;
 }
 
+function createContext(snapshots: readonly Readonly<{
+    entryId: string;
+    title: string;
+    collisionScope?: string;
+    scopeLabel?: string;
+    present?: boolean;
+}>[]): PluginClientActionContext {
+    const daemonContext = createDaemonContext(snapshots);
+    const listEntries = createTriageListEntriesActionHandler();
+    const executeAction = (async (
+        action: string,
+        input?: unknown,
+        options?: Readonly<{ signal?: AbortSignal }>,
+    ) => {
+        expect(action).toBe('entries/list-v1');
+        return await listEntries(input as never, {
+            ...daemonContext,
+            signal: options?.signal ?? daemonContext.signal,
+        });
+    }) as PluginClientActionContext['ui']['executeAction'];
+    return {
+        plugin: { id: 'happier.triage', version: '1.0.0' },
+        contribution: {
+            id: 'entries/search-v1',
+            qualifiedId: 'happier.triage/actions/entries/search-v1',
+        },
+        invocationSurface: 'ui',
+        signal: new AbortController().signal,
+        ui: Object.freeze({ executeAction, openSurface: async () => {} }),
+        ephemeralSharedScope: createTriageEphemeralSharedScopeFixture(),
+    };
+}
+
 describe('the Triage universal-search query Action', () => {
+    it('reuses the shared mounted window without rescanning or changing the shell lens', async () => {
+        const daemonContext = createDaemonContext([
+            { entryId: '17', title: 'Fix the transcript crash' },
+            { entryId: '18', title: 'Document the release flow' },
+        ]);
+        const listEntries = createTriageListEntriesActionHandler();
+        const executeAction = vi.fn(async (action: string, input: unknown, options?: Readonly<{ signal?: AbortSignal }>) => {
+            expect(action).toBe('entries/list-v1');
+            return await listEntries(input as never, {
+                ...daemonContext,
+                signal: options?.signal ?? daemonContext.signal,
+            });
+        });
+        const ui = Object.freeze({
+            executeAction,
+            openSurface: vi.fn(async () => {}),
+        }) as PluginClientActionContext['ui'];
+        const ephemeralSharedScope = createTriageEphemeralSharedScopeFixture();
+        const shellLease = acquireTriageListWindow(ui, ephemeralSharedScope);
+        try {
+            await refreshTriageListWindow('view', ui, ephemeralSharedScope);
+            setTriageListWindowLens({
+                ...TRIAGE_LIST_DEFAULT_LENS_V1,
+                query: 'release',
+            }, ui, ephemeralSharedScope);
+            const shellSnapshot = readTriageListWindowSnapshot(ui, ephemeralSharedScope);
+            expect(shellSnapshot.window?.rows.map((row) => row.entryRef.entryId)).toEqual(['18']);
+            const callsBeforeSearch = executeAction.mock.calls.length;
+
+            const result = await createTriageSearchEntriesActionHandler()({
+                query: 'crash',
+                limit: 8,
+            }, {
+                plugin: { id: 'happier.triage', version: '1.0.0' },
+                contribution: {
+                    id: 'entries/search-v1',
+                    qualifiedId: 'happier.triage/actions/entries/search-v1',
+                },
+                invocationSurface: 'ui',
+                signal: new AbortController().signal,
+                ui,
+                ephemeralSharedScope,
+            } satisfies PluginClientActionContext);
+
+            expect(result.items.map((item) => item.title)).toEqual(['Fix the transcript crash']);
+            expect(executeAction).toHaveBeenCalledTimes(callsBeforeSearch);
+            expect(readTriageListWindowSnapshot(ui, ephemeralSharedScope)).toBe(shellSnapshot);
+        } finally {
+            shellLease.release();
+        }
+    });
+
     it('answers the canonical search contract from the one canonical matcher', async () => {
         const context = createContext([
             { entryId: '17', title: 'Fix the transcript crash' },
@@ -259,5 +354,59 @@ describe('the Triage universal-search query Action', () => {
         }, context);
 
         expect(result.items).toEqual([]);
+    });
+
+    it('releases its lease promptly when aborted during a cold shared refresh', async () => {
+        let settleRead: ((value: unknown) => void) | undefined;
+        const ui = Object.freeze({
+            executeAction: vi.fn(() => new Promise<unknown>((resolve) => { settleRead = resolve; })),
+            openSurface: vi.fn(async () => {}),
+        }) as PluginClientActionContext['ui'];
+        const baseScope = createTriageEphemeralSharedScopeFixture();
+        let leases = 0;
+        const ephemeralSharedScope = Object.freeze({
+            acquire<T>(key: string, create: Parameters<typeof baseScope.acquire<T>>[1]) {
+                const lease = baseScope.acquire(key, create);
+                if (lease === null) return null;
+                leases += 1;
+                let released = false;
+                return Object.freeze({
+                    value: lease.value,
+                    release() {
+                        if (released) return;
+                        released = true;
+                        leases -= 1;
+                        lease.release();
+                    },
+                });
+            },
+        });
+        const shellLease = acquireTriageListWindow(ui, ephemeralSharedScope);
+        expect(leases).toBe(1);
+        const cancellation = new AbortController();
+        const pending = createTriageSearchEntriesActionHandler()({ query: 'crash', limit: 8 }, {
+            plugin: { id: 'happier.triage', version: '1.0.0' },
+            contribution: {
+                id: 'entries/search-v1',
+                qualifiedId: 'happier.triage/actions/entries/search-v1',
+            },
+            invocationSurface: 'ui',
+            signal: cancellation.signal,
+            ui,
+            ephemeralSharedScope,
+        });
+        await vi.waitFor(() => expect(settleRead).toBeDefined(), { timeout: 5_000 });
+        cancellation.abort();
+
+        await expect(Promise.race([
+            pending.then(() => 'resolved', () => 'rejected'),
+            new Promise<'still-pending'>((resolve) => setTimeout(() => resolve('still-pending'), 50)),
+        ])).resolves.toBe('rejected');
+        // Search released only its lease. The shell still owns the shared pass,
+        // so its transport remains unsettled and the shared value stays alive.
+        expect(leases).toBe(1);
+        shellLease.release();
+        expect(leases).toBe(0);
+        settleRead?.({});
     });
 });

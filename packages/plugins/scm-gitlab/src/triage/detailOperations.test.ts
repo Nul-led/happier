@@ -793,6 +793,34 @@ describe('GitLab discussions plane', () => {
     expect(thread?.omittedNoteCount).toBe(0);
     expect(stub.requests).toHaveLength(1);
   });
+
+  it.each([
+    ['open while a resolvable note is unresolved', false, [
+      { id: 1, body: 'first', resolvable: true, resolved: true },
+      { id: 2, body: 'second', resolvable: true, resolved: false },
+    ]],
+    ['resolved once every resolvable note is', true, [
+      { id: 1, body: 'first', resolvable: true, resolved: true },
+      { id: 2, body: 'second', resolvable: true, resolved: true },
+      { id: 3, body: 'closed the merge request', system: true, resolvable: false },
+    ]],
+  ])('publishes the thread as %s', async (_case, resolved, notes) => {
+    const stub = createStubGitlabTransport({
+      respond: (request) => (
+        pathOf(request).endsWith('/merge_requests/7/discussions')
+          ? ok([{ id: 'a1b2c3d4', individual_note: false, notes }])
+          : undefined
+      ),
+    });
+
+    const result = GitlabDiscussionsResultV1Schema.parse(
+      await listGitlabDiscussions(planeInput(), stub.context),
+    );
+    if (result.kind !== 'discussions') throw new Error('the discussions page must settle');
+    // The mounted control reads one thread fact, not the first note's flag: a
+    // resolved thread whose newest note is a system record is still resolved.
+    expect(result.rows[0]?.resolved).toBe(resolved);
+  });
 });
 
 

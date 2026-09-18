@@ -4,6 +4,7 @@ import type {
 } from '@happier-dev/plugin-sdk/agents/runtime';
 import type { ClaudeRuntimeLogger } from '../../dependencies.js';
 
+import { readClaudeProviderIdentityValue } from '../../../../protocol/providerIdentity.js';
 import { isSidechainSessionHook } from '../../../hooks/sidechain.js';
 
 const DEFAULT_PROMPT_PROOF_WINDOW_MS = 30_000;
@@ -77,9 +78,9 @@ function readProviderSessionId(
     payload: Readonly<Record<string, unknown>>,
 ): string | null {
     const values = [
-        readString(reportedProviderSessionId),
-        readString(payload.session_id),
-        readString(payload.sessionId),
+        readClaudeProviderIdentityValue(reportedProviderSessionId),
+        readClaudeProviderIdentityValue(payload.session_id),
+        readClaudeProviderIdentityValue(payload.sessionId),
     ].filter((value): value is string => value !== null);
     if (values.length === 0 || new Set(values).size !== 1) return null;
     return values[0] ?? null;
@@ -166,7 +167,7 @@ export function createClaudeAgentSdkResumeIdentityOwner(params: Readonly<{
     const promotionOperations = new Set<Promise<void>>();
     let activeCandidate: ActiveTranscriptCandidate | null = null;
     let lastPublishedProviderSessionId: string | null = null;
-    let expectedInitialProviderSessionId = readString(params.expectedInitialProviderSessionId);
+    let expectedInitialProviderSessionId = readClaudeProviderIdentityValue(params.expectedInitialProviderSessionId);
     let explicitResumeFailure: ClaudeAgentSdkResumeIdentityMismatchError | null = null;
     let disposed = false;
     let disposePromise: Promise<void> | null = null;
@@ -252,7 +253,8 @@ export function createClaudeAgentSdkResumeIdentityOwner(params: Readonly<{
         if (disposed || activeCandidate !== candidate || candidate.invalidated || candidate.promoted) return;
         const row = parseJsonRecord(line.endsWith('\r') ? line.slice(0, -1) : line);
         if (!row) return;
-        const rowProviderSessionId = readString(row.sessionId) ?? readString(row.session_id);
+        const rowProviderSessionId = readClaudeProviderIdentityValue(row.sessionId)
+            ?? readClaudeProviderIdentityValue(row.session_id);
         if (rowProviderSessionId !== candidate.providerSessionId) return;
         const text = readUserPromptText(row);
         const timestampMs = readRowTimestampMs(row);
@@ -439,7 +441,7 @@ export function createClaudeAgentSdkResumeIdentityOwner(params: Readonly<{
         validateSdkResultProviderSessionId(value) {
             if (explicitResumeFailure) return explicitResumeFailure;
             if (!expectedInitialProviderSessionId) return null;
-            const providerSessionId = readString(value);
+            const providerSessionId = readClaudeProviderIdentityValue(value);
             if (providerSessionId !== expectedInitialProviderSessionId) {
                 return failExplicitResume(providerSessionId, null);
             }

@@ -35,6 +35,7 @@ import {
   projectTriageDisplayTextV1,
 } from '@happier-dev/triage-protocol/v1';
 
+import { readGitlabDiscussionResolution } from '../mapping/discussionResolution.js';
 import {
   GITLAB_MAX_DETAIL_PAGE_SIZE_V1,
   type GitlabActivityEventSourceV1,
@@ -317,6 +318,12 @@ export type GitlabProjectedDiscussionRowV1 = Readonly<{
   id: string;
   /** GitLab's own flag: an individual note is not a resolvable thread. */
   individualNote: boolean;
+  /**
+   * The thread's own resolution, decided by the one provider reader the
+   * resolution mutation also uses. A reader that inferred it from whichever note
+   * happens to be first would disagree with the write it offers.
+   */
+  resolved: boolean;
   notes: readonly GitlabProjectedNoteRowV1[];
   /** Notes this discussion returned that did not fit the published bound. */
   omittedNoteCount: number;
@@ -337,6 +344,7 @@ export function projectGitlabDiscussionRows(
       row: Object.freeze({
         id,
         individualNote: raw.individual_note === true,
+        resolved: readGitlabDiscussionResolution(raw.notes).resolved,
         notes: notes.rows,
         omittedNoteCount: notes.omittedRowCount,
         ...(truncated ? { truncated: true as const } : {}),

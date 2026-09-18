@@ -96,6 +96,21 @@ describe('mapRuntimeConfigUpdateToDesired', () => {
       { configOption: { id: 'ultracode', value: true } },
       providerContext,
     )).toEqual({ kind: 'not_controllable', reason: 'ultracode_unsupported_for_model' });
+
+    expect(mapRuntimeConfigUpdateToDesired(
+      {
+        modelId: providerModel.id,
+        providerBinding: {
+          connectionId: 'provider-connection-1',
+          model: providerModel,
+          materialization: { v: 1, kind: 'spawnEnv' },
+        },
+      },
+      providerContext,
+    )).toEqual({
+      kind: 'desired',
+      desired: { model: providerModel.id },
+    });
   });
 
   it('does not consume the retired plural configOptions alias', () => {

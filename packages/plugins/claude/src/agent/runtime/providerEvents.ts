@@ -1,6 +1,17 @@
 import { z } from 'zod';
 
+import { hasClaudeProviderIdentityValue } from '../../protocol/providerIdentity.js';
 import { ClaudeSessionRuntimeIssueSchema } from './issues/runtimeIssues.js';
+
+/**
+ * Identity Claude minted. `.trim()` is a zod TRANSFORM, so using it on these
+ * fields would hand every downstream reader a rewritten id — `--resume`, the
+ * transcript file name and the statusline/hook arbitration all compare these
+ * bytes. Presence is refined instead, leaving the provider's value untouched.
+ * Happier-owned fields (`sessionId`, `turnId`, `localId`, labels) keep their
+ * canonicalization.
+ */
+const providerIdentity = (): z.ZodString => z.string().refine(hasClaudeProviderIdentityValue);
 
 const ProviderEventBaseSchema = z.object({
   sessionId: z.string().trim().min(1),
@@ -9,7 +20,7 @@ const ProviderEventBaseSchema = z.object({
 
 const ProviderTurnEventBaseSchema = ProviderEventBaseSchema.extend({
   turnId: z.string().trim().min(1),
-  agentTurnId: z.string().trim().min(1).optional(),
+  agentTurnId: providerIdentity().optional(),
 });
 
 export const ClaudeProviderEventSchema = z.discriminatedUnion('kind', [
@@ -22,7 +33,7 @@ export const ClaudeProviderEventSchema = z.discriminatedUnion('kind', [
   }),
   ProviderTurnEventBaseSchema.extend({
     kind: z.literal('turn-agent-id-observed'),
-    agentTurnId: z.string().trim().min(1),
+    agentTurnId: providerIdentity(),
   }),
   ProviderTurnEventBaseSchema.extend({
     kind: z.literal('turn-complete'),
@@ -44,20 +55,20 @@ export const ClaudeProviderEventSchema = z.discriminatedUnion('kind', [
   ProviderEventBaseSchema.extend({
     kind: z.literal('tool-call'),
     turnId: z.string().trim().min(1),
-    toolCallId: z.string().refine((value) => value.trim().length > 0),
+    toolCallId: providerIdentity(),
     toolName: z.string().trim().min(1),
     toolInput: z.unknown(),
   }),
   ProviderEventBaseSchema.extend({
     kind: z.literal('tool-progress'),
     turnId: z.string().trim().min(1),
-    toolCallId: z.string().refine((value) => value.trim().length > 0),
+    toolCallId: providerIdentity(),
     progress: z.unknown(),
   }),
   ProviderEventBaseSchema.extend({
     kind: z.literal('tool-result'),
     turnId: z.string().trim().min(1),
-    toolCallId: z.string().refine((value) => value.trim().length > 0),
+    toolCallId: providerIdentity(),
     output: z.unknown(),
     isError: z.boolean().optional(),
   }),
@@ -76,7 +87,7 @@ export const ClaudeProviderEventSchema = z.discriminatedUnion('kind', [
   }),
   ProviderEventBaseSchema.extend({
     kind: z.literal('session-id-publish'),
-    publishedSessionId: z.string().trim().min(1),
+    publishedSessionId: providerIdentity(),
     source: z.string().trim().min(1),
     /**
      * Where Claude materialized this resume id's transcript. The path rides
@@ -88,11 +99,11 @@ export const ClaudeProviderEventSchema = z.discriminatedUnion('kind', [
      * resume gate (`AM-24`): the host offers it to a successor Agent on the same
      * machine and never writes it to a server record.
      */
-    nativeSessionLogPath: z.string().trim().min(1).max(4_096).optional(),
+    nativeSessionLogPath: z.string().max(4_096).trim().min(1).optional(),
   }),
   ProviderEventBaseSchema.extend({
     kind: z.literal('session-ended'),
-    agentSessionId: z.string().trim().min(1).optional(),
+    agentSessionId: providerIdentity().optional(),
     reason: z.string().trim().min(1).optional(),
   }),
   ProviderEventBaseSchema.extend({

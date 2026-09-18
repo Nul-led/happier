@@ -17,7 +17,7 @@ const surface = createSurfaceContextFixture({
     locale: 'en',
     colorScheme: 'light',
 });
-const identity = { pluginId: 'com.acme.fixture', pluginVersion: '1.0.0', viewId: 'settings', generation: 'g1' } as const;
+const identity = { instanceId: 'mount-1', mountNonce: 'nonce-1' } as const;
 const originalWindowDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'window');
 
 describe('hosted-web plugin UI public client factory', () => {
@@ -34,6 +34,7 @@ describe('hosted-web plugin UI public client factory', () => {
         let listener: ((message: unknown) => void) | undefined;
         const sent: PluginUiHostApiWireEnvelopeV1[] = [];
         const bootstrap: PluginUiHostApiClientBootstrap = {
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             transport: {
                 subscribe(next) { listener = next; return { dispose: () => { listener = undefined; } }; },
@@ -72,53 +73,33 @@ describe('hosted-web plugin UI public client factory', () => {
                 if (envelope.kind !== 'hostApi' || typeof envelope.sequence !== 'number') return;
                 const payload = envelope.payload;
                 if (payload?.kind === 'negotiate') {
-                    dispatch({
-                        version: 1,
-                        pluginId: identity.pluginId,
-                        contributionId: 'settings-web',
-                        surfaceId: 'settings-surface',
-                        nonce: 'nonce-1',
-                        sequence: envelope.sequence,
-                        requestSequence: envelope.sequence,
-                        kind: 'result',
-                        payload: {
+                    dispatch({ identity: { instanceId: 'mount-1', mountNonce: 'nonce-1' }, version: 1, sequence: envelope.sequence, requestSequence: envelope.sequence, kind: 'result', payload: {
                             wireVersion: 1,
                             kind: 'negotiated',
                             identity,
                             apiVersion: '1.0.0',
                             methods: ['context'],
                             surface,
-                        },
-                    });
+                        } });
                 }
                 if (payload?.kind === 'request' && payload.method === 'context'
                     && typeof payload.requestId === 'string') {
-                    dispatch({
-                        version: 1,
-                        pluginId: identity.pluginId,
-                        contributionId: 'settings-web',
-                        surfaceId: 'settings-surface',
-                        nonce: 'nonce-1',
-                        sequence: envelope.sequence,
-                        requestSequence: envelope.sequence,
-                        kind: 'result',
-                        payload: {
+                    dispatch({ identity: { instanceId: 'mount-1', mountNonce: 'nonce-1' }, version: 1, sequence: envelope.sequence, requestSequence: envelope.sequence, kind: 'result', payload: {
                             wireVersion: 1,
                             kind: 'result',
                             identity,
                             requestId: payload.requestId,
                             method: 'context',
                             result: { surface, activity: { active: true } },
-                        },
-                    });
+                        } });
                 }
             },
         };
         const realm: HostedWebPluginUiClientRealm = {
             location: {
                 href: 'https://plugin.test/settings?happierBridgeNonce=nonce-1'
-                    + '&happierPluginId=com.acme.fixture&happierContributionId=settings-web'
-                    + '&happierSurfaceId=settings-surface&happierHostOrigin=https%3A%2F%2Fhost.test',
+                    + '&happierInstanceId=mount-1'
+                    + '&happierHostOrigin=https%3A%2F%2Fhost.test',
             },
             parent,
             addEventListener(type, listener) {
@@ -134,33 +115,11 @@ describe('hosted-web plugin UI public client factory', () => {
         Reflect.set(globalThis, 'window', realm);
 
         const apiPromise = createPluginUiHostApiClient();
-        expect(posted).toEqual([expect.objectContaining({ kind: 'ready', nonce: 'nonce-1' })]);
+        expect(posted).toEqual([expect.objectContaining({ kind: 'ready', identity })]);
 
-        dispatch({
-            version: 1,
-            direction: 'hostToFrame',
-            pluginId: identity.pluginId,
-            contributionId: 'settings-web',
-            surfaceId: 'settings-surface',
-            nonce: 'nonce-1',
-            sequence: 1,
-            origin: 'https://plugin.test',
-            kind: 'bootstrap',
-            payload: { apiVersion: '1.0.0', wireVersion: 1, identity },
-        });
-        dispatch({
-            version: 1,
-            pluginId: identity.pluginId,
-            contributionId: 'settings-web',
-            surfaceId: 'settings-surface',
-            nonce: 'nonce-1',
-            sequence: 2,
-            requestSequence: 1,
-            kind: 'ack',
-            // An older/no-Data host still returns this existing ready
-            // acknowledgement, but has no capability to lend the guest.
-            payload: { accepted: true },
-        });
+        dispatch({ identity: { instanceId: 'mount-1', mountNonce: 'nonce-1' }, version: 1, direction: 'hostToFrame', sequence: 1, origin: 'https://plugin.test', kind: 'bootstrap', payload: {
+                authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' }, apiVersion: '1.0.0', wireVersion: 1, identity } });
+        dispatch({ identity: { instanceId: 'mount-1', mountNonce: 'nonce-1' }, version: 1, sequence: 2, requestSequence: 1, kind: 'ack', payload: { accepted: true } });
 
         await new Promise<void>((resolve) => setTimeout(resolve, 0));
         expect(posted).toHaveLength(2);
@@ -180,7 +139,8 @@ describe('hosted-web plugin UI public client factory', () => {
     });
 
     it('fails with the same typed bootstrap error for a malformed host-private adapter', async () => {
-        Reflect.set(globalThis, PLUGIN_UI_HOST_API_CLIENT_BOOTSTRAP_KEY, { identity: {}, transport: {} });
+        Reflect.set(globalThis, PLUGIN_UI_HOST_API_CLIENT_BOOTSTRAP_KEY, {
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' }, identity: {}, transport: {} });
         await expect(createPluginUiHostApiClient()).rejects.toMatchObject({ code: 'ui_host_bootstrap_missing' });
     });
     it('hands a hosted-web surface the same RenderContext facts a mounted RN surface gets (EU-8)', async () => {
@@ -189,6 +149,7 @@ describe('hosted-web plugin UI public client factory', () => {
         // mount, and the hosted-web author received a bare host API.
         let listener: ((message: unknown) => void) | undefined;
         const bootstrap: PluginUiHostApiClientBootstrap = {
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             launchInput: { noteId: 'note-7' },
             subPath: 'work/ideas.md',
@@ -234,6 +195,7 @@ describe('hosted-web plugin UI public client factory', () => {
         let listener: ((message: unknown) => void) | undefined;
         const composerRef = Object.freeze({ kind: 'session' as const, sessionId: 'session-composer' });
         Reflect.set(globalThis, PLUGIN_UI_HOST_API_CLIENT_BOOTSTRAP_KEY, {
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             composerRef,
             transport: {
@@ -266,6 +228,7 @@ describe('hosted-web plugin UI public client factory', () => {
         // stay distinguishable to an author reading the key.
         let listener: ((message: unknown) => void) | undefined;
         Reflect.set(globalThis, PLUGIN_UI_HOST_API_CLIENT_BOOTSTRAP_KEY, {
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             identity,
             transport: {
                 subscribe(next: (message: unknown) => void) { listener = next; return { dispose: () => { listener = undefined; } }; },

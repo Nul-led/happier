@@ -53,7 +53,8 @@ import {
   type BitbucketBuildsResultV1,
   type BitbucketCommentsResultV1,
 } from './detailContracts.js';
-import { observeBitbucketEntry } from './observeEntry.js';
+import { getBitbucketPullRequest } from '../pullRequests.js';
+import { observeBitbucketEntryWithFacts } from './observeEntry.js';
 import { toTriageSourceFailure } from './failures.js';
 
 export { BITBUCKET_TRIAGE_DETAIL_ACTION_IDS } from './detailContracts.js';
@@ -164,6 +165,38 @@ function resolvePosition(
   };
 }
 
+/**
+ * Proves that the route this invocation resolved still addresses the selected repository.
+ *
+ * The locator supplies a MUTABLE `workspace/repository` slug; the collision scope supplies the
+ * immutable repository UUID the reader actually selected. Only the pull-request entity carries
+ * both, so this exact read is the one place the two can be compared — the activity, diff, builds
+ * and comments subresources are addressed by that slug and their bodies say nothing about which
+ * repository owns them. Without it, a repository that moved and a successor that took its slug
+ * present the successor's pull request under the reader's selection.
+ *
+ * Overview does not pass through here: its own authoritative observation IS this read, and paying
+ * for it twice would spend a second request to learn the same fact.
+ *
+ * It runs on continued pages too. A continuation is bound to the route, and the route is exactly
+ * what can have changed hands between two presses of `Show more`.
+ */
+async function proveBitbucketDetailEntity(
+  admitted: Extract<AdmittedInvocation, { ok: true }>,
+): Promise<TriageSourceFailureV1 | null> {
+  const proven = await getBitbucketPullRequest({
+    client: admitted.dependencies.client,
+    workspaceUuid: admitted.route.workspaceUuid,
+    repositorySlug: admitted.route.repositorySlug,
+    expectedRepositoryUuid: admitted.route.expectedRepositoryUuid,
+    entryId: admitted.route.entryId,
+    ...(admitted.dependencies.signal === undefined
+      ? {}
+      : { signal: admitted.dependencies.signal }),
+  });
+  return proven.kind === 'unresolved' ? toTriageSourceFailure(proven.failure) : null;
+}
+
 /** Mints the provider position once so the canonical Action-envelope fitter can admit it. */
 function mintWalkContinuation(
   page: BitbucketWalkPositionV1,
@@ -204,7 +237,7 @@ export async function readBitbucketOverview(
   }, context);
   if (!admitted.ok) return unavailable(admitted.failure);
   try {
-  const observation = await observeBitbucketEntry({
+  const { observation, description } = await observeBitbucketEntryWithFacts({
     client: admitted.dependencies.client,
     route: admitted.route,
     localRef: request.localRef,
@@ -213,7 +246,14 @@ export async function readBitbucketOverview(
       : { signal: admitted.dependencies.signal }),
   });
   if (observation.kind === 'unresolved') return unavailable(observation.failure);
-  return Object.freeze({ kind: 'overview' as const, observedAtMs: Date.now(), observation });
+  const observedAtMs = Date.now();
+  return fitActionResultTextV1(description ?? '', (fitted, descriptionTruncated) => ({
+    kind: 'overview' as const,
+    observedAtMs,
+    observation,
+    description: description === null ? null : fitted,
+    descriptionTruncated,
+  }));
   } finally {
     admitted.dispose();
   }
@@ -257,6 +297,9 @@ export async function readBitbucketDiff(
   });
   const position = resolvePosition(request.continuation, continuationContext);
   if (!position.ok) return unavailable(toTriageSourceFailure(CONTINUATION_UNREADABLE));
+
+  const misrouted = await proveBitbucketDetailEntity(admitted);
+  if (misrouted !== null) return unavailable(misrouted);
 
   const diffstatPromise = readBitbucketDiffstatPage(
     { route: admitted.route, position: position.position },
@@ -336,6 +379,9 @@ export async function listBitbucketActivity(
   const position = resolvePosition(request.continuation, continuationContext);
   if (!position.ok) return unavailable(toTriageSourceFailure(CONTINUATION_UNREADABLE));
 
+  const misrouted = await proveBitbucketDetailEntity(admitted);
+  if (misrouted !== null) return unavailable(misrouted);
+
   const page = await readBitbucketActivityPage(
     { route: admitted.route, position: position.position },
     admitted.dependencies,
@@ -395,6 +441,9 @@ export async function listBitbucketBuilds(
   });
   const position = resolvePosition(request.continuation, continuationContext);
   if (!position.ok) return unavailable(toTriageSourceFailure(CONTINUATION_UNREADABLE));
+
+  const misrouted = await proveBitbucketDetailEntity(admitted);
+  if (misrouted !== null) return unavailable(misrouted);
 
   const page = await readBitbucketBuildsPage(
     { route: admitted.route, position: position.position },
@@ -456,6 +505,9 @@ export async function listBitbucketComments(
   });
   const position = resolvePosition(request.continuation, continuationContext);
   if (!position.ok) return unavailable(toTriageSourceFailure(CONTINUATION_UNREADABLE));
+
+  const misrouted = await proveBitbucketDetailEntity(admitted);
+  if (misrouted !== null) return unavailable(misrouted);
 
   const page = await readBitbucketCommentsPage(
     { route: admitted.route, position: position.position },

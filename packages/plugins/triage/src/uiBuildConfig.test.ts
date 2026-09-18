@@ -12,6 +12,7 @@ import {
     TRIAGE_LIST_PAGE_RENDERER_ID_V1,
     TRIAGE_SESSION_ENTRIES_ARTIFACT_ID_V1,
     TRIAGE_SESSION_ENTRIES_RENDERER_ID_V1,
+    TRIAGE_SEARCH_ACTION_ARTIFACT_ID_V1,
 } from './ui/contributions.js';
 
 type BuildTarget = Readonly<{
@@ -62,7 +63,31 @@ describe('PRs & Issues UI build configuration', () => {
             TRIAGE_ENTRY_PICKER_ARTIFACT_ID_V1,
             TRIAGE_LIST_PAGE_ARTIFACT_ID_V1,
             TRIAGE_SESSION_ENTRIES_ARTIFACT_ID_V1,
+            TRIAGE_SEARCH_ACTION_ARTIFACT_ID_V1,
         ].sort());
+    }, 180_000);
+
+    it('binds the Search Action to its client artifact export on every client platform', async () => {
+        const config = await loadBuildConfig();
+        const action = PLUGIN_MANIFEST.contributes.actions.find((row) => row.id === 'entries/search-v1');
+        expect(action?.execution).toEqual({
+            target: 'client',
+            client: {
+                artifactId: TRIAGE_SEARCH_ACTION_ARTIFACT_ID_V1,
+                modulePath: './searchEntries',
+                exportName: 'createTriageSearchEntriesActionHandler',
+            },
+            platforms: ['web', 'ios', 'android'],
+        });
+        expect(config.targets).toContainEqual(expect.objectContaining({
+            rendererId: TRIAGE_SEARCH_ACTION_ARTIFACT_ID_V1,
+            entry: 'src/actions/searchEntries.ts',
+            platforms: ['web', 'ios', 'android'],
+            module: expect.objectContaining({
+                modulePath: './searchEntries',
+                exportName: 'createTriageSearchEntriesActionHandler',
+            }),
+        }));
     }, 180_000);
 
     it('binds every declared renderer to the artifact its own entry module produces', async () => {
@@ -107,7 +132,7 @@ describe('PRs & Issues UI build configuration', () => {
         // surface whose source exports any other name resolves to nothing and
         // throws `invalid_surface_module` instead of mounting — while native,
         // which does carry `exportName`, keeps working and hides the break.
-        for (const target of config.targets) {
+        for (const target of config.targets.filter((candidate) => candidate.rendererId !== TRIAGE_SEARCH_ACTION_ARTIFACT_ID_V1)) {
             expect(target.module?.exportName, target.rendererId).toBe(WEB_SURFACE_EXPORT_NAME);
 
             const source = await readFile(new URL(`../${target.entry}`, import.meta.url), 'utf8');

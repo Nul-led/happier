@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 
 import { SCM_OPERATION_ERROR_CODES } from '@happier-dev/plugin-sdk/scm';
+import { buildWorktreeRelativePath, normalizeWorktreeDisplayName } from '@happier-dev/plugin-sdk/scm';
 
 import { inspectGitCheckoutIdentity } from '../checkoutIdentity.js';
 import { runWithRealGitScmRuntime } from '../testkit/scmRuntime.test-support.js';
@@ -37,7 +38,7 @@ async function writeTrackedFile(cwd: string, relativePath: string, contents: str
     await runGit(cwd, ['add', relativePath]);
 }
 
-describe('materializeGitWorkspaceCheckout', () => {
+describe('materializeGitWorkspaceCheckout', { timeout: 20_000 }, () => {
     it('classifies a selected root without the provider-authorized source remote as a remote mismatch', async () => {
         const selectedRoot = await makeTempDir('git-review-workspace-remote-mismatch-');
 
@@ -64,6 +65,97 @@ describe('materializeGitWorkspaceCheckout', () => {
                 },
             }))).rejects.toMatchObject({ errorCode: SCM_OPERATION_ERROR_CODES.REMOTE_NOT_FOUND });
         } finally {
+            await rm(selectedRoot, { recursive: true, force: true });
+        }
+    });
+
+    it('never matches a configured remote whose deployment port differs from the authorized clone URL', async () => {
+        const selectedRoot = await makeTempDir('git-review-workspace-port-mismatch-');
+
+        try {
+            await runGit(selectedRoot, ['init']);
+            await configureGitRepo(selectedRoot);
+            await runGit(selectedRoot, ['branch', '-M', 'main']);
+            await writeTrackedFile(selectedRoot, 'README.md', 'main\n');
+            await runGit(selectedRoot, ['commit', '-m', 'initial']);
+            await runGit(selectedRoot, [
+                'remote', 'add', 'origin', 'https://gitlab.example.test:8443/team/repository.git',
+            ]);
+
+            await expect(runWithRealGitScmRuntime(() => prepareGitReviewWorkspace({
+                repoRoot: selectedRoot,
+                sourceTip: {
+                    repository: {
+                        kind: 'gitlab',
+                        deployment: 'https://gitlab.example.test:9443',
+                        repository: 'team/repository',
+                    },
+                    // Same host and same path — only the deployment port differs, and two ports
+                    // on one host are two deployments.
+                    cloneUrl: 'https://gitlab.example.test:9443/team/repository.git',
+                    branch: 'feature/auth',
+                    sourceHeadSha: '0123456789abcdef0123456789abcdef01234567',
+                    fetchRef: 'refs/heads/feature/auth',
+                },
+            }))).rejects.toMatchObject({ errorCode: SCM_OPERATION_ERROR_CODES.REMOTE_NOT_FOUND });
+        } finally {
+            await rm(selectedRoot, { recursive: true, force: true });
+        }
+    });
+
+    it('materializes from a self-managed remote whose custom port matches the authorized clone URL', async () => {
+        const remoteRoot = await makeTempDir('git-review-workspace-ported-remote-');
+        const authorRoot = await makeTempDir('git-review-workspace-ported-author-');
+        const selectedRoot = await makeTempDir('git-review-workspace-ported-selected-');
+        const sourceUrl = 'https://gitlab.example.test:8443/gitlab/team/repository.git';
+
+        try {
+            await runGit(remoteRoot, ['init', '--bare']);
+            await runGit(authorRoot, ['init']);
+            await configureGitRepo(authorRoot);
+            await runGit(authorRoot, ['branch', '-M', 'main']);
+            await writeTrackedFile(authorRoot, 'README.md', 'main\n');
+            await runGit(authorRoot, ['commit', '-m', 'initial']);
+            await runGit(authorRoot, ['remote', 'add', 'origin', remoteRoot]);
+            await runGit(authorRoot, ['push', 'origin', 'main']);
+            await runGit(authorRoot, ['switch', '-c', 'feature/auth']);
+            await writeTrackedFile(authorRoot, 'feature.txt', 'feature\n');
+            await runGit(authorRoot, ['commit', '-m', 'feature']);
+            const sourceHeadSha = await runGit(authorRoot, ['rev-parse', 'HEAD']);
+            await runGit(authorRoot, ['push', 'origin', 'feature/auth']);
+
+            await runGit(selectedRoot, ['init']);
+            await configureGitRepo(selectedRoot);
+            await runGit(selectedRoot, ['branch', '-M', 'main']);
+            await writeTrackedFile(selectedRoot, 'README.md', 'main\n');
+            await runGit(selectedRoot, ['commit', '-m', 'selected-initial']);
+            await runGit(selectedRoot, ['remote', 'add', 'origin', sourceUrl]);
+            await runGit(selectedRoot, ['config', `url.file://${remoteRoot}.insteadOf`, sourceUrl]);
+
+            const prepared = await runWithRealGitScmRuntime(() => prepareGitReviewWorkspace({
+                repoRoot: selectedRoot,
+                sourceTip: {
+                    repository: {
+                        kind: 'gitlab',
+                        deployment: 'https://gitlab.example.test:8443/gitlab',
+                        repository: 'team/repository',
+                    },
+                    cloneUrl: sourceUrl,
+                    branch: 'feature/auth',
+                    sourceHeadSha,
+                    fetchRef: 'refs/heads/feature/auth',
+                },
+            }));
+
+            expect(prepared).toMatchObject({
+                branchName: 'feature/auth',
+                created: true,
+                currentness: { kind: 'currentAtObservedHead' },
+            });
+            await expect(runGit(prepared.targetPath, ['rev-parse', 'HEAD'])).resolves.toBe(sourceHeadSha);
+        } finally {
+            await rm(remoteRoot, { recursive: true, force: true });
+            await rm(authorRoot, { recursive: true, force: true });
             await rm(selectedRoot, { recursive: true, force: true });
         }
     });
@@ -129,7 +221,7 @@ describe('materializeGitWorkspaceCheckout', () => {
         }
     });
 
-    it('rejects forbidden worktree display names before materializing a checkout', async () => {
+    it('rejects forbidden names and materializes the same nested target predicted by the UI policy', async () => {
         const repoRoot = await makeTempDir('git-materialize-forbidden-name-repo-');
 
         try {
@@ -152,6 +244,19 @@ describe('materializeGitWorkspaceCheckout', () => {
                 branchMode: 'new',
             }))).rejects.toThrow('Invalid Git worktree name');
             await expect(runGit(repoRoot, ['worktree', 'list', '--porcelain'])).resolves.not.toContain('.dev/worktree');
+
+            const displayName = ' feature\\ auth..fix / nested ';
+            const previewName = normalizeWorktreeDisplayName(displayName);
+            const previewPath = join(repoRoot, ...buildWorktreeRelativePath(previewName).split('/'));
+            const checkout = await runWithRealGitScmRuntime(() => createGitWorkspaceCheckoutAtDefaultPath({
+                repoRoot,
+                displayName,
+                baseRef: 'main',
+                branchMode: 'new',
+            }));
+            expect(await realpath(checkout.targetPath)).toBe(await realpath(previewPath));
+            expect(checkout.branchName).toBe('feature/auth-fix/nested');
+            await expect(runGit(previewPath, ['rev-parse', '--abbrev-ref', 'HEAD'])).resolves.toBe(checkout.branchName);
         } finally {
             await rm(repoRoot, { recursive: true, force: true });
         }
@@ -237,6 +342,34 @@ describe('materializeGitWorkspaceCheckout', () => {
         }
     });
 
+    it('rejoins one matching default-path worktree when identical creation requests race', async () => {
+        const repoRoot = await makeTempDir('git-materialize-concurrent-rejoin-repo-');
+
+        try {
+            await runGit(repoRoot, ['init']);
+            await configureGitRepo(repoRoot);
+            await runGit(repoRoot, ['branch', '-M', 'main']);
+            await writeTrackedFile(repoRoot, 'README.md', 'main\n');
+            await runGit(repoRoot, ['commit', '-m', 'initial']);
+
+            const [first, second] = await runWithRealGitScmRuntime(async () => await Promise.all([
+                createGitWorkspaceCheckoutAtDefaultPath({
+                    repoRoot, displayName: 'workflow-run-1-root-1', baseRef: 'HEAD', branchMode: 'new',
+                }),
+                createGitWorkspaceCheckoutAtDefaultPath({
+                    repoRoot, displayName: 'workflow-run-1-root-1', baseRef: 'HEAD', branchMode: 'new',
+                }),
+            ]));
+
+            expect(await realpath(second.targetPath)).toBe(await realpath(first.targetPath));
+            expect(second.branchName).toBe(first.branchName);
+            expect([first.reused, second.reused].sort()).toEqual([false, true]);
+            await expect(runGit(repoRoot, ['branch', '--list', 'workflow-run-1-root-1-2'])).resolves.toBe('');
+        } finally {
+            await rm(repoRoot, { recursive: true, force: true });
+        }
+    });
+
     it('reuses the worktree that already holds an existing branch at a non-default path', async () => {
         const repoRoot = await makeTempDir('git-materialize-existing-branch-repo-');
         const existingWorktreeRoot = await makeTempDir('git-materialize-existing-branch-worktree-');
@@ -308,6 +441,47 @@ describe('materializeGitWorkspaceCheckout', () => {
         } finally {
             await rm(repoRoot, { recursive: true, force: true });
             await rm(originalWorktreeRoot, { recursive: true, force: true });
+        }
+    });
+
+    it('restores an existing branch at its exact path when Git still has a stale linked-worktree registration', async () => {
+        const repoRoot = await makeTempDir('git-materialize-stale-registration-repo-');
+        const targetRoot = join(repoRoot, '.worktrees', 'feature-auth');
+
+        try {
+            await runGit(repoRoot, ['init']);
+            await configureGitRepo(repoRoot);
+            await runGit(repoRoot, ['branch', '-M', 'main']);
+            await writeTrackedFile(repoRoot, 'README.md', 'main\n');
+            await runGit(repoRoot, ['commit', '-m', 'initial']);
+            await runGit(repoRoot, ['branch', 'feature-auth']);
+            await runGit(repoRoot, ['worktree', 'add', targetRoot, 'feature-auth']);
+            await rm(targetRoot, { recursive: true, force: true });
+
+            const staleRegistration = await runGit(repoRoot, ['worktree', 'list', '--porcelain']);
+            expect(staleRegistration).toContain('branch refs/heads/feature-auth');
+            expect(staleRegistration).toContain('prunable gitdir file points to non-existent location');
+
+            const materialized = await runWithRealGitScmRuntime(() => materializeGitWorkspaceCheckoutAtPath({
+                repoRoot,
+                targetPath: targetRoot,
+                displayName: 'feature-auth',
+                baseRef: null,
+                branchMode: 'existing',
+            }));
+            const identity = await runWithRealGitScmRuntime(() => inspectGitCheckoutIdentity({ cwd: targetRoot }));
+
+            expect(materialized).toEqual({
+                targetPath: await realpath(targetRoot),
+                branchName: 'feature-auth',
+                reused: false,
+            });
+            expect(identity).toEqual(expect.objectContaining({
+                branchName: 'feature-auth',
+                registeredWorktreePath: await realpath(targetRoot),
+            }));
+        } finally {
+            await rm(repoRoot, { recursive: true, force: true });
         }
     });
 });

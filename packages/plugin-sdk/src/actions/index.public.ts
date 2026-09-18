@@ -12,6 +12,7 @@ export type { AdmittedTargetedOperationExecutionWithOriginOptions } from './serv
 export type { PluginMachineExecutionOriginV1 } from './executionOrigin.js';
 export { PluginMachineExecutionOriginV1Schema } from './executionOrigin.js';
 export type { ActionContribution } from './service.js';
+export type { ActionApprovalRequestCreatedResult } from './service.js';
 export type { ActionExecuteResult } from './service.js';
 export type { ActionHandler } from './service.js';
 export type { PluginActionInvocationSurfaceV2 } from './service.js';
@@ -38,6 +39,16 @@ export type { PluginActionHandlerInvocation } from './service.js';
 export type { PluginActionPlacement } from '../definePlugin.js';
 export type { PluginActionInputById } from './service.js';
 export type { PluginActionResultById } from './service.js';
+export type { PluginActionWorkflowAuthoredResultReferenceV1 } from './actionTypeMap.generated.js';
+export type { PluginActionWorkflowBlockV1 } from './actionTypeMap.generated.js';
+export type { PluginActionWorkflowConditionV1 } from './actionTypeMap.generated.js';
+export type { PluginActionWorkflowEvaluatorHistoryModeV1 } from './actionTypeMap.generated.js';
+export type { PluginActionWorkflowFailurePolicyV1 } from './actionTypeMap.generated.js';
+export type { PluginActionWorkflowItemExecutionModeV1 } from './actionTypeMap.generated.js';
+export type { PluginActionWorkflowParallelBranchV1 } from './actionTypeMap.generated.js';
+export type { PluginActionWorkflowRepetitionV1 } from './actionTypeMap.generated.js';
+export type { PluginActionWorkflowStepV1 } from './actionTypeMap.generated.js';
+export type { PluginActionWorkflowValueReferenceV1 } from './actionTypeMap.generated.js';
 export type { PluginInvocableActionId } from './service.js';
 export type { PluginJsonSchemaV2 } from './actionTypeMap.generated.js';
 export type { PluginPolicyExpressionV2 } from './actionTypeMap.generated.js';
@@ -55,6 +66,7 @@ export {
   isExternalActionResultWithinResponseEnvelopeLimitV1,
   measureExternalActionResultResponseEnvelopeUtf8BytesV1,
 } from './externalActionLimits.js';
+export { isPluginActionApprovalRequestCreated } from './service.js';
 export { isPluginActionHandlerInvocationNotStartedAdvisory } from './service.js';
 export { isSameActionInputOptionValue } from './inputHints.js';
 export { normalizeActionInputByFieldHints } from './inputHints.js';

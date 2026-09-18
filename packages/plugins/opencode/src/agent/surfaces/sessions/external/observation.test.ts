@@ -1004,4 +1004,69 @@ describe('OpenCode External Session observation', () => {
     })).rejects.toThrow(/requires at least one current link/u);
     credential.dispose();
   });
+
+  /**
+   * Bytes OpenCode minted. The observation link key and the `/session/status`
+   * lookup both address the provider's own session id, so re-minting it either
+   * collides two distinct links or reads the wrong session's turn phase.
+   */
+  const PROVIDER_MINTED_SESSION_ID = '  provider\nses/AB+cd==  ';
+
+  it('keys and reads an observation link by the exact provider session bytes', async () => {
+    const baseUrl = 'http://127.0.0.1:49196';
+    const fetchFn = vi.fn(async (input: string | URL) => {
+      const url = new URL(input);
+      expect(url.pathname).toBe('/session/status');
+      return new Response(JSON.stringify({
+        [PROVIDER_MINTED_SESSION_ID]: { type: 'busy' },
+        [PROVIDER_MINTED_SESSION_ID.trim()]: { type: 'idle' },
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    const credential = await registerCredential(baseUrl, 'exact-identity-secret', fetchFn);
+    const contribution = createOpenCodeExternalSessionObservationContribution({
+      env: { HAPPIER_OPENCODE_SERVER_URL: baseUrl },
+      now: () => 2_000,
+    });
+    const exactSource = linkedSource(PROVIDER_MINTED_SESSION_ID, baseUrl, '/tmp/project');
+    const trimmedSource = linkedSource(PROVIDER_MINTED_SESSION_ID.trim(), baseUrl, '/tmp/project');
+    const exact = contribution.describeResource(exactSource);
+    const trimmed = contribution.describeResource(trimmedSource);
+
+    expect(exact.linkKey).not.toBe(trimmed.linkKey);
+
+    await expect(contribution.reconcileResource({
+      purpose: 'observation_evidence',
+      resourceKey: exact.resourceKey,
+      links: [{ linkKey: exact.linkKey, linkedSource: exactSource }],
+      signal: new AbortController().signal,
+      managedEndpointRead: credential.managedEndpointRead,
+    })).resolves.toEqual({
+      purpose: 'observation_evidence',
+      outcomes: [{
+        linkKey: exact.linkKey,
+        facts: [{
+          kind: 'turn_phase',
+          evidenceClass: 'reconciliation',
+          observedAtMs: 2_000,
+          expiresAtMs: 32_000,
+          value: 'working',
+        }],
+      }],
+    });
+
+    credential.dispose();
+  });
+
+  it('refuses to key an observation link on a whitespace-only session id', () => {
+    const contribution = createOpenCodeExternalSessionObservationContribution({
+      env: { HAPPIER_OPENCODE_SERVER_URL: 'http://127.0.0.1:49196' },
+    });
+
+    expect(() => contribution.describeResource(
+      linkedSource('  \n ', 'http://127.0.0.1:49196', '/tmp/project'),
+    )).toThrow('OpenCode observation requires a native session id');
+  });
 });

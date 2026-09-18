@@ -114,6 +114,7 @@ export const PI_PLUGIN = definePlugin({
             cancel: true,
             configuration: true,
             compaction: { events: true, manual: true },
+            executionRunContext: { versions: [1] },
           },
         }),
         surfaces: {

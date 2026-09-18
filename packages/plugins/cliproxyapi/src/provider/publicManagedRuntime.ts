@@ -26,6 +26,7 @@ const MANAGED_HEALTH_IDENTITY_KEYS = Object.freeze([
   'protocols',
   'purposes',
   'modelListEnabled',
+  'sourceClass',
 ]);
 const MANAGED_HEALTH_PURPOSE_KEYS = Object.freeze(['consumer', 'purpose']);
 const MANAGED_HEALTH_CONSUMER_KEYS = Object.freeze(['pluginId', 'localId']);
@@ -40,6 +41,8 @@ type ManagedPurposeSnapshot = Readonly<{
     purpose: string;
   }>[];
   serializedPurposeConfiguration: string;
+  modelListEnabled: boolean;
+  sourceClass: 'connected_account' | 'provider_connection';
 }>;
 
 function identityMismatch(): Error {
@@ -112,8 +115,8 @@ function matchesManagedHealthIdentity(
       <= CLIPROXYAPI_MANAGED_HEALTH_IDENTITY.wrapperBuildVersionMaxBytes
     && matchesProtocols(identity.protocols, purposeSnapshot.protocols)
     && matchesPurposes(identity.purposes, purposeSnapshot.healthPurposes)
-    && identity.modelListEnabled
-      === CLIPROXYAPI_MANAGED_HEALTH_IDENTITY.modelListEnabled;
+    && identity.modelListEnabled === purposeSnapshot.modelListEnabled
+    && identity.sourceClass === purposeSnapshot.sourceClass;
 }
 
 function readContentType(
@@ -221,6 +224,7 @@ async function assertManagedHealthIdentity(
 }
 
 async function resolveManagedPurposeSnapshot(
+  request: Parameters<ManagedProviderRuntime['start']>[0],
   context: Parameters<ManagedProviderRuntime['start']>[1],
 ): Promise<ManagedPurposeSnapshot> {
   throwIfAborted(context.signal);
@@ -234,9 +238,34 @@ async function resolveManagedPurposeSnapshot(
     if (binding !== null) families.push(family);
   }
   if (families.length === 0) {
-    throw new Error(
-      'CLIProxyAPI managed runtime requires at least one bound Connected Account purpose',
-    );
+    if (request.reason !== 'explicitStartLocal' || request.endpointTemplateIds.length !== 1) {
+      throw new Error('CLIProxyAPI managed runtime requires an exact upstream source');
+    }
+    const endpointTemplateId = request.endpointTemplateIds[0]!;
+    const protocol = endpointTemplateId === 'cliproxyapi-openai-responses'
+      ? 'openai-responses'
+      : endpointTemplateId === 'cliproxyapi-openai-chat'
+        ? 'openai-chat'
+        : endpointTemplateId === 'cliproxyapi-anthropic'
+          ? 'anthropic'
+          : null;
+    if (!protocol) throw new Error('CLIProxyAPI managed runtime has no requested endpoint');
+    return Object.freeze({
+      protocols: Object.freeze([protocol]),
+      endpointTemplateIds: Object.freeze([endpointTemplateId]),
+      healthPurposes: Object.freeze([]),
+      modelListEnabled: false,
+      sourceClass: 'provider_connection' as const,
+      serializedPurposeConfiguration: JSON.stringify({
+        v: 3,
+        modelListEnabled: false,
+        purposes: [],
+        providerConnection: {
+          protocol,
+          downstreamBasePath: protocol === 'anthropic' ? '/' : '/v1',
+        },
+      }),
+    });
   }
   const boundFamilies = Object.freeze([...families]);
   const protocols = Object.freeze(boundFamilies.flatMap((family) => [
@@ -256,8 +285,10 @@ async function resolveManagedPurposeSnapshot(
     protocols,
     endpointTemplateIds,
     healthPurposes,
+    modelListEnabled: CLIPROXYAPI_MANAGED_MODEL_LIST_ENABLED,
+    sourceClass: 'connected_account' as const,
     serializedPurposeConfiguration: JSON.stringify({
-      v: 2,
+      v: 3,
       modelListEnabled: CLIPROXYAPI_MANAGED_MODEL_LIST_ENABLED,
       purposes: boundFamilies.map((family) => ({
         id: family.authEntry.id,
@@ -279,10 +310,14 @@ function publicManagedServiceSpec(
 ): ManagedServiceSpec {
   return Object.freeze({
     id: CLIPROXYAPI_MANAGED_SERVICE.id,
-    requestAuth: Object.freeze({
-      kind: 'connectedAccountCapabilityPath' as const,
-      injectEnvironmentKey: CLIPROXYAPI_MANAGED_ENV.requestAuthCapabilityPath,
-    }),
+    ...(purposeSnapshot.sourceClass === 'connected_account'
+      ? {
+          requestAuth: Object.freeze({
+            kind: 'connectedAccountCapabilityPath' as const,
+            injectEnvironmentKey: CLIPROXYAPI_MANAGED_ENV.requestAuthCapabilityPath,
+          }),
+        }
+      : {}),
     clientAccess: Object.freeze({
       kind: 'hostBearer' as const,
       injectEnvironmentKey: CLIPROXYAPI_MANAGED_ENV.downstreamBearer,
@@ -336,7 +371,7 @@ const CATALOG_PROBE_ENDPOINT_TEMPLATE_IDS: ReadonlySet<string> = new Set(
 );
 
 const start: ManagedProviderRuntime['start'] = async (request, context) => {
-  const purposeSnapshot = await resolveManagedPurposeSnapshot(context);
+  const purposeSnapshot = await resolveManagedPurposeSnapshot(request, context);
   const admitsCatalogProbeEndpoints = request.reason === 'catalogProbe';
   const endpointTemplateIds = Object.freeze(request.endpointTemplateIds.filter(
     (endpointTemplateId) => purposeSnapshot.endpointTemplateIds.includes(

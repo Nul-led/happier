@@ -41,9 +41,12 @@ func runWithContext(
 	if err != nil {
 		return err
 	}
-	broker, err := managedruntime.NewHTTPBroker(brokerConfig)
-	if err != nil {
-		return err
+	var broker managedruntime.RequestAuthBroker
+	if brokerConfig.CapabilityPath != "" {
+		broker, err = managedruntime.NewHTTPBroker(brokerConfig)
+		if err != nil {
+			return err
+		}
 	}
 	gateway, err := managedruntime.NewGateway(
 		gatewayConfig,
@@ -93,13 +96,6 @@ func materializeGatewayConfig(
 	if err != nil {
 		return managedruntime.Config{}, managedruntime.HTTPBrokerConfig{}, err
 	}
-	capabilityPath, err := requiredEnvironment(
-		lookupEnvironment,
-		managedruntime.RequestAuthCapabilityPathEnvironmentVariable,
-	)
-	if err != nil || !filepath.IsAbs(capabilityPath) || strings.ContainsRune(capabilityPath, '\x00') {
-		return managedruntime.Config{}, managedruntime.HTTPBrokerConfig{}, fmt.Errorf("managed request-auth capability environment is missing or invalid")
-	}
 	purposeConfigurationValue, err := requiredEnvironment(
 		lookupEnvironment,
 		managedruntime.ManagedPurposeConfigurationEnvironmentVariable,
@@ -113,10 +109,20 @@ func materializeGatewayConfig(
 	if err != nil {
 		return managedruntime.Config{}, managedruntime.HTTPBrokerConfig{}, fmt.Errorf("managed purpose configuration environment is invalid")
 	}
-	capabilityPath = filepath.Clean(capabilityPath)
-	runtimeDir := filepath.Dir(filepath.Dir(capabilityPath))
-	if runtimeDir == filepath.Dir(runtimeDir) {
-		return managedruntime.Config{}, managedruntime.HTTPBrokerConfig{}, fmt.Errorf("managed request-auth capability environment is missing or invalid")
+	capabilityPath, hasCapabilityPath := lookupEnvironment(managedruntime.RequestAuthCapabilityPathEnvironmentVariable)
+	runtimeDir := filepath.Join(os.TempDir(), fmt.Sprintf("happier-cliproxyapi-managed-%d", port))
+	if purposeConfiguration.ProviderConnection == nil {
+		if !hasCapabilityPath || capabilityPath == "" || capabilityPath != strings.TrimSpace(capabilityPath) ||
+			!filepath.IsAbs(capabilityPath) || strings.ContainsRune(capabilityPath, '\x00') {
+			return managedruntime.Config{}, managedruntime.HTTPBrokerConfig{}, fmt.Errorf("managed request-auth capability environment is missing or invalid")
+		}
+		capabilityPath = filepath.Clean(capabilityPath)
+		runtimeDir = filepath.Dir(filepath.Dir(capabilityPath))
+		if runtimeDir == filepath.Dir(runtimeDir) {
+			return managedruntime.Config{}, managedruntime.HTTPBrokerConfig{}, fmt.Errorf("managed request-auth capability environment is missing or invalid")
+		}
+	} else if hasCapabilityPath {
+		return managedruntime.Config{}, managedruntime.HTTPBrokerConfig{}, fmt.Errorf("managed request-auth capability environment is invalid for Provider Connection")
 	}
 	config, err := managedruntime.ImmutableGatewayConfig(
 		host,
@@ -128,9 +134,7 @@ func materializeGatewayConfig(
 	if err != nil {
 		return managedruntime.Config{}, managedruntime.HTTPBrokerConfig{}, fmt.Errorf("managed gateway environment is invalid: %w", err)
 	}
-	return config, managedruntime.HTTPBrokerConfig{
-		CapabilityPath: capabilityPath,
-	}, nil
+	return config, managedruntime.HTTPBrokerConfig{CapabilityPath: capabilityPath}, nil
 }
 
 func requiredEnvironment(

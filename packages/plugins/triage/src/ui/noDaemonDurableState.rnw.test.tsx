@@ -274,12 +274,8 @@ async function mountProbe(harness: DurableHarness): Promise<PluginUiTestkit> {
     const calls = harness.actionCalls as string[];
     await act(async () => {
         fixture = await createPluginUiTestkit({
-            identity: {
-                pluginId: PLUGIN_ID,
-                pluginVersion: '0.0.0',
-                viewId: 'no-daemon-durable-state',
-                generation: 'no-daemon-durable-state-mount',
-            },
+            identity: { instanceId: 'fixture-instance-183', mountNonce: 'fixture-mount-183' },
+            authorPlugin: { id: PLUGIN_ID, version: '0.0.0' },
             surface: durableProbeSurface,
             surfaceContext: createSurfaceContextFixture({}),
             adapter: createDurableAdapter(harness.client),

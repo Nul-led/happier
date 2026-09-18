@@ -7,6 +7,7 @@ import type {
     PluginInvocationContributionIdentity,
 } from '../identity.js';
 import type { PluginInvocationContext } from '../invocation.js';
+import type { PluginEphemeralSharedScope } from '../ephemeralSharedScope.js';
 import type { PluginUiHostApi } from '../ui/hostApi.js';
 import type { PluginActionContributionV2 } from './actionTypeMap.generated.js';
 
@@ -32,6 +33,7 @@ export type PluginActionInvocationSurfaceV2 = PluginActionContributionV2['surfac
 
 /** The bounded UI capability available to client-targeted Action handlers. */
 export type PluginClientActionUi = Readonly<{
+    executeAction: PluginUiHostApi['executeAction'];
     openSurface: PluginUiHostApi['openSurface'];
 }>;
 
@@ -45,6 +47,8 @@ export type PluginClientActionContext = Readonly<{
     invocationSurface: PluginActionInvocationSurfaceV2;
     signal: AbortSignal;
     ui: PluginClientActionUi;
+    /** Same Account/plugin/immutable-generation scope as mounted UI artifacts. */
+    ephemeralSharedScope: PluginEphemeralSharedScope | null;
     currentUiContext?: CurrentUiContextSnapshotV1;
 }>;
 

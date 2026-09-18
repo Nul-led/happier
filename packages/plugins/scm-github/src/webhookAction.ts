@@ -6,6 +6,7 @@ import {
   type PluginWebhookActionResult,
 } from '@happier-dev/plugin-sdk/webhooks';
 import type { PluginInvocationContext } from '@happier-dev/plugin-sdk';
+import { isPluginActionApprovalRequestCreated } from '@happier-dev/plugin-sdk/actions';
 import type { PluginActionInputById, PluginActionResultById } from '@happier-dev/plugin-sdk/actions';
 import { isAutomationEventSourcesListPageProgressingV1, projectPluginEventAdmissionSourceStatusV1 } from '@happier-dev/plugin-sdk/events';
 
@@ -106,6 +107,11 @@ async function readCurrentAutomationSources(
       ...(cursor === undefined ? {} : { cursor }),
     }, { signal: context.signal });
     context.signal.throwIfAborted();
+    // A policy deferral means the catalog read never ran, so this scan has no
+    // revision or definitions; it joins the existing typed scan failures.
+    if (isPluginActionApprovalRequestCreated(result)) {
+      throw new Error('github_automation_source_approval_deferred');
+    }
     if (result.kind === 'unchanged') throw new Error('github_automation_source_revision_unavailable');
     if (result.kind === 'cursorStale') {
       throw new Error('github_automation_source_cursor_stale');
@@ -248,7 +254,7 @@ async function admitAutomationWebhookEvent(params: Readonly<{
   let admitted: PluginActionResultById['automation.event.admit'];
   try {
     params.context.signal.throwIfAborted();
-    admitted = await params.context.services.actions.execute('automation.event.admit', {
+    const executed = await params.context.services.actions.execute('automation.event.admit', {
       eventRef: {
         pluginId: params.normalized.eventRef.pluginId,
         localId: params.normalized.eventRef.localId,
@@ -265,6 +271,17 @@ async function admitAutomationWebhookEvent(params: Readonly<{
       })),
     }, { signal: params.context.signal });
     params.context.signal.throwIfAborted();
+    // A policy deferral is not an admission: the occurrence never reached the
+    // canonical Automation owner, so this delivery stays retryable instead of
+    // being reported as a settled acceptance.
+    if (isPluginActionApprovalRequestCreated(executed)) {
+      await reportHealth(null);
+      return PluginWebhookActionResultSchema.parse({
+        kind: 'retry',
+        code: 'github.automation-unavailable',
+      });
+    }
+    admitted = executed;
     if (!isCheckpointSafeAdmissionResult(admitted, definitions.length)) {
       await reportHealth(null);
       return PluginWebhookActionResultSchema.parse({

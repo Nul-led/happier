@@ -80,7 +80,7 @@ describe('Agent runner-factory registration transaction', () => {
     const providerCliAttach = Object.freeze({
       resolveTarget: () => ({ ok: false as const, reason: 'fixture target is unavailable' }),
       createArgs: () => [],
-      buildHealthUrl: () => null,
+      resolveReachability: () => null,
     }) satisfies AgentProviderCliAttachDeclarationV1;
 
     scope.api.agents.register('assistant', factory, {
@@ -100,7 +100,7 @@ describe('Agent runner-factory registration transaction', () => {
       reason: 'fixture target is unavailable',
     });
     expect(capturedProviderCliAttach?.createArgs({})).toEqual([]);
-    expect(capturedProviderCliAttach?.buildHealthUrl({})).toBeNull();
+    expect(capturedProviderCliAttach?.resolveReachability({})).toBeNull();
   });
 
   it('captures a focused Agent CLI session-command declaration in the one Agent registration', async () => {

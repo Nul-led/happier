@@ -461,12 +461,8 @@ async function mountShell(
     let fixture!: PluginUiTestkit;
     await act(async () => {
         fixture = await createPluginUiTestkit({
-            identity: {
-                pluginId: 'happier.triage',
-                pluginVersion: '0.0.0',
-                viewId: 'triage',
-                generation: 'triage-list-mount',
-            },
+            identity: { instanceId: 'fixture-instance-187', mountNonce: 'fixture-mount-187' },
+            authorPlugin: { id: 'happier.triage', version: '0.0.0' },
             surface: surfaceWithDataClient,
             surfaceContext: createSurfaceContextFixture(
                 options.sourceContributions === 'absent'
@@ -496,6 +492,10 @@ async function mountShell(
                                 contributor: request.operation.contributor,
                             },
                             connectedAccount: { kind: 'none' },
+                            // The host stamps what the reader actually saw
+                            // beside their choice; the canonical result schema
+                            // requires it.
+                            presentation: { connectedAccountLabel: null, machineDisplayName: 'Development Mac' },
                         } as never;
                     }
                     return {
@@ -721,7 +721,7 @@ describe('selecting several PRs & Issues rows', () => {
         expect(locations.slice(before)).toEqual([]);
     });
 
-    it('omits a shared Session control when the selected repositories cannot share its placement', async () => {
+    it('offers a shared Session with explicit project choice across different repositories', async () => {
         const harness = createHarness({
             actions: {
                 v: 1,
@@ -750,12 +750,9 @@ describe('selecting several PRs & Issues rows', () => {
         await pressRow('Replace the duplicated normalizer', { ctrlKey: true });
         await pressRow('Extract the selection reducer', { ctrlKey: true });
 
-        expect(document.querySelector('[data-testid="triage-bulk-oneSessionForAllEntries"]')).toBeNull();
+        expect(document.querySelector('[data-testid="triage-bulk-oneSessionForAllEntries"]')).not.toBeNull();
         expect(document.querySelector('[data-testid="triage-bulk-oneSessionPerEntry"]')).not.toBeNull();
         expect(document.querySelector('[data-testid="triage-bulk-attachAllToNewSession"]')).not.toBeNull();
-        expect(document.body.textContent).toContain(
-            'These entries do not share one compatible repository placement.',
-        );
     });
 
     it('offers only the configured actions the selected subjects are offered', async () => {

@@ -10,6 +10,11 @@
             "delivery": [
               "newTurn"
             ],
+            "executionRunContext": {
+              "versions": [
+                1
+              ]
+            },
             "open": [
               "create",
               "resume"
@@ -18,7 +23,10 @@
           "surfaces": [
             "terminal",
             "externalSessions"
-          ]
+          ],
+          "tools": {
+            "delivery": "native_mcp"
+          }
         },
         "catalog": {
           "vendorResume": {
@@ -102,7 +110,19 @@
         "id": "antigravity",
         "primary": "sessions",
         "runtime": {
-          "kind": "custom"
+          "definition": {
+            "mcp": {
+              "policy": "pass_through"
+            }
+          },
+          "kind": "acp",
+          "transport": {
+            "executable": {
+              "id": "agy-acp-server",
+              "kind": "managedDependency"
+            },
+            "kind": "stdio"
+          }
         },
         "surfaces": {
           "externalSession": {
@@ -179,24 +199,16 @@
     "daemonDatabases": [],
     "events": [],
     "executionRunProfiles": [],
-    "hooks": [
-      {
-        "category": "decision",
-        "executionKind": "decide",
-        "filters": {
-          "agentId": "antigravity"
-        },
-        "hookApiVersion": 1,
-        "id": "resolve-prerequisites",
-        "on": "agent.resolvePrerequisites",
-        "scope": "agent"
-      }
-    ],
+    "hooks": [],
     "managedDependencies": [
       {
-        "description": "Google Antigravity structured local runtime.",
-        "executable": "localharness",
-        "id": "localharness",
+        "architectures": [
+          "arm64",
+          "x64"
+        ],
+        "description": "Official pinned Antigravity ACP server.",
+        "executable": "agy_acp_server",
+        "id": "agy-acp-server",
         "platforms": [
           "macos",
           "linux",
@@ -204,25 +216,45 @@
         ],
         "sources": [
           {
-            "assetPathByPlatform": {
-              "darwin-arm64": "google/antigravity/bin/localharness",
-              "linux-arm64": "google/antigravity/bin/localharness",
-              "linux-x64": "google/antigravity/bin/localharness",
-              "win32-arm64": "google/antigravity/bin/localharness.exe",
-              "win32-x64": "google/antigravity/bin/localharness.exe"
+            "assetsByPlatform": {
+              "darwin-arm64": {
+                "archiveUrl": "https://dl.google.com/agy-extensions/releases/macos/agy-acp-server-agy_acp_server_1.1.1-darwin-arm64.zip",
+                "executableSubpath": "agy_acp_server.par",
+                "sha256": "fdfa915652cdb7ba8085cc8fffed072cbe009251aa2c951aabdda07a8c28a189"
+              },
+              "linux-arm64": {
+                "archiveUrl": "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-agy_acp_server_1.1.1-linux-arm64.zip",
+                "args": [
+                  "--uid="
+                ],
+                "executableSubpath": "agy_acp_server.par",
+                "sha256": "ed69e64b308fcb123ab54bf3277bf9cb0d651064f885ea5aab0ff520c7175398"
+              },
+              "linux-x64": {
+                "archiveUrl": "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-agy_acp_server_1.1.1-linux-x86_64.zip",
+                "args": [
+                  "--uid="
+                ],
+                "executableSubpath": "agy_acp_server.par",
+                "sha256": "38f62d01b32deb0907b3d39a71ec301fd36369f6ffd1cf262d4af385177f79df"
+              },
+              "win32-arm64": {
+                "archiveUrl": "https://dl.google.com/agy-extensions/releases/windows/agy-acp-server-agy_acp_server_1.1.1-windows-arm64.zip",
+                "executableSubpath": "agy_acp_server.exe",
+                "sha256": "35f4b1f47ba6a3fea7b0a3e30010df5ea73a64b4f0e7cf991cddc673ddfbcafc"
+              },
+              "win32-x64": {
+                "archiveUrl": "https://dl.google.com/agy-extensions/releases/windows/agy-acp-server-agy_acp_server_1.1.1-windows-x86_64.zip",
+                "executableSubpath": "agy_acp_server.exe",
+                "sha256": "47cb50eef14f0a4655d78cfcfda869bcea7aaee5f9787e936bc2935ea612c3b8"
+              }
             },
-            "autoUpdateMode": "notify",
-            "compatibilityProbe": "antigravity-localharness-v1",
-            "distribution": "google-antigravity",
-            "executable": true,
-            "installConsent": "host_managed_required",
-            "installId": "dep.antigravity.localharness",
-            "kind": "managedPypiWheelAsset",
-            "trustedPublisher": "Google",
-            "versionSpecifier": ">=0.1.4,<0.2.0"
+            "installId": "dep.antigravity.agy-acp-server",
+            "kind": "pinnedArchive",
+            "version": "1.1.1"
           }
         ],
-        "title": "Antigravity localharness"
+        "title": "Antigravity ACP server"
       }
     ],
     "mcp": {
@@ -242,116 +274,7 @@
     "searchProviders": [],
     "sessionHeaderActions": [],
     "sessionInfoSections": [],
-    "settings": [
-      {
-        "actions": [],
-        "fields": [
-          {
-            "analytics": {
-              "identityScope": "person",
-              "privacy": "safe",
-              "trackChanges": true,
-              "trackCurrentState": true,
-              "valueKind": "enum"
-            },
-            "default": "auto",
-            "description": {
-              "fallback": "Select automatic routing, subscription CLI print mode, or SDK mode.",
-              "key": "settingsAgents.plugins.antigravity.fields.antigravityRuntimeMode.subtitle"
-            },
-            "id": "antigravityRuntimeMode",
-            "presentation": {
-              "control": "select",
-              "options": [
-                {
-                  "description": {
-                    "fallback": "Prefer the subscription CLI when available, then SDK credentials.",
-                    "key": "settingsAgents.plugins.antigravity.fields.antigravityRuntimeMode.options.auto.subtitle"
-                  },
-                  "title": {
-                    "fallback": "Auto",
-                    "key": "settingsAgents.plugins.antigravity.fields.antigravityRuntimeMode.options.auto.title"
-                  },
-                  "value": "auto"
-                },
-                {
-                  "description": {
-                    "fallback": "Uses agy print mode with your local login; live tool approvals are degraded.",
-                    "key": "settingsAgents.plugins.antigravity.fields.antigravityRuntimeMode.options.cliPrint.subtitle"
-                  },
-                  "title": {
-                    "fallback": "Antigravity CLI (subscription)",
-                    "key": "settingsAgents.plugins.antigravity.fields.antigravityRuntimeMode.options.cliPrint.title"
-                  },
-                  "value": "cliPrint"
-                },
-                {
-                  "description": {
-                    "fallback": "Uses Gemini API key or Vertex credentials through the SDK.",
-                    "key": "settingsAgents.plugins.antigravity.fields.antigravityRuntimeMode.options.sdk.subtitle"
-                  },
-                  "title": {
-                    "fallback": "Antigravity SDK (Gemini API / Vertex)",
-                    "key": "settingsAgents.plugins.antigravity.fields.antigravityRuntimeMode.options.sdk.title"
-                  },
-                  "value": "sdk"
-                }
-              ]
-            },
-            "schema": {
-              "description": "Preferred Antigravity runtime mode",
-              "enum": [
-                "auto",
-                "cliPrint",
-                "sdk"
-              ],
-              "type": "string"
-            },
-            "title": {
-              "fallback": "Runtime mode",
-              "key": "settingsAgents.plugins.antigravity.fields.antigravityRuntimeMode.title"
-            }
-          }
-        ],
-        "id": "agent-settings",
-        "presentation": {
-          "icon": {
-            "color": {
-              "kind": "theme",
-              "token": "blue"
-            },
-            "ionName": "rocket-outline"
-          },
-          "sections": [
-            {
-              "description": {
-                "fallback": "Choose how Antigravity sessions start. CLI mode uses your subscription login with degraded live controls; SDK mode uses Gemini API or Vertex credentials.",
-                "key": "settingsAgents.plugins.antigravity.sections.runtime.footer"
-              },
-              "fields": [
-                "antigravityRuntimeMode"
-              ],
-              "id": "antigravity-runtime",
-              "title": {
-                "fallback": "Runtime",
-                "key": "settingsAgents.plugins.antigravity.sections.runtime.title"
-              }
-            }
-          ],
-          "subagentSections": []
-        },
-        "scope": "account",
-        "target": {
-          "agent": "antigravity",
-          "kind": "agent"
-        },
-        "title": {
-          "fallback": "Antigravity",
-          "key": "settingsAgents.plugins.antigravity.title"
-        },
-        "version": 1
-      }
-    ],
+    "settings": [],
     "systemTools": [
       {
         "executableNames": [
@@ -402,12 +325,12 @@
       },
       {
         "capability": "process",
-        "id": "localharness-process",
-        "reason": "Launch the managed Antigravity localharness through host-mediated execution.",
+        "id": "antigravity-acp-process",
+        "reason": "Launch the pinned official Antigravity ACP server through host-mediated execution.",
         "scope": {
           "executables": [
             {
-              "id": "localharness",
+              "id": "agy-acp-server",
               "kind": "managedDependency"
             }
           ]

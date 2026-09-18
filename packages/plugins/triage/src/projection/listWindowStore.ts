@@ -1,6 +1,7 @@
 import type { PluginCancellationOptions } from '@happier-dev/plugin-sdk';
 import { createCoalescedScheduler } from '@happier-dev/plugin-sdk/async';
 
+import { foldConnectionAnswers } from '../corpus/fold/connectionAnswer.js';
 import type { CorpusQualifiedObservationV1 } from '../corpus/fold/qualify.js';
 import { sameTriageSourceIdentity } from '../corpus/identity/components.js';
 import { laneObservationsFromWire } from './listWindowWire.js';
@@ -160,6 +161,8 @@ export type TriageListLoadMoreV1 =
 
 export type TriageListWindowStoreV1 = Readonly<{
     getSnapshot(): TriageListWindowSnapshotV1;
+    /** Project the retained acquisition through another lens without mutating it. */
+    project(lens: TriageListLensV1): TriageListWindowV1 | undefined;
     subscribe(listener: () => void): () => void;
     /** The only way a consumer causes provider work. */
     refresh(trigger: TriageRefreshTriggerV1): Promise<void>;
@@ -207,6 +210,8 @@ type LaneState = {
     lane: TriageListLaneV1;
     /** Last-known-good: retained verbatim when the next pass for this lane fails. */
     observations: readonly CorpusQualifiedObservationV1[];
+    /** Pages of the current resumable walk, excluding prior-walk continuity rows. */
+    walkObservations?: readonly CorpusQualifiedObservationV1[];
     error: TriageListWindowErrorV1 | null;
     completedAtMs: number | null;
 };
@@ -424,11 +429,20 @@ export function createTriageListWindowStore(deps: Readonly<{
      *
      * One eligible connection is enough for a refresh to be worth pressing; only
      * when every one of them is refused is the press a no-op the reader must be
-     * told about. Several refusals report the furthest deadline, because an
-     * earlier one would re-enable a Refresh the next evaluation refuses again.
+     * told about. Several refusals therefore report the EARLIEST deadline: that
+     * is the moment this aggregate refusal ends, because the loop below already
+     * stops refusing as soon as any one connection is admitted again. Reporting
+     * the furthest one told the reader to come back long after the press would
+     * have worked, and a control that waits for the moment it published waits
+     * through the whole difference.
+     *
+     * Within ONE connection the opposite rule still holds and belongs where it
+     * is: `evaluateRefreshEligibility` reports the latest of that connection's
+     * own blockers, because every one of them has to elapse before it is
+     * eligible.
      */
     function refreshBlock(): TriageRefreshPacingBlockV1 | null {
-        let latest: TriageRefreshPacingBlockV1 | null = null;
+        let earliest: TriageRefreshPacingBlockV1 | null = null;
         for (const summary of configuredSources) {
             if (!summary.available) continue;
             const blocked = coordinator.pacingBlock({
@@ -436,9 +450,9 @@ export function createTriageListWindowStore(deps: Readonly<{
                 trigger: 'manual',
             });
             if (blocked === null) return null;
-            if (latest === null || blocked.nextEligibleAtMs > latest.nextEligibleAtMs) latest = blocked;
+            if (earliest === null || blocked.nextEligibleAtMs < earliest.nextEligibleAtMs) earliest = blocked;
         }
-        return latest;
+        return earliest;
     }
 
     /**
@@ -552,14 +566,14 @@ export function createTriageListWindowStore(deps: Readonly<{
         return snapshot;
     }
 
-    function rebuild(): void {
+    function projectRetained(projectionLens: TriageListLensV1): TriageListWindowV1 {
         const observations: CorpusQualifiedObservationV1[] = [];
         const walked: TriageListLaneV1[] = [];
         for (const lane of lanes.values()) {
             observations.push(...lane.observations);
             walked.push(lane.lane);
         }
-        window = foldTriageListWindow({
+        return foldTriageListWindow({
             observations,
             // Every configured source is a lane of this window, including one no
             // pass could ask: this mount set out to cover it either way.
@@ -573,9 +587,13 @@ export function createTriageListWindowStore(deps: Readonly<{
             // is the right size for one invocation and the wrong size for a
             // mount that has appended several; taking it here would make every
             // appended window invisible while still paying for it.
-            lens: { ...lens, limit: foldLimit() },
+            lens: projectionLens,
             assembledAtMs: deps.nowMs(),
         });
+    }
+
+    function rebuild(): void {
+        window = projectRetained({ ...lens, limit: foldLimit() });
     }
 
     /**
@@ -852,6 +870,7 @@ export function createTriageListWindowStore(deps: Readonly<{
         const settled = new Map<string, Readonly<{
             lane: TriageListLaneV1;
             completedAtMs: number;
+            observations: readonly CorpusQualifiedObservationV1[];
         }>>();
         const outcomes = new Map<string, TriageRefreshPassOutcomeV1>();
         let remainingRowBudget = MAX_TRIAGE_LIST_WINDOW_ROWS_V1;
@@ -978,6 +997,13 @@ export function createTriageListWindowStore(deps: Readonly<{
                 const laneObservations = admitted.get(sourceInstanceId) ?? [];
                 laneObservations.push(...laneObservationsFromWire(result, sourceInstanceId));
                 admitted.set(sourceInstanceId, laneObservations);
+                const walkObservations = retainObservations(
+                    resume?.some((entry) => entry.sourceInstanceId === sourceInstanceId)
+                        ? lanes.get(sourceInstanceId)?.walkObservations ?? []
+                        : [],
+                    laneObservations,
+                    true,
+                );
                 if (lane === undefined) {
                     outcomes.set(sourceInstanceId, { kind: 'interrupted' });
                     continue;
@@ -986,16 +1012,18 @@ export function createTriageListWindowStore(deps: Readonly<{
                     recordLaneFailure(sourceInstanceId, lane, {
                         code: lane.health.failure.code,
                         message: lane.health.failure.detail ?? lane.health.failure.class,
-                    }, laneObservations);
+                    }, walkObservations);
                     outcomes.set(sourceInstanceId, { kind: 'failed', failure: lane.health.failure });
                     continue;
                 }
                 if (lane.health.kind === 'unavailable') {
-                    recordLaneFailure(sourceInstanceId, lane, UNREADABLE_IN_THIS_PASS_V1, laneObservations);
+                    recordLaneFailure(sourceInstanceId, lane, UNREADABLE_IN_THIS_PASS_V1, walkObservations);
                     outcomes.set(sourceInstanceId, { kind: 'interrupted' });
                     continue;
                 }
-                settled.set(sourceInstanceId, Object.freeze({ lane, completedAtMs: batchCompletedAtMs }));
+                settled.set(sourceInstanceId, Object.freeze({
+                    lane, completedAtMs: batchCompletedAtMs, observations: walkObservations,
+                }));
                 outcomes.set(sourceInstanceId, { kind: 'completed' });
             }
         }
@@ -1004,17 +1032,16 @@ export function createTriageListWindowStore(deps: Readonly<{
             const completed = settled.get(sourceInstanceId);
             if (completed === undefined) continue;
             const { lane } = completed;
-            const laneObservations = admitted.get(sourceInstanceId) ?? [];
+            const walkObservations = completed.observations;
             lanes.set(sourceInstanceId, {
                 lane,
-                // A terminal page finishes the walk after the frontier this
-                // mounted generation already retained. It replaces an older
-                // generation on Refresh/reacquisition, but an append must keep
-                // the earlier pages and add the terminal one before publishing
-                // the now-complete window.
-                observations: activeCycleReplacesGeneration || (lane.exhausted && !activeCycleIsAppend)
-                    ? laneObservations
-                    : retainObservations(lanes.get(sourceInstanceId)?.observations ?? [], laneObservations),
+                // A terminal append publishes all pages of THIS walk, not the
+                // old membership retained while the refresh was incomplete.
+                // Replacing membership makes no entity-absence or durable-state claim.
+                observations: activeCycleReplacesGeneration || lane.exhausted
+                    ? walkObservations
+                    : retainObservations(lanes.get(sourceInstanceId)?.observations ?? [], walkObservations),
+                ...(continuations.has(sourceInstanceId) ? { walkObservations } : {}),
                 error: null,
                 completedAtMs: completed.completedAtMs,
             });
@@ -1043,9 +1070,8 @@ export function createTriageListWindowStore(deps: Readonly<{
      * re-read replaces its retained answer instead of listing twice, and an
      * entry the failed walk never reached keeps the answer it last gave.
      *
-     * A settling pass no longer replaces this set wholesale — that replacement
-     * was deriving absence by set complement — so the bound it used to supply
-     * is now `retainObservations`'s explicit capacity instead.
+     * Only a clean completed walk replaces scan membership. A failed walk
+     * cannot do so; its continuity overlay uses the same retained capacity.
      */
     function recordLaneFailure(
         sourceInstanceId: string,
@@ -1083,22 +1109,58 @@ export function createTriageListWindowStore(deps: Readonly<{
     function retainObservations(
         retained: readonly CorpusQualifiedObservationV1[],
         admitted: readonly CorpusQualifiedObservationV1[],
+        sameWalk = false,
     ): readonly CorpusQualifiedObservationV1[] {
         if (admitted.length === 0) return retained;
         const merged = new Map<string, CorpusQualifiedObservationV1>();
         for (const observation of retained) merged.set(triageEntryRowKey(observation.entryRef), observation);
         for (const observation of admitted) {
             const key = triageEntryRowKey(observation.entryRef);
+            const earlier = merged.get(key);
             // Re-inserted at the back: insertion order is what eviction reads,
             // and this pass's answers must be the last thing it would drop.
             merged.delete(key);
-            merged.set(key, observation);
+            merged.set(key, earlier === undefined || !sameWalk ? observation : layerWalkAnswer(earlier, observation));
         }
         const values = [...merged.values()];
         const capacity = retainedObservationCapacity();
         return Object.freeze(
             values.length <= capacity ? values : values.slice(values.length - capacity),
         );
+    }
+
+    /**
+     * The two answers one connection gave for one entry, layered.
+     *
+     * A source is designed to meet the same entry more than once inside ONE
+     * walk and to report only the fact each native lane established — GitHub
+     * asks five involvement queries and pre-dedupes none of them
+     * (`scm-github/src/triage/scan/frontier.ts`). Inside one invocation the
+     * canonical connection-answer fold already unions those encounters; across
+     * the transport windows this mount appends, the union has to happen here or
+     * it does not happen at all, and a later `participating` page silently
+     * removes a pull request from **Needs your attention** while the review is
+     * still blocked on the reader.
+     *
+     * Only pages resumed within the SAME WALK accumulate. A fresh walk starts
+     * at page one, and its answers replace old facts in the continuity overlay;
+     * otherwise a withdrawn review request would be unioned forever. An append
+     * may also visit an unvisited source, so append mode alone is not evidence
+     * that two answers belong to the same walk.
+     *
+     * The union itself is not written here: `foldConnectionAnswers` is the one
+     * owner of what merging two answers of one connection means, and it is
+     * asked the same question the assembled pass asks it.
+     */
+    function layerWalkAnswer(
+        earlier: CorpusQualifiedObservationV1,
+        later: CorpusQualifiedObservationV1,
+    ): CorpusQualifiedObservationV1 {
+        const folded = foldConnectionAnswers([earlier, later]);
+        const winner = folded.length === 1 ? folded[0] : undefined;
+        // Two answers the fold left apart — a different connection, or an
+        // outcome that carries no viewer facts to union — keep the newer one.
+        return winner === undefined ? later : { ...winner, entryRef: later.entryRef };
     }
 
     /**
@@ -1278,9 +1340,10 @@ export function createTriageListWindowStore(deps: Readonly<{
             activeCycleReplacesGeneration
             && request.blocked.length === 0
             && !activeCycleAggregateFailed
-            && configuredSources
-                .filter((summary) => summary.available)
-                .every((summary) => lanes.get(summary.sourceInstanceId)?.error === null)
+            // Only this bounded cut was requested. The untouched configured
+            // suffix must remain reachable through Load More after it settles.
+            && request.startedSourceInstanceIds
+                .every((sourceInstanceId) => lanes.get(sourceInstanceId)?.error === null)
         ) {
             generationReplacementPending = false;
         }
@@ -1310,6 +1373,9 @@ export function createTriageListWindowStore(deps: Readonly<{
 
     return Object.freeze({
         getSnapshot: readSnapshot,
+        project(nextLens) {
+            return window === null ? undefined : projectRetained(nextLens);
+        },
         subscribe(listener) {
             listeners.add(listener);
             return () => {

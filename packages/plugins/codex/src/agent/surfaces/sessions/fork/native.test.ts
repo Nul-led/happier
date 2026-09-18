@@ -2,13 +2,18 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { forkCodexNativeAppServerConversation } from './native.js';
 
+// Codex mints these ids; a fork must address the parent and report the child
+// with byte-exact identity, so a trimming implementation forks the wrong thread.
+const EXACT_PARENT_SESSION_ID = '  provider\nses/AB+cd==  ';
+const EXACT_CHILD_SESSION_ID = '  child\nses/ZY+xw==  ';
+
 describe('forkCodexNativeAppServerConversation', () => {
   it('prefers thread/fork and reads nested thread ids from the response payload', async () => {
-    const request = vi.fn(async () => ({ thread: { id: ' forked-thread ' } }));
+    const request = vi.fn(async () => ({ thread: { id: 'forked-thread' } }));
 
     await expect(forkCodexNativeAppServerConversation({
       client: { request },
-      parentCodexSessionId: ' parent-thread ',
+      parentCodexSessionId: 'parent-thread',
     })).resolves.toEqual({ providerSessionId: 'forked-thread' });
 
     expect(request).toHaveBeenCalledWith('thread/fork', {
@@ -16,6 +21,38 @@ describe('forkCodexNativeAppServerConversation', () => {
       persistExtendedHistory: true,
       excludeTurns: true,
     }, { timeoutMs: null });
+  });
+
+  it('forks using the parent thread id exactly as Codex minted it', async () => {
+    const request = vi.fn(async () => ({ thread: { id: EXACT_CHILD_SESSION_ID } }));
+
+    await expect(forkCodexNativeAppServerConversation({
+      client: { request },
+      parentCodexSessionId: EXACT_PARENT_SESSION_ID,
+    })).resolves.toEqual({ providerSessionId: EXACT_CHILD_SESSION_ID });
+
+    expect(request).toHaveBeenCalledWith('thread/fork', {
+      threadId: EXACT_PARENT_SESSION_ID,
+      persistExtendedHistory: true,
+      excludeTurns: true,
+    }, { timeoutMs: null });
+  });
+
+  it('reports the exact forked child thread id to the fork event stream', async () => {
+    const request = vi.fn(async () => ({ threadId: EXACT_CHILD_SESSION_ID }));
+    const events: unknown[] = [];
+
+    await forkCodexNativeAppServerConversation({
+      client: { request },
+      parentCodexSessionId: EXACT_PARENT_SESSION_ID,
+      onEvent: (event) => { events.push(event); },
+    });
+
+    expect(events).toContainEqual({
+      type: 'methodSucceeded',
+      method: 'thread/fork',
+      providerSessionId: EXACT_CHILD_SESSION_ID,
+    });
   });
 
   it('reports a missing parent thread as a failure before any fork dispatch', async () => {

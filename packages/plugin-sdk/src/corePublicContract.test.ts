@@ -80,6 +80,7 @@ import type {
     PluginInvocationContext,
 } from './invocation.js';
 import type {
+    CurrentSessionPresentationIntentV1,
     InteractionOptions,
     InteractionTerminalStatusV1,
     InteractionTransientApprovalAuthorRequestV1,
@@ -99,6 +100,7 @@ import type {
     UiWidget,
 } from './interactions.js';
 import type {
+    CurrentSessionPresentationIntentV1 as ProtocolCurrentSessionPresentationIntentV1,
     InteractionTerminalStatusV1 as ProtocolInteractionTerminalStatusV1,
     InteractionTransientApprovalAuthorRequestV1 as ProtocolInteractionTransientApprovalAuthorRequestV1,
     InteractionTransientApprovalResultV1 as ProtocolInteractionTransientApprovalResultV1,
@@ -238,6 +240,8 @@ describe('CORE.T1/T5 public contract', () => {
             options?: Readonly<{ severity?: 'info' | 'warning' | 'error'; signal?: AbortSignal }>,
         ]>();
         expectTypeOf<InteractionSeverity>().toEqualTypeOf<'info' | 'warning' | 'error'>();
+        expectTypeOf<CurrentSessionPresentationIntentV1>()
+            .toEqualTypeOf<ProtocolCurrentSessionPresentationIntentV1>();
         expectTypeOf<InteractionTerminalStatusV1>()
             .toEqualTypeOf<ProtocolInteractionTerminalStatusV1>();
         expectTypeOf<InteractionTransientApprovalAuthorRequestV1>()
@@ -277,6 +281,10 @@ describe('CORE.T1/T5 public contract', () => {
             ): Promise<InteractionTransientConfirmationResultV1>;
         }>();
         expectTypeOf<PresentationService>().toEqualTypeOf<{
+            present(
+                intent: CurrentSessionPresentationIntentV1,
+                options?: Readonly<{ signal?: AbortSignal }>,
+            ): Promise<void>;
             notify(
                 message: string,
                 options?: Readonly<{ severity?: InteractionSeverity; signal?: AbortSignal }>,

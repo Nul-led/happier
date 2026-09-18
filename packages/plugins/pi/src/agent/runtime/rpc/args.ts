@@ -116,7 +116,10 @@ export function buildPiRpcArgs(opts?: Readonly<{
   if (tools) args.push('--tools', tools.join(','));
   const thinking = normalizePiThinkingLevel(opts?.thinkingLevel);
   if (thinking) args.push('--thinking', thinking);
-  const resumeSessionId = typeof opts?.resumeSessionId === 'string' ? opts.resumeSessionId.trim() : '';
+  // Pi minted this id; the operand carries its exact bytes.
+  const resumeSessionId = typeof opts?.resumeSessionId === 'string' && opts.resumeSessionId.trim().length > 0
+    ? opts.resumeSessionId
+    : '';
   if (resumeSessionId) args.push('--session', resumeSessionId);
   return args;
 }

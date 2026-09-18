@@ -127,6 +127,7 @@ export {
   readActiveSessionModelSelectionFromMetadata,
   resolveAmbientProviderConnectionForModelIntent,
   resolveModelSelectionIntentFromSessionMetadata,
+  readSessionModelSelectionV2FromMetadata,
   resolveMetadataStringOverrideV1,
   resolvePermissionIntentFromSessionMetadata,
   type AmbientProviderConnectionForModelIntent,

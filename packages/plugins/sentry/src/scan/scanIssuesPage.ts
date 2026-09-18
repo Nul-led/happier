@@ -24,7 +24,7 @@ import {
 import { SENTRY_FAILURE_CODES, type SentryFailureV1 } from '../sentryContracts.js';
 import type { SentryApiClientV1 } from '../api/sentryApiClient.js';
 import { classifySentryFailure } from '../api/sentryFailure.js';
-import { parseSentryLinkHeader } from '../api/sentryLinkHeader.js';
+import { readSentryNextPageRelation } from '../api/sentryLinkHeader.js';
 import { mapSentryIssueForInvokedInstance } from '../entries/sentryIssueMapping.js';
 import type { SentryIssueSnapshotV1 } from '../entries/sentryIssueTypes.js';
 import type { SentryInvokedInstanceV1 } from '../instances/sentryCollisionScope.js';
@@ -214,17 +214,18 @@ export async function executeSentryScanPage(
     continuation,
   });
 
-  const link = parseSentryLinkHeader(response.headers);
-  if (!link.present) {
+  const relation = readSentryNextPageRelation(response.headers);
+  if (relation.kind === 'headerAbsent') {
     return page(sentryPartialHealth(SENTRY_FAILURE_CODES.paginationHeaderAbsent), null);
   }
-
-  const next = link.next;
-  if (next === null || !next.hasResults) {
-    return page(rowHealth ?? SENTRY_WALK_FINISHED, null);
-  }
-  if (next.cursor === null || next.cursor === '') {
+  // Pagination metadata this source cannot characterize is a walk that stopped,
+  // never a collection the provider declared exhausted. The rows this page
+  // carried are still applied; only the walk ends.
+  if (relation.kind === 'unusable') {
     return page(sentryPartialHealth(SENTRY_FAILURE_CODES.paginationCursorMalformed), null);
+  }
+  if (relation.kind === 'exhausted') {
+    return page(rowHealth ?? SENTRY_WALK_FINISHED, null);
   }
   // Non-progress is "this walk has been here already", not merely "this page
   // pointed at itself". The shared cycle owner watches both the position that
@@ -232,7 +233,7 @@ export async function executeSentryScanPage(
   // repeat and an `A → B → A` alternation — invisible to a comparison that can
   // only see the current request — are both caught, without an evidence record
   // that grows with the walk.
-  const advanced = advanceCursorCycleWalkV1(position, next.cursor);
+  const advanced = advanceCursorCycleWalkV1(position, relation.cursor);
   if (advanced.kind === 'revisited') {
     return page(sentryPartialHealth(SENTRY_FAILURE_CODES.paginationCursorNotAdvancing), null);
   }

@@ -7,6 +7,7 @@ import {
     cloneStrictPluginJsonValue,
     measureSerializedValidatedStrictPluginJsonUtf8Bytes,
 } from '@happier-dev/protocol/plugins/actions/protocol-composable-schema';
+import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol/strings/opaqueIdentifier';
 
 import type { PluginDiagnosticData } from './diagnostics.js';
 import type {
@@ -1212,14 +1213,20 @@ export function validateAgentExternalSessionHookMapEventResult(
                 AGENT_EXTERNAL_SESSION_HOOK_LIMITS.maxMappedFacts,
                 'mapHookEvent facts',
             ).map(snapshotFact);
+            const remoteSessionId = readNonBlankOpaqueIdentifier(record.remoteSessionId);
+            if (remoteSessionId === null
+                || remoteSessionId.length
+                    > AGENT_EXTERNAL_SESSION_HOOK_LIMITS.maxRemoteSessionIdCodeUnits) {
+                return invalid(
+                    'remoteSessionId',
+                    'must be a non-blank opaque identifier of at most '
+                    + `${AGENT_EXTERNAL_SESSION_HOOK_LIMITS.maxRemoteSessionIdCodeUnits} code units`,
+                );
+            }
             return Object.freeze({
                 kind: 'mapped',
                 sourceInput: snapshotSource(record.sourceInput),
-                remoteSessionId: normalizedString(
-                    record.remoteSessionId,
-                    AGENT_EXTERNAL_SESSION_HOOK_LIMITS.maxRemoteSessionIdCodeUnits,
-                    'remoteSessionId',
-                ),
+                remoteSessionId,
                 ...(record.linkData === undefined
                     ? {}
                     : { linkData: snapshotLinkData(record.linkData) }),

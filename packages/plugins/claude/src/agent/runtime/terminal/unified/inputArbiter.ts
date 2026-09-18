@@ -69,6 +69,12 @@ export type ClaudeUnifiedInputArbiterSnapshot = Readonly<{
 
 export type ClaudeUnifiedInputArbiter = Readonly<{
   enqueue(input: TerminalPromptInput): void;
+  /**
+   * Enqueue a terminal-local control whose successful terminal write is its final acceptance
+   * boundary. The returned promise settles only when that write succeeds or the control becomes
+   * terminally undeliverable; provider-turn evidence is neither expected nor consumed.
+   */
+  enqueueTurnNeutralControl(input: TerminalPromptInput): Promise<void>;
   observeReadiness(readiness: TerminalInputReadinessV1): void;
   observeCompaction(event: Readonly<{ phase: 'started' | 'completed' }>): void;
   drain(): Promise<void>;
@@ -264,6 +270,11 @@ export function createClaudeUnifiedInputArbiter(
   const providerAcceptanceUnknownTerminalInputs = new Set<TerminalPromptInput>();
   const terminalCustodyInputs = new Set<TerminalPromptInput>();
   const terminalCustodyAcceptances: PendingProviderAcceptance[] = [];
+  const turnNeutralControlInputs = new WeakSet<TerminalPromptInput>();
+  const turnNeutralControlWaiters = new Map<TerminalPromptInput, Readonly<{
+    resolve: () => void;
+    reject: (error: Error) => void;
+  }>>();
   const interruptRequestedInputs = new WeakSet<object>();
   let publishedPendingInputInterruptAndRunLocalId: string | null | undefined;
 
@@ -325,6 +336,18 @@ export function createClaudeUnifiedInputArbiter(
     if (!retryTimer) return;
     clearTimeout(retryTimer);
     retryTimer = null;
+  }
+
+  function settleTurnNeutralControl(input: TerminalPromptInput, error?: Error): void {
+    const waiter = turnNeutralControlWaiters.get(input);
+    if (!waiter) return;
+    turnNeutralControlWaiters.delete(input);
+    if (error) waiter.reject(error);
+    else waiter.resolve();
+  }
+
+  function turnNeutralControlFailure(result: Extract<TerminalInputInjectionResult, { status: 'failed' }>): Error {
+    return new Error(`claude_unified_terminal_control_injection_failed: ${result.reason}`);
   }
 
   function scheduleRetry(retryAfterMs: number): void {
@@ -732,6 +755,14 @@ export function createClaudeUnifiedInputArbiter(
         retryAttempt = 0;
         lastDeferredReason = null;
         lastFailureReason = null;
+        if (turnNeutralControlInputs.has(input)) {
+          queue.shift();
+          takeProviderAcceptanceObservedDuringInjection(input);
+          headInputState = queue.length > 0 ? 'queued' : 'submitted';
+          settleTurnNeutralControl(input);
+          if (queue.length > 0) continue;
+          return;
+        }
         pendingProviderAcceptance = injectionAcceptance;
         headInputState = 'awaiting_provider_acceptance';
         await options.onPromptInjected?.(input, acceptance, result);
@@ -745,7 +776,11 @@ export function createClaudeUnifiedInputArbiter(
         return;
       }
 
-      if (result.status === 'failed' && result.phase === 'after_enter_unknown') {
+      if (
+        !turnNeutralControlInputs.has(input)
+        && result.status === 'failed'
+        && result.phase === 'after_enter_unknown'
+      ) {
         const providerAcceptedDuringInjection = takeProviderAcceptanceObservedDuringInjection(input);
         if (providerAcceptedDuringInjection) {
           if (queue[0] !== input) return;
@@ -776,6 +811,15 @@ export function createClaudeUnifiedInputArbiter(
         return;
       }
       if (action.kind === 'await_provider_confirmation') {
+        if (turnNeutralControlInputs.has(input)) {
+          queue.shift();
+          clearInjectionAcceptanceForInput(input);
+          retryAttempt = 0;
+          headInputState = queue.length > 0 ? 'queued' : 'failed_ambiguous';
+          settleTurnNeutralControl(input, turnNeutralControlFailure(result));
+          if (queue.length > 0) continue;
+          return;
+        }
         pendingProviderAcceptance = injectionAcceptance;
         providerAcceptanceUnknownTerminalInputs.add(input);
         headInputState = 'awaiting_provider_acceptance';
@@ -786,11 +830,14 @@ export function createClaudeUnifiedInputArbiter(
         retryAttempt = 0;
         lastDeferredReason = null;
         headInputState = queue.length > 0 ? 'queued' : null;
-        options.onInjectionFailure?.({
-          input,
-          result,
-          failureState: 'failed_ambiguous',
-        });
+        if (!turnNeutralControlInputs.has(input)) {
+          options.onInjectionFailure?.({
+            input,
+            result,
+            failureState: 'failed_ambiguous',
+          });
+        }
+        settleTurnNeutralControl(input, turnNeutralControlFailure(result));
         if (queue.length > 0) continue;
         return;
       }
@@ -801,12 +848,17 @@ export function createClaudeUnifiedInputArbiter(
         lastDeferredReason = null;
         lastFailureReason = null;
         headInputState = queue.length > 0 ? 'queued' : 'failed_terminal';
-        await options.onPromptTerminallyRejectedBeforeProvider?.(input, result);
-        options.onInjectionFailure?.({
-          input,
-          result,
-          failureState: 'failed_terminal',
-        });
+        if (!turnNeutralControlInputs.has(input)) {
+          await options.onPromptTerminallyRejectedBeforeProvider?.(input, result);
+        }
+        settleTurnNeutralControl(input, turnNeutralControlFailure(result));
+        if (!turnNeutralControlInputs.has(input)) {
+          options.onInjectionFailure?.({
+            input,
+            result,
+            failureState: 'failed_terminal',
+          });
+        }
         if (queue.length > 0) {
           headInputState = 'queued';
           continue;
@@ -814,12 +866,21 @@ export function createClaudeUnifiedInputArbiter(
         return;
       }
 
-      headInputState = 'failed_terminal';
-      options.onInjectionFailure?.({
-        input,
-        result,
-        failureState: 'failed_terminal',
-      });
+      if (turnNeutralControlInputs.has(input)) {
+        queue.shift();
+        headInputState = queue.length > 0 ? 'queued' : 'failed_terminal';
+        settleTurnNeutralControl(input, turnNeutralControlFailure(result));
+      } else {
+        headInputState = 'failed_terminal';
+      }
+      if (!turnNeutralControlInputs.has(input)) {
+        options.onInjectionFailure?.({
+          input,
+          result,
+          failureState: 'failed_terminal',
+        });
+      }
+      if (queue.length > 0) continue;
       return;
     }
   }
@@ -855,6 +916,24 @@ export function createClaudeUnifiedInputArbiter(
       }
       queue.push(input);
       if (!headInputState) headInputState = 'queued';
+    },
+    enqueueTurnNeutralControl(input) {
+      if (disposed) {
+        return Promise.reject(new Error('claude_unified_terminal_control_arbiter_disposed'));
+      }
+      turnNeutralControlInputs.add(input);
+      const completion = new Promise<void>((resolve, reject) => {
+        turnNeutralControlWaiters.set(input, { resolve, reject });
+      });
+      queue.push(input);
+      if (!headInputState) headInputState = 'queued';
+      void drain().catch((error: unknown) => {
+        settleTurnNeutralControl(
+          input,
+          error instanceof Error ? error : new Error('claude_unified_terminal_control_injection_failed'),
+        );
+      });
+      return completion;
     },
     observeReadiness(nextReadiness) {
       readiness = nextReadiness;
@@ -918,8 +997,17 @@ export function createClaudeUnifiedInputArbiter(
         unconsumed.filter((input) => (
           !providerAcceptanceUnknownTerminalInputs.has(input)
           && input !== retainedInput
+          && !turnNeutralControlInputs.has(input)
         )),
       );
+      for (const input of unconsumed) {
+        if (turnNeutralControlInputs.has(input)) {
+          settleTurnNeutralControl(
+            input,
+            new Error('claude_unified_terminal_control_arbiter_disposed'),
+          );
+        }
+      }
       retainedHeadDeliveryBlocker = null;
       pendingProviderAcceptance = null;
       injectingProviderAcceptance = null;

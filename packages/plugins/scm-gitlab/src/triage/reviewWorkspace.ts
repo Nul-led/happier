@@ -2,8 +2,11 @@
  * GitLab's provider-side admission for one selected merge-request workspace.
  *
  * This source owns exact configured-account reauthorization, rereading the
- * selected merge request, and deriving its editable source tip. The generic SCM
- * Action owns every local filesystem and Git decision after those facts hold.
+ * selected merge request, and deriving its editable source tip. Two provider
+ * reads are needed for that last fact and not one: a merge request names its
+ * source project by id, and only the Projects API publishes that project's path
+ * and clone URL. The generic SCM Action owns every local filesystem and Git
+ * decision after those facts hold.
  */
 
 import type { PluginInvocationContext } from '@happier-dev/plugin-sdk';
@@ -12,6 +15,7 @@ import type {
   PluginActionInputById,
   PluginActionResultById,
 } from '@happier-dev/plugin-sdk/actions';
+import { isPluginActionApprovalRequestCreated } from '@happier-dev/plugin-sdk/actions';
 import { pluginJsonValuesEqual } from '@happier-dev/plugin-sdk/protocol';
 import type {
   TriagePrepareReviewWorkspaceInputV1,
@@ -23,7 +27,8 @@ import type {
 import { admitForgeRequestUrl } from '@happier-dev/triage-sources/runtime';
 
 import { admitGitlabItemInvocation } from './admission.js';
-import { buildGitlabItemUrl } from './detail/routes.js';
+import type { GitlabDetailReadDependenciesV1 } from './detail/reads.js';
+import { buildGitlabItemUrl, buildGitlabProjectUrl } from './detail/routes.js';
 import { requestGitlabJson } from './http/gitlabClient.js';
 import { buildGitlabEntryIdentity } from './identity.js';
 import { readGitlabMergeRequestReviewRevision } from './mapping/mergeRequestHead.js';
@@ -62,31 +67,76 @@ type GitlabPreparedSourceTip = Readonly<{
   fetchRef: string;
 }>;
 
-function readGitlabPreparedSourceTip(
+/**
+ * The project id a merge request publishes for its source branch.
+ *
+ * `GET …/merge_requests/{iid}` answers with `source_project_id`; it never embeds
+ * the project itself. Reading a nested object here would refuse every real merge
+ * request while a fabricated fixture passed.
+ */
+function readGitlabSourceProjectId(row: Readonly<Record<string, unknown>>): number | null {
+  const value = row.source_project_id;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 ? value : null;
+}
+
+type GitlabPreparedSourceTipRead =
+  | Readonly<{ kind: 'ok'; sourceTip: GitlabPreparedSourceTip }>
+  /** GitLab named no reachable source project for this merge request. */
+  | Readonly<{ kind: 'refused' }>
+  /** The configured account could not read the project GitLab named. */
+  | Readonly<{ kind: 'unavailable' }>;
+
+/**
+ * Reads the editable source tip through the project the merge request names.
+ *
+ * `sources/SCM.md` §3.10.3b makes the source project — never the target — the
+ * checkout authority, so the identity of the response is compared against the id
+ * the merge request published before its path and clone URL are trusted.
+ */
+async function readGitlabPreparedSourceTip(
   row: Readonly<Record<string, unknown>>,
   origin: GitlabConfiguredOrigin,
   sourceHeadSha: string,
-): GitlabPreparedSourceTip | null {
-  const sourceProject = readRecord(row.source_project);
+  dependencies: GitlabDetailReadDependenciesV1,
+): Promise<GitlabPreparedSourceTipRead> {
+  const sourceProjectId = readGitlabSourceProjectId(row);
   const branch = readNonEmptyString(row.source_branch);
-  if (sourceProject === null || branch === null) return null;
+  if (sourceProjectId === null || branch === null) return { kind: 'refused' };
 
+  const read = await requestGitlabJson({
+    invocation: dependencies.invocation,
+    url: buildGitlabProjectUrl({ origin, projectId: sourceProjectId }),
+    fetcher: dependencies.fetcher,
+    signal: dependencies.signal,
+    nowMs: dependencies.nowMs,
+  });
+  if (read.kind === 'failed') {
+    // A deleted or unreachable source repository is a refusal, not a fallback to
+    // the target project: §3.10.3b forbids that substitution outright.
+    return read.failure.code === 'not-found' ? { kind: 'refused' } : { kind: 'unavailable' };
+  }
+
+  const sourceProject = readRecord(read.response.body);
+  if (sourceProject === null || sourceProject.id !== sourceProjectId) return { kind: 'refused' };
   const repository = readNonEmptyString(sourceProject.path_with_namespace);
   const cloneUrl = readGitlabSourceCloneUrl(sourceProject, origin);
-  if (repository === null || cloneUrl === null) return null;
+  if (repository === null || cloneUrl === null) return { kind: 'refused' };
 
   return Object.freeze({
-    repository: Object.freeze({
-      kind: 'gitlab',
-      deployment: origin.normalized,
-      repository,
+    kind: 'ok' as const,
+    sourceTip: Object.freeze({
+      repository: Object.freeze({
+        kind: 'gitlab' as const,
+        deployment: origin.normalized,
+        repository,
+      }),
+      cloneUrl,
+      branch,
+      sourceHeadSha,
+      // A source branch is the only editable fetch authority. GitLab's
+      // merge-request ref is a review ref and is never substituted here.
+      fetchRef: `refs/heads/${branch}`,
     }),
-    cloneUrl,
-    branch,
-    sourceHeadSha,
-    // A source branch is the only editable fetch authority. GitLab's
-    // merge-request ref is a review ref and is never substituted here.
-    fetchRef: `refs/heads/${branch}`,
   });
 }
 
@@ -145,6 +195,9 @@ async function executeGitlabReviewWorkspaceScmAction(input: Readonly<{
       { signal: input.signal },
     );
     input.signal.throwIfAborted();
+    // A policy deferral means the canonical SCM owner never ran; it joins the
+    // same typed source-unavailable result as a transport failure.
+    if (isPluginActionApprovalRequestCreated(result)) return null;
     return result;
   } catch (error) {
     input.signal.throwIfAborted();
@@ -214,21 +267,28 @@ async function authorizeGitlabReviewWorkspace(
   }
 
   const revision = readGitlabMergeRequestReviewRevision(row);
-  const sourceTip = revision === null
-    ? null
-    : readGitlabPreparedSourceTip(row, admitted.route.origin, revision.headSha);
-  if (revision === null || sourceTip === null) {
-    return { kind: 'refused', reason: 'pullRequestMoved' };
-  }
+  if (revision === null) return { kind: 'refused', reason: 'pullRequestMoved' };
+  // The revision comparison precedes the source-project read: a merge request
+  // that already moved is refused without spending a second provider request.
   if (revision.baseSha !== input.observed.baseSha
     || revision.headSha !== input.observed.headSha
     || revision.nativeRevision !== input.observed.nativeRevision) {
     return { kind: 'refused', reason: 'observedHeadMoved' };
   }
 
+  const sourceTip = await readGitlabPreparedSourceTip(
+    row,
+    admitted.route.origin,
+    revision.headSha,
+    admitted.dependencies,
+  );
+  context.signal.throwIfAborted();
+  if (sourceTip.kind === 'unavailable') return { kind: 'unavailable', reason: 'account' };
+  if (sourceTip.kind !== 'ok') return { kind: 'refused', reason: 'pullRequestMoved' };
+
   return Object.freeze({
     kind: 'authorized' as const,
-    sourceTip,
+    sourceTip: sourceTip.sourceTip,
     pullRequest: Object.freeze({ number: pullRequestNumber }),
   });
 }

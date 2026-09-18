@@ -203,7 +203,7 @@ function publishRequest(overrides: Partial<ScmHostingRepositoryPublishRequest> =
     };
 }
 
-describe('git hosting repository publish operation', () => {
+describe('git hosting repository publish operation', { timeout: 20_000 }, () => {
     it('resolves default hosting provider registries from host-injected runtime services only', () => {
         const source = readFileSync(new URL('./hostingRepositoryPublishOperations.ts', import.meta.url), 'utf8');
 

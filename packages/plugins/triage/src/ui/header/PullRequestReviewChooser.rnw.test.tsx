@@ -100,12 +100,8 @@ async function mountChooser(executeAction: (
     );
   });
   const fixture = await createPluginUiTestkit({
-    identity: {
-      pluginId: 'happier.triage',
-      pluginVersion: '0.0.0',
-      viewId: 'pull-request-review-chooser',
-      generation: 'pull-request-review-chooser-test',
-    },
+    identity: { instanceId: 'fixture-instance-191', mountNonce: 'fixture-mount-191' },
+    authorPlugin: { id: 'happier.triage', version: '0.0.0' },
     surface,
     surfaceContext: createSurfaceContextFixture(),
     adapter: createPluginUiRnwSemanticSurfaceAdapter({
@@ -145,7 +141,12 @@ describe('the mounted selected-PR review chooser', () => {
         };
       }
       if (action === TRIAGE_START_PULL_REQUEST_REVIEW_ACTION_LOCAL_ID_V1) {
-        return { v: 1, status: 'started' };
+        return {
+          v: 1,
+          status: 'started',
+          startedEngineIds: ['codex', 'claude'],
+          failedEngineIds: [],
+        };
       }
       if (action === 'session.open') return null;
       throw new Error(`Unexpected action ${action}`);
@@ -200,6 +201,56 @@ describe('the mounted selected-PR review chooser', () => {
     await expect(fixture.queryByRole('checkbox', { name: 'Codex' })).resolves.toBeUndefined();
   });
 
+  /**
+   * The canonical fan-out reports each engine independently inside one
+   * successful Action, so "the review started" can be true of one engine and
+   * false of another. Opening the Session as an unqualified success hid the
+   * refused half; repeating the whole selection would start the successful half
+   * twice.
+   */
+  it('keeps a partly started review visible and retries only the engines that did not start', async () => {
+    const startRequests: unknown[] = [];
+    const calls: string[] = [];
+    const { fixture } = await mountChooser(async (action, input) => {
+      calls.push(action);
+      if (action === 'review.engines.list') {
+        return {
+          sessionId: 'session-review',
+          items: [
+            { engineId: 'codex', label: 'Codex', enabled: true },
+            { engineId: 'claude', label: 'Claude', enabled: true },
+          ],
+        };
+      }
+      if (action === TRIAGE_START_PULL_REQUEST_REVIEW_ACTION_LOCAL_ID_V1) {
+        startRequests.push(input);
+        return startRequests.length === 1
+          ? { v: 1, status: 'started', startedEngineIds: ['codex'], failedEngineIds: ['claude'] }
+          : { v: 1, status: 'started', startedEngineIds: ['claude'], failedEngineIds: [] };
+      }
+      if (action === 'session.open') return null;
+      throw new Error(`Unexpected action ${action}`);
+    });
+
+    await fixture.press(await fixture.getByRole('checkbox', { name: 'Codex' }));
+    await fixture.press(await fixture.getByRole('checkbox', { name: 'Claude' }));
+    await fixture.press(await fixture.getByRole('button', { name: 'Start review' }));
+    await settle();
+
+    // The Session is not opened as a clean success while an engine is missing.
+    expect(calls).not.toContain('session.open');
+    await expect(fixture.getByRole('button', { name: 'Try again' })).resolves.toBeDefined();
+
+    await fixture.press(await fixture.getByRole('button', { name: 'Try again' }));
+    await settle();
+
+    expect(startRequests).toHaveLength(2);
+    expect(startRequests[0]).toMatchObject({ engineIds: ['codex', 'claude'] });
+    // The engine that IS running is never started a second time.
+    expect(startRequests[1]).toMatchObject({ engineIds: ['claude'] });
+    expect(calls.at(-1)).toBe('session.open');
+  });
+
   it('never repeats an ambiguously settled review write and offers only the safe Session open', async () => {
     const calls: string[] = [];
     const { fixture, focusedLabels } = await mountChooser(async (action) => {
@@ -244,7 +295,7 @@ describe('the mounted selected-PR review chooser', () => {
         };
       }
       if (action === TRIAGE_START_PULL_REQUEST_REVIEW_ACTION_LOCAL_ID_V1) {
-        return { v: 1, status: 'started' };
+        return { v: 1, status: 'started', startedEngineIds: ['codex'], failedEngineIds: [] };
       }
       if (action === 'session.open') {
         opens += 1;

@@ -710,9 +710,9 @@ describe('normal SDK declaration closure identities', () => {
         expect(declaration).not.toMatch(/\bzod\b/u);
         expect(importedName(
             declarationSourceFile,
-            '../sessions/subagents.js',
-            'SubagentLaunchV1',
-        )).toBe('SubagentLaunchV1');
+            '../actions/actionTypeMap.generated.js',
+            'PluginActionInputById',
+        )).toBe('PluginActionInputById');
         expect(exportedTypeAlias(
             declarationSourceFile,
             'HappierStructuredInputV1',

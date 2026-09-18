@@ -1,5 +1,6 @@
 import { asRecord, normalizeString, readStringRecord } from './openCodeParsing.js';
 import type { OpenCodeServerClient } from './openCodeServerClient.js';
+import { isOpenCodeServerUnsupportedOperation } from './openCodeServerClient.js';
 import type { OpenCodeRuntimeContext } from './runtimeContext.js';
 
 type OpenCodeMcpRegistration = Readonly<{
@@ -7,10 +8,23 @@ type OpenCodeMcpRegistration = Readonly<{
   config: Readonly<Record<string, unknown>>;
 }>;
 
+/**
+ * `unsupported` is deliberately not a kind of `failed`.
+ *
+ * `failed` means the reachable server has a dynamic MCP registration route and
+ * would not complete this registration: Happier's own tools would be silently
+ * missing, so prompt admission fails closed. `unsupported` means the server
+ * declares no such route at all — the standalone OpenCode V2 protocol has no
+ * MCP group. Failing every ordinary prompt closed over a route that never
+ * existed would remove core agent use to protect an integration that cannot
+ * exist there, so the session continues without Happier's MCP-backed tools and
+ * reports the exact limitation on a default-on signal.
+ */
 export type OpenCodeMcpRegistrationResult = Readonly<{
   requiredHappier: Readonly<
     | { status: 'ready' }
     | { status: 'failed'; error: unknown }
+    | { status: 'unsupported'; reason: string }
   >;
 }>;
 
@@ -91,6 +105,25 @@ export async function registerOpenCodeMcpServers(params: Readonly<{
         requiredHappier = { status: 'ready' };
       }
     } catch (error) {
+      if (isOpenCodeServerUnsupportedOperation(error, 'mcp_registration')) {
+        const reason = error instanceof Error
+          ? error.message
+          : 'the reachable OpenCode server has no dynamic MCP registration route';
+        if (registration.name === 'happier') {
+          requiredHappier = { status: 'unsupported', reason };
+        }
+        // Default-on, because this silently removes every Happier MCP-backed
+        // tool (including title updates) from an otherwise working session.
+        params.ctx.logger.warn(
+          '[OpenCodeServer] this server supports no dynamic MCP registration; continuing without Happier MCP tools',
+          {
+            serverName: registration.name,
+            dialect: error.dialect,
+            reason,
+          },
+        );
+        continue;
+      }
       if (registration.name === 'happier') {
         requiredHappier = { status: 'failed', error };
       }

@@ -1,4 +1,5 @@
 import { definePlugin } from '@happier-dev/plugin-sdk';
+import { CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1 } from '@happier-dev/plugin-sdk/connected-accounts';
 import { withTriageSourceSettingsTranslationsV1 } from '@happier-dev/triage-sources/translations';
 import {
   TRIAGE_SOURCES_CONTRIBUTION_POINT_ID_V1,
@@ -174,6 +175,7 @@ export const GITLAB_PLUGIN = definePlugin({
           modes: [{
             id: GITLAB_PERSONAL_ACCESS_TOKEN_MODE_ID,
             kind: 'manual',
+            directExport: { contractVersion: CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1 },
             title: 'GitLab.com personal access token',
             outcomeReconciliation: 'none',
             fields: [{
@@ -202,6 +204,7 @@ export const GITLAB_PLUGIN = definePlugin({
           }, {
             id: GITLAB_SELF_HOSTED_PERSONAL_ACCESS_TOKEN_MODE_ID,
             kind: 'manual',
+            directExport: { contractVersion: CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1 },
             title: 'Self-managed GitLab personal access token',
             outcomeReconciliation: 'none',
             fields: [{

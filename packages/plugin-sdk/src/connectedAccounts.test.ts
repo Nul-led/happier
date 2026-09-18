@@ -204,6 +204,7 @@ const EXPECTED_EXPORTS = [
     'CLAUDE_SUBSCRIPTION_MATERIALIZATION_CONTRACT_V1',
     'CLAUDE_SUBSCRIPTION_OAUTH_PROFILE',
     'CLAUDE_SUBSCRIPTION_SETUP_TOKEN_ENVIRONMENT_REQUEST_V1',
+    'CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1',
     'ClaudeSubscriptionMaterializationContractV1',
     'ClaudeSubscriptionSetupTokenEnvironmentRequestV1',
     'ConnectedAccountAuthFailureRequestV1Schema',

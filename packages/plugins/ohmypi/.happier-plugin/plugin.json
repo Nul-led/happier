@@ -11,6 +11,11 @@
             "delivery": [
               "newTurn"
             ],
+            "executionRunContext": {
+              "versions": [
+                1
+              ]
+            },
             "open": [
               "create",
               "resume",

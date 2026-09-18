@@ -7,6 +7,7 @@ import {
     type TriageScanResultV1,
     type TriageSourceFailureV1,
     type TriageSourceScanObservationV1,
+    type TriageSourceViewerFactsV1,
 } from '@happier-dev/triage-protocol/v1';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -90,7 +91,7 @@ function presentObservation(input: Readonly<{
     entryId: string;
     title: string;
     sourceUpdatedAtMs: number;
-    involvement?: readonly 'reviewRequested'[];
+    involvement?: TriageSourceViewerFactsV1['involvement'];
 }>): TriageSourceScanObservationV1 {
     return {
         kind: 'present',
@@ -133,6 +134,8 @@ function createHarness(options: Readonly<{
     configureSourceB?: boolean;
     /** Two distinct configured accounts of one source can observe one canonical entry. */
     sameSourceForB?: boolean;
+    /** Substitute only the provider scan boundary for a discriminating walk fixture. */
+    scanA?: ScanFn;
 }> = {}) {
     const admitSourceB = options.admitSourceB ?? true;
     const sourceForB = options.sameSourceForB ? SOURCE_A : SOURCE_B;
@@ -192,6 +195,8 @@ function createHarness(options: Readonly<{
         enumerationRepeatsCursor: false,
         /** A typed failure source A answers with instead of a page, when set. */
         sourceAFailure: null as TriageSourceFailureV1 | null,
+        /** The same for source B, so two connections can wait out different deadlines. */
+        sourceBFailure: null as TriageSourceFailureV1 | null,
         /**
          * Source A admits its first page and then fails the continuation — the
          * ordinary shape of a walk that is interrupted part way through.
@@ -239,6 +244,19 @@ function createHarness(options: Readonly<{
         /** Both lanes advance one row at a time so a mixed transport page returns two frontiers. */
         mixedSourcesNeverFinish: false,
         /**
+         * Source A meets ONE entry through two involvement lanes of the same
+         * walk: the first window reports the review request, the terminal
+         * window reports the same entry as merely participating. That is what
+         * the first-party GitHub scan owner deliberately emits — one encounter
+         * per native lane, no pre-dedupe, relying on the aggregate to union.
+         */
+        sourceASplitsInvolvementAcrossWindows: false,
+        /**
+         * The next walk is authoritative and no longer reports the review
+         * request at all. A fresh completed walk must be able to remove it.
+         */
+        sourceADropsReviewRequest: false,
+        /**
          * Every configured instance returns exactly the page size the aggregate
          * submitted, with distinct rows. This exposes transport-batch geometry:
          * a 32-source batch and a one-source batch must share one mounted
@@ -254,6 +272,7 @@ function createHarness(options: Readonly<{
 
     const scanA: ScanFn = async (input) => {
         scanCalls.count += 1;
+        if (options.scanA !== undefined) return await options.scanA(input);
         if (state.holdSourceA !== null) await state.holdSourceA;
         if (state.rowsPerSubmittedLimit) {
             const limit = input.page.kind === 'initial' ? input.page.limit : 1;
@@ -328,6 +347,42 @@ function createHarness(options: Readonly<{
         }
         if (state.sourceAFailure !== null) {
             return { kind: 'failed', failure: state.sourceAFailure };
+        }
+        if (state.sourceASplitsInvolvementAcrossWindows) {
+            if (state.sourceADropsReviewRequest) {
+                return {
+                    kind: 'complete',
+                    observations: [presentObservation({
+                        entryId: '1',
+                        title: state.titleOfFirstEntry,
+                        sourceUpdatedAtMs: 3_000,
+                        involvement: ['participating'],
+                    })],
+                    evidence: { kind: 'walkFinished' },
+                };
+            }
+            return input.page.kind === 'initial'
+                ? {
+                    kind: 'page',
+                    observations: [presentObservation({
+                        entryId: '1',
+                        title: state.titleOfFirstEntry,
+                        sourceUpdatedAtMs: 3_000,
+                        involvement: ['reviewRequested'],
+                    })],
+                    evidence: { kind: 'partial', reason: 'more-pages' },
+                    continuation: { v: 1, token: 'page-2' },
+                }
+                : {
+                    kind: 'complete',
+                    observations: [presentObservation({
+                        entryId: '1',
+                        title: state.titleOfFirstEntry,
+                        sourceUpdatedAtMs: 3_000,
+                        involvement: ['participating'],
+                    })],
+                    evidence: { kind: 'walkFinished' },
+                };
         }
         if (state.sourceANeverFinishes) {
             const page = input.page.kind === 'initial' ? 1 : Number(input.page.continuation.token);
@@ -420,6 +475,9 @@ function createHarness(options: Readonly<{
 
     const scanB: ScanFn = async (input) => {
         scanCalls.count += 1;
+        if (state.sourceBFailure !== null) {
+            return { kind: 'failed', failure: state.sourceBFailure };
+        }
         if (state.sourceBFails) {
             return { kind: 'failed', failure: { class: 'transient', code: 'provider-busy' } };
         }
@@ -669,6 +727,170 @@ describe('the mounted PRs & Issues window store', () => {
         expect(store.getSnapshot().loadMore).toEqual({ kind: 'exhausted' });
         store.dispose();
     });
+
+    it.each(['lens', 'transport', 'configuration', 'failed-prefix'] as const)(
+        'keeps an unvisited configured suffix reachable after %s replacement',
+        async (replacement) => {
+            let failPrefix = false;
+            const retryAtMs = 1_760_000_010_000;
+            const harness = createHarness({ configureSourceA: false, configureSourceB: false,
+                scanA: async (input) => failPrefix && input.instance.instance.sourceInstanceId.startsWith('00000003-') ? {
+                    kind: 'failed',
+                    failure: { class: 'rateLimit', code: 'prefix-rate-limit', retryNotBeforeMs: retryAtMs },
+                } : ({
+                    kind: 'complete',
+                    observations: [presentObservation({
+                        entryId: input.instance.instance.sourceInstanceId,
+                        title: 'Change',
+                        sourceUpdatedAtMs: 1_000,
+                    })],
+                    evidence: { kind: 'walkFinished' },
+                }),
+            });
+            const seed = (index: number) => {
+                const id = `${String(index + 3).padStart(8, '0')}-1111-4111-8111-111111111111`;
+                harness.control.sourceInstances.seed(toCorpusStoredValue(instanceRow(
+                    `suffix${String(index).padStart(4, '0')}`, SOURCE_A, id, index + 3,
+                )));
+                return id;
+            };
+            for (let index = 0; index < MAX_TRIAGE_LIST_WINDOW_ROWS_V1; index += 1) seed(index);
+            let suffixId = replacement === 'configuration' ? '' : seed(MAX_TRIAGE_LIST_WINDOW_ROWS_V1);
+            const store = createTriageListWindowStore({
+                readEntries: harness.readEntries,
+                nowMs: () => harness.clock.nowMs,
+            });
+            try {
+                await store.refresh('view');
+                failPrefix = replacement === 'failed-prefix';
+                if (replacement === 'configuration') suffixId = seed(MAX_TRIAGE_LIST_WINDOW_ROWS_V1);
+                else if (replacement === 'lens') store.setLens({ ...TRIAGE_LIST_DEFAULT_LENS_V1, query: 'Change' });
+                else store.replaceReadTransport();
+                await store.refresh('manual');
+
+                if (failPrefix) {
+                    expect(store.getSnapshot().loadMore).toBeUndefined();
+                    expect(store.getSnapshot().window?.lanes.some((lane) => lane.health.kind === 'failed')).toBe(true);
+                    failPrefix = false;
+                    harness.clock.nowMs = retryAtMs;
+                    await store.refresh('manual');
+                }
+
+                expect(store.getSnapshot().window?.coverage).toBe('partial');
+                expect(store.getSnapshot().loadMore).toEqual({ kind: 'available' });
+                await store.loadMore();
+                expect(store.getSnapshot().window?.rows.map((row) => row.entryRef.entryId)).toContain(suffixId);
+                expect(store.getSnapshot().window?.rows).toHaveLength(MAX_TRIAGE_LIST_WINDOW_ROWS_V1 + 1);
+                expect(store.getSnapshot().loadMore).toEqual({ kind: 'exhausted' });
+                const batches = harness.actionInputs.filter((input) => input.sources.kind === 'selected');
+                expect(batches.every((input) => input.sources.kind === 'selected'
+                    && input.sources.sourceInstanceIds.length <= MAX_TRIAGE_LIST_SOURCE_BATCH_V1
+                    && input.limit <= MAX_TRIAGE_LIST_WINDOW_ROWS_V1)).toBe(true);
+            } finally {
+                store.dispose();
+            }
+        },
+    );
+
+    it('publishes only the refreshed walk membership when its terminal page arrives on Load More', async () => {
+        const harness = createHarness({ configureSourceB: false });
+        harness.state.sourceAReplacementOutcome = 'baseline';
+        const store = createTriageListWindowStore({
+            readEntries: harness.readEntries,
+            nowMs: () => harness.clock.nowMs,
+        });
+        try {
+            await store.refresh('view');
+            expect(store.getSnapshot().window?.rows.map((row) => row.entryRef.entryId)).toEqual(['1', '2']);
+            harness.state.sourceAOverDelivers = true;
+            await store.refresh('manual');
+            const partial = store.getSnapshot();
+            expect(partial.window?.coverage).toBe('partial');
+            expect(partial.window?.rows.map((row) => row.entryRef.entryId)).toEqual(expect.arrayContaining(['1', '2']));
+
+            await store.loadMore();
+            const completed = store.getSnapshot();
+            expect(completed.window?.coverage).toBe('complete');
+            expect(completed.loadMore).toEqual({ kind: 'exhausted' });
+            const ids = completed.window?.rows.map((row) => row.entryRef.entryId) ?? [];
+            expect(ids).not.toContain('1');
+            expect(ids).not.toContain('2');
+            expect(ids).toHaveLength(70);
+            expect(ids).toEqual(expect.arrayContaining(['first-0', 'first-49', 'second-0', 'second-19']));
+            expect(completed.window?.rows.flatMap((row) => row.observations).some(
+                (observation) => observation.outcome.kind === 'absent',
+            )).toBe(false);
+        } finally {
+            store.dispose();
+        }
+    });
+
+    it.each(['walkFinished', 'partial', 'moving', 'failed'] as const)(
+        'keeps walk-local facts separate from old continuity rows through a %s terminal refresh page',
+        async (outcome) => {
+            let refreshing = false;
+            const harness = createHarness({ configureSourceB: false, scanA: async (input) => {
+                if (!refreshing) return {
+                    kind: 'complete',
+                    observations: ['old-only', 'seen-on-terminal'].map((entryId) => presentObservation({
+                        entryId, title: entryId, sourceUpdatedAtMs: 9_000, involvement: ['reviewRequested'],
+                    })),
+                    evidence: { kind: 'walkFinished' },
+                };
+                if (input.page.kind === 'initial') return {
+                    kind: 'page',
+                    observations: Array.from({ length: 50 }, (_, index) => presentObservation({
+                        entryId: index === 0 ? 'shared-in-walk' : `new-${index}`,
+                        title: 'New change', sourceUpdatedAtMs: 1_000,
+                        involvement: index === 0 ? ['reviewRequested'] : ['participating'],
+                    })),
+                    evidence: { kind: 'partial', reason: 'more-pages' },
+                    continuation: { v: 1, token: 'terminal' },
+                };
+                if (outcome === 'failed') return {
+                    kind: 'failed', failure: { class: 'transient', code: 'terminal-failure' },
+                };
+                return {
+                    kind: 'complete',
+                    observations: ['shared-in-walk', 'seen-on-terminal'].map((entryId) => presentObservation({
+                        entryId, title: entryId, sourceUpdatedAtMs: 2_000, involvement: ['participating'],
+                    })),
+                    evidence: outcome === 'walkFinished' ? { kind: 'walkFinished' } : { kind: outcome, reason: 'unsettled' },
+                };
+            } });
+            const store = createTriageListWindowStore({ readEntries: harness.readEntries, nowMs: () => harness.clock.nowMs });
+            try {
+                await store.refresh('view');
+                refreshing = true;
+                await store.refresh('manual');
+                expect(store.getSnapshot().window?.rows.map((row) => row.entryRef.entryId)).toContain('old-only');
+                await store.loadMore();
+                const snapshot = store.getSnapshot();
+                const rows = snapshot.window?.rows ?? [];
+                expect(rows.some((row) => row.entryRef.entryId === 'old-only')).toBe(outcome !== 'walkFinished');
+                expect(snapshot.window?.coverage).toBe(outcome === 'walkFinished' ? 'complete' : 'partial');
+                expect(rows.find((row) => row.entryRef.entryId === 'shared-in-walk')?.attention?.reasonId)
+                    .toBe('involvement/review-requested');
+                if (outcome !== 'failed') {
+                    expect(rows.find((row) => row.entryRef.entryId === 'seen-on-terminal')?.attention?.reasonId)
+                        .toBe('involvement/participating');
+                } else {
+                    // A failed walk has no resumable custody. A later clean
+                    // first-page walk must not publish its abandoned pages.
+                    const retryAtMs = snapshot.refreshBlocked?.nextEligibleAtMs;
+                    if (retryAtMs === undefined) throw new Error('failed lane did not publish its retry deadline');
+                    harness.clock.nowMs = retryAtMs;
+                    refreshing = false;
+                    await store.refresh('manual');
+                    expect(store.getSnapshot().window?.coverage).toBe('complete');
+                    expect(store.getSnapshot().window?.rows.map((row) => row.entryRef.entryId).sort())
+                        .toEqual(['old-only', 'seen-on-terminal']);
+                }
+            } finally {
+                store.dispose();
+            }
+        },
+    );
 
     it('derives freshness from each lane completion rather than the final transport batch', async () => {
         const harness = createHarness({ configureSourceB: false });
@@ -1149,6 +1371,49 @@ describe('the mounted PRs & Issues window store', () => {
             kind: 'selected',
             sourceInstanceIds: [INSTANCE_A],
         });
+        store.dispose();
+    });
+
+    /**
+     * The published refusal is a promise about a moment, and a surface that
+     * disables **Refresh** until then has to be able to trust it.
+     *
+     * Across connections the aggregate refusal ends when the FIRST of them
+     * becomes eligible, because one eligible connection is enough for a press to
+     * read something — which is exactly the rule `refreshBlock` already applies
+     * when it returns "not blocked" the moment any source is eligible. Reporting
+     * the furthest deadline told the reader to come back at a time long after
+     * the press would have worked, and a control that waits for the moment it
+     * was given waits through the whole difference.
+     */
+    it('reports the moment its refusal ends, not the last connection to recover', async () => {
+        const harness = createHarness();
+        const store = createTriageListWindowStore({
+            readEntries: harness.readEntries,
+            nowMs: () => harness.clock.nowMs,
+        });
+        const firstEligibleAtMs = harness.clock.nowMs + 60_000;
+        // Both deadlines are far beyond the aggregate failure backoff, so each
+        // connection's own answer is its stated provider deadline.
+        harness.state.sourceAFailure = {
+            class: 'rateLimit',
+            code: 'secondary-limit',
+            retryNotBeforeMs: firstEligibleAtMs,
+        };
+        harness.state.sourceBFailure = {
+            class: 'rateLimit',
+            code: 'secondary-limit',
+            retryNotBeforeMs: harness.clock.nowMs + 300_000,
+        };
+
+        await store.refresh('view');
+        expect(store.getSnapshot().refreshBlocked)
+            .toEqual({ reason: 'sourceRetryDeadline', nextEligibleAtMs: firstEligibleAtMs });
+
+        // At that moment the refusal is over, with the other connection still
+        // waiting out its own much longer deadline.
+        harness.clock.nowMs = firstEligibleAtMs;
+        expect(store.getSnapshot().refreshBlocked).toBeUndefined();
         store.dispose();
     });
 
@@ -2168,4 +2433,84 @@ describe('appending another bounded window to one mount', () => {
 
         store.dispose();
     }, 60_000);
+
+    /**
+     * One walk, several involvement lanes, several transport windows.
+     *
+     * A source is designed to meet the same entry more than once inside one
+     * walk and to report only the fact each native lane established
+     * (`scm-github/src/triage/scan/frontier.ts`). Inside one Action invocation
+     * the canonical connection-answer fold already unions those encounters; a
+     * mount that appends a later window must keep doing so, or paging silently
+     * removes a pull request from **Needs your attention** while the source
+     * still requires the review.
+     */
+    it('unions the involvement one walk reported across appended windows', async () => {
+        const harness = createHarness({ admitSourceB: false, configureSourceB: false });
+        harness.state.sourceASplitsInvolvementAcrossWindows = true;
+        const store = createTriageListWindowStore({
+            readEntries: harness.readEntries,
+            nowMs: () => harness.clock.nowMs,
+        });
+
+        await store.refresh('view');
+        expect(store.getSnapshot().window?.rows[0]?.attention).toMatchObject({
+            level: 'required',
+            reasonId: 'involvement/review-requested',
+        });
+
+        // The appended window is genuinely newer, so its content wins and only
+        // involvement accumulates.
+        harness.clock.nowMs += 1;
+        await store.loadMore();
+
+        const row = store.getSnapshot().window?.rows[0];
+        expect(row?.entryRef.entryId).toBe('1');
+        expect(row?.observations.flatMap((observation) => (
+            observation.outcome.kind === 'present' ? [...observation.outcome.viewer.involvement] : []
+        ))).toEqual(['reviewRequested', 'participating']);
+        expect(row?.attention).toMatchObject({
+            level: 'required',
+            reasonId: 'involvement/review-requested',
+        });
+
+        store.dispose();
+    });
+
+    /**
+     * Accumulation is scoped to the walk that produced it.
+     *
+     * A later completed walk is authoritative about what it observed, so an
+     * involvement it no longer reports has to disappear. Without that
+     * distinction the union above becomes permanent and a withdrawn review
+     * request would keep demanding attention forever.
+     */
+    it('clears an involvement a later completed walk no longer reports', async () => {
+        const harness = createHarness({ admitSourceB: false, configureSourceB: false });
+        harness.state.sourceASplitsInvolvementAcrossWindows = true;
+        const store = createTriageListWindowStore({
+            readEntries: harness.readEntries,
+            nowMs: () => harness.clock.nowMs,
+        });
+
+        await store.refresh('view');
+        harness.clock.nowMs += 1;
+        await store.loadMore();
+
+        harness.state.sourceADropsReviewRequest = true;
+        harness.clock.nowMs += TRIAGE_VIEW_REFRESH_MIN_INTERVAL_MS + 1;
+        await store.refresh('manual');
+
+        const row = store.getSnapshot().window?.rows[0];
+        expect(row?.entryRef.entryId).toBe('1');
+        expect(row?.observations.flatMap((observation) => (
+            observation.outcome.kind === 'present' ? [...observation.outcome.viewer.involvement] : []
+        ))).toEqual(['participating']);
+        expect(row?.attention).toMatchObject({
+            level: 'suggested',
+            reasonId: 'involvement/participating',
+        });
+
+        store.dispose();
+    });
 });

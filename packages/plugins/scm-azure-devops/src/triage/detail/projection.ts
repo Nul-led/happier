@@ -5,6 +5,8 @@ import {
   projectTriageDisplayTextV1,
 } from '@happier-dev/triage-protocol/v1';
 
+import { readAzureChangeEntryRows } from '../decode.js';
+
 /**
  * The Azure DevOps detail boundary projector.
  *
@@ -125,14 +127,18 @@ export type AzurePageProjectionV1<TRow> = Readonly<{
   projectionTruncated: boolean;
 }>;
 
+/**
+ * Project already-admitted provider rows.
+ *
+ * The caller supplies an array because deciding that a response IS a collection belongs to the
+ * strict envelope owner one layer up (`decode.ts#readAzureCollectionRows`, consumed by
+ * `reads.ts`). A projector that accepted an arbitrary body could answer an unknown shape with a
+ * healthy empty page, which `sources/SCM.md` §2.9 and REQ-04 both forbid.
+ */
 function projectRows<TRow>(
-  body: unknown,
+  values: readonly unknown[],
   projectOne: (row: JsonRecord) => Readonly<{ row: TRow; truncated: boolean }> | null,
 ): AzurePageProjectionV1<TRow> {
-  // Azure wraps every collection as `{ count, value: [...] }`.
-  const values = isRecord(body) && Array.isArray(body.value)
-    ? body.value
-    : Array.isArray(body) ? body : [];
   const rows: TRow[] = [];
   let omitted = 0;
   let truncated = false;
@@ -170,10 +176,10 @@ export type AzureProjectedIterationRowV1 = Readonly<{
 }>;
 
 export function projectAzureIterationRows(
-  body: unknown,
+  rows: readonly unknown[],
   bounds: AzureDetailBoundsV1,
 ): AzurePageProjectionV1<AzureProjectedIterationRowV1> {
-  return projectRows(body, (raw) => {
+  return projectRows(rows, (raw) => {
     // A 1-based real iteration only. `0` is the comparison baseline, and a row
     // claiming it would let a caller path-address a resource that does not exist.
     const id = readPositiveInteger(raw.id);
@@ -211,10 +217,10 @@ export type AzureProjectedCommitRowV1 = Readonly<{
 }>;
 
 export function projectAzureCommitRows(
-  body: unknown,
+  rows: readonly unknown[],
   bounds: AzureDetailBoundsV1,
 ): AzurePageProjectionV1<AzureProjectedCommitRowV1> {
-  return projectRows(body, (raw) => {
+  return projectRows(rows, (raw) => {
     const commitId = bounded(raw.commitId, bounds.identifierUtf8Bytes);
     if (commitId === null) return null;
     const comment = bounded(raw.comment, bounds.textUtf8Bytes);
@@ -268,13 +274,15 @@ export type AzureChangesProjectionV1 =
     continuationMalformed: boolean;
   }>;
 
+/**
+ * The changed-file page and its provider-issued position, from the one response that carries
+ * both. The read boundary has already refused a body that is not a changes collection.
+ */
 export function projectAzureIterationChanges(
   body: unknown,
   bounds: AzureDetailBoundsV1,
 ): AzureChangesProjectionV1 {
-  const changes = isRecord(body) && Array.isArray(body.changeEntries)
-    ? { value: body.changeEntries }
-    : body;
+  const changes = readAzureChangeEntryRows(body) ?? [];
   const projected = projectRows<AzureProjectedChangedFileRowV1>(changes, (raw) => {
     const item = isRecord(raw.item) ? raw.item : {};
     const path = bounded(item.path, bounds.locationUtf8Bytes);
@@ -326,10 +334,10 @@ export type AzureProjectedStatusRowV1 = Readonly<{
 }>;
 
 export function projectAzureStatusRows(
-  body: unknown,
+  rows: readonly unknown[],
   bounds: AzureDetailBoundsV1,
 ): AzurePageProjectionV1<AzureProjectedStatusRowV1> {
-  return projectRows(body, (raw) => {
+  return projectRows(rows, (raw) => {
     const id = readPositiveInteger(raw.id);
     const state = bounded(raw.state, bounds.textUtf8Bytes);
     if (id === null || state === null) return null;
@@ -379,10 +387,10 @@ export type AzureProjectedPolicyEvaluationRowV1 = Readonly<{
 }>;
 
 export function projectAzurePolicyEvaluationRows(
-  body: unknown,
+  rows: readonly unknown[],
   bounds: AzureDetailBoundsV1,
 ): AzurePageProjectionV1<AzureProjectedPolicyEvaluationRowV1> {
-  return projectRows(body, (raw) => {
+  return projectRows(rows, (raw) => {
     const evaluationId = bounded(raw.evaluationId, bounds.identifierUtf8Bytes);
     const status = bounded(raw.status, bounds.textUtf8Bytes);
     if (evaluationId === null || status === null) return null;
@@ -445,10 +453,10 @@ export type AzureProjectedThreadRowV1 = Readonly<{
 }>;
 
 export function projectAzureThreadRows(
-  body: unknown,
+  rows: readonly unknown[],
   bounds: AzureDetailBoundsV1,
 ): AzurePageProjectionV1<AzureProjectedThreadRowV1> {
-  return projectRows(body, (raw) => {
+  return projectRows(rows, (raw) => {
     const id = readPositiveInteger(raw.id);
     if (id === null) return null;
     const status = bounded(raw.status, bounds.textUtf8Bytes);
@@ -460,7 +468,7 @@ export function projectAzureThreadRows(
 
     const allComments = Array.isArray(raw.comments) ? raw.comments : [];
     const comments = projectRows<AzureProjectedThreadCommentV1>(
-      { value: allComments },
+      allComments,
       (comment) => {
         const commentId = readPositiveInteger(comment.id);
         if (commentId === null) return null;

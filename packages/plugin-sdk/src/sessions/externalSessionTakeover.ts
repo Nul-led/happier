@@ -7,6 +7,7 @@ import { cloneStrictPluginJsonValue } from '@happier-dev/protocol/plugins/action
 import {
     RuntimeDescriptorV1Schema,
 } from '@happier-dev/protocol/sessions/metadata/runtime-descriptor';
+import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol/strings/opaqueIdentifier';
 
 import type {
     AgentExternalSessionLinkData,
@@ -276,6 +277,16 @@ export function validateAgentExternalSessionTakeoverResolveLaunchRequest(
             AGENT_EXTERNAL_SESSION_TAKEOVER_LIMITS.maxLinkedDirectoryCodeUnits,
             'resolveLaunch request linkedDirectory',
         );
+    const remoteSessionId = readNonBlankOpaqueIdentifier(record.remoteSessionId);
+    if (remoteSessionId === null
+        || remoteSessionId.length
+            > AGENT_EXTERNAL_SESSION_TAKEOVER_LIMITS.maxRemoteSessionIdCodeUnits) {
+        return invalid(
+            'resolveLaunch request remoteSessionId',
+            'must be a non-blank opaque identifier of at most '
+            + `${AGENT_EXTERNAL_SESSION_TAKEOVER_LIMITS.maxRemoteSessionIdCodeUnits} code units`,
+        );
+    }
     return Object.freeze({
         ...snapshotInvocation(record),
         linkedSessionId: boundedString(
@@ -285,12 +296,7 @@ export function validateAgentExternalSessionTakeoverResolveLaunchRequest(
             'resolveLaunch request linkedSessionId',
         ),
         source: source.data as AgentExternalSessionSource,
-        remoteSessionId: boundedString(
-            record.remoteSessionId,
-            1,
-            AGENT_EXTERNAL_SESSION_TAKEOVER_LIMITS.maxRemoteSessionIdCodeUnits,
-            'resolveLaunch request remoteSessionId',
-        ),
+        remoteSessionId,
         linkData: linkData.data,
         targetDirectory: boundedString(
             record.targetDirectory,

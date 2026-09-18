@@ -42,6 +42,10 @@ function displayRow(
     pinned: false,
     materialized: true,
     sourceInstanceId: null,
+    kindId: 'pull-request',
+    lifecycleLabel: 'Open',
+    observedAtMs: 1_000,
+    stale: false,
     ...overrides,
   };
 }
@@ -78,50 +82,114 @@ describe('a PRs & Issues entry row\u2019s secondary actions', () => {
   });
 });
 
+/** The clock and locale every announcement below is stated against. */
+const ANNOUNCED = Object.freeze({ nowMs: 1_760_000_000_000, locale: 'en' });
+
 describe('a PRs & Issues entry row', () => {
+  it('retains the source identity when its declared display name is unavailable', () => {
+    const props = triageListRowItemProps(displayRow(), false, {
+      ...ANNOUNCED, source: SOURCE, descriptor: null,
+    });
+    expect(props.subtitle).toContain('happier.forge/items');
+  });
+  it('visibly distinguishes same-title entries by declared source, kind, identifier and lifecycle', () => {
+    const descriptor = {
+      v: 1 as const,
+      purpose: 'triage-source',
+      displayName: 'Example forge',
+      kinds: [
+        { id: 'pull-request', workflowSubject: 'pullRequest' as const, displayName: 'Pull request' },
+        { id: 'issue', workflowSubject: 'issue' as const, displayName: 'Code issue' },
+      ],
+    };
+    const first = triageListRowItemProps(displayRow({ identifierLabel: 'example/repository#31' }), false, {
+      ...ANNOUNCED, descriptor,
+    });
+    const second = triageListRowItemProps(displayRow({
+      kindId: 'issue',
+      identifierLabel: 'example/repository#32',
+      lifecycleLabel: 'Closed',
+    }), false, { ...ANNOUNCED, descriptor });
+    expect(first.title).toBe(second.title);
+    expect(first.subtitle).toContain('Example forge');
+    expect(first.subtitle).toContain('Pull request');
+    expect(first.subtitle).toContain('example/repository#31');
+    expect(first.subtitle).toContain('Open');
+    expect(second.subtitle).toContain('Code issue');
+    expect(second.subtitle).toContain('example/repository#32');
+    expect(second.subtitle).toContain('Closed');
+    expect(first.accessibilityHint).toContain('Pull request');
+    expect(first.accessibilityHint).not.toContain('pull-request');
+  });
   it('keeps the entry as its accessible name and says the rest beside it', () => {
     // `core/SURFACE.md` §7.1 requires the attention reason to be announced.
     // Pinning the name to the title is what stops the shared row composing
     // "Replace the duplicated normalizerexample/repository" — and it is also
     // what silenced every other word on the row until this description existed.
-    const props = triageListRowItemProps(displayRow({ detail: 'Your review is requested' }), false);
+    const props = triageListRowItemProps(
+      displayRow({ detail: 'Your review is requested' }),
+      false,
+      ANNOUNCED,
+    );
 
     expect(props.accessibilityLabel).toBe('Replace the duplicated normalizer');
-    expect(props.accessibilityHint).toBe('example/repository, Your review is requested');
+    // Kind and lifecycle are announced too: a reader moving row by row hears no
+    // section heading and sees no state chip (`core/SURFACE.md` §7.1).
+    expect(props.accessibilityHint)
+      .toBe('pull-request, example/repository, Open, Your review is requested');
   });
 
   it('still names the owning scope when the row has nothing else to add', () => {
     // Two repositories routinely hold an entry with the same title, and the
     // name deliberately does not disambiguate them.
-    expect(triageListRowItemProps(displayRow(), false).accessibilityHint)
-      .toBe('example/repository');
+    expect(triageListRowItemProps(displayRow(), false, ANNOUNCED).accessibilityHint)
+      .toBe('pull-request, example/repository, Open');
   });
 
   it('announces the freshness note of a pin this mount never materialized', () => {
     const props = triageListRowItemProps(
-      displayRow({ detail: 'Not yet synchronized', materialized: false, pinned: true }),
+      displayRow({
+        detail: 'Not yet synchronized',
+        materialized: false,
+        pinned: true,
+        // Nothing materialized this pin, so this mount knows no lifecycle and
+        // no observation moment for it.
+        lifecycleLabel: null,
+        observedAtMs: null,
+      }),
       false,
+      ANNOUNCED,
     );
 
-    expect(props.accessibilityHint).toBe('example/repository, Not yet synchronized');
+    expect(props.accessibilityHint).toBe('pull-request, example/repository, Not yet synchronized');
   });
 
   it('announces why an entry the source dropped is still listed', () => {
     // A presence note is the row's whole reason for looking different, and it
     // is stated in words rather than by tone alone (§7.1).
     const props = triageListRowItemProps(
-      displayRow({ detail: 'No longer reported by the source', tone: 'danger' }),
+      displayRow({
+        detail: 'No longer reported by the source',
+        tone: 'danger',
+        lifecycleLabel: null,
+      }),
       false,
+      ANNOUNCED,
     );
 
-    expect(props.accessibilityHint).toBe('example/repository, No longer reported by the source');
+    expect(props.accessibilityHint)
+      .toBe('pull-request, example/repository, No longer reported by the source');
     expect(props.tone).toBe('danger');
   });
 
   it('never repeats the entry it has already been named after', () => {
     // A description that restates the name makes every row announce itself
     // twice, which is the failure the pinned name exists to prevent.
-    const props = triageListRowItemProps(displayRow({ detail: 'Your review is requested' }), false);
+    const props = triageListRowItemProps(
+      displayRow({ detail: 'Your review is requested' }),
+      false,
+      ANNOUNCED,
+    );
 
     expect(props.accessibilityHint).not.toContain('Replace the duplicated normalizer');
   });
@@ -129,17 +197,21 @@ describe('a PRs & Issues entry row', () => {
   it('shows the same words it announces, in the same order', () => {
     // The description is the row's own visible content, not a second copy that
     // can drift from it. Nothing is announced that the row does not display.
-    const props = triageListRowItemProps(displayRow({ detail: 'Your review is requested' }), true);
+    const props = triageListRowItemProps(
+      displayRow({ detail: 'Your review is requested' }),
+      true,
+      ANNOUNCED,
+    );
 
     expect(props).toEqual({
       testID: triageListRowTestId('happier.forge/items|pull-request|origin|31'),
       title: 'Replace the duplicated normalizer',
-      subtitle: 'example/repository',
+      subtitle: 'pull-request · example/repository · Open',
       detail: 'Your review is requested',
       tone: 'neutral',
       busy: true,
       accessibilityLabel: 'Replace the duplicated normalizer',
-      accessibilityHint: 'example/repository, Your review is requested',
+      accessibilityHint: 'pull-request, example/repository, Open, Your review is requested',
       // The row's own text is bounded, because the shared virtualizer has no
       // fixed row height and reveals an unmounted row by the measured average.
       // A provider title is a bounded 4 KiB string, not a bounded LINE COUNT:
@@ -156,7 +228,7 @@ describe('a PRs & Issues entry row', () => {
     // keeps a pathological row comparable to its neighbours, so it has to hold
     // exactly where it matters.
     const paragraph = 'Replace the duplicated normalizer. '.repeat(40);
-    const props = triageListRowItemProps(displayRow({ title: paragraph }), false);
+    const props = triageListRowItemProps(displayRow({ title: paragraph }), false, ANNOUNCED);
 
     expect(props.titleNumberOfLines).toBe(2);
     // ...and the whole title still reaches assistive technology as the row's
@@ -165,7 +237,23 @@ describe('a PRs & Issues entry row', () => {
   });
 
   it('carries no detail slot at all when the row has no trailing line', () => {
-    expect(Object.hasOwn(triageListRowItemProps(displayRow(), false), 'detail')).toBe(false);
+    expect(Object.hasOwn(triageListRowItemProps(displayRow(), false, ANNOUNCED), 'detail'))
+      .toBe(false);
+  });
+
+  it('tells a reader that a retained row is not a current observation', () => {
+    // The window says once, above the list, that it is showing the last known
+    // rows. A reader walking rows never reaches that sentence, so each retained
+    // row carries the same fact and the age it is known to.
+    const props = triageListRowItemProps(
+      displayRow({ stale: true, observedAtMs: ANNOUNCED.nowMs - 240_000 }),
+      false,
+      ANNOUNCED,
+    );
+
+    expect(props.accessibilityHint).toBe(
+      'pull-request, example/repository, Open, Stale, last seen 4 minutes ago',
+    );
   });
 });
 

@@ -11,6 +11,10 @@ import {
     ConversationProviderConnectionsListResultV1JsonSchema,
 } from '../provider/connection.js';
 import {
+    ConversationPermissionMediationSourceCurrentnessInputV1JsonSchema,
+    ConversationPermissionMediationSourceCurrentnessResultV1JsonSchema,
+} from '../management/permissionMediationSourceCurrentness.js';
+import {
     ConversationProviderObservationIngestInputV1JsonSchema,
 } from './ingress.js';
 import {
@@ -19,8 +23,8 @@ import {
 } from './transportFacts.js';
 
 /**
- * Schema declarations for the finite core Actions that provider callers may
- * invoke. The Channels manifest owns Action id, surface, and danger facts;
+ * Schema declarations for the finite core Actions that plugin-authority or
+ * host-background callers may invoke. The Channels manifest owns Action id, surface, and danger facts;
  * this protocol projection owns only their exact input/result contracts.
  */
 export const CONVERSATION_CORE_PROVIDER_ACTION_DECLARATIONS_V1: ConversationCoreProviderActionDeclarationsV1 = Object.freeze({
@@ -42,5 +46,9 @@ export const CONVERSATION_CORE_PROVIDER_ACTION_DECLARATIONS_V1: ConversationCore
     automationResultDeliver: Object.freeze({
         inputSchema: AutomationResultDeliveryInputV1JsonSchema,
         resultSchema: AutomationResultDeliveryResultV1JsonSchema,
+    }),
+    permissionMediationSourceCurrentness: Object.freeze({
+        inputSchema: ConversationPermissionMediationSourceCurrentnessInputV1JsonSchema,
+        resultSchema: ConversationPermissionMediationSourceCurrentnessResultV1JsonSchema,
     }),
 });

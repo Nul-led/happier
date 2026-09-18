@@ -11,6 +11,7 @@ import {
 import type { CodexExternalSessionSource } from '../../surfaces/sessions/external/models.js';
 import type { CodexExternalSessionHomeEntry } from './homeEntries.js';
 import { homeEntries } from './homeEntries.js';
+import { readExactCodexProviderSessionId } from '../../../protocol/runtimeDescriptorV1.js';
 import {
   parseCodexRolloutSessionIdFromFilename,
   readCodexSessionMetaFromRollout,
@@ -320,8 +321,9 @@ async function resolveRolloutCandidateSessionId(
   }
   const sessionMeta = await readCodexSessionMetaFromRollout(filePath, bounds);
   throwIfCodexExternalSessionInvocationStopped(bounds);
-  const sessionId = typeof sessionMeta?.id === 'string' ? sessionMeta.id.trim() : '';
-  return sessionId || null;
+  // Codex recorded this id in session_meta; keep its exact bytes so the
+  // candidate names the same session the rollout inventory matches.
+  return readExactCodexProviderSessionId(sessionMeta?.id);
 }
 
 export async function collectCodexRolloutCandidateEntries(params: Readonly<{

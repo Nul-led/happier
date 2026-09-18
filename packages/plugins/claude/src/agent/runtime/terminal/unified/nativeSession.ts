@@ -67,6 +67,18 @@ function readUpdatedPermissions(
     : undefined;
 }
 
+function readStructuredQuestionAnswers(
+  value: unknown,
+): Readonly<Record<string, readonly string[]>> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const answers: Record<string, readonly string[]> = {};
+  for (const [question, answer] of Object.entries(value)) {
+    if (typeof answer !== 'string' || answer.length === 0) continue;
+    answers[question] = [answer];
+  }
+  return Object.keys(answers).length > 0 ? answers : undefined;
+}
+
 export function createNativePermissionDecisionAdapter(context: AgentSessionRuntimeContext) {
   const engine = createClaudeNativePermissionEngine(context);
   return {
@@ -86,10 +98,14 @@ export function createNativePermissionDecisionAdapter(context: AgentSessionRunti
       const updatedPermissions = result.behavior === 'allow'
         ? readUpdatedPermissions(result.updatedPermissions)
         : undefined;
+      const answers = result.behavior === 'allow'
+        ? readStructuredQuestionAnswers(result.updatedInput?.answers)
+        : undefined;
       const decision: ClaudePermissionDecision = result.behavior === 'allow'
         ? {
             decision: 'approved',
             updatedInput: result.updatedInput,
+            ...(answers ? { answers } : {}),
             ...(updatedPermissions ? { updatedPermissions } : {}),
           }
         : {

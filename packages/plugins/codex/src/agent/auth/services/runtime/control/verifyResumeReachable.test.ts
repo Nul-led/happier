@@ -28,6 +28,39 @@ describe('verifyResumeReachableCodex', () => {
     });
   });
 
+  it('matches the exact vendor resume id bytes and never a stripped sibling', async () => {
+    const exactVendorResumeId = '  provider ses AB+cd==  ';
+    const strippedVendorResumeId = exactVendorResumeId.trim();
+    const strippedOnly = createLookup([{
+      fileName: `rollout-2026-09-13T12-00-00-${strippedVendorResumeId}.jsonl`,
+      nativeSessionId: null,
+    }]);
+    await expect(verifyResumeReachableCodex({
+      vendorResumeId: exactVendorResumeId,
+      sessionFiles: strippedOnly,
+    })).resolves.toEqual({ ok: false, reason: 'codex_session_file_not_found' });
+
+    const exactOnly = createLookup([{
+      fileName: `rollout-2026-09-13T12-00-00-${exactVendorResumeId}.jsonl`,
+      nativeSessionId: null,
+    }]);
+    await expect(verifyResumeReachableCodex({
+      vendorResumeId: exactVendorResumeId,
+      sessionFiles: exactOnly,
+    })).resolves.toEqual({ ok: true });
+    await expect(verifyResumeReachableCodex({
+      vendorResumeId: strippedVendorResumeId,
+      sessionFiles: exactOnly,
+    })).resolves.toEqual({ ok: false, reason: 'codex_session_file_not_found' });
+
+    const blank = createLookup([]);
+    await expect(verifyResumeReachableCodex({
+      vendorResumeId: ' \n ',
+      sessionFiles: blank,
+    })).resolves.toEqual({ ok: false, reason: 'codex_session_file_not_found' });
+    expect(blank.findDeclaredCandidate).not.toHaveBeenCalled();
+  });
+
   it('fails closed for path-shaped identifiers before asking the host to search', async () => {
     const sessionFiles = createLookup([]);
     await expect(verifyResumeReachableCodex({

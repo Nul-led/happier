@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+    hasCodexAppServerCollaborationMode,
     readCodexAppServerSessionControls,
     resolveCodexAppServerCollaborationModeSelection,
 } from './controls';
@@ -173,5 +174,19 @@ describe('Codex app-server session controls', () => {
                 },
             },
         });
+    });
+
+    it('distinguishes a missing mode from a mode that only needs model fallback data', () => {
+        const modesResponse = {
+            data: [{ id: 'plan', name: 'Plan', mode: 'plan', model: null }],
+        };
+
+        expect(hasCodexAppServerCollaborationMode(modesResponse, 'plan')).toBe(true);
+        expect(hasCodexAppServerCollaborationMode(modesResponse, 'missing')).toBe(false);
+        expect(resolveCodexAppServerCollaborationModeSelection({
+            modesResponse,
+            modeId: 'plan',
+            currentModelId: null,
+        })).toBeNull();
     });
 });

@@ -33,6 +33,13 @@ describe('the one git worktree add owner', () => {
         })).toEqual(['worktree', 'add', '--', '.dev/worktree/feature/auth', 'feature/auth']);
     });
 
+    it('forces only an explicitly requested missing registered worktree recovery', () => {
+        expect(buildGitWorktreeAddArgs({
+            branchName: 'feature/auth', worktreePath: '/repo/.worktrees/auth',
+            branchMode: 'existing', force: true,
+        })).toEqual(['worktree', 'add', '--force', '--', '/repo/.worktrees/auth', 'feature/auth']);
+    });
+
     it('omits an absent base ref rather than passing an empty argument', () => {
         expect(buildGitWorktreeAddArgs({
             branchName: 'feature',

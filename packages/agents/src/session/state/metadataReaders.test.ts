@@ -5,6 +5,7 @@ import {
   readActiveSessionModelSelectionFromMetadata,
   resolveAmbientProviderConnectionForModelIntent,
   resolveModelSelectionIntentFromSessionMetadata,
+  readSessionModelSelectionV2FromMetadata,
 } from './metadataReaders.js';
 
 describe('isProviderBoundSessionMetadata', () => {
@@ -59,6 +60,19 @@ describe('isProviderBoundSessionMetadata', () => {
 });
 
 describe('resolveModelSelectionIntentFromSessionMetadata', () => {
+  it('reads an exact Team V2 intent without fabricating a Provider connection', () => {
+    expect(readSessionModelSelectionV2FromMetadata({
+      modelSelectionIntentV2: {
+        v: 2,
+        updatedAt: 12,
+        ref: {
+          source: 'team_resource', resourceId: 'resource-1', teamId: 'team-1',
+          expectedResourceRevision: 4, deliveryMode: 'brokered',
+          agentTargetKey: 'backend:codex', modelId: 'model-1',
+        },
+      },
+    })?.ref).toMatchObject({ source: 'team_resource', teamId: 'team-1', expectedResourceRevision: 4 });
+  });
   it('normalizes legacy input only after the exact target is supplied', () => {
     expect(resolveModelSelectionIntentFromSessionMetadata({
       modelOverrideV1: { v: 1, updatedAt: 4, modelId: 'legacy-native' },

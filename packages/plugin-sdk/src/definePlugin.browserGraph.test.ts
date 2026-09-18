@@ -68,6 +68,7 @@ describe('definePlugin browser graph', () => {
     expect(protocol.COMPOSER_ATTACHMENT_RUNTIME_REGISTRATION_FIELDS_V1).toEqual([
       'prepareForSend',
       'resolveForDispatch',
+      'resolveForDispatchV2',
       'afterMessageAccepted',
     ]);
   });

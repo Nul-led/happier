@@ -13,30 +13,24 @@ import {
     type HostedWebPluginUiClientRealm,
 } from './hostedWebClientBootstrap.js';
 
-const identity = {
-    pluginId: 'acme.preview',
-    pluginVersion: '1.2.3',
-    viewId: 'preview',
-    generation: '7',
-    sessionId: 'session-1',
-} as const;
+const identity = { instanceId: 'mount-1', mountNonce: 'nonce-1' } as const;
 
 function createRealm(
     hrefSuffix = '',
     frameHref = 'https://plugin.test/panel',
 ) {
     const listeners = new Set<(event: unknown) => void>();
-    const posted: Array<{ message: unknown; targetOrigin: string }> = [];
+    const posted: Array<{ message: unknown; targetOrigin: string; transfer?: readonly unknown[] }> = [];
     const parent = {
-        postMessage(message: unknown, targetOrigin: string) {
-            posted.push({ message, targetOrigin });
+        postMessage(message: unknown, targetOrigin: string, transfer?: readonly unknown[]) {
+            posted.push({ message, targetOrigin, ...(transfer ? { transfer } : {}) });
         },
     };
     const realm: HostedWebPluginUiClientRealm = {
         location: {
             href: `${frameHref}?happierBridgeNonce=nonce-1`
-                + '&happierPluginId=acme.preview&happierContributionId=preview-web'
-                + '&happierSurfaceId=preview-surface'
+                + '&happierInstanceId=mount-1'
+                + ''
                 + '&happierHostOrigin=https%3A%2F%2Fhost.test'
                 + hrefSuffix,
         },
@@ -59,53 +53,151 @@ function createRealm(
     };
 }
 
+function installDocumentChannel(realm: HostedWebPluginUiClientRealm) {
+    const guestPort = {
+        onmessage: null as ((event: { data?: unknown }) => void) | null,
+        postMessage: vi.fn(), start: vi.fn(), close: vi.fn(),
+    };
+    const hostPort = {
+        onmessage: null as ((event: { data?: unknown }) => void) | null,
+        postMessage: vi.fn(), start: vi.fn(), close: vi.fn(),
+    };
+    guestPort.postMessage.mockImplementation((data) => hostPort.onmessage?.({ data }));
+    hostPort.postMessage.mockImplementation((data) => guestPort.onmessage?.({ data }));
+    Object.defineProperty(realm, 'MessageChannel', {
+        value: class FakeMessageChannel { readonly port1 = guestPort; readonly port2 = hostPort; },
+    });
+    return { guestPort, hostPort };
+}
+
 function bootstrapMessage(overrides: Readonly<Record<string, unknown>> = {}) {
-    return {
-        version: 1,
-        direction: 'hostToFrame',
-        pluginId: 'acme.preview',
-        contributionId: 'preview-web',
-        surfaceId: 'preview-surface',
-        sessionId: 'session-1',
-        nonce: 'nonce-1',
-        sequence: 1,
-        origin: 'https://plugin.test',
-        kind: 'bootstrap',
-        payload: {
+    return { identity: { instanceId: 'mount-1', mountNonce: 'nonce-1' }, version: 1, direction: 'hostToFrame', sequence: 1, origin: 'https://plugin.test', kind: 'bootstrap', payload: {
             apiVersion: '1.0.0',
             wireVersion: 1,
             identity,
             subPath: 'work/ideas.md',
             launchInput: { noteId: 'note-7' },
-        },
-        ...overrides,
-    };
+        }, ...overrides };
 }
 
 function readyAcknowledgementMessage(input: Readonly<{
     accountData?: boolean;
 }> = {}) {
-    return {
-        version: 1,
-        pluginId: 'acme.preview',
-        contributionId: 'preview-web',
-        surfaceId: 'preview-surface',
-        sessionId: 'session-1',
-        nonce: 'nonce-1',
-        sequence: 2,
-        requestSequence: 1,
-        kind: 'ack',
-        payload: {
+    return { identity: { instanceId: 'mount-1', mountNonce: 'nonce-1' }, version: 1, sequence: 2, requestSequence: 1, kind: 'ack', payload: {
             accepted: true,
             ...(input.accountData === undefined
                 ? {}
                 : { capabilities: { accountData: input.accountData } }),
-        },
-    };
+        } };
 }
 
 describe('hosted-web UI client bootstrap', () => {
-    it('binds the Session only from the verified post-ready bootstrap and ignores a legacy frame query', async () => {
+    it('carries only genuine primary-button HTTP(S) anchor activation outside Host API', () => {
+        const harness = createRealm('', 'about:srcdoc');
+        const clickListeners = new Set<(event: unknown) => void>();
+        Object.defineProperty(harness.realm, 'document', {
+            value: {
+                addEventListener: (_type: 'click', listener: (event: unknown) => void) => clickListeners.add(listener),
+                removeEventListener: (_type: 'click', listener: (event: unknown) => void) => clickListeners.delete(listener),
+            },
+        });
+        Object.defineProperty(harness.realm, '__HAPPIER_UI_FRAME_BOOTSTRAP_V1__', {
+            value: {
+                identity,
+                frameOrigin: 'null',
+                hostOrigin: 'https://host.test',
+            },
+        });
+        Object.defineProperty(harness.realm, '__HAPPIER_UI_FRAME_EXTERNAL_LINKS_V1__', { value: true });
+        const { guestPort } = installDocumentChannel(harness.realm);
+        expect(installHostedWebPluginUiHostApiClientBootstrap(harness.realm)).toBe(true);
+        const click = (href: string, isTrusted: boolean) => {
+            const preventDefault = vi.fn();
+            for (const listener of clickListeners) listener({
+                isTrusted,
+                defaultPrevented: false,
+                button: 0,
+                metaKey: false,
+                ctrlKey: false,
+                shiftKey: false,
+                altKey: false,
+                preventDefault,
+                target: { closest: () => ({ href }) },
+            });
+            return preventDefault;
+        };
+
+        expect(click('https://example.test/docs', true)).toHaveBeenCalledOnce();
+        expect(guestPort.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+            kind: 'openExternal',
+            payload: { url: 'https://example.test/docs' },
+        }));
+        const sentCount = guestPort.postMessage.mock.calls.length;
+        expect(click('javascript:alert(1)', true)).toHaveBeenCalledOnce();
+        click('data:text/html,hello', true);
+        click('https://example.test/synthetic', false);
+        expect(guestPort.postMessage).toHaveBeenCalledTimes(sentCount);
+    });
+
+    it('offers the guest-owned document port with ready and retires the WindowProxy listener', async () => {
+        const harness = createRealm('', 'about:srcdoc');
+        Object.defineProperty(harness.realm, '__HAPPIER_UI_FRAME_BOOTSTRAP_V1__', {
+            value: { identity, frameOrigin: 'null', hostOrigin: 'https://host.test' },
+        });
+        const { guestPort, hostPort } = installDocumentChannel(harness.realm);
+        expect(installHostedWebPluginUiHostApiClientBootstrap(harness.realm)).toBe(true);
+        expect(harness.listenerCount()).toBe(0);
+        expect(guestPort.start).toHaveBeenCalledTimes(1);
+        expect(harness.posted[0]?.transfer).toEqual([hostPort]);
+
+        const readiness = awaitHostedWebPluginUiHostApiClientBootstrap(harness.realm);
+        hostPort.postMessage(bootstrapMessage({ origin: 'null' }));
+        const bootstrap = await readiness;
+        await bootstrap.transport.send({
+            wireVersion: 1,
+            kind: 'negotiate',
+            identity,
+            apiRange: '^1.0.0',
+        });
+
+        expect(harness.posted).toHaveLength(1);
+        expect(guestPort.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+            kind: 'hostApi',
+            identity,
+        }));
+        harness.dispatch({
+            source: harness.parent,
+            origin: 'https://host.test',
+            data: { ...bootstrapMessage(), sequence: 99 },
+        });
+        expect(guestPort.postMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it('bootstraps a by-value HTML frame through the same opaque ready handshake', async () => {
+        const harness = createRealm('', 'about:srcdoc');
+        const opaqueIdentity = { instanceId: 'html-mount', mountNonce: 'html-nonce' };
+        Object.defineProperty(harness.realm, '__HAPPIER_UI_FRAME_BOOTSTRAP_V1__', {
+            value: { identity: opaqueIdentity, frameOrigin: 'null', hostOrigin: 'https://host.test' },
+        });
+        const { guestPort, hostPort } = installDocumentChannel(harness.realm);
+        expect(installHostedWebPluginUiHostApiClientBootstrap(harness.realm)).toBe(true);
+        expect(harness.posted[0]?.message).toEqual({
+            version: 1, identity: opaqueIdentity, sequence: 1, kind: 'ready', payload: { ready: true },
+        });
+        const readiness = awaitHostedWebPluginUiHostApiClientBootstrap(harness.realm);
+        hostPort.postMessage({
+            version: 1, identity: opaqueIdentity, direction: 'hostToFrame', sequence: 1,
+            origin: 'null', kind: 'bootstrap',
+            payload: { apiVersion: '1.0.0', wireVersion: 1, identity: opaqueIdentity, launchInput: { value: '</script>' } },
+        });
+        const bootstrap = await readiness;
+        expect(bootstrap.identity).toEqual(opaqueIdentity);
+        expect(bootstrap.launchInput).toEqual({ value: '</script>' });
+        expect(bootstrap.authorPlugin).toBeUndefined();
+        await bootstrap.transport.send({ wireVersion: 1, identity: opaqueIdentity, kind: 'negotiate', apiRange: '^1' });
+        expect(guestPort.postMessage).toHaveBeenCalledWith(expect.objectContaining({ identity: opaqueIdentity, kind: 'hostApi' }));
+    });
+    it('keeps Session identity out of the bridge and ignores a legacy frame query', async () => {
         const harness = createRealm(
             '&happierSessionId=stale-session',
             'https://artifacts.happier.test/capability/',
@@ -139,7 +231,7 @@ describe('hosted-web UI client bootstrap', () => {
             targetOrigin: 'https://host.test',
             message: expect.objectContaining({
                 kind: 'hostApi',
-                sessionId: 'session-1',
+                identity,
                 payload: expect.objectContaining({ identity }),
             }),
         });
@@ -151,13 +243,7 @@ describe('hosted-web UI client bootstrap', () => {
         expect(installHostedWebPluginUiHostApiClientBootstrap(harness.realm)).toBe(true);
         expect(harness.posted).toEqual([{
             targetOrigin: 'https://host.test',
-            message: expect.objectContaining({
-                kind: 'ready',
-                nonce: 'nonce-1',
-                pluginId: 'acme.preview',
-                contributionId: 'preview-web',
-                surfaceId: 'preview-surface',
-            }),
+            message: expect.objectContaining({ identity: { instanceId: 'mount-1', mountNonce: 'nonce-1' }, kind: 'ready' }),
         }]);
 
         const readiness = awaitHostedWebPluginUiHostApiClientBootstrap(harness.realm);
@@ -189,7 +275,7 @@ describe('hosted-web UI client bootstrap', () => {
             targetOrigin: 'https://host.test',
             message: expect.objectContaining({
                 kind: 'hostApi',
-                nonce: 'nonce-1',
+                identity,
                 payload: expect.objectContaining({ kind: 'negotiate', identity }),
             }),
         });
@@ -197,25 +283,14 @@ describe('hosted-web UI client bootstrap', () => {
         harness.dispatch({
             source: harness.parent,
             origin: 'https://host.test',
-            data: {
-                version: 1,
-                pluginId: 'acme.preview',
-                contributionId: 'preview-web',
-                surfaceId: 'preview-surface',
-                sessionId: 'session-1',
-                nonce: 'nonce-1',
-                sequence: 2,
-                requestSequence: 2,
-                kind: 'result',
-                payload: {
+            data: { identity: { instanceId: 'mount-1', mountNonce: 'nonce-1' }, version: 1, sequence: 2, requestSequence: 2, kind: 'result', payload: {
                     wireVersion: 1,
                     kind: 'negotiated',
                     identity,
                     apiVersion: '1.0.0',
                     methods: ['context'],
                     surface: { placement: 'settingsPage' },
-                },
-            },
+                } },
         });
         expect(received).toHaveBeenCalledWith(expect.objectContaining({ kind: 'negotiated', identity }));
 
@@ -255,33 +330,20 @@ describe('hosted-web UI client bootstrap', () => {
         });
         const currentAnswerSequence = (harness.posted.at(-1)?.message as Readonly<{ sequence: number }>).sequence;
 
-        // A superseded mount of the same plugin/view differs only by generation.
-        // The bridge nonce, origin, Session and request correlation all still
-        // match, so whole-identity equality is the only thing keeping this
-        // answer out of the frame.
-        const supersededIdentity = { ...identity, generation: '8' } as const satisfies PluginUiHostApiWireIdentityV1;
+        // Outer correlation still matches, but an inner answer from a retired
+        // document must not settle a request in its replacement.
+        const supersededIdentity = { ...identity, mountNonce: 'nonce-2' } as const satisfies PluginUiHostApiWireIdentityV1;
         const negotiated = (
             wireIdentity: PluginUiHostApiWireIdentityV1,
             requestSequence: number,
-        ) => ({
-            version: 1,
-            pluginId: 'acme.preview',
-            contributionId: 'preview-web',
-            surfaceId: 'preview-surface',
-            sessionId: 'session-1',
-            nonce: 'nonce-1',
-            sequence: requestSequence + 10,
-            requestSequence,
-            kind: 'result',
-            payload: {
+        ) => ({ identity: { instanceId: 'mount-1', mountNonce: 'nonce-1' }, version: 1, sequence: requestSequence + 10, requestSequence, kind: 'result', payload: {
                 wireVersion: 1,
                 kind: 'negotiated',
                 identity: wireIdentity,
                 apiVersion: '1.0.0',
                 methods: ['context'],
                 surface: { placement: 'settingsPage' },
-            },
-        });
+            } });
         harness.dispatch({
             source: harness.parent,
             origin: 'https://host.test',
@@ -351,22 +413,11 @@ describe('hosted-web UI client bootstrap', () => {
         harness.dispatch({
             source: harness.parent,
             origin: 'https://host.test',
-            data: {
-                version: 1,
-                pluginId: 'acme.preview',
-                contributionId: 'preview-web',
-                surfaceId: 'preview-surface',
-                sessionId: 'session-1',
-                nonce: 'nonce-1',
-                sequence: requestEnvelope.sequence,
-                requestSequence: requestEnvelope.sequence,
-                kind: 'result',
-                payload: {
+            data: { identity: { instanceId: 'mount-1', mountNonce: 'nonce-1' }, version: 1, sequence: requestEnvelope.sequence, requestSequence: requestEnvelope.sequence, kind: 'result', payload: {
                     kind: 'snapshot',
                     queryId: 'query_1',
                     snapshot: { status: 'ready', rows: [], hasMore: false },
-                },
-            },
+                } },
         });
         await expect(opened).resolves.toEqual({
             kind: 'snapshot',
@@ -377,18 +428,7 @@ describe('hosted-web UI client bootstrap', () => {
         harness.dispatch({
             source: harness.parent,
             origin: 'https://host.test',
-            data: {
-                version: 1,
-                direction: 'hostToFrame',
-                pluginId: 'acme.preview',
-                contributionId: 'preview-web',
-                surfaceId: 'preview-surface',
-                sessionId: 'session-1',
-                nonce: 'nonce-1',
-                sequence: 3,
-                kind: 'accountData',
-                payload: { kind: 'change', queryId: 'query_1' },
-            },
+            data: { identity: { instanceId: 'mount-1', mountNonce: 'nonce-1' }, version: 1, direction: 'hostToFrame', sequence: 3, kind: 'accountData', payload: { kind: 'change', queryId: 'query_1' } },
         });
         expect(receivedChanges).toHaveBeenCalledWith({ kind: 'change', queryId: 'query_1' });
 
@@ -487,7 +527,7 @@ describe('hosted-web UI client bootstrap', () => {
         harness.dispatch({
             source: harness.parent,
             origin: 'https://host.test',
-            data: bootstrapMessage({ nonce: 'stale-nonce' }),
+            data: bootstrapMessage({ identity: { ...identity, mountNonce: 'stale-nonce' } }),
         });
 
         harness.dispatch({
@@ -581,7 +621,7 @@ describe('hosted-web UI client bootstrap', () => {
         await expect(readiness).resolves.toMatchObject({ identity });
         expect(JSON.parse(String(postMessage.mock.calls[0]?.[0]))).toMatchObject({
             kind: 'ready',
-            nonce: 'nonce-1',
+            identity,
         });
     });
 });

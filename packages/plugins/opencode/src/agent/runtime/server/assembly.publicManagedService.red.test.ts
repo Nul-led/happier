@@ -50,6 +50,11 @@ function createContext() {
   const abort = new AbortController();
   const sessionStorage = new Map<string, unknown>();
   const context = {
+    exec: {
+      systemTools: {
+        resolve: vi.fn(async () => ({ executablePath: '/usr/local/bin/opencode' })),
+      },
+    },
     logger: {
       debug: vi.fn(),
       info: vi.fn(),

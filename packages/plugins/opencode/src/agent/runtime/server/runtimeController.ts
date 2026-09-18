@@ -7,6 +7,7 @@ import {
   publishOpenCodeTurnCancelled,
   publishOpenCodeRuntimeEvent,
   publishOpenCodeTurnFailed,
+  projectOpenCodeRuntimeScope,
 } from './openCodeRuntimeEvents.js';
 import type { OpenCodeServerClient } from './openCodeServerClient.js';
 import { isOpenCodeServerAuthFailure } from './openCodeServerClient.js';
@@ -53,7 +54,7 @@ import {
 import { completeOpenCodeTurnIfReady } from './turnCompletion.js';
 import { createOpenCodeHappierAuthoredProviderUserMessageIds } from './happierAuthoredProviderUserMessages.js';
 import type { OpenCodeRuntimeContext } from './runtimeContext.js';
-import type { OpenCodeRuntimeEvent } from './runtimeEvents.js';
+import type { OpenCodeRuntimeEvent, OpenCodeRuntimeScope } from './runtimeEvents.js';
 
 function readOpenCodeProviderErrorMessage(error: unknown): string {
   const record = asRecord(error);
@@ -132,13 +133,13 @@ function readOpenCodeForkMessageId(request: Extract<
 >): string | null {
   if (request.source.providerCheckpoint === undefined) return null;
   const checkpoint = asRecord(request.source.providerCheckpoint);
-  if (
-    normalizeString(checkpoint?.kind) !== 'opencode_exclusive_message_id'
-    || !normalizeString(checkpoint?.messageId)
-  ) {
+  // `kind` is Happier's own checkpoint vocabulary; `messageId` is the id
+  // OpenCode minted and the fork route addresses verbatim.
+  const messageId = readNonBlankOpaqueIdentifier(checkpoint?.messageId);
+  if (normalizeString(checkpoint?.kind) !== 'opencode_exclusive_message_id' || !messageId) {
     throw new Error('OpenCode fork checkpoint is not an opencode_exclusive_message_id checkpoint');
   }
-  return normalizeString(checkpoint?.messageId);
+  return messageId;
 }
 
 type Deferred<T> = Readonly<{
@@ -160,7 +161,7 @@ function createDeferred<T>(): Deferred<T> {
 export function createOpenCodeServerRuntimeController(params: Readonly<{
   ctx: OpenCodeRuntimeContext;
   directory: string;
-  happierSessionId: string;
+  scope: OpenCodeRuntimeScope;
   client: OpenCodeServerClient;
   env?: Readonly<Record<string, string>>;
   readManagedServiceSnapshot?: () => ManagedServiceSnapshot | null | undefined;
@@ -578,7 +579,7 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
         publishOpenCodeToolPartRuntimeEvents({
           part: toolPart,
           state,
-          happierSessionId: params.happierSessionId,
+          scope: params.scope,
           publishRuntimeEvent,
         });
       }
@@ -604,7 +605,7 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
       if (!text) continue;
       await publishOpenCodeRuntimeEvent(publishRuntimeEvent, {
         kind: 'transcript-agent-message-committed',
-        sessionId: params.happierSessionId,
+        ...projectOpenCodeRuntimeScope(params.scope),
         emittedAtMs: Date.now(),
         agentId: 'opencode',
         localId: buildOpenCodeRuntimeTranscriptLocalId(state.providerSessionId, messageId),
@@ -789,7 +790,7 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
             observedExternalUserMessageIds.add(providerMessageKey);
             await publishOpenCodeRuntimeEvent(publishRuntimeEvent, {
               kind: 'transcript-user-text',
-              sessionId: params.happierSessionId,
+              ...projectOpenCodeRuntimeScope(params.scope),
               emittedAtMs: Date.now(),
               text,
               localId: buildOpenCodeRuntimeTranscriptLocalId(state.providerSessionId, messageId),
@@ -811,7 +812,7 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
           state.emittedAssistantMessageIds.add(providerMessageKey);
           await publishOpenCodeRuntimeEvent(publishRuntimeEvent, {
             kind: 'transcript-agent-message-committed',
-            sessionId: params.happierSessionId,
+            ...projectOpenCodeRuntimeScope(params.scope),
             emittedAtMs: Date.now(),
             agentId: 'opencode',
             localId: buildOpenCodeRuntimeTranscriptLocalId(state.providerSessionId, messageId),
@@ -875,7 +876,7 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
         resetCurrentTurnObservations();
         await publishOpenCodeTurnFailed({
           publishRuntimeEvent,
-          sessionId: params.happierSessionId,
+          scope: params.scope,
           turnId,
           emittedAtMs,
           issue,
@@ -887,7 +888,7 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
       publishRuntimeEvent,
       state,
       foregroundToolTracker,
-      happierSessionId: params.happierSessionId,
+      scope: params.scope,
       resetCurrentTurnObservations,
       status,
       hasTerminalAssistantHistory,
@@ -946,7 +947,7 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
     resetCurrentTurnObservations();
     await publishOpenCodeTurnFailed({
       publishRuntimeEvent,
-      sessionId: params.happierSessionId,
+      scope: params.scope,
       turnId,
       emittedAtMs,
       issue: buildOpenCodeRuntimeIssue({
@@ -970,7 +971,7 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
     resetCurrentTurnObservations();
     await publishOpenCodeTurnFailed({
       publishRuntimeEvent,
-      sessionId: params.happierSessionId,
+      scope: params.scope,
       turnId,
       emittedAtMs,
       issue: buildOpenCodeRuntimeIssue({
@@ -1054,7 +1055,7 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
     resetCurrentTurnObservations();
     await publishOpenCodeTurnFailed({
       publishRuntimeEvent,
-      sessionId: params.happierSessionId,
+      scope: params.scope,
       turnId,
       emittedAtMs,
       issue: buildOpenCodeRuntimeIssue({
@@ -1100,8 +1101,8 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
   const handleQuestionAsked = async (
     properties: Readonly<Record<string, unknown>>,
   ): Promise<void> => {
-    const requestId = normalizeString(properties.id);
-    const providerSessionId = normalizeString(properties.sessionID);
+    const requestId = readNonBlankOpaqueIdentifier(properties.id) ?? '';
+    const providerSessionId = readNonBlankOpaqueIdentifier(properties.sessionID) ?? '';
     if (
       !requestId
       || !providerSessionId
@@ -1120,7 +1121,7 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
         )
       : [];
     if (questions.length === 0) {
-      await client.questionReject({ requestId });
+      await client.questionReject({ sessionId: providerSessionId, requestId });
       return;
     }
     const internalTitleQuestions = questions.every((question) => {
@@ -1139,6 +1140,7 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
     });
     if (internalTitleQuestions) {
       await client.questionReply({
+        sessionId: providerSessionId,
         requestId,
         answers: questions.map(() => ['OK']),
       });
@@ -1181,7 +1183,7 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
       hostQuestions.some((question) => !question.prompt)
       || hostQuestions.length === 0
     ) {
-      await client.questionReject({ requestId });
+      await client.questionReject({ sessionId: providerSessionId, requestId });
       return;
     }
 
@@ -1200,7 +1202,7 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
       });
       if (!questionIsStillCurrent()) return;
       if (result.status !== 'answered') {
-        await client.questionReject({ requestId });
+        await client.questionReject({ sessionId: providerSessionId, requestId });
         return;
       }
       const answers = hostQuestions.map((hostQuestion, questionIndex) => {
@@ -1225,14 +1227,17 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
         if (answer.kind === 'singleChoice') return [renderChoice(answer.answer)].filter(Boolean);
         return answer.answers.map(renderChoice).filter(Boolean);
       });
-      await client.questionReply({ requestId, answers });
+      await client.questionReply({ sessionId: providerSessionId, requestId, answers });
     } catch (error) {
       params.ctx.logger.debug('[OpenCodeServer] question handling failed closed', {
         requestId,
         error,
       });
       if (!questionIsStillCurrent()) return;
-      await client.questionReject({ requestId }).catch((replyError: unknown) => {
+      await client.questionReject({
+        sessionId: providerSessionId,
+        requestId,
+      }).catch((replyError: unknown) => {
         params.ctx.logger.debug('[OpenCodeServer] question rejection failed', {
           requestId,
           error: replyError,
@@ -1249,6 +1254,9 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
       const requestId = readOpenCodePermissionRequestId(properties);
       if (!requestId || !rememberPermissionRequest(requestId)) return;
       await client.permissionReply({
+        // The request was unparseable, so its own `sessionID` is not
+        // trustworthy; the session this runtime owns is.
+        sessionId: state.providerSessionId,
         requestId,
         reply: 'reject',
         message: 'OpenCode permission request was malformed or ambiguous.',
@@ -1312,6 +1320,7 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
 
       try {
         await client.permissionReply({
+          sessionId: ask.providerSessionId ?? requestProviderSessionId,
           requestId: ask.requestId,
           reply,
           ...(message ? { message } : {}),
@@ -1395,7 +1404,7 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
 
     if (type === 'message.part.updated' || type === 'message.part.created') {
       const rawPart = asRecord(properties.part);
-      observeCurrentTurnMessageId(normalizeString(rawPart?.messageID));
+      observeCurrentTurnMessageId(readNonBlankOpaqueIdentifier(rawPart?.messageID) ?? '');
       const part = readOpenCodeToolPart(rawPart);
       if (!part) return;
       if (!state.turnInFlight) return;
@@ -1406,7 +1415,7 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
       publishOpenCodeToolPartRuntimeEvents({
         part,
         state,
-        happierSessionId: params.happierSessionId,
+        scope: params.scope,
         publishRuntimeEvent,
       });
       return;
@@ -1414,7 +1423,7 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
 
     if (type === 'message.updated') {
       const info = asRecord(properties.info);
-      const messageId = normalizeString(info?.id);
+      const messageId = readNonBlankOpaqueIdentifier(info?.id) ?? '';
       observeCurrentTurnMessageId(messageId);
       if (
         messageId
@@ -1426,7 +1435,7 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
         const emittedAtMs = Date.now();
         publishRuntimeEvent({
           kind: 'context-compaction',
-          sessionId: params.happierSessionId,
+          ...projectOpenCodeRuntimeScope(params.scope),
           emittedAtMs,
           compactionId: messageId,
           phase: 'started',
@@ -1434,7 +1443,7 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
         });
         publishRuntimeEvent({
           kind: 'context-compaction',
-          sessionId: params.happierSessionId,
+          ...projectOpenCodeRuntimeScope(params.scope),
           emittedAtMs,
           compactionId: messageId,
           phase: 'completed',
@@ -1448,7 +1457,7 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
     }
 
     if (type === 'message.part.delta') {
-      observeCurrentTurnMessageId(normalizeString(properties.messageID));
+      observeCurrentTurnMessageId(readNonBlankOpaqueIdentifier(properties.messageID) ?? '');
       return;
     }
   };
@@ -1509,9 +1518,12 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
 
     if (type === 'message.updated') {
       const info = asRecord(properties.info);
-      const messageId = normalizeString(info?.id);
+      const messageId = readNonBlankOpaqueIdentifier(info?.id) ?? '';
       if (!state.turnInFlight) {
-        if (state.providerSessionId && normalizeString(info?.sessionID) === state.providerSessionId) {
+        if (
+          state.providerSessionId
+          && readNonBlankOpaqueIdentifier(info?.sessionID) === state.providerSessionId
+        ) {
           // Replayable events are content-free invalidations outside a Happier turn. The
           // authoritative message inventory remains the sole transcript owner.
           await projectExternalSessionMessagesBestEffort();
@@ -1521,8 +1533,8 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
       if (
         !messageId
         || normalizeString(info?.role) !== 'assistant'
-        || normalizeString(info?.sessionID) !== state.providerSessionId
-        || normalizeString(info?.parentID) !== state.currentTurnProviderUserMessageId
+        || readNonBlankOpaqueIdentifier(info?.sessionID) !== state.providerSessionId
+        || readNonBlankOpaqueIdentifier(info?.parentID) !== state.currentTurnProviderUserMessageId
       ) {
         return;
       }
@@ -1533,10 +1545,10 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
     if (type === 'message.part.updated' || type === 'message.part.created' || type === 'message.part.delta') {
       if (!state.turnInFlight || !state.providerSessionId) return;
       const part = type === 'message.part.delta' ? properties : asRecord(properties.part);
-      const messageId = normalizeString(part?.messageID);
+      const messageId = readNonBlankOpaqueIdentifier(part?.messageID) ?? '';
       if (
         !messageId
-        || normalizeString(part?.sessionID) !== state.providerSessionId
+        || readNonBlankOpaqueIdentifier(part?.sessionID) !== state.providerSessionId
         || state.currentTurnProviderUserMessageIds.has(messageId)
         || !state.currentTurnObservedMessageIds.has(messageId)
       ) {
@@ -1588,7 +1600,7 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
       publishRuntimeEvent,
       status,
       state,
-      happierSessionId: params.happierSessionId,
+      scope: params.scope,
       stopNativeRetry,
     });
     if (await failCurrentTurnForProviderErrorStatus(status)) return;
@@ -1618,7 +1630,7 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
       managedServerTurnInterruptionSupervisor.captureTurnStartSnapshot();
       void publishOpenCodeRuntimeEvent(publishRuntimeEvent, {
         kind: 'turn-start',
-        sessionId: params.happierSessionId,
+        ...projectOpenCodeRuntimeScope(params.scope),
         turnId: state.activeTurnId,
         emittedAtMs: Date.now(),
       }).catch((error: unknown) => {
@@ -1627,9 +1639,10 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
     },
     async openSession(request) {
       if (request.kind === 'resume') {
-        state.providerSessionId = normalizeString(request.providerSessionId);
+        // OpenCode minted this id: resume the exact session, never a re-minted one.
+        state.providerSessionId = readNonBlankOpaqueIdentifier(request.providerSessionId);
       } else if (request.kind === 'fork') {
-        const parentProviderSessionId = normalizeString(request.source.providerSessionId);
+        const parentProviderSessionId = readNonBlankOpaqueIdentifier(request.source.providerSessionId);
         if (!parentProviderSessionId) {
           throw new Error('OpenCode fork requires a parent provider session id');
         }
@@ -1711,7 +1724,7 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
           resetCurrentTurnObservations();
           await publishOpenCodeTurnFailed({
             publishRuntimeEvent,
-            sessionId: params.happierSessionId,
+            scope: params.scope,
             turnId: failedTurnId,
             emittedAtMs,
             issue: buildOpenCodeRuntimeIssue({
@@ -1733,7 +1746,7 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
           resetCurrentTurnObservations();
           await publishOpenCodeTurnFailed({
             publishRuntimeEvent,
-            sessionId: params.happierSessionId,
+            scope: params.scope,
             turnId: failedTurnId,
             emittedAtMs,
             issue: buildOpenCodeRuntimeIssue({
@@ -1752,6 +1765,11 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
       try {
         const mcpRegistration = await params.mcpRegistration;
         assertPromptTurnStillOwnsDispatch();
+        // Only a *refused* registration fails admission closed. A server with
+        // no dynamic MCP route at all (`unsupported`) costs this session
+        // Happier's MCP-backed tools, which the registration owner already
+        // reported on a default-on signal, and is not a reason to block
+        // ordinary prompting.
         if (mcpRegistration.requiredHappier.status === 'failed') {
           const registrationError = mcpRegistration.requiredHappier.error;
           const detail = registrationError instanceof Error
@@ -1842,7 +1860,7 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
         publishRuntimeEvent,
         status,
         state,
-        happierSessionId: params.happierSessionId,
+        scope: params.scope,
         stopNativeRetry,
       });
       if (await failCurrentTurnForProviderErrorStatus(status)) return;
@@ -1860,26 +1878,23 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
       };
     },
     async cancelTurn() {
-      const turnId = claimOpenCodeActiveTurnForTerminalEvent(state);
-      retirePendingQuestions();
-      if (turnId) {
-        resetCurrentTurnObservations();
-        wakeServerConnectedWaiters();
-      }
+      const turnId = state.turnInFlight ? state.activeTurnId : null;
+      if (!turnId) return;
       if (state.providerSessionId) {
-        await client.sessionAbort({ sessionId: state.providerSessionId }).catch((error: unknown) => {
-          params.ctx.logger.debug('[OpenCodeServer] session abort failed during cancel', { error });
-        });
+        await client.sessionAbort({ sessionId: state.providerSessionId });
       }
-      if (turnId) {
-        await publishOpenCodeTurnCancelled({
-          publishRuntimeEvent,
-          sessionId: params.happierSessionId,
-          turnId,
-          reason: 'cancelled',
-          emittedAtMs: Date.now(),
-        });
-      }
+      if (!state.turnInFlight || state.activeTurnId !== turnId) return;
+      claimOpenCodeActiveTurnForTerminalEvent(state);
+      retirePendingQuestions();
+      resetCurrentTurnObservations();
+      wakeServerConnectedWaiters();
+      await publishOpenCodeTurnCancelled({
+        publishRuntimeEvent,
+        scope: params.scope,
+        turnId,
+        reason: 'cancelled',
+        emittedAtMs: Date.now(),
+      });
     },
     async listSkills(input = {}) {
       const directory = normalizeString(input.directory) || params.directory;
@@ -1923,7 +1938,7 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
       }
       publishRuntimeEvent({
         kind: 'context-compaction',
-        sessionId: params.happierSessionId,
+        ...projectOpenCodeRuntimeScope(params.scope),
         emittedAtMs: Date.now(),
         compactionId: request.compactionId,
         phase: 'started',
@@ -1935,9 +1950,9 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
           model,
           auto: false,
         });
-        publishRuntimeEvent({
-          kind: 'context-compaction',
-          sessionId: params.happierSessionId,
+      publishRuntimeEvent({
+        kind: 'context-compaction',
+        ...projectOpenCodeRuntimeScope(params.scope),
           emittedAtMs: Date.now(),
           compactionId: request.compactionId,
           phase: 'completed',
@@ -1946,7 +1961,7 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
       } catch (error) {
         publishRuntimeEvent({
           kind: 'context-compaction',
-          sessionId: params.happierSessionId,
+          ...projectOpenCodeRuntimeScope(params.scope),
           emittedAtMs: Date.now(),
           compactionId: request.compactionId,
           phase: 'failed',

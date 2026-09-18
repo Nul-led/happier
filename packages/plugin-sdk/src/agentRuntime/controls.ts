@@ -1,5 +1,8 @@
 import type { PluginDiagnosticData } from '../diagnostics.js';
 import type {
+  AgentSessionExecutionRunRuntimeFactoryV1,
+} from './executionRun.js';
+import type {
   WorkStatePublisher,
 } from '../services/sessions.js';
 import type { JsonValue } from '../identity.js';
@@ -209,6 +212,8 @@ export interface AgentSessionRuntimeFactory {
   readonly catalog?: AgentSessionCatalogControl;
   readonly usageLimitRecovery?: AgentSessionUsageLimitRecoveryControl;
   readonly continuation?: AgentSessionContinuationControl;
+  /** Capability-gated detached execution; Session V1 remains unchanged. */
+  readonly executionRunContextV1?: AgentSessionExecutionRunRuntimeFactoryV1;
   open(
     request: AgentSessionOpenRequest,
     context: AgentSessionRuntimeContext,

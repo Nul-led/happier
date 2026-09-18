@@ -53,6 +53,10 @@ import {
   sendGithubReviewThreadReply,
 } from './reviewThread.js';
 import { preflightGithubPublicationCapability } from './publicationCapability.js';
+import {
+  recordGithubPublicationSettlement,
+  type GithubPublicationSettlementV1,
+} from './publicationSettlement.js';
 
 /**
  * The head-pinned and state-transition GitHub pull-request writes, each
@@ -364,10 +368,7 @@ export async function publishGithubPullRequestReview(
     route: GithubRepositoryRouteV1;
     publicationPlan: ReviewCommentPublicationPlanV1;
     claimPublicationDispatch: () => Promise<ReviewCommentClaimPublicationDispatchResponseV1>;
-    settlePublicationDispatch?: (
-      claim: ReviewCommentClaimPublicationDispatchResponseV1,
-      result: ReviewCommentPublicationResultV1,
-    ) => Promise<void>;
+    settlePublicationDispatch?: GithubPublicationSettlementV1;
   }>,
   dependencies: GithubMutationDependenciesV1,
 ): Promise<GithubPullRequestReviewPublicationOutcomeV1> {
@@ -579,7 +580,11 @@ export async function publishGithubPullRequestReview(
           })(),
       },
     );
-    await input.settlePublicationDispatch?.(claim, publication);
+    const settlementFailure = await recordGithubPublicationSettlement(
+      input.settlePublicationDispatch,
+      claim,
+      publication,
+    );
     const confirmedPullRequest = await confirm(
       input.localRef,
       input.route,
@@ -599,9 +604,11 @@ export async function publishGithubPullRequestReview(
         ? { failure: dispatchFailure }
         : readFailure !== undefined
           ? { failure: readFailure }
-          : !confirmedPullRequest.ok
-            ? { failure: confirmedPullRequest.failure }
-            : {}),
+          : settlementFailure !== undefined
+            ? { failure: settlementFailure }
+            : !confirmedPullRequest.ok
+              ? { failure: confirmedPullRequest.failure }
+              : {}),
     });
   };
 
@@ -651,10 +658,7 @@ export async function publishGithubPullRequestComment(
     mode: 'create' | 'reply';
     threadId?: string;
     claimPublicationDispatch: () => Promise<ReviewCommentClaimPublicationDispatchResponseV1>;
-    settlePublicationDispatch?: (
-      claim: ReviewCommentClaimPublicationDispatchResponseV1,
-      result: ReviewCommentPublicationResultV1,
-    ) => Promise<void>;
+    settlePublicationDispatch?: GithubPublicationSettlementV1;
   }>,
   dependencies: GithubMutationDependenciesV1,
 ): Promise<GithubPullRequestReviewPublicationOutcomeV1> {
@@ -807,7 +811,11 @@ export async function publishGithubPullRequestComment(
         verdict: { kind: 'notRequested' },
       },
     );
-    await input.settlePublicationDispatch?.(claim, publication);
+    const settlementFailure = await recordGithubPublicationSettlement(
+      input.settlePublicationDispatch,
+      claim,
+      publication,
+    );
     const confirmed = await confirm(input.localRef, input.route, repositories, dependencies);
     return Object.freeze({
       kind: 'settled' as const,
@@ -817,9 +825,11 @@ export async function publishGithubPullRequestComment(
         ? { failure: dispatchFailure }
         : comments.failure !== null
           ? { failure: toTriageFailure(comments.failure) }
-          : !confirmed.ok
-            ? { failure: confirmed.failure }
-            : {}),
+          : settlementFailure !== undefined
+            ? { failure: settlementFailure }
+            : !confirmed.ok
+              ? { failure: confirmed.failure }
+              : {}),
     });
   };
 
@@ -839,7 +849,9 @@ export async function publishGithubPullRequestComment(
         verdict: { kind: 'notRequested' },
       },
     );
-    await input.settlePublicationDispatch?.(claim, publication);
+    // A definite provider rejection is the reported failure even when the internal
+    // settlement also fails: nothing was published, so the rejection is the outcome.
+    await recordGithubPublicationSettlement(input.settlePublicationDispatch, claim, publication);
     const confirmed = await confirm(input.localRef, input.route, repositories, dependencies);
     return Object.freeze({
       kind: 'settled' as const,

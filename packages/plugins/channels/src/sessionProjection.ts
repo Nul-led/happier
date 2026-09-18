@@ -2,6 +2,7 @@ import type {
   ActionsService,
   PluginActionResultById,
 } from '@happier-dev/plugin-sdk/actions';
+import { isPluginActionApprovalRequestCreated } from '@happier-dev/plugin-sdk/actions';
 import { isPluginError, PluginError } from '@happier-dev/plugin-sdk';
 import type { JsonValue } from '@happier-dev/plugin-sdk';
 import type { PluginAccountCollectionForDefinition } from '@happier-dev/plugin-sdk/collections';
@@ -559,7 +560,7 @@ export async function readConversationSessionProjectionNoHistoryBaseline(input: 
   while (!input.signal.aborted) {
     let transcript: ExternalShareableTranscriptResult;
     try {
-      transcript = await input.actions.execute(
+      const read = await input.actions.execute(
         'session.transcript.get',
         {
           sessionId: input.sessionId,
@@ -569,6 +570,12 @@ export async function readConversationSessionProjectionNoHistoryBaseline(input: 
         },
         { signal: input.signal },
       );
+      // A policy deferral means the transcript page was never read, so no
+      // baseline can be established from it.
+      if (isPluginActionApprovalRequestCreated(read)) {
+        return { kind: 'unavailable', reason: 'transcriptUnavailable' };
+      }
+      transcript = read;
     } catch (error) {
       if (!input.signal.aborted && isTranscriptCursorRejected(error)) {
         return { kind: 'historyGap', reason: 'cursorRejected' };
@@ -674,7 +681,7 @@ export async function projectConversationSessionTranscriptPage(input: Readonly<{
 
   let transcript: ExternalShareableTranscriptResult;
   try {
-    transcript = await input.actions.execute(
+    const read = await input.actions.execute(
       'session.transcript.get',
       {
         sessionId: binding.target.sessionId,
@@ -684,6 +691,13 @@ export async function projectConversationSessionTranscriptPage(input: Readonly<{
       },
       { signal: input.signal },
     );
+    // A policy deferral means this transcript page was never read. That is
+    // transport unavailability, not a history gap, so the frontier is left
+    // exactly where it was.
+    if (isPluginActionApprovalRequestCreated(read)) {
+      return { kind: 'unavailable', reason: 'transcriptUnavailable' };
+    }
+    transcript = read;
   } catch (error) {
     if (!input.signal.aborted && isTranscriptCursorRejected(error)) {
       return await pauseForHistoryGap('cursorRejected');

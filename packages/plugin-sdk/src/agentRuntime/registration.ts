@@ -174,13 +174,17 @@ export type AgentProviderCliAttachTargetResolutionV1 =
  * All three callbacks are required so metadata and live reachability follow
  * one declaration rather than a plugin-owned executable surface.
  */
+export type AgentProviderCliAttachReachabilityV1 =
+  | Readonly<{ kind: 'http'; url: string }>
+  | Readonly<{ kind: 'localSocket'; path: string }>;
+
 export type AgentProviderCliAttachDeclarationV1 = Readonly<{
   resolveTarget(params: Readonly<{
     metadata: AttachSessionMetadata;
     fallbackServerBaseUrl?: string | null;
   }>): AgentProviderCliAttachTargetResolutionV1;
   createArgs(target: AgentProviderCliAttachTargetV1): readonly string[];
-  buildHealthUrl(target: AgentProviderCliAttachTargetV1): string | null;
+  resolveReachability(target: AgentProviderCliAttachTargetV1): AgentProviderCliAttachReachabilityV1 | null;
 }>;
 
 /**

@@ -29,18 +29,18 @@ Available models:
 });
 
 describe('GROK_PREFLIGHT_SESSION_CONTROLS', () => {
-  it('declares the native command while leaving execution to the host', async () => {
+  it('declares the native command while leaving execution to the host', () => {
     const models = GROK_PREFLIGHT_SESSION_CONTROLS.models;
     expect(models?.command).toEqual({
       toolId: 'grok-cli',
       args: ['models'],
       ci: 'omit',
     });
-    await expect(models?.parseOutput?.({
+    expect(models?.parseOutput?.({
       ok: true,
       stdout: 'Available models:\n  * grok-4.5 (default)\n',
       stderr: '',
       exitCode: 0,
-    })).resolves.toEqual([{ id: 'grok-4.5', name: 'Grok 4.5' }]);
+    })).toEqual([{ id: 'grok-4.5', name: 'Grok 4.5' }]);
   });
 });

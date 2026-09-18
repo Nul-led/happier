@@ -52,14 +52,14 @@ export function createOpenCodeAttachArgs(target: AgentProviderCliAttachTargetV1)
   ];
 }
 
-export function buildOpenCodeAttachHealthUrl(target: AgentProviderCliAttachTargetV1): string | null {
+export function resolveOpenCodeAttachReachability(target: AgentProviderCliAttachTargetV1) {
   try {
     const url = new URL(target.baseUrl);
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
     url.pathname = `${url.pathname.replace(/\/+$/, '')}/global/health`;
     url.search = '';
     url.hash = '';
-    return url.toString();
+    return { kind: 'http' as const, url: url.toString() };
   } catch {
     return null;
   }

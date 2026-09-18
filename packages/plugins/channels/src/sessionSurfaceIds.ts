@@ -13,6 +13,7 @@
  * by another family.
  */
 export const CHANNELS_SESSION_CONVERSATIONS_VIEW_ID = 'session-conversations';
+export const CHANNELS_SESSION_CONVERSATIONS_WIDGET_ID = 'session-conversations-widget';
 export const CHANNELS_SESSION_CONVERSATIONS_HEADER_ACTION_ID = 'open-session-conversations';
 export const CHANNELS_SESSION_COMPOSER_CONTROL_ID = 'session-conversations-chip';
 export const CHANNELS_SESSION_COMPOSER_ATTENTION_CONTROL_ID = 'session-conversations-attention-chip';

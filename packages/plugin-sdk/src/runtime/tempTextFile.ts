@@ -27,6 +27,16 @@ export type SecureTempTextFileInputV1 = Readonly<{
   tmpDir?: string | null;
 }>;
 
+export type SecureTempDirectoryInputV1 = Readonly<{
+  prefix: string;
+  tmpDir?: string | null;
+}>;
+
+export type SecureTempDirectoryV1 = Readonly<{
+  path: string;
+  cleanup(): void;
+}>;
+
 type SecureTempTextFileDeps = Readonly<{
   platform?: NodeJS.Platform;
   windowsAclBoundary?: WindowsProtectedAclBoundarySync;
@@ -48,6 +58,41 @@ function bestEffortChmod(path: string, mode: number): void {
   }
 }
 
+export function createSecureTempDirectorySyncWithDeps(
+  input: SecureTempDirectoryInputV1,
+  deps: SecureTempTextFileDeps = {},
+): SecureTempDirectoryV1 {
+  validatePathToken(input.prefix, 'prefix');
+  const baseDir = input.tmpDir ?? tmpdir();
+  mkdirSync(baseDir, { recursive: true, mode: PRIVATE_DIR_MODE });
+  const directory = mkdtempSync(join(baseDir, `${input.prefix}-`));
+  try {
+    const platform = deps.platform ?? process.platform;
+    if (platform === 'win32') {
+      const windowsAclBoundary = deps.windowsAclBoundary
+        ?? (defaultWindowsAclBoundary ??= createWindowsProtectedAclBoundarySync());
+      windowsAclBoundary.applyAndVerify({ path: directory, kind: 'directory' });
+    } else {
+      bestEffortChmod(directory, PRIVATE_DIR_MODE);
+    }
+    return {
+      path: directory,
+      cleanup() {
+        rmSync(directory, { recursive: true, force: true });
+      },
+    };
+  } catch (error) {
+    rmSync(directory, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+export function createSecureTempDirectorySync(
+  input: SecureTempDirectoryInputV1,
+): SecureTempDirectoryV1 {
+  return createSecureTempDirectorySyncWithDeps(input);
+}
+
 export function writeSecureTempTextFileSyncWithDeps(
   input: SecureTempTextFileInputV1,
   deps: SecureTempTextFileDeps = {},
@@ -57,24 +102,23 @@ export function writeSecureTempTextFileSyncWithDeps(
     validatePathToken(input.suffix, 'suffix');
   }
 
-  const baseDir = input.tmpDir ?? tmpdir();
-  mkdirSync(baseDir, { recursive: true, mode: PRIVATE_DIR_MODE });
-
-  const directory = mkdtempSync(join(baseDir, `${input.prefix}-`));
+  const tempDirectory = createSecureTempDirectorySyncWithDeps({
+    prefix: input.prefix,
+    ...(input.tmpDir === undefined ? {} : { tmpDir: input.tmpDir }),
+  }, deps);
+  const directory = tempDirectory.path;
   const platform = deps.platform ?? process.platform;
   const path = join(directory, `payload${input.suffix ?? ''}`);
-
-  if (platform !== 'win32') {
-    bestEffortChmod(directory, PRIVATE_DIR_MODE);
-    writeFileSync(path, input.contents, { encoding: 'utf8', mode: PRIVATE_FILE_MODE, flag: 'wx' });
-    bestEffortChmod(path, PRIVATE_FILE_MODE);
-    return path;
-  }
-
-  const windowsAclBoundary = deps.windowsAclBoundary
-    ?? (defaultWindowsAclBoundary ??= createWindowsProtectedAclBoundarySync());
   let fileDescriptor: number | null = null;
   try {
+    if (platform !== 'win32') {
+      writeFileSync(path, input.contents, { encoding: 'utf8', mode: PRIVATE_FILE_MODE, flag: 'wx' });
+      bestEffortChmod(path, PRIVATE_FILE_MODE);
+      return path;
+    }
+
+    const windowsAclBoundary = deps.windowsAclBoundary
+      ?? (defaultWindowsAclBoundary ??= createWindowsProtectedAclBoundarySync());
     windowsAclBoundary.applyAndVerify({ path: directory, kind: 'directory' });
     fileDescriptor = openSync(path, 'wx', PRIVATE_FILE_MODE);
     // Apply and verify the restrictive DACL while the file is still empty.
@@ -93,7 +137,7 @@ export function writeSecureTempTextFileSyncWithDeps(
         // Preserve the original ACL/write failure.
       }
     }
-    rmSync(directory, { recursive: true, force: true });
+    tempDirectory.cleanup();
     throw error;
   }
 }

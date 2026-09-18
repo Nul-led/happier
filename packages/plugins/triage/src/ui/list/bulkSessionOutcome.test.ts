@@ -50,6 +50,30 @@ describe('bulk per-entry settlement', () => {
         expect(outcomes.map(isTriageBulkEntryOutcomeIncompleteV1)).toEqual([false, true]);
     });
 
+    it.each(['failed', 'cancelled'] as const)(
+        'reports a terminal %s direct send as incomplete',
+        (delivery) => {
+            const outcomes = projectTriageBulkEntryOutcomesV1({
+                entries: [entries[0]!],
+                start: {
+                    v: 1,
+                    type: 'opened',
+                    sessionId: 'session-a',
+                    disposition: 'created',
+                    delivery,
+                },
+                secondaryLinks: [],
+                compose: 'notRequested',
+            });
+
+            expect(outcomes[0]).toMatchObject({
+                directSend: 'refused',
+                attachment: 'refused',
+            });
+            expect(isTriageBulkEntryOutcomeIncompleteV1(outcomes[0]!)).toBe(true);
+        },
+    );
+
     it('reports a New Session seed refusal for every selected entry', () => {
         expect(projectTriageBulkSeedOutcomesV1(entries, 'refused').map((outcome) => ({
             attachment: outcome.attachment,

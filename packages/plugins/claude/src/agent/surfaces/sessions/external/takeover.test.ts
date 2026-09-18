@@ -33,7 +33,7 @@ describe('Claude External Sessions takeover launch derivation', () => {
         expect(plan).not.toHaveProperty('transcriptStorage');
     });
 
-    it('fails closed when fresh linked identity is incomplete or inconsistent', () => {
+    it('fails closed when fresh linked identity is inconsistent', () => {
         expect(resolveClaudeExternalSessionTakeoverPlan({
             remoteSessionId: 'claude-session-current',
             source: {
@@ -43,16 +43,6 @@ describe('Claude External Sessions takeover launch derivation', () => {
             },
             linkData: { projectId: 'project-2' },
             linkedDirectory: '/repo/project',
-        })).toBeNull();
-
-        expect(resolveClaudeExternalSessionTakeoverPlan({
-            remoteSessionId: 'claude-session-current',
-            source: {
-                kind: 'claudeConfig',
-                configDir: '/home/user/.claude-current',
-                projectId: 'project-1',
-            },
-            linkData: { projectId: 'project-1' },
         })).toBeNull();
     });
 

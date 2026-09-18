@@ -36,8 +36,10 @@ export type {
     ComposerAttachmentPrepareRequestV1,
     ComposerAttachmentPrepareResultV1,
     ComposerAttachmentResolveRequestV1,
+    ComposerAttachmentResolveRequestV2,
     ComposerAttachmentResolveResultV1,
 } from './activation.js';
+export type { PluginExecutionScopeV1, PluginScopedInvocationContextV1 } from './invocation.js';
 export type { ComposerReferenceResolutionV1 } from './composerReferenceProviders.js';
 export {
     defineComposerAttachment,
@@ -57,6 +59,7 @@ export type {
     UiSurfaceHostedWebBuild,
     UiSurfaceHostedWebDefinition,
     UiSurfaceHostedWebRendererDefinition,
+    UiSurfaceHostedHtmlRendererDefinition,
     UiSurfacePlacement,
     UiSurfaceReactNativeBuild,
     UiSurfaceReactNativeDefinition,
@@ -90,6 +93,10 @@ export type { DefinedPluginContributes } from './definePlugin.js';
 export type { DefinedPluginManifest } from './definePlugin.js';
 export type { Disposable } from './lifecycle.js';
 export type { JsonValue } from './identity.js';
+export type {
+    PluginEphemeralSharedScope,
+    PluginEphemeralSharedValueLease,
+} from './ephemeralSharedScope.js';
 export type { LoggerService } from './services/core.js';
 export type { MessageActionAvailableSnapshotV1 } from './invocation.js';
 export type { PluginApi } from './activation.js';

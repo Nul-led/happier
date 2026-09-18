@@ -348,6 +348,21 @@ function reviewPublicationBanner(
   const published = effects.filter((effect) => effect.kind === 'published').length;
   const uncertain = effects.filter((effect) => effect.kind === 'uncertain').length;
   const failed = effects.length - published - uncertain;
+  // Bitbucket already did this; Happier could not record it. Saying so is the honest partial
+  // outcome — the reader must reload rather than assume this review is filed.
+  if (parsed.data.settlement === 'unrecorded') {
+    return {
+      tone: 'warning',
+      title: text(
+        'plugins.bitbucket.ui.mutations.review.settlementUnrecorded',
+        'Published on Bitbucket, but Happier could not record it.',
+      ),
+      detail: text(
+        'plugins.bitbucket.ui.mutations.review.settlementUnrecordedDetail',
+        'Reload before publishing again so this review is reconciled instead of repeated.',
+      ),
+    };
+  }
   const summaryLanded = !('kind' in verdict)
     && verdict.outcome.kind !== 'published'
     && verdict.outcome.kind !== 'skippedPriorFailure'

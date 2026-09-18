@@ -70,7 +70,6 @@ export type PeerTcpTunnelStreamSessionResult =
             | 'receive_window_exceeded'
             | 'frame_invalid'
             | 'encoded_frame_too_large'
-            | 'payload_base64_invalid'
             | 'decoded_payload_too_large'
             | 'tunnel_id_mismatch'
             | 'direction_not_allowed'

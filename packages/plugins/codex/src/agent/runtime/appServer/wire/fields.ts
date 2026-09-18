@@ -1,4 +1,5 @@
 import { isCodexAppServerFastServiceTier } from '../serviceTier.js';
+import { readExactCodexProviderSessionId } from '../../../../protocol/runtimeDescriptorV1.js';
 
 type CodexAppServerThreadResponse = Readonly<{
   threadId?: unknown;
@@ -16,12 +17,6 @@ type CodexAppServerTurnResponse = Readonly<{
 export function readRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
-}
-
-export function trimSessionId(value: string | null | undefined): string | null {
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
 }
 
 export function trimStringValue(value: unknown): string | null {
@@ -42,9 +37,9 @@ export function readThreadId(value: unknown): string | null {
     response.thread?.id,
   ];
   for (const candidate of candidates) {
-    if (typeof candidate === 'string' && candidate.trim().length > 0) {
-      return candidate.trim();
-    }
+    // Codex minted this thread id; carry its exact bytes.
+    const threadId = readExactCodexProviderSessionId(candidate);
+    if (threadId) return threadId;
   }
   return null;
 }

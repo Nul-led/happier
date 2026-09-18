@@ -793,6 +793,34 @@ describe('Codex External Session hooks contribution', () => {
     });
   });
 
+  it('maps the hook session id byte-exact and ignores a blank one', async () => {
+    // Codex writes this id into the hook payload; mapping must not rewrite it,
+    // or the mapped event links to a different provider session.
+    const exactRemoteSessionId = '  provider\nses/AB+cd==  ';
+    const contribution = createCodexExternalSessionHooksContribution({
+      env: { CODEX_HOME: '/tmp/codex-hooks' },
+    });
+
+    expect(await contribution.mapHookEvent(mapRequest({
+      nativePayload: {
+        session_id: exactRemoteSessionId,
+        hook_event_name: 'SessionStart',
+      },
+    }))).toEqual({
+      ok: true,
+      value: {
+        kind: 'mapped',
+        sourceInput: { kind: 'codexHome', home: 'user' },
+        remoteSessionId: exactRemoteSessionId,
+        facts: [],
+      },
+    });
+
+    expect(await contribution.mapHookEvent(mapRequest({
+      nativePayload: { session_id: ' \n\t ', hook_event_name: 'SessionStart' },
+    }))).toEqual({ ok: true, value: { kind: 'ignored' } });
+  });
+
   it('ignores recursive, unknown, mismatched, and malformed events without inventing interrupt completion', async () => {
     const contribution = createCodexExternalSessionHooksContribution({
       env: { CODEX_HOME: '/tmp/codex-hooks' },

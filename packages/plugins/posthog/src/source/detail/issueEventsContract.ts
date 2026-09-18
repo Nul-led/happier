@@ -88,6 +88,16 @@ const PosthogProjectedExceptionV1Schema = defineProtocolObject({
 export const PosthogProjectedIssueEventV1Schema = defineProtocolObject({
     uuid: definePosthogSampleString({ minLength: 1 }),
     timestampMs: defineProtocolNumber({ integer: true }).optional(),
+    /**
+     * This row's own absolute offset in the frozen query that produced it, so an exact
+     * reread addresses the row the reader selected rather than the list position it
+     * happens to occupy after skipped siblings.
+     *
+     * Optional for the same reason `frozenRequest` is: a detail surface paired with an
+     * older daemon still reads samples normally, and only the selected-evidence and
+     * code-variable controls stay unavailable for rows that carry no stated position.
+     */
+    providerOffset: defineProtocolNumber({ integer: true, minimum: 0 }).optional(),
     sessionId: definePosthogSampleString({ minLength: 1 }).optional(),
     url: definePosthogSampleString({ minLength: 1 }).optional(),
     exceptions: defineProtocolArray(PosthogProjectedExceptionV1Schema),

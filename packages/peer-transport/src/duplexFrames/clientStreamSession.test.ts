@@ -214,6 +214,91 @@ describe('client-side duplex stream session', () => {
         });
     });
 
+    it('flushes data already waiting for ACK credit before emitting the local half-close', async () => {
+        const sent: Array<{ kind?: unknown; payload?: Uint8Array }> = [];
+        const session = createPeerTcpTunnelStreamSession({
+            tunnelId: 'preview_tunnel',
+            outboundDirection: 'client_to_daemon',
+            initialWindowBytes: 1,
+            maxFrameBytes: 1024,
+            connection: { close: async () => undefined },
+            sendFrame: async (frame) => {
+                sent.push(frame);
+            },
+        });
+
+        const write = session.write(new Uint8Array([1, 2]));
+        const endWrite = session.endWrite('request_complete');
+
+        await expect(session.write(new Uint8Array([3]))).resolves.toEqual({
+            ok: false,
+            reasonCode: 'direction_half_closed',
+        });
+        expect(sent.map((frame) => frame.kind)).toEqual(['data']);
+
+        await session.acceptFrame({
+            v: 1,
+            kind: 'ack',
+            tunnelId: 'preview_tunnel',
+            direction: 'client_to_daemon',
+            nextSequence: 1,
+            windowBytes: 1,
+        });
+
+        await expect(write).resolves.toEqual({ ok: true });
+        await expect(endWrite).resolves.toEqual({ ok: true });
+        expect(sent.map((frame) => frame.kind)).toEqual(['data', 'data', 'close']);
+        expect(sent[1]?.payload).toEqual(new Uint8Array([2]));
+    });
+
+    it('does not strand a half-close requested while the final drain is resuming reads', async () => {
+        const sent: Array<{ kind?: unknown }> = [];
+        let pauseStarted!: () => void;
+        let resumeStarted!: () => void;
+        let finishResume!: () => void;
+        const pauseStartedPromise = new Promise<void>((resolve) => { pauseStarted = resolve; });
+        const resumeStartedPromise = new Promise<void>((resolve) => { resumeStarted = resolve; });
+        const finishResumePromise = new Promise<void>((resolve) => { finishResume = resolve; });
+        const session = createPeerTcpTunnelStreamSession({
+            tunnelId: 'preview_tunnel',
+            outboundDirection: 'client_to_daemon',
+            initialWindowBytes: 1,
+            maxFrameBytes: 1024,
+            connection: {
+                close: async () => undefined,
+                pauseRead: async () => { pauseStarted(); },
+                resumeRead: async () => {
+                    resumeStarted();
+                    await finishResumePromise;
+                },
+            },
+            sendFrame: async (frame) => {
+                sent.push(frame);
+            },
+        });
+
+        const write = session.write(new Uint8Array([1, 2]));
+        await pauseStartedPromise;
+        await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
+        const ack = session.acceptFrame({
+            v: 1,
+            kind: 'ack',
+            tunnelId: 'preview_tunnel',
+            direction: 'client_to_daemon',
+            nextSequence: 1,
+            windowBytes: 1,
+        });
+        await resumeStartedPromise;
+        const endWrite = session.endWrite('request_complete');
+        finishResume();
+        await ack;
+        await Promise.resolve();
+
+        expect(sent.map((frame) => frame.kind)).toEqual(['data', 'data', 'close']);
+        await expect(write).resolves.toEqual({ ok: true });
+        await expect(endWrite).resolves.toEqual({ ok: true });
+    });
+
     it('rejects regressive and beyond-sent ACKs at the shared owner', async () => {
         const sent: unknown[] = [];
         const session = createPeerTcpTunnelStreamSession({

@@ -1,5 +1,6 @@
 import {
     ComposerRefV1Schema,
+    PluginHostedWebBridgeBootstrapPayloadV1Schema,
     PluginUiHostApiWireIdentityV1Schema,
     PluginUiLaunchInputV1Schema,
     PluginUiSubPathV1Schema,
@@ -15,6 +16,8 @@ export const PLUGIN_UI_HOST_API_CLIENT_BOOTSTRAP_KEY = '__HAPPIER_PLUGIN_UI_HOST
 
 export interface PluginUiHostApiClientBootstrap {
     readonly identity: PluginUiHostApiWireIdentityV1;
+    /** Installed source metadata, separate from the frame's opaque address. */
+    readonly authorPlugin?: Readonly<{ id: string; version: string }>;
     readonly transport: PluginUiHostApiClientTransport;
     readonly apiRange?: string;
     /**
@@ -33,8 +36,11 @@ export function readPluginUiHostApiClientBootstrap(): PluginUiHostApiClientBoots
     const value: unknown = Reflect.get(globalThis, PLUGIN_UI_HOST_API_CLIENT_BOOTSTRAP_KEY);
     if (typeof value !== 'object' || value === null) return undefined;
     const identity = PluginUiHostApiWireIdentityV1Schema.safeParse(Reflect.get(value, 'identity'));
+    const authorPlugin = PluginHostedWebBridgeBootstrapPayloadV1Schema.shape.authorPlugin.safeParse(
+        Reflect.get(value, 'authorPlugin'),
+    );
     const transportValue: unknown = Reflect.get(value, 'transport');
-    if (!identity.success || typeof transportValue !== 'object' || transportValue === null) return undefined;
+    if (!identity.success || !authorPlugin.success || typeof transportValue !== 'object' || transportValue === null) return undefined;
     const send: unknown = Reflect.get(transportValue, 'send');
     const subscribe: unknown = Reflect.get(transportValue, 'subscribe');
     const apiRange: unknown = Reflect.get(value, 'apiRange');
@@ -57,6 +63,7 @@ export function readPluginUiHostApiClientBootstrap(): PluginUiHostApiClientBoots
         : ComposerRefV1Schema.safeParse(rawComposerRef);
     return {
         identity: identity.data,
+        ...(authorPlugin.data === undefined ? {} : { authorPlugin: authorPlugin.data }),
         ...(launchInput?.success ? { launchInput: launchInput.data as JsonValue } : {}),
         ...(subPath?.success ? { subPath: subPath.data } : {}),
         ...(composerRef?.success ? { composerRef: composerRef.data } : {}),

@@ -220,12 +220,8 @@ async function mountCockpit(
     let fixture!: PluginUiTestkit;
     await act(async () => {
         fixture = await createPluginUiTestkit({
-            identity: {
-                pluginId: PLUGIN_ID,
-                pluginVersion: '0.0.0',
-                viewId: 'session-linked-entries',
-                generation: 'session-linked-entries-mount',
-            },
+            identity: { instanceId: 'fixture-instance-165', mountNonce: 'fixture-mount-165' },
+            authorPlugin: { id: PLUGIN_ID, version: '0.0.0' },
             surface: renderSessionLinkedEntriesSurface,
             surfaceContext: createSurfaceContextFixture({
                 mount: {
@@ -543,6 +539,31 @@ describe('the mounted Session cockpit', () => {
         expect(harness.gets).toEqual(['link-a', 'link-a']);
         await expect(fixture.getByText('example/repository#99')).resolves
             .toEqual({ content: 'example/repository#99' });
+    });
+
+    it('recovers an unreadable private link at the same revision without rereading healthy links', async () => {
+        const rows = [queryRow('link-a', 2_000), queryRow('link-b', 1_000)];
+        const failures = new Set(['link-b']);
+        const harness = createDataHarness({
+            snapshot: { rows, hasMore: false, status: 'ready' },
+            rowsById: new Map([
+                ['link-a', linkRow({ displayPathAtLink: 'example/repository#42' })],
+                ['link-b', linkRow({ displayPathAtLink: 'example/repository#43' })],
+            ]),
+            failingRowIds: failures,
+        });
+        const fixture = await mountCockpit(harness, { kind: 'session', sessionId: SESSION_ID });
+        await expect(fixture.getByText('This link could not be read.')).resolves.toBeDefined();
+        failures.clear();
+        await act(async () => {
+            await fixture.press(await fixture.getByRole('button', { name: 'Refresh' }));
+        });
+        await act(async () => { await Promise.resolve(); });
+        await expect(fixture.getByRole('button', { name: 'example/repository#43' })).resolves.toBeDefined();
+        expect((await fixture.queryAllByRole('button')).filter((button) => button.name === 'Unlink')).toHaveLength(2);
+        expect(harness.gets).toEqual(['link-a', 'link-b', 'link-b']);
+        await act(async () => { harness.control.publish({ rows, hasMore: false, status: 'ready' }); });
+        expect(harness.gets).toEqual(['link-a', 'link-b', 'link-b']);
     });
 
     it('renders a link whose private row could not be read instead of dropping it', async () => {

@@ -1,6 +1,7 @@
 import type { JsonValue, PluginApi, PluginInvocationContext } from '@happier-dev/plugin-sdk';
 import type { ActionHandler } from '@happier-dev/plugin-sdk/actions';
 import type { PluginAccountCollectionDefinition } from '@happier-dev/plugin-sdk/collections';
+import type { SessionMessageSendResultV1 } from '@happier-dev/protocol';
 import { TRIAGE_SOURCES_CONTRIBUTION_PROTOCOL_ID_V1 } from '@happier-dev/triage-protocol/v1';
 import { describe, expect, it } from 'vitest';
 
@@ -39,6 +40,7 @@ import {
     TRIAGE_START_PULL_REQUEST_REVIEW_ACTION_LOCAL_ID_V1,
     TRIAGE_UNLINK_ENTRY_FROM_SESSION_ACTION_LOCAL_ID_V1,
     TriageStartEntrySessionInputV1Schema,
+    TriageStartEntrySessionResultV1Schema,
     TriageStartPullRequestReviewInputV1Schema,
 } from './entrySessionProtocol.js';
 import type { TriageAdmittedSourceV1 } from './listEntries.js';
@@ -90,12 +92,16 @@ function registeredHandler(localId: string): ActionHandler<JsonValue, JsonValue>
 function createContext(
     collections: CorpusCollectionsV1,
     invoker?: TestkitActionInvoker,
+    executeOverride?: (actionId: unknown, input: unknown) => Promise<unknown>,
 ): PluginInvocationContext {
     return {
         signal: new AbortController().signal,
         services: {
             actions: {
                 execute: async (actionId: unknown, input: unknown) => {
+                    if (executeOverride !== undefined) {
+                        return await executeOverride(actionId, input);
+                    }
                     if (invoker === undefined) {
                         throw new Error(`no host Action was expected, and "${String(actionId)}" was invoked`);
                     }
@@ -158,9 +164,43 @@ function formalReviewInput() {
     };
 }
 
+/**
+ * The real keyed shape `review.start` answers with.
+ *
+ * `packages/protocol/src/actions/actionExecutor.ts` fans out one entry per
+ * requested engine and returns every one of them inside an OUTER success, so a
+ * fixture that answers `{ status: 'started' }` cannot falsify a handler that
+ * discards per-engine outcomes.
+ */
+function reviewStartFanout(
+    outcomes: Readonly<Record<string, 'started' | 'unavailable'>>,
+): unknown {
+    return {
+        intent: 'review',
+        sessionId: 'session-a',
+        results: Object.entries(outcomes).map(([key, outcome]) => (outcome === 'started'
+            ? {
+                key,
+                ok: true,
+                result: {
+                    runId: `run-${key}`,
+                    callId: `call-${key}`,
+                    sidechainId: `sidechain-${key}`,
+                },
+            }
+            : {
+                key,
+                ok: false,
+                errorCode: 'review_engine_unavailable',
+                error: 'review_engine_unavailable',
+            })),
+    };
+}
+
 function createFormalReviewContext(input: Readonly<{
     verifyResult: unknown;
     events: string[];
+    reviewStartResult?: unknown;
 }>): PluginInvocationContext {
     const operation = { role: 'verifyReviewWorkspace' };
     const source = START_INPUT_BASE.entryRef.source;
@@ -243,7 +283,10 @@ function createFormalReviewContext(input: Readonly<{
                             observed: TESTKIT_OBSERVED_REVISION,
                         },
                     });
-                    return { status: 'started' };
+                    return input.reviewStartResult ?? reviewStartFanout({
+                        'engine-a': 'started',
+                        'engine-b': 'started',
+                    });
                 },
             },
         },
@@ -339,6 +382,21 @@ describe('the Session-start Action a mounted header can actually press', () => {
             START_INPUT_BASE.entryRef,
             testkitEntryRef({ entryId: '18' }),
         ]);
+    });
+
+    it('fails closed when a nested Session Action requires present-user approval', async () => {
+        const { collections } = createTestkitCorpusCollections();
+        const handler = registeredHandler(TRIAGE_START_ENTRY_SESSION_ACTION_LOCAL_ID_V1);
+
+        await expect(handler({
+            ...START_INPUT_BASE,
+            workspaceMode: 'reference_only',
+            destination: NEW_DESTINATION,
+        }, createContext(collections, undefined, async () => ({
+            kind: 'approval_request_created',
+            artifactId: 'approval-artifact-1',
+            actionId: 'session.spawn_new',
+        })))).rejects.toThrow('triage:sessionAction:approvalDeferred');
     });
 
     it('rejects the retired singular-plus-additional delivery spelling', () => {
@@ -576,7 +634,12 @@ describe('the registered formal Review transition', () => {
         await expect(handler(formalReviewInput(), createFormalReviewContext({
             verifyResult: { kind: 'verified', pullRequest: { number: 17 } },
             events,
-        }))).resolves.toEqual({ v: 1, status: 'started' });
+        }))).resolves.toEqual({
+            v: 1,
+            status: 'started',
+            startedEngineIds: ['engine-a', 'engine-b'],
+            failedEngineIds: [],
+        });
 
         expect(events).toEqual([
             'source.readCurrent',
@@ -584,6 +647,63 @@ describe('the registered formal Review transition', () => {
             'source.verifyReviewWorkspace',
             'review.start',
         ]);
+    });
+
+    /**
+     * The fan-out owner reports each engine independently INSIDE an outer
+     * success, so a start that reached no engine at all — the selected one
+     * disappearing between the chooser's discovery and this transition is the
+     * ordinary way there — used to answer `started` and open the Session as a
+     * review with zero runs.
+     */
+    it('refuses when the canonical fan-out started no engine at all', async () => {
+        const events: string[] = [];
+        const handler = registeredHandler(TRIAGE_START_PULL_REQUEST_REVIEW_ACTION_LOCAL_ID_V1);
+
+        await expect(handler(formalReviewInput(), createFormalReviewContext({
+            verifyResult: { kind: 'verified', pullRequest: { number: 17 } },
+            reviewStartResult: reviewStartFanout({
+                'engine-a': 'unavailable',
+                'engine-b': 'unavailable',
+            }),
+            events,
+        }))).resolves.toEqual({ v: 1, status: 'refused', reason: 'noEngineStarted' });
+    });
+
+    /** Partial success keeps both halves: the started runs and the refused engine. */
+    it('reports the engines that started and the ones that did not', async () => {
+        const events: string[] = [];
+        const handler = registeredHandler(TRIAGE_START_PULL_REQUEST_REVIEW_ACTION_LOCAL_ID_V1);
+
+        await expect(handler(formalReviewInput(), createFormalReviewContext({
+            verifyResult: { kind: 'verified', pullRequest: { number: 17 } },
+            reviewStartResult: reviewStartFanout({
+                'engine-a': 'started',
+                'engine-b': 'unavailable',
+            }),
+            events,
+        }))).resolves.toEqual({
+            v: 1,
+            status: 'started',
+            startedEngineIds: ['engine-a'],
+            failedEngineIds: ['engine-b'],
+        });
+    });
+
+    /**
+     * An outer success whose keyed outcomes cannot be attributed is not a
+     * refusal: runs may already exist, so the caller must reach its
+     * non-repeatable outcome-unknown path rather than be offered a retry.
+     */
+    it('never converts an unreadable fan-out answer into a retryable refusal', async () => {
+        const events: string[] = [];
+        const handler = registeredHandler(TRIAGE_START_PULL_REQUEST_REVIEW_ACTION_LOCAL_ID_V1);
+
+        await expect(handler(formalReviewInput(), createFormalReviewContext({
+            verifyResult: { kind: 'verified', pullRequest: { number: 17 } },
+            reviewStartResult: { intent: 'review', sessionId: 'session-a' },
+            events,
+        }))).rejects.toThrow();
     });
 
     it.each([
@@ -661,6 +781,93 @@ describe('the explicit unlink Action', () => {
 });
 
 describe('the Session-start wire', () => {
+    /**
+     * Every status the canonical `session.message.send` result can answer with,
+     * checked against the exported protocol result type. Keeping the vector
+     * explicit avoids depending on Zod's private schema representation while
+     * the type assertions below make a missing or extra arm fail compilation.
+     *
+     * The start wire's `delivery` union must track this contract arm for arm:
+     * when the canonical result gains, renames or retires an outcome, the cases
+     * below fail until this Action's output follows. This is the drift that
+     * once split the terminal `cancelled` and `failed` arms between the
+     * plugin's TypeScript delivery union and its own wire schema, so neither
+     * half of that contract may be spelled by hand again.
+     */
+    const CANONICAL_SEND_STATUSES_V1 = [
+        'accepted',
+        'alreadyAccepted',
+        'rejected',
+        'outcomeUnknown',
+        'failed',
+        'cancelled',
+    ] as const satisfies readonly SessionMessageSendResultV1['status'][];
+    type MissingCanonicalSendStatusV1 = Exclude<
+        SessionMessageSendResultV1['status'],
+        typeof CANONICAL_SEND_STATUSES_V1[number]
+    >;
+    type AssertNoMissingCanonicalSendStatusV1<T extends never> = T;
+    type CanonicalSendStatusVectorIsExhaustiveV1 = AssertNoMissingCanonicalSendStatusV1<MissingCanonicalSendStatusV1>;
+    const canonicalSendStatusVectorIsExhaustiveV1: CanonicalSendStatusVectorIsExhaustiveV1 | true = true;
+    /** A settled phase resume carries every answer except the unknown one. */
+    const CANONICAL_SETTLED_SEND_STATUSES_V1 = CANONICAL_SEND_STATUSES_V1.filter(
+        (status) => status !== 'outcomeUnknown',
+    );
+
+    it('keeps one exhaustive canonical send-status vector', () => {
+        expect(canonicalSendStatusVectorIsExhaustiveV1).toBe(true);
+        expect(new Set(CANONICAL_SEND_STATUSES_V1).size).toBe(CANONICAL_SEND_STATUSES_V1.length);
+    });
+
+    it.each(CANONICAL_SEND_STATUSES_V1)(
+        'carries the canonical Session-input send outcome %s',
+        (delivery) => {
+            const parsed = TriageStartEntrySessionResultV1Schema.safeParse({
+                v: 1,
+                type: 'opened',
+                sessionId: 'session-a',
+                disposition: 'created',
+                delivery,
+            });
+
+            expect(parsed.success).toBe(true);
+            if (parsed.success) expect(parsed.data.delivery).toBe(delivery);
+        },
+    );
+
+    it.each(CANONICAL_SETTLED_SEND_STATUSES_V1)(
+        'retains the settled canonical Session-input send outcome %s across an open retry',
+        (delivery) => {
+            expect(TriageStartEntrySessionInputV1Schema.safeParse({
+                ...START_INPUT_BASE,
+                workspaceMode: 'reference_only',
+                destination: NEW_DESTINATION,
+                resume: {
+                    phase: 'openPending',
+                    sessionId: 'session-a',
+                    disposition: 'created',
+                    delivery,
+                },
+            }).success).toBe(true);
+        },
+    );
+
+    it('answers a phase resume whose settled delivery outcome was never a canonical arm', () => {
+        // The settled subset is the canonical contract minus `outcomeUnknown`;
+        // nothing outside either set may travel on the resume wire.
+        expect(TriageStartEntrySessionInputV1Schema.safeParse({
+            ...START_INPUT_BASE,
+            workspaceMode: 'reference_only',
+            destination: NEW_DESTINATION,
+            resume: {
+                phase: 'openPending',
+                sessionId: 'session-a',
+                disposition: 'created',
+                delivery: 'outcomeUnknown',
+            },
+        }).success).toBe(false);
+    });
+
     it('admits and preserves every selected review engine beyond the former local cap', () => {
         const engineIds = Array.from({ length: 17 }, (_, index) => `review-engine-${index + 1}`);
 

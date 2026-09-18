@@ -98,6 +98,7 @@ type OpenCall = Readonly<{ view: unknown; input: unknown }>;
 function createHarness(options: Readonly<{
     scanFailure?: TriageSourceFailureV1;
     cancelFirstComposerApply?: boolean;
+    observations?: readonly TriageSourceScanObservationV1[];
 }> = {}) {
     const { collections, control } = createTestkitCorpusCollections();
     control.sourceInstances.seed(toCorpusStoredValue(instanceRow()));
@@ -113,7 +114,7 @@ function createHarness(options: Readonly<{
         }
         return {
             kind: 'complete',
-            observations: [
+            observations: options.observations ?? [
                 observation('42', 'Replace the duplicated normalizer'),
                 observation('43', 'Older change'),
             ],
@@ -301,12 +302,8 @@ async function openPicker(
     let fixture!: PluginUiTestkit;
     await act(async () => {
         fixture = await createPluginUiTestkit({
-            identity: {
-                pluginId: 'happier.triage',
-                pluginVersion: '0.0.0',
-                viewId,
-                generation: `${viewId}-mount`,
-            },
+            identity: { instanceId: 'fixture-instance-168', mountNonce: 'fixture-mount-168' },
+            authorPlugin: { id: 'happier.triage', version: '0.0.0' },
             surface: renderPickerSurface,
             surfaceContext: createSurfaceContextFixture(environment),
             adapter: createPluginUiRnwSemanticSurfaceAdapter({
@@ -356,6 +353,13 @@ afterEach(async () => {
 });
 
 describe('the mounted Composer entry picker', () => {
+    it('shows the canonical kind, address and lifecycle beside the entry title', async () => {
+        const picker = await mountPicker(createHarness({
+            observations: [observation('42', 'Replace the duplicated normalizer')],
+        }), COMPOSER_A, 'triage-picker-row-context');
+        await expect(picker.getByText('happier.example.source/example-forge · pull-request · example/repository #17 · Open'))
+            .resolves.toBeDefined();
+    });
     it('derives multi-selection and later row state only from the canonical Composer snapshot', async () => {
         const harness = createHarness();
         const picker = await mountPicker(harness, COMPOSER_A, 'triage-picker-canonical-selection');

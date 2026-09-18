@@ -38,7 +38,7 @@ import {
 } from '../sentryContracts.js';
 import { createSentryApiClient, type SentryApiClientV1 } from '../api/sentryApiClient.js';
 import { classifySentryFailure } from '../api/sentryFailure.js';
-import { parseSentryLinkHeader } from '../api/sentryLinkHeader.js';
+import { readSentryNextPageRelation } from '../api/sentryLinkHeader.js';
 import { buildSentryIssueUrl } from '../api/sentryRoutes.js';
 import { resolveSentryAccountRoute } from '../auth/sentryAccountRoute.js';
 import type { SentryDeploymentV1 } from '../auth/sentryOrigin.js';
@@ -226,7 +226,15 @@ async function collectAccountCandidates(input: Readonly<{
 }>): Promise<Readonly<{
   candidates: readonly TriageSourceInstanceDraftV1[];
   failures: readonly SentryInstanceFailureV1[];
-  skippedSiblingFailure: TriageSourceFailureV1 | null;
+  /**
+   * The first reason this account's organizations are not all here.
+   *
+   * A skipped provider row and a walk that stopped before Sentry itself said
+   * `results="false"` are the same fact for a reader: the candidate list is a
+   * prefix, not the account's organizations. Discovery reports it as
+   * `incomplete` rather than offering a partial list as the whole one (§2.4).
+   */
+  incompleteReason: TriageSourceFailureV1 | null;
 }>> {
   const candidates: TriageSourceInstanceDraftV1[] = [];
   const failures: SentryInstanceFailureV1[] = [];
@@ -244,10 +252,14 @@ async function collectAccountCandidates(input: Readonly<{
   */
   const recordedInstanceKeys = new Set<string>();
   let cursor: string | undefined;
-  let skippedSiblingFailure: TriageSourceFailureV1 | null = null;
+  let incompleteReason: TriageSourceFailureV1 | null = null;
 
+  // Every failure this walk reports is also a reason its candidate list is a
+  // prefix: a page it could not read, a row it could not parse, and a next
+  // relation it will not follow all leave organizations unobserved.
   const fail = (failure: TriageSourceFailureV1): void => {
     failures.push(Object.freeze({ binding: input.binding, failure }));
+    incompleteReason ??= failure;
   };
 
   for (;;) {
@@ -281,7 +293,7 @@ async function collectAccountCandidates(input: Readonly<{
 
     const page = parseSentryOrganizationsPage({ deployment: input.deployment, body });
     if (Array.isArray(body) && page.organizations.length < body.length && page.failure !== null) {
-      skippedSiblingFailure ??= toTriageFailure(page.failure);
+      incompleteReason ??= toTriageFailure(page.failure);
     }
     for (const organization of page.organizations) {
       const draft = buildDraft({
@@ -290,9 +302,7 @@ async function collectAccountCandidates(input: Readonly<{
         organization,
       });
       if (draft === null) {
-        const failure = sourceFailure(SENTRY_FAILURE_CODES.malformedOrganizationRow);
-        skippedSiblingFailure ??= failure;
-        fail(failure);
+        fail(sourceFailure(SENTRY_FAILURE_CODES.malformedOrganizationRow));
         continue;
       }
       // A repeat is provider paging, not a second configured choice.
@@ -302,29 +312,31 @@ async function collectAccountCandidates(input: Readonly<{
     }
     if (page.failure !== null) fail(toTriageFailure(page.failure));
 
-    const link = parseSentryLinkHeader(response.headers);
-    if (!link.present) {
+    const relation = readSentryNextPageRelation(response.headers);
+    if (relation.kind === 'headerAbsent') {
       fail(sourceFailure(SENTRY_FAILURE_CODES.paginationHeaderAbsent));
       break;
     }
-    const next = link.next;
-    if (next === null || !next.hasResults) break;
-    if (next.cursor === null || next.cursor === '') {
+    // Pagination metadata this source cannot read stops discovery with its own
+    // reason: the organizations already accepted stay candidates, and the result
+    // stays explicitly incomplete rather than claiming a complete account walk.
+    if (relation.kind === 'unusable') {
       fail(sourceFailure(SENTRY_FAILURE_CODES.paginationCursorMalformed));
       break;
     }
-    if (requestedCursors.has(next.cursor)) {
+    if (relation.kind === 'exhausted') break;
+    if (requestedCursors.has(relation.cursor)) {
       fail(sourceFailure(SENTRY_FAILURE_CODES.paginationCursorNotAdvancing));
       break;
     }
-    requestedCursors.add(next.cursor);
-    cursor = next.cursor;
+    requestedCursors.add(relation.cursor);
+    cursor = relation.cursor;
   }
 
   return Object.freeze({
     candidates: Object.freeze(candidates),
     failures: Object.freeze(failures),
-    skippedSiblingFailure,
+    incompleteReason,
   });
 }
 
@@ -371,7 +383,7 @@ export async function listSentryInstances(
 
   const candidates: TriageSourceInstanceDraftV1[] = [];
   const failures: SentryInstanceFailureV1[] = [];
-  let skippedSiblingFailure: TriageSourceFailureV1 | null = null;
+  let incompleteReason: TriageSourceFailureV1 | null = null;
 
   const accounts = [...listed.accounts]
     .sort((left, right) => compareAccounts(left.account, right.account));
@@ -399,7 +411,7 @@ export async function listSentryInstances(
     });
     candidates.push(...walked.candidates);
     failures.push(...walked.failures);
-    skippedSiblingFailure ??= walked.skippedSiblingFailure;
+    incompleteReason ??= walked.incompleteReason;
   }
 
   const frozenFailures = Object.freeze([...failures]);
@@ -413,12 +425,12 @@ export async function listSentryInstances(
       failure: sourceFailure(SENTRY_FAILURE_CODES.accountListTruncated),
     });
   }
-  if (skippedSiblingFailure !== null) {
+  if (incompleteReason !== null) {
     return Object.freeze({
       kind: 'incomplete' as const,
       candidates: Object.freeze(candidates),
       failures: frozenFailures,
-      failure: skippedSiblingFailure,
+      failure: incompleteReason,
     });
   }
   return Object.freeze({

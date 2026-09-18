@@ -12,6 +12,7 @@ import {
     throwIfCodexExternalSessionInvocationStopped,
     type CodexExternalSessionInvocationBounds,
 } from '../../surfaces/sessions/external/invocationBounds.js';
+import { readExactCodexProviderSessionId } from '../../../protocol/runtimeDescriptorV1.js';
 
 export type CodexSessionMetaPayload = {
     id?: string;
@@ -37,6 +38,9 @@ const CODEX_SESSION_META_CLOCK_SKEW_MS = 2_000;
 export function parseCodexRolloutSessionIdFromFilename(filePath: string): string | null {
     const name = filePath.split(/[/\\\\]/).pop() ?? '';
     const match = /^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-(.+)\.jsonl$/i.exec(name);
+    // A filename is not a byte-exact identity source: Windows strips trailing
+    // spaces and dots from names, so this stays a trimmed best-effort fast path.
+    // `session_meta.payload.id` is the authoritative id and is read exactly.
     const sessionId = match?.[1]?.trim() ?? '';
     return sessionId || null;
 }
@@ -356,7 +360,8 @@ export async function discoverCodexRolloutFileOnce(opts: {
     resumeId?: string | null;
     scanLimit: number;
 }): Promise<CodexRolloutCandidate | null> {
-    const resumeId = typeof opts.resumeId === 'string' && opts.resumeId.trim().length > 0 ? opts.resumeId.trim() : null;
+    // Codex minted this id; it is matched against rollout files verbatim.
+    const resumeId = readExactCodexProviderSessionId(opts.resumeId);
 
     // Fast-path: filename fragment match.
     if (resumeId) {

@@ -48,6 +48,8 @@ import {
     fitActionResultSequenceV1,
 } from '@happier-dev/triage-sources/projection/actionResultSequence';
 
+import { fitPosthogDiscoveredEnvironments } from '../connect/configuration.js';
+import type { PosthogNativeOverviewResultV1 } from './detail/nativeOverviewContract.js';
 import {
     MAX_POSTHOG_DIRECTORY_ROWS_PER_PAGE_V1,
     PosthogConfigurationDirectoryInputV1Schema,
@@ -99,7 +101,6 @@ import {
 } from './identity.js';
 import {
     POSTHOG_DRAFT_WINDOW_POLICY,
-    encodePosthogConfiguration,
     resolvePosthogWindowPolicy,
     type PosthogConfigurationToken,
     type PosthogConfiguredEnvironment,
@@ -129,6 +130,7 @@ export const POSTHOG_FAILURE_CODES = {
     environmentNotConfigured: 'posthog/environment-not-configured',
     noSelectableEnvironment: 'posthog/no-selectable-environment',
     discoveryPageBounded: 'posthog/discovery-page-bounded',
+    discoveryEnvironmentsBounded: 'posthog/discovery-environments-bounded',
     accountListTruncated: 'posthog/account-list-truncated',
     entryIdMalformed: 'posthog/entry-id-malformed',
     responseUnreadable: 'posthog/response-unreadable',
@@ -494,6 +496,8 @@ export async function listPosthogInstances(
     const candidates: TriageSourceInstanceDraftV1[] = [];
     const failures: PosthogInstanceFailure[] = [];
     let bounded = false;
+    /** A candidate's draft carries fewer environments than discovery saw. */
+    let environmentsBounded = false;
 
     const accounts = [...listed.accounts]
         .sort((left, right) => compareAccounts(left.account, right.account));
@@ -588,14 +592,16 @@ export async function listPosthogInstances(
                 continue;
             }
 
-            const encoded = encodePosthogConfiguration({
-                v: 1,
+            // A discovered set larger than one configuration token still produces an
+            // editable draft. Dropping the organization instead would leave a first-time
+            // reader with no row, so no draft, so no way to open the native editor and
+            // choose the subset that does fit.
+            const fitted = fitPosthogDiscoveredEnvironments(environments, {
                 organizationUuid: organization.organizationUuid,
-                environments,
                 scanWindowPolicy: POSTHOG_DRAFT_WINDOW_POLICY,
                 detailWindowPolicy: POSTHOG_DRAFT_WINDOW_POLICY,
             });
-            if (!encoded.ok) {
+            if (fitted === null) {
                 failures.push(Object.freeze({
                     binding,
                     localInstanceKey: localInstanceKey.value,
@@ -606,6 +612,7 @@ export async function listPosthogInstances(
                 }));
                 continue;
             }
+            if (fitted.bounded) environmentsBounded = true;
 
             candidates.push(Object.freeze({
                 v: 1 as const,
@@ -614,7 +621,7 @@ export async function listPosthogInstances(
                 // An origin change is explicit reconfiguration and a new identity, so
                 // this key is locator-derived rather than immutable provider identity.
                 keyStability: 'locatorDerived' as const,
-                configuration: Object.freeze({ v: 1 as const, token: encoded.token }),
+                configuration: Object.freeze({ v: 1 as const, token: fitted.token }),
                 locator: Object.freeze({ v: 1 as const, displayLabel: organization.name }),
             }) as TriageSourceInstanceDraftV1);
         }
@@ -635,6 +642,20 @@ export async function listPosthogInstances(
             candidates: Object.freeze(candidates),
             failures: frozenFailures,
             failure: sourceFailure('unknown', POSTHOG_FAILURE_CODES.discoveryPageBounded),
+        });
+    }
+    // Every page was read whole, but a draft carries fewer environments than the
+    // organization exposed. The candidate is usable and the editor can widen or narrow
+    // it; what this listing cannot claim is that the draft describes all of them.
+    if (environmentsBounded) {
+        return Object.freeze({
+            kind: 'incomplete' as const,
+            candidates: Object.freeze(candidates),
+            failures: frozenFailures,
+            failure: sourceFailure(
+                'unknown',
+                POSTHOG_FAILURE_CODES.discoveryEnvironmentsBounded,
+            ),
         });
     }
     return Object.freeze({
@@ -1021,17 +1042,15 @@ async function readPosthogSourceEntry(
     input: unknown,
     context: PluginInvocationContext,
     signal: AbortSignal,
-): Promise<TriageGetResultV1> {
+): Promise<PosthogNativeOverviewResultV1> {
     const parsed = TriageGetInputV1Schema.parse(input);
     const localRef = Object.freeze({
         kindId: parsed.localRef.kindId,
         collisionScope: parsed.localRef.collisionScope,
         entryId: parsed.localRef.entryId,
     });
-    const unresolved = (failure: TriageSourceFailureV1): TriageGetResultV1 => Object.freeze({
-        kind: 'unresolved' as const,
-        localRef,
-        failure,
+    const unresolved = (failure: TriageSourceFailureV1): PosthogNativeOverviewResultV1 => Object.freeze({
+        observation: { kind: 'unresolved' as const, localRef, failure },
     });
 
     // Exact get and every source-native detail plane share one admission owner. A ref
@@ -1085,24 +1104,31 @@ async function readPosthogSourceEntry(
         aggregations: outcome.queryDetail.impact ?? outcome.queryDetail.aggregations,
     };
 
-    return buildPosthogPresentObservation({
-        snapshot: buildPosthogEntrySnapshot({
-            locator: {
-                collisionScope: parsed.localRef.collisionScope,
-                entryId: parsed.localRef.entryId,
-            },
-            row,
-            scope: {
-                displayName: environment.displayName,
-                teamRouteId: environment.teamPathId,
-            },
-            crud: outcome.crud,
-            ...(outcome.queryDetail === undefined ? {} : { enrichment: outcome.queryDetail }),
-            untitledLabel: UNTITLED_ISSUE_LABEL,
-            bounds: PROJECTION_BOUNDS,
-        }),
-        ...(row.lastSeenMs === undefined ? {} : { sourceUpdatedAtMs: row.lastSeenMs }),
+    const snapshot = buildPosthogEntrySnapshot({
+        locator: {
+            collisionScope: parsed.localRef.collisionScope,
+            entryId: parsed.localRef.entryId,
+        },
+        row,
+        scope: {
+            displayName: environment.displayName,
+            teamRouteId: environment.teamPathId,
+        },
+        crud: outcome.crud,
+        ...(outcome.queryDetail === undefined ? {} : { enrichment: outcome.queryDetail }),
+        untitledLabel: UNTITLED_ISSUE_LABEL,
+        bounds: PROJECTION_BOUNDS,
     });
+    return {
+        observation: buildPosthogPresentObservation({
+            snapshot,
+            ...(row.lastSeenMs === undefined ? {} : { sourceUpdatedAtMs: row.lastSeenMs }),
+        }),
+        ...(snapshot.severity === undefined ? {} : { severity: snapshot.severity }),
+        ...(outcome.enrichmentFailure === undefined ? {} : {
+            enrichmentFailure: toTriageSourceFailure(outcome.enrichmentFailure),
+        }),
+    };
 }
 
 export type PosthogSourceEntryReader = (
@@ -1116,7 +1142,7 @@ export function createPosthogSourceEntryReader(
     return async (input, context) => await runPosthogBoundedInvocation(
         context,
         deadlineMs,
-        async (signal) => await readPosthogSourceEntry(input, context, signal),
+        async (signal) => (await readPosthogSourceEntry(input, context, signal)).observation,
     );
 }
 
@@ -1125,10 +1151,16 @@ export const getPosthogSourceEntry: PosthogSourceEntryReader = async (input, con
         ? await runPosthogBoundedInvocation(
             context,
             undefined,
-            async (signal) => await readPosthogSourceEntry(input, context, signal),
+            async (signal) => (await readPosthogSourceEntry(input, context, signal)).observation,
         )
-        : await readPosthogSourceEntry(input, context, context.signal)
+        : (await readPosthogSourceEntry(input, context, context.signal)).observation
 );
+
+/** Overview consumes the same join; aggregate get exposes only its shared observation. */
+export const readPosthogNativeOverview = async (
+    input: unknown,
+    context: PluginInvocationContext,
+): Promise<PosthogNativeOverviewResultV1> => await readPosthogSourceEntry(input, context, context.signal);
 
 /**
  * Mounted-detail sampled reads inherit the host-stamped caller lifetime.

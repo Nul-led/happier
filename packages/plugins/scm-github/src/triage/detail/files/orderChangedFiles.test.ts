@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import type { GithubProjectedChangedFileRowV1 } from '../projection.js';
+import { GITHUB_DETAIL_BOUNDS_V1, projectGithubChangedFileRows, type GithubProjectedChangedFileRowV1 } from '../projection.js';
+import { GithubChangedFilesResultV1Schema } from '../contracts.js';
 
 import {
   classifyGithubChangedFile,
@@ -24,6 +25,51 @@ function orderedPaths(paths: readonly string[]): readonly string[] {
 }
 
 describe('GitHub changed-file reading order', () => {
+  it('orders GitHub changed files source, related tests, then generated paths and imports deterministically', () => {
+    const raw = [
+      { filename: 'yarn.lock', status: 'modified' },
+      { filename: 'src/a.test.ts', status: 'modified' },
+      { filename: 'src/z.test.ts', status: 'modified' },
+      { filename: 'src/a.ts', status: 'modified', patch: "@@ -1 +1 @@\n+import { value } from './z';" },
+      { filename: 'src/z.ts', status: 'modified', patch: '@@ -0,0 +1 @@\n+export const value = 1;' },
+    ];
+    const readOrder = (files: typeof raw) => {
+      const page = projectGithubChangedFileRows(files, GITHUB_DETAIL_BOUNDS_V1);
+      const result = GithubChangedFilesResultV1Schema.parse({ kind: 'changedFiles', ...page });
+      if (result.kind !== 'changedFiles') throw new Error('Expected changed files');
+      return orderGithubChangedFiles(result.rows).map((entry) => entry.row.path);
+    };
+    expect(readOrder(raw)).toEqual(['src/z.ts', 'src/a.ts', 'src/z.test.ts', 'src/a.test.ts', 'yarn.lock']);
+    expect(readOrder([...raw].reverse())).toEqual(readOrder(raw));
+  });
+
+  it('falls back to lexical source order for missing, unresolved, removed or cyclic imports', () => {
+    const page = projectGithubChangedFileRows([
+      { filename: 'src/c.ts', status: 'modified', patch: "@@ -1 +1 @@\n+import value from './a';" },
+      { filename: 'src/a.ts', status: 'modified', patch: "@@ -1 +1 @@\n+import value from './c';" },
+      { filename: 'src/b.ts', status: 'modified', patch: "@@ -1 +1 @@\n-import value from './z';\n+import value from './missing';" },
+      { filename: 'src/z.ts', status: 'modified' },
+    ], GITHUB_DETAIL_BOUNDS_V1);
+    expect(orderGithubChangedFiles(page.rows).map((entry) => entry.row.path))
+      .toEqual(['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/z.ts']);
+  });
+
+  it('does not invent dependencies from deleted imports, comments or ambiguous targets', () => {
+    for (const patch of [
+      "@@ -1 +1 @@\n-import value from './z';\n+export const value = 1;",
+      "@@ -1 +1 @@\n+// import value from './z';",
+      "@@ -1 +1,3 @@\n+/*\n+import value from './z';\n+*/",
+      "@@ -1 +1 @@\n+import value from './z';",
+    ]) {
+      const page = projectGithubChangedFileRows([
+        { filename: 'src/z.ts', status: 'modified' },
+        { filename: 'src/z.tsx', status: 'modified' },
+        { filename: 'src/a.ts', status: 'modified', patch },
+      ], GITHUB_DETAIL_BOUNDS_V1);
+      expect(orderGithubChangedFiles(page.rows).map((entry) => entry.row.path))
+        .toEqual(['src/a.ts', 'src/z.ts', 'src/z.tsx']);
+    }
+  });
   it('reads source first, then tests, then generated output', () => {
     // The provider order is deliberately hostile: lockfile churn first, the
     // code last. Raw provider order and plain alphabetical order both fail here.

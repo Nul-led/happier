@@ -1,12 +1,15 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import type { AgentSessionOpenRequest } from '@happier-dev/plugin-sdk/agents/runtime';
+import type {
+  AgentExecutionRunOpenRequest,
+  AgentSessionOpenRequest,
+} from '@happier-dev/plugin-sdk/agents/runtime';
 
 import { OPENCODE_PROVIDER_CONFIG_RELATIVE_PATH } from './adapter.js';
 
 export async function readOpenCodeProviderConfigContent(
-  request: AgentSessionOpenRequest,
+  request: AgentSessionOpenRequest | AgentExecutionRunOpenRequest,
 ): Promise<string | undefined> {
   const materialization = request.providerBinding?.materialization;
   if (materialization === undefined) return undefined;
@@ -25,7 +28,13 @@ export async function readOpenCodeProviderConfigContent(
 
 export async function withOpenCodeProviderConfigLaunchEnvironment(
   request: AgentSessionOpenRequest,
-): Promise<AgentSessionOpenRequest> {
+): Promise<AgentSessionOpenRequest>;
+export async function withOpenCodeProviderConfigLaunchEnvironment(
+  request: AgentExecutionRunOpenRequest,
+): Promise<AgentExecutionRunOpenRequest>;
+export async function withOpenCodeProviderConfigLaunchEnvironment(
+  request: AgentSessionOpenRequest | AgentExecutionRunOpenRequest,
+): Promise<AgentSessionOpenRequest | AgentExecutionRunOpenRequest> {
   const providerConfigContent = await readOpenCodeProviderConfigContent(request);
   if (providerConfigContent === undefined) return request;
   return {

@@ -164,4 +164,29 @@ describe('createClaudeStatuslineApplier', () => {
         );
         expect(canaryCalls).toHaveLength(2);
     });
+    it('rejects a statusline payload that only matches the provider session id after trimming', async () => {
+        // Claude minted the padded bytes; a payload carrying the trimmed form is a
+        // DIFFERENT session and must not enrich this one.
+        const harness = createHarness({ providerSessionId: '  provider\nses/AB+cd==  ' });
+
+        await harness.applier.apply({
+            ...basePayload,
+            session_id: 'provider\nses/AB+cd==',
+            transcript_path: '/projects/other/transcript.jsonl',
+        });
+
+        expect(harness.onEffectiveModel).not.toHaveBeenCalled();
+    });
+
+    it('accepts the statusline payload that carries the provider session id exactly', async () => {
+        const harness = createHarness({ providerSessionId: '  provider\nses/AB+cd==  ' });
+
+        await harness.applier.apply({
+            ...basePayload,
+            session_id: '  provider\nses/AB+cd==  ',
+            transcript_path: '/projects/other/transcript.jsonl',
+        });
+
+        expect(harness.onEffectiveModel).toHaveBeenCalledTimes(1);
+    });
 });

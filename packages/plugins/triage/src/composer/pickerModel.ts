@@ -41,6 +41,8 @@ export type TriagePickerCorpusRowV1 = Readonly<{
     entryRef: TriageEntryRefV1;
     title: string;
     scopeLabel: string;
+    identifierLabel?: string;
+    lifecycleLabel?: string | null;
     /**
      * What a reader can find this row by, projected by the one search owner.
      *
@@ -125,6 +127,8 @@ export type TriagePickerRowV1 = Readonly<{
     entryRef: TriageEntryRefV1;
     title: string;
     scopeLabel: string;
+    identifierLabel?: string;
+    lifecycleLabel?: string | null;
     /** Always false: only the row's two explicit controls commit an effect. */
     activatesOnPress: false;
     attachment: Readonly<{ kind: 'attached'; instanceId: string }> | Readonly<{ kind: 'notAttached' }>;
@@ -268,6 +272,8 @@ export function buildTriagePickerView(input: Readonly<{
                 entryRef: row.entryRef,
                 title: row.title,
                 scopeLabel: row.scopeLabel,
+                identifierLabel: row.identifierLabel,
+                lifecycleLabel: row.lifecycleLabel,
                 activatesOnPress: false,
                 attachment: attachedRecord
                     ? { kind: 'attached', instanceId: attachedRecord.instanceId }

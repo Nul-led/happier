@@ -266,20 +266,6 @@ function buildLocator(entry: BitbucketPullRequestEntry): TriageEntryLocatorV1 {
 }
 
 /**
- * Compares the one source-owned opaque route semantic that survives a
- * provider reread. Presentation fields may change independently, while the
- * collision scope remains only the immutable identity check; neither value is
- * reconstructed from the other.
- */
-export function matchesBitbucketEntryLocator(
-  entry: BitbucketPullRequestEntry,
-  locator: TriageEntryLocatorV1,
-): boolean {
-  const current = buildLocator(entry);
-  return current.routingToken !== undefined && current.routingToken === locator.routingToken;
-}
-
-/**
  * Involvement is proven against the exact credential in hand, not inferred from the lane that
  * happened to return the row. The lane contributes its own canonical token, and the entry's own
  * author/reviewer/participant evidence contributes the rest, so a pull request returned by one lane

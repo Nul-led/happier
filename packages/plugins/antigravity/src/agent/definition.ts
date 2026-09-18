@@ -3,17 +3,12 @@ import {
   ANTIGRAVITY_BACKEND_ID,
   ANTIGRAVITY_BINARY_NAME,
 } from './install/cliRuntime.js';
-import type { AgentModelConfig } from '@happier-dev/plugin-sdk/agents';
-import { ANTIGRAVITY_AGENT_MODEL_CONFIG } from './models.js';
 
-function defineAgentWithPublicModelConfig<const TDefinition extends Readonly<Record<string, unknown>>>(
-  definition: TDefinition,
-  modelConfig: AgentModelConfig,
-): Readonly<TDefinition & { modelConfig: AgentModelConfig }> {
-  return Object.freeze({ ...definition, modelConfig });
-}
-
-export const AGENT_DEFINITION = defineAgentWithPublicModelConfig({
+// The ACP agent declaration carries no static model fallback: Happier ACP
+// sessions run the managed `agy_acp_server`, whose models are negotiated on the
+// live ACP session. Interactive `agy` CLI model output is a separate identity
+// and is never borrowed as a default here.
+export const AGENT_DEFINITION = Object.freeze({
   id: ANTIGRAVITY_AGENT_ID,
   core: {
     id: ANTIGRAVITY_AGENT_ID,
@@ -38,11 +33,19 @@ export const AGENT_DEFINITION = defineAgentWithPublicModelConfig({
       topology: 'exclusive',
       attachStrategy: 'terminal_host',
     },
-    tools: { delivery: 'unsupported', support: 'unsupported' },
+    // The declarative ACP runtime passes Happier's session MCP descriptors to
+    // `agy_acp_server`. Keep support experimental until an authenticated live
+    // Antigravity session has exercised a Happier-provided MCP tool end to end.
+    tools: { delivery: 'native_mcp', support: 'experimental' },
   },
   settingsBackendId: ANTIGRAVITY_BACKEND_ID,
   ownedBackendIds: [ANTIGRAVITY_BACKEND_ID],
+  // Released accounts persisted the Agents enable/disable toggle under the
+  // concrete backend ids Antigravity used to own. The declarative ACP runtime
+  // replaced those runtimes, but their persisted state must keep projecting
+  // through the one compatibility reader instead of silently re-enabling a
+  // disabled Agent. These ids name settings keys only; no runtime is restored.
   enablementCompatibilityBackendIds: ['antigravity-localharness', 'antigravity-terminal'],
   sessionModeDescriptor: { source: 'none', semantics: 'none', runtimeSwitch: 'none' },
   sessionModesKind: 'none',
-}, ANTIGRAVITY_AGENT_MODEL_CONFIG);
+} as const);

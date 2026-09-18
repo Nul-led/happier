@@ -9,8 +9,12 @@ import {
     type PosthogSampleStateV1,
 } from './occurrenceController.js';
 
-function event(uuid: string): PosthogProjectedIssueEvent {
-    return { uuid, exceptions: [] };
+function event(uuid: string, providerOffset?: number): PosthogProjectedIssueEvent {
+    return {
+        uuid,
+        ...(providerOffset === undefined ? {} : { providerOffset }),
+        exceptions: [],
+    };
 }
 
 const FAILURE = { class: 'permission', code: 'posthog/permission-denied' } as const;
@@ -174,7 +178,7 @@ describe('posthogSampleReducer', () => {
         const ready = settled(
             started(posthogSampleInitialState(), 1),
             1,
-            [event('a'), event('b')],
+            [event('a', 40), event('b', 41)],
             null,
             null,
             page,
@@ -188,6 +192,63 @@ describe('posthogSampleReducer', () => {
             frozenRequest: page,
             selectedAbsoluteOffset: 41,
         });
+    });
+
+    it('addresses the selected row by the position the provider gave it, not by its list index', () => {
+        // The provider page began at offset 40 and its first row was unreadable, so the
+        // rows a reader holds are the provider's rows 41 and 42. Counting from the
+        // compacted list would reread 41 for the row that lives at 42; the dispatch UUID
+        // gate then refuses, and valid evidence becomes permanently unreachable.
+        const page = {
+            v: 1 as const,
+            issueId: 'issue-1',
+            from: '2026-07-16T00:00:00.000Z',
+            to: '2026-08-15T00:00:00.000Z',
+            filterTestAccounts: false,
+            onlyAppFrames: false,
+            include: ['exception', 'stacktrace', 'navigation', 'correlation'],
+            limit: 3,
+            offset: 40,
+        };
+        const ready = settled(
+            started(posthogSampleInitialState(), 1),
+            1,
+            [event('a', 41), event('b', 42)],
+            null,
+            null,
+            page,
+        );
+
+        expect(resolvePosthogSelectedEvidence(
+            posthogSampleReducer(ready, { kind: 'selected', uuid: 'b' }),
+        )).toMatchObject({ event: { uuid: 'b' }, selectedAbsoluteOffset: 42 });
+    });
+
+    it('refuses selected evidence for a row that carries no provider position', () => {
+        // A source that could not state where the row sat cannot be reread exactly, and
+        // guessing a position is what the UUID gate exists to catch. No control is
+        // better than one that addresses a neighbouring occurrence.
+        const page = {
+            v: 1 as const,
+            issueId: 'issue-1',
+            from: '2026-07-16T00:00:00.000Z',
+            to: null,
+            filterTestAccounts: false,
+            onlyAppFrames: false,
+            include: ['exception', 'stacktrace', 'navigation', 'correlation'],
+            limit: 3,
+            offset: 0,
+        };
+        const ready = settled(
+            started(posthogSampleInitialState(), 1),
+            1,
+            [event('a')],
+            null,
+            null,
+            page,
+        );
+
+        expect(resolvePosthogSelectedEvidence(ready)).toBeUndefined();
     });
 
     it('carries the omitted-row count so a reader can see the page was not whole', () => {

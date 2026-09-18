@@ -61,9 +61,14 @@ const KNOWN_UNAVAILABLE_MODELS_BY_PROVIDER = Object.freeze({
   anthropic: ANTHROPIC_KNOWN_UNAVAILABLE_MODELS,
 } as const);
 
-function isVerboseModelIdLine(line: string): boolean {
+function parseOpenCodeModelId(line: string): Readonly<{ providerId: string; modelId: string }> | null {
   const trimmed = line.trim();
-  return trimmed.length > 0 && /^[a-z0-9._:-]+\/[a-z0-9._:-]+$/iu.test(trimmed);
+  const separatorIndex = trimmed.indexOf('/');
+  if (separatorIndex <= 0 || separatorIndex === trimmed.length - 1) return null;
+  return {
+    providerId: trimmed.slice(0, separatorIndex),
+    modelId: trimmed.slice(separatorIndex + 1),
+  };
 }
 
 function extractJsonBlock(lines: readonly string[], startIndex: number): Readonly<{
@@ -103,13 +108,14 @@ function parseJsonObject(text: string): Readonly<Record<string, unknown>> | null
 function parseVerboseBlocks(outputRaw: string): readonly Readonly<{
   fullId: string;
   record: Readonly<Record<string, unknown>>;
-}>[] {
+}>[] | null {
   const lines = outputRaw.split('\n');
   const parsed: Array<Readonly<{ fullId: string; record: Readonly<Record<string, unknown>> }>> = [];
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = String(lines[index] ?? '').trim();
-    if (!isVerboseModelIdLine(line)) continue;
+    const parsedId = parseOpenCodeModelId(line);
+    if (!parsedId) continue;
 
     let cursor = index + 1;
     while (cursor < lines.length) {
@@ -118,15 +124,19 @@ function parseVerboseBlocks(outputRaw: string): readonly Readonly<{
         cursor += 1;
         continue;
       }
-      if (next.startsWith('{')) break;
-      cursor += 1;
+      break;
     }
-    if (cursor >= lines.length) continue;
+    if (cursor >= lines.length || !String(lines[cursor] ?? '').trim().startsWith('{')) continue;
 
     const block = extractJsonBlock(lines, cursor);
-    if (!block) continue;
+    if (!block) return null;
     const record = parseJsonObject(block.jsonText);
-    if (record) parsed.push({ fullId: line, record });
+    if (!record) return null;
+    if (
+      parsedId.providerId !== normalizeString(record.providerID)
+      || parsedId.modelId !== normalizeString(record.id)
+    ) return null;
+    parsed.push({ fullId: line, record });
     index = block.endIndexInclusive;
   }
 
@@ -172,7 +182,9 @@ export function buildOpenCodePreflightModelsFromVerboseOutput(
   const nowMs = typeof options.nowMs === 'number' && Number.isFinite(options.nowMs)
     ? options.nowMs
     : Date.now();
-  const models = parseVerboseBlocks(outputRaw)
+  const blocks = parseVerboseBlocks(outputRaw);
+  if (!blocks) return null;
+  const models = blocks
     .map((block): OpenCodePreflightModel | null => {
       const providerId = block.fullId.slice(0, block.fullId.indexOf('/'));
       if (!modelSupportsToolCalls(block.record, providerId, nowMs)) return null;
@@ -201,11 +213,11 @@ function buildOpenCodePreflightModelsFromPlainOutput(outputRaw: string): readonl
 
   for (const rawLine of outputRaw.split('\n')) {
     const id = rawLine.trim();
-    if (!isVerboseModelIdLine(id) || seen.has(id)) continue;
-    const separatorIndex = id.indexOf('/');
+    const parsedId = parseOpenCodeModelId(id);
+    if (!parsedId || seen.has(id)) continue;
     if (isKnownUnavailableOpenCodeModel({
-      providerId: id.slice(0, separatorIndex),
-      modelId: id.slice(separatorIndex + 1),
+      providerId: parsedId.providerId,
+      modelId: parsedId.modelId,
       nowMs,
     })) {
       continue;

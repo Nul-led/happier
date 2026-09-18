@@ -13,8 +13,11 @@ export type CodexAppServerRollbackTarget =
   | Readonly<{ type: 'latest_turn' }>
   | Readonly<{ type: 'before_user_message'; userMessageSeq: number }>;
 
-type CodexAppServerEventBase = Readonly<{
-  sessionId: string;
+type CodexAppServerEventTarget =
+  | Readonly<{ sessionId: string; executionRunId?: never }>
+  | Readonly<{ sessionId?: never; executionRunId: string }>;
+
+type CodexAppServerEventBase = CodexAppServerEventTarget & Readonly<{
   emittedAtMs: number;
   sidechainId?: string;
 }>;
@@ -91,6 +94,12 @@ export type CodexAppServerEvent =
       body: unknown;
       meta?: Readonly<Record<string, unknown>>;
     }>)
+  | (CodexAppServerEventBase & Readonly<{
+      kind: 'transcript-user-message-committed';
+      localId: string;
+      text: string;
+      turnId?: string;
+    }>)
   | (CodexAppServerEventBase & NativeUsageObservation)
   | (CodexAppServerTurnEventBase & Readonly<{
       kind: 'turn-rollback-boundary-observed';
@@ -125,7 +134,7 @@ export type CodexAppServerEvent =
 
 export type CodexAppServerEventInput = CodexAppServerEvent extends infer Event
   ? Event extends CodexAppServerEvent
-    ? Omit<Event, 'sessionId' | 'emittedAtMs'>
+    ? Omit<Event, 'sessionId' | 'executionRunId' | 'emittedAtMs'>
     : never
   : never;
 
@@ -173,6 +182,7 @@ export type CodexAppServerSession = Readonly<{
   updateConfig?(update: Readonly<{
     modelId?: string;
     permissionMode?: string;
+    collaborationModeId?: string;
     configOption?: Readonly<Record<string, unknown>>;
   }>): Promise<void>;
   runtimeAuth?: AgentSessionRuntimeAuthControl;

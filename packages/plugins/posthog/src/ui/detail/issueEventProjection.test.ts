@@ -12,7 +12,7 @@ function projectFixture() {
     if (envelope === null) {
         throw new Error('recorded issue-events fixture must satisfy the strict envelope');
     }
-    return projectPosthogIssueEvents(envelope.rawEvents);
+    return projectPosthogIssueEvents(envelope.rawEvents, 0);
 }
 
 /** Every string anywhere inside a projected value, for leak detection. */
@@ -38,6 +38,9 @@ describe('projectPosthogIssueEvents', () => {
         expect(projected[0]).toEqual({
             uuid: '00000000-0000-4000-8000-0000000000f1',
             timestampMs: Date.parse('2026-08-14T06:41:55.902000Z'),
+            // Geometry, not content: where the provider put this row in the page the
+            // source asked for, which is the address an exact reread reproduces.
+            providerOffset: 0,
             sessionId: '00000000-0000-4000-8000-0000000000c1',
             url: 'https://shop.example/checkout/summary',
             exceptions: [
@@ -96,6 +99,7 @@ describe('projectPosthogIssueEvents', () => {
         expect(projected[1]).toEqual({
             uuid: '00000000-0000-4000-8000-0000000000f2',
             timestampMs: Date.parse('2026-08-13T22:10:04.000000Z'),
+            providerOffset: 1,
             sessionId: '00000000-0000-4000-8000-0000000000c2',
             url: 'https://shop.example/checkout/summary?coupon=redacted',
             exceptions: [
@@ -109,6 +113,7 @@ describe('projectPosthogIssueEvents', () => {
         expect(projected[2]).toEqual({
             uuid: '00000000-0000-4000-8000-0000000000f3',
             timestampMs: Date.parse('2026-08-13T05:00:00.000000Z'),
+            providerOffset: 2,
             exceptions: [
                 {
                     type: 'TypeError',
@@ -123,15 +128,28 @@ describe('projectPosthogIssueEvents', () => {
         const projected = projectPosthogIssueEvents([
             {
                 uuid: 'e1',
+                pageRowIndex: 0,
                 rawProperties: {
                     $session_id: { nested: 'not-a-string' },
                     $current_url: 42,
                     $exception_list: 'not-an-array',
                 },
             },
-        ]);
+        ], 0);
 
-        expect(projected).toEqual([{ uuid: 'e1', exceptions: [] }]);
+        expect(projected).toEqual([{ uuid: 'e1', providerOffset: 0, exceptions: [] }]);
+    });
+
+    it('addresses each row by the provider position the page began at, not by its own order', () => {
+        // The rows a reader holds are the accepted ones; the addresses a reread needs
+        // are the provider's. They stop agreeing the moment a sibling is skipped, and
+        // the page the reader is looking at may not start at zero.
+        const projected = projectPosthogIssueEvents([
+            { uuid: 'e-second', pageRowIndex: 1, rawProperties: {} },
+            { uuid: 'e-fourth', pageRowIndex: 3, rawProperties: {} },
+        ], 20);
+
+        expect(projected.map((event) => event.providerOffset)).toEqual([21, 23]);
     });
 
     it('does not invent per-event content or count ceilings before envelope fitting', () => {
@@ -151,13 +169,14 @@ describe('projectPosthogIssueEvents', () => {
         const [projected] = projectPosthogIssueEvents([
             {
                 uuid: 'e-pathological',
+                pageRowIndex: 0,
                 rawProperties: {
                     $current_url: `https://shop.example/checkout?${'q=1&'.repeat(600)}`,
                     $session_id: '00000000-0000-4000-8000-0000000000c9',
                     $exception_list: Array.from({ length: 9 }, () => exception),
                 },
             },
-        ]);
+        ], 0);
 
         if (projected === undefined) throw new Error('a provider-valid event must stay visible');
         expect('truncated' in projected).toBe(false);
@@ -180,6 +199,7 @@ describe('projectPosthogIssueEvents', () => {
         const saturated = Array.from({ length: POSTHOG_ISSUE_EVENTS_MAX_LIMIT }, (_unused, index) => ({
             uuid: `00000000-0000-4000-8000-0000000000${String(index).padStart(2, '0')}`,
             timestampMs: 1_760_000_000_000,
+            pageRowIndex: index,
             rawProperties: {
                 $current_url: 'https://shop.example/'.concat('z'.repeat(2_000)),
                 $session_id: '00000000-0000-4000-8000-0000000000c9',
@@ -191,7 +211,7 @@ describe('projectPosthogIssueEvents', () => {
             },
         }));
 
-        const projected = projectPosthogIssueEvents(saturated);
+        const projected = projectPosthogIssueEvents(saturated, 0);
 
         expect(projected).toHaveLength(POSTHOG_ISSUE_EVENTS_MAX_LIMIT);
         expect(collectStrings(projected)).toContain('V'.repeat(4_000));
@@ -208,6 +228,7 @@ describe('projectPosthogIssueEvents — one owner for the single-line rule', () 
         // to encode, so the saturated-page measurement below would stop being honest.
         const [projected] = projectPosthogIssueEvents([{
             uuid: '00000000-0000-4000-8000-00000000abcd',
+            pageRowIndex: 0,
             rawProperties: {
                 $exception_list: [{
                     type: 'TypeError',
@@ -223,7 +244,7 @@ describe('projectPosthogIssueEvents — one owner for the single-line rule', () 
                     },
                 }],
             },
-        }]);
+        }], 0);
 
         expect(projected?.exceptions[0]?.value).toBe('first line second line third');
         expect(projected?.exceptions[0]?.frames[0]?.function).toBe('render Summary');

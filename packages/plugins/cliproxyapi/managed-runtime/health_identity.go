@@ -22,6 +22,7 @@ type ManagedHealthIdentity struct {
 	Protocols           []ProviderProtocol `json:"protocols"`
 	Purposes            []QualifiedPurpose `json:"purposes"`
 	ModelListEnabled    bool               `json:"modelListEnabled"`
+	SourceClass         string             `json:"sourceClass"`
 }
 
 func (identity RuntimeIdentity) validate() error {
@@ -58,6 +59,12 @@ func managedHealthIdentity(
 		Protocols:           append([]ProviderProtocol(nil), config.Protocols...),
 		Purposes:            purposes,
 		ModelListEnabled:    config.ModelListEnabled,
+		SourceClass: func() string {
+			if config.ProviderConnection != nil {
+				return "provider_connection"
+			}
+			return "connected_account"
+		}(),
 	}
 }
 

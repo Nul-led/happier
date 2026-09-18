@@ -4,10 +4,11 @@ export function createClaudeUnifiedResumeTurnBarrier(params: Readonly<{
   intent: ClaudeUnifiedTerminalLaunchIntent;
   quietMs: number;
   begin(): void;
-  cancel(): void;
+  cancel(reason: 'idle' | 'startup_blocked'): void;
 }>): Readonly<{
   beginBeforeProviderRun(): void;
   observeProviderSessionStart(source: string | null): void;
+  observeStartupBlocked(): boolean;
   observeStartupReady(): void;
   /** Consumes the first prompt belonging to the authoritative resume SessionStart. */
   observePromptStart(): boolean;
@@ -34,7 +35,7 @@ export function createClaudeUnifiedResumeTurnBarrier(params: Readonly<{
       idleReleaseTimer = null;
       if (state !== 'provisional') return;
       state = 'none';
-      params.cancel();
+      params.cancel('idle');
     }, Math.max(0, Math.trunc(params.quietMs)));
   };
   const observeTerminal = (): void => {
@@ -60,6 +61,14 @@ export function createClaudeUnifiedResumeTurnBarrier(params: Readonly<{
       // classification. The enclosing runtime rejects a fresh-start or identity mismatch.
       resumePromptPending = source === 'resume';
       scheduleIdleRelease();
+    },
+    observeStartupBlocked() {
+      if (state !== 'provisional' || sessionStarted) return false;
+      clearTimer();
+      state = 'none';
+      resumePromptPending = false;
+      params.cancel('startup_blocked');
+      return true;
     },
     observeStartupReady() {
       if (state !== 'provisional') return;

@@ -23,6 +23,7 @@ function managedServiceHandle(params: Readonly<{
   waitError?: Error;
   onDispose?: () => void;
   request?: (input: ManagedServiceRequest) => Promise<ManagedServiceResponse>;
+  onWaitUntilHealthy?: (options: Readonly<{ timeoutMs?: number }>) => void;
 }>): ManagedServiceHandle {
   const readSnapshot = (): ManagedServiceSnapshot => ({
     id: 'opencode-server',
@@ -40,7 +41,8 @@ function managedServiceHandle(params: Readonly<{
       listener(readSnapshot());
       return { dispose() {} };
     },
-    waitUntilHealthy: async () => {
+    waitUntilHealthy: async (options) => {
+      params.onWaitUntilHealthy?.(options);
       if (params.waitError) throw params.waitError;
       return readSnapshot();
     },
@@ -66,10 +68,22 @@ function createContextFixture(params: Readonly<{
   managedServerBaseUrl: string;
   managedServerWaitError?: Error;
   onManagedServerDispose?: () => void;
+  onWaitUntilHealthy?: (options: Readonly<{ timeoutMs?: number }>) => void;
+  systemToolExecutablePath?: string;
+  systemToolResolveError?: Error;
+  managedServerRequest?: (input: ManagedServiceRequest) => Promise<ManagedServiceResponse>;
 }>): OpenCodeRuntimeContext {
   const abortController = new AbortController();
   const sessionStorage = new Map<string, unknown>();
   return {
+    exec: {
+      systemTools: {
+        resolve: vi.fn(async () => {
+          if (params.systemToolResolveError) throw params.systemToolResolveError;
+          return { executablePath: params.systemToolExecutablePath ?? '/usr/local/bin/opencode' };
+        }),
+      },
+    },
     logger: {
       info: vi.fn(),
       warn: vi.fn(),
@@ -90,6 +104,8 @@ function createContextFixture(params: Readonly<{
         baseUrl: params.managedServerBaseUrl,
         waitError: params.managedServerWaitError,
         onDispose: params.onManagedServerDispose,
+        onWaitUntilHealthy: params.onWaitUntilHealthy,
+        ...(params.managedServerRequest ? { request: params.managedServerRequest } : {}),
       })),
     },
     ui: {
@@ -131,6 +147,173 @@ afterEach(() => {
 });
 
 describe('OpenCode server managed-service assembly', () => {
+  it('uses the managed-service owner default as the one startup deadline for supervision and health observation', async () => {
+    const onWaitUntilHealthy = vi.fn();
+    const ctx = createContextFixture({
+      managedServerBaseUrl: 'http://127.0.0.1:49194',
+      onWaitUntilHealthy,
+    });
+
+    const assembly = await createOpenCodeServerRuntimeAssembly({
+      ctx,
+      directory: '/repo',
+      happierSessionId: 'happy-session-startup-deadline',
+      endpoint: { mode: 'managed-spawn' },
+      request: {
+        kind: 'create',
+        sessionId: 'happy-session-startup-deadline',
+        cwd: '/repo',
+      },
+    });
+
+    expect(ctx.managedServices.supervise).toHaveBeenCalledWith(
+      expect.objectContaining({ startupTimeoutMs: 30_000 }),
+      expect.any(Object),
+    );
+    expect(onWaitUntilHealthy).toHaveBeenCalledWith(expect.objectContaining({
+      timeoutMs: 30_000,
+    }));
+    await assembly.dispose();
+  });
+
+  it('makes an owned opencode2 server ready through the /api route it actually mounts', async () => {
+    // The V2 server (`packages/server/src/api.ts` at the pinned comparator)
+    // mounts no `/global` group at all, so probing the legacy route would leave
+    // a beta-only install permanently unhealthy and its sessions unopenable.
+    const ctx = createContextFixture({
+      managedServerBaseUrl: 'http://127.0.0.1:49210',
+      systemToolExecutablePath: '/usr/local/bin/opencode2',
+    });
+
+    const assembly = await createOpenCodeServerRuntimeAssembly({
+      ctx,
+      directory: '/repo',
+      happierSessionId: 'happy-session-opencode2-readiness',
+      endpoint: { mode: 'managed-spawn' },
+      request: {
+        kind: 'create',
+        sessionId: 'happy-session-opencode2-readiness',
+        cwd: '/repo',
+      },
+    });
+
+    try {
+      expect(vi.mocked(ctx.managedServices.supervise).mock.calls[0]?.[0]?.healthCheck).toEqual({
+        kind: 'http',
+        target: { kind: 'servicePath', path: '/api/health' },
+        timeoutMs: 5_000,
+      });
+    } finally {
+      await assembly.dispose();
+    }
+  });
+
+  it('sends an owned opencode2 server its own /api requests, not just its own health route', async () => {
+    // Readiness and request routing must agree: the binary Happier resolved is
+    // the one fact that decides which routes the child mounts, so a managed
+    // opencode2 server must not be asked for V1 root routes it never serves.
+    const requests: string[] = [];
+    const ctx = createContextFixture({
+      managedServerBaseUrl: 'http://127.0.0.1:49212',
+      systemToolExecutablePath: '/usr/local/bin/opencode2',
+      managedServerRequest: async (input) => {
+        requests.push(input.pathAndQuery);
+        const body = input.pathAndQuery === '/api/health'
+          ? JSON.stringify({ healthy: true })
+          : input.pathAndQuery === '/api/session'
+            ? JSON.stringify({ data: { id: 'oc-session-v2' } })
+            : '{}';
+        return {
+          ok: input.pathAndQuery !== '/global/health',
+          status: input.pathAndQuery === '/global/health' ? 404 : 200,
+          statusText: 'OK',
+          headers: { 'content-type': 'application/json' },
+          body: new Response(body).body,
+        };
+      },
+    });
+
+    const assembly = await createOpenCodeServerRuntimeAssembly({
+      ctx,
+      directory: '/repo',
+      happierSessionId: 'happy-session-opencode2-requests',
+      endpoint: { mode: 'managed-spawn' },
+      request: {
+        kind: 'create',
+        sessionId: 'happy-session-opencode2-requests',
+        cwd: '/repo',
+      },
+    });
+
+    try {
+      expect(requests).toContain('/api/session');
+      expect(requests.some((path) => path.startsWith('/session'))).toBe(false);
+    } finally {
+      await assembly.dispose();
+    }
+  });
+
+  it('keeps an owned stable opencode server ready through the legacy /global route', async () => {
+    const ctx = createContextFixture({
+      managedServerBaseUrl: 'http://127.0.0.1:49211',
+      systemToolExecutablePath: '/usr/local/bin/opencode',
+    });
+
+    const assembly = await createOpenCodeServerRuntimeAssembly({
+      ctx,
+      directory: '/repo',
+      happierSessionId: 'happy-session-opencode-readiness',
+      endpoint: { mode: 'managed-spawn' },
+      request: {
+        kind: 'create',
+        sessionId: 'happy-session-opencode-readiness',
+        cwd: '/repo',
+      },
+    });
+
+    try {
+      expect(vi.mocked(ctx.managedServices.supervise).mock.calls[0]?.[0]?.healthCheck).toEqual({
+        kind: 'http',
+        target: { kind: 'servicePath', path: '/global/health' },
+        timeoutMs: 5_000,
+      });
+    } finally {
+      await assembly.dispose();
+    }
+  });
+
+  it('falls back to the proven legacy readiness route when the executable cannot be resolved', async () => {
+    const ctx = createContextFixture({
+      managedServerBaseUrl: 'http://127.0.0.1:49212',
+      systemToolResolveError: new Error('opencode is not installed'),
+    });
+
+    const assembly = await createOpenCodeServerRuntimeAssembly({
+      ctx,
+      directory: '/repo',
+      happierSessionId: 'happy-session-unresolved-readiness',
+      endpoint: { mode: 'managed-spawn' },
+      request: {
+        kind: 'create',
+        sessionId: 'happy-session-unresolved-readiness',
+        cwd: '/repo',
+      },
+    });
+
+    try {
+      expect(vi.mocked(ctx.managedServices.supervise).mock.calls[0]?.[0]?.healthCheck).toMatchObject({
+        target: { kind: 'servicePath', path: '/global/health' },
+      });
+      // The fallback is reported rather than silently taken.
+      expect(ctx.logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('could not resolve the OpenCode executable'),
+        expect.objectContaining({ healthPath: '/global/health' }),
+      );
+    } finally {
+      await assembly.dispose();
+    }
+  });
+
   it('releases an acquired managed server when startup health does not settle', async () => {
     const startupError = new Error('managed server startup did not settle');
     const onManagedServerDispose = vi.fn();

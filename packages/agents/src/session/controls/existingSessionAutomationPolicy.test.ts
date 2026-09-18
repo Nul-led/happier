@@ -76,7 +76,7 @@ describe('evaluateExistingSessionAutomationEligibility', () => {
     });
   });
 
-  it('accepts runtimeDescriptorV1 sessions without legacy top-level vendor ids', () => {
+  it('does not interpret native resume ids from the opaque runtimeDescriptorV1 payload', () => {
     expect(
       evaluateExistingSessionAutomationEligibility({
         metadata: {
@@ -87,14 +87,10 @@ describe('evaluateExistingSessionAutomationEligibility', () => {
           },
         },
       }),
-    ).toEqual({
-      eligible: true,
-      agentId: 'opencode',
-      strategy: 'vendor_resume',
-    });
+    ).toEqual({ eligible: false, reasonCode: 'vendor_resume_id_missing' });
   });
 
-  it('keeps legacy agentRuntimeDescriptorV1 read-compat for runtime-descriptor sessions', () => {
+  it('does not interpret native resume ids from the legacy descriptor payload', () => {
     expect(
       evaluateExistingSessionAutomationEligibility({
         metadata: {
@@ -105,10 +101,6 @@ describe('evaluateExistingSessionAutomationEligibility', () => {
           },
         },
       }),
-    ).toEqual({
-      eligible: true,
-      agentId: 'opencode',
-      strategy: 'vendor_resume',
-    });
+    ).toEqual({ eligible: false, reasonCode: 'vendor_resume_id_missing' });
   });
 });

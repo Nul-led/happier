@@ -385,14 +385,23 @@ export type PortableWorkspacePathRequest = Readonly<{
 export type WorkspaceLocationInspection = Readonly<{
     rootPath: string;
     scmProvider?: 'git';
+    /** Exact committed revision at inspection time, when the SCM can resolve one without mutation. */
+    committedRevision?: string;
     checkoutDiscovery?: readonly Readonly<{
         kind: CreatableWorkspaceCheckoutKind;
         path?: string;
+        /** Opaque canonical repository identity used to compare related checkouts. */
+        repositoryIdentityPath?: string;
     }>[];
     checkoutProviderKinds?: readonly CreatableWorkspaceCheckoutKind[];
 }>;
 
 export type WorkspaceIntegrationHandlers = Readonly<{
+    /** Optional read classification; raw directory listings remain available when absent. */
+    classifyDirectoryIgnores?: (input: Readonly<{
+        cwd: string;
+        entries: readonly Readonly<{ name: string; type: 'file' | 'directory' | 'other' }>[];
+    }>) => Promise<ReadonlySet<string>>;
     inspectWorkspaceLocation?: (
         input: Readonly<{ context: BackendRuntimeContext }>
     ) => Promise<WorkspaceLocationInspection | null> | WorkspaceLocationInspection | null;
@@ -647,6 +656,7 @@ export {
     mapSaplingScmErrorCode,
     supportedCapability,
     unsupportedCapability,
+    resolveScmBackendCapabilities,
 } from './backendProjections.js';
 
 export {

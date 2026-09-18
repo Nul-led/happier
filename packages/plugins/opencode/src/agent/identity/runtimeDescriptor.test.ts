@@ -21,7 +21,7 @@ describe('OpenCode runtime descriptor metadata reader', () => {
       agentId: 'opencode',
       runtimeKind: 'server',
       backendMode: 'server',
-      providerSessionId: 'opencode-surface-1',
+      providerSessionId: ' opencode-surface-1 ',
       serverBaseUrl: 'http://127.0.0.1:49196/',
       serverBaseUrlExplicit: true,
     });
@@ -37,10 +37,10 @@ describe('OpenCode runtime descriptor metadata reader', () => {
       agentId: 'opencode',
       runtimeKind: 'acp',
       backendMode: 'acp',
-      providerSessionId: 'opencode-session-legacy',
+      providerSessionId: ' opencode-session-legacy ',
       runtimeHandle: {
         backendMode: 'acp',
-        providerSessionId: 'opencode-session-legacy',
+        providerSessionId: ' opencode-session-legacy ',
         serverBaseUrl: 'http://127.0.0.1:49196/',
         serverBaseUrlExplicit: true,
       },

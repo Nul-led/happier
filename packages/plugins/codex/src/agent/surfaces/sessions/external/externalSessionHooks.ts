@@ -19,6 +19,7 @@ import {
 } from '../../../runtime/appServer/client.js';
 import { resolveConfiguredCodexHomePath } from '../../../rollout/discovery/homeEntries.js';
 import { resolveCodexRuntimeHomeEnvironment } from '../../../auth/services/state/sharing/files.js';
+import { readExactCodexProviderSessionId } from '../../../../protocol/runtimeDescriptorV1.js';
 
 export const CODEX_EXTERNAL_SESSION_HOOK_VERSION = '0.145.0';
 export const CODEX_EXTERNAL_SESSION_HOOK_VARIANT_ID =
@@ -452,7 +453,11 @@ function mapHookEvent(
     return ignored();
   }
 
-  const remoteSessionId = readNonEmptyString(request.nativePayload, 'session_id');
+  // Codex wrote this id into the hook payload; map its exact bytes so the event
+  // links to the provider session Codex named.
+  const remoteSessionId = readExactCodexProviderSessionId(
+    request.nativePayload.session_id,
+  );
   if (!remoteSessionId) return ignored();
 
   if (request.eventId === SESSION_START_EVENT_ID) {

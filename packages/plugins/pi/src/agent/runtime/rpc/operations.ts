@@ -45,15 +45,18 @@ import {
 } from './events.js';
 import { classifyPiAgentEndBoundary } from './lifecycle.js';
 import {
+  buildPiProviderFailureLogEvidence,
   readPiProviderFailureDiagnostic,
   readPiPromptRejectionDiagnostic,
   type PiProviderFailureDiagnostic,
+  type PiProviderFailureLogEvidence,
 } from './providerFailureDiagnostic.js';
 import {
   PiRequestAuthCompatibilityError,
   resolvePiRequestAuthCompatibility,
 } from './requestAuthCompatibility.js';
 import type { PiPermissionMode, PiRpcStateData } from './types.js';
+import { resolvePiEffectiveLaunchPermissionPolicy } from './permissions.js';
 import { createPiSessionModelsSource } from '../modelsSource.js';
 import { projectPiSessionStatsUsage } from './usage.js';
 import {
@@ -64,6 +67,99 @@ import {
 } from './extensionUi.js';
 
 const PI_VERSION_PROBE_TIMEOUT_MS = 30_000;
+// Session opening is one provider-lifecycle operation. Keep every RPC in that
+// sequence under the same budget so an inner acknowledgement cannot abandon a
+// valid cold start before the owning open operation is allowed to settle.
+const PI_SESSION_OPEN_TIMEOUT_MS = 5 * 60_000;
+
+class PiSessionOpenTimeoutError extends Error {
+  constructor(phase: string) {
+    super(`Pi session open timed out during ${phase} after ${PI_SESSION_OPEN_TIMEOUT_MS}ms`);
+    this.name = 'PiSessionOpenTimeoutError';
+  }
+}
+
+export type PiSessionOpenLifecycle = Readonly<{
+  signal: AbortSignal;
+  remainingMs(phase: string, maximumMs?: number): number;
+  waitFor<T>(
+    operation: Promise<T>,
+    phase: string,
+    disposeLateResult?: (value: T) => void | Promise<void>,
+  ): Promise<T>;
+  dispose(): void;
+}>;
+
+export function createPiSessionOpenLifecycle(params: Readonly<{
+  signal?: AbortSignal;
+  onLateCleanupError?: (error: unknown) => void;
+}> = {}): PiSessionOpenLifecycle {
+  const startedAtMs = Date.now();
+  const controller = new AbortController();
+  let currentPhase = 'session open';
+  let timedOut = false;
+  let disposed = false;
+  const abortFromParent = () => controller.abort(params.signal?.reason);
+  if (params.signal?.aborted) abortFromParent();
+  else params.signal?.addEventListener('abort', abortFromParent, { once: true });
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort(new PiSessionOpenTimeoutError(currentPhase));
+  }, PI_SESSION_OPEN_TIMEOUT_MS);
+  timeout.unref?.();
+
+  const readAbortError = (phase: string): Error => {
+    if (timedOut) return new PiSessionOpenTimeoutError(phase);
+    return controller.signal.reason instanceof Error
+      ? controller.signal.reason
+      : new Error(`Pi session open was cancelled during ${phase}`);
+  };
+  const remainingMs = (phase: string, maximumMs?: number): number => {
+    currentPhase = phase;
+    if (controller.signal.aborted) throw readAbortError(phase);
+    const remaining = PI_SESSION_OPEN_TIMEOUT_MS - (Date.now() - startedAtMs);
+    if (remaining <= 0) throw new PiSessionOpenTimeoutError(phase);
+    return maximumMs === undefined ? remaining : Math.min(remaining, maximumMs);
+  };
+  return Object.freeze({
+    signal: controller.signal,
+    remainingMs,
+    async waitFor<T>(operation: Promise<T>, phase: string, disposeLateResult?: (value: T) => void | Promise<void>) {
+      remainingMs(phase);
+      return await new Promise<T>((resolve, reject) => {
+        let settled = false;
+        const settle = (callback: () => void) => {
+          if (settled) return false;
+          settled = true;
+          controller.signal.removeEventListener('abort', onAbort);
+          callback();
+          return true;
+        };
+        const onAbort = () => settle(() => reject(readAbortError(phase)));
+        controller.signal.addEventListener('abort', onAbort, { once: true });
+        if (controller.signal.aborted) onAbort();
+        void operation.then(
+          (value) => {
+            if (settle(() => resolve(value))) return;
+            if (!disposeLateResult) return;
+            void Promise.resolve(disposeLateResult(value)).catch((error) => {
+              params.onLateCleanupError?.(error);
+            });
+          },
+          (error: unknown) => {
+            settle(() => reject(error));
+          },
+        );
+      });
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      clearTimeout(timeout);
+      params.signal?.removeEventListener('abort', abortFromParent);
+    },
+  });
+}
 
 type PiRuntimeOperationsParams = Readonly<{
   services: Pick<PluginServices, 'exec'> & Readonly<{
@@ -76,9 +172,11 @@ type PiRuntimeOperationsParams = Readonly<{
   unsetEnvKeys?: readonly string[];
   permissionMode?: PiPermissionMode;
   initialSessionId?: string | null;
-  resumeSessionId?: string | null;
+  resumeSessionSelector?: string | null;
+  resumeProviderSessionId?: string | null;
   sessionId: string;
   eagerStart?: boolean;
+  sessionOpenLifecycle?: PiSessionOpenLifecycle;
   happierToolsExtension?: Readonly<{ extensionPath: string; configPath: string }>;
 }>;
 
@@ -87,8 +185,8 @@ type PiAvailableCommand = Readonly<{
   description?: string;
 }>;
 
-type RuntimeEventHandler = (event: AgentSessionRuntimeEvent) => void;
-type RuntimeEventPublisher = (event: unknown) => void;
+type PiConversationEventHandler = (event: PiRuntimeEvent) => void;
+type RuntimeEventPublisher = (event: PiRuntimeEvent) => void;
 
 type ActiveTurnState = Readonly<{
   turnId: string;
@@ -124,7 +222,13 @@ type PendingCancellation = {
 
 type PiRuntimeTurnOperations = Readonly<{
   beginTurnLifecycle(turnId?: string): void;
-  openSession(opts?: Readonly<Record<string, unknown>>): Promise<string | null>;
+  openSession(
+    resume?: Readonly<{
+      selector: string;
+      providerSessionId: string;
+    }>,
+    lifecycle?: PiSessionOpenLifecycle,
+  ): Promise<string | null>;
   sendTurnPrompt(
     prompt: string,
     turnId: string,
@@ -133,7 +237,7 @@ type PiRuntimeTurnOperations = Readonly<{
   ): Promise<void>;
   steerInFlightTurn(message: string): Promise<void>;
   waitForTurnCompletion(opts?: Readonly<Record<string, unknown>>): Promise<void>;
-  subscribeRuntimeEvents(handler: RuntimeEventHandler): () => void;
+  subscribeRuntimeEvents(handler: PiConversationEventHandler): () => void;
   /**
    * Cancel the exact tracked Pi turn (active or in-flight admission). Returns
    * `false` without touching the Pi process when `turnId` does not identify
@@ -249,24 +353,31 @@ function assertPiRequestAuthRuntimeConfigured(env: Readonly<Record<string, strin
 }
 
 async function requireSupportedPiRequestAuthVersion(
-  params: PiRuntimeOperationsParams,
+  params: PiExecutionRunConversationParams,
   executable: ManagedExecutableRef,
+  lifecycle?: PiSessionOpenLifecycle,
 ): Promise<string> {
   let output = '';
   try {
-    const result = await params.services.exec.run({
+    const request = {
       executable,
       args: ['--version'],
       cwd: { root: 'workspace', relativePath: '' },
-      timeoutMs: PI_VERSION_PROBE_TIMEOUT_MS,
+      timeoutMs: lifecycle?.remainingMs('request-auth version probe', PI_VERSION_PROBE_TIMEOUT_MS)
+        ?? PI_VERSION_PROBE_TIMEOUT_MS,
       maxStdoutBytes: 8 * 1024,
       maxStderrBytes: 8 * 1024,
-    });
+    } as const;
+    const operation = params.services.exec.run(request, lifecycle ? { signal: lifecycle.signal } : undefined);
+    const result = lifecycle
+      ? await lifecycle.waitFor(operation, 'request-auth version probe')
+      : await operation;
     if (result.termination.observed.kind === 'exit' && result.termination.observed.exitCode === 0) {
       const decode = new TextDecoder();
       output = `${decode.decode(result.stdout)}\n${decode.decode(result.stderr)}`;
     }
   } catch {
+    lifecycle?.remainingMs('request-auth version probe');
     // The compatibility resolver below turns an unavailable/unreadable probe into a typed refusal.
   }
   const compatibility = resolvePiRequestAuthCompatibility(output);
@@ -322,7 +433,7 @@ async function withTimeout(promise: Promise<void>, opts: Readonly<Record<string,
 }
 
 function createPiExecSpec(
-  params: PiRuntimeOperationsParams,
+  params: PiExecutionRunConversationParams,
   executable: ManagedExecutableRef,
 ) {
   const thinkingLevel = resolvePiThinkingLevelFromEnv(params.env);
@@ -333,7 +444,7 @@ function createPiExecSpec(
       args: buildPiRpcArgs({
         permissionMode: params.permissionMode,
         thinkingLevel,
-        resumeSessionId: params.resumeSessionId,
+        resumeSessionId: params.resumeSessionSelector,
         connectedServiceId: readPiConnectedServiceIdFromEnv(params.env),
         env: params.env,
         happierToolsExtension: params.happierToolsExtension,
@@ -357,11 +468,11 @@ function createPiExecSpec(
 function createRuntimeOperations(params: Readonly<{
   rpc: PiJsonStreamRpcClient;
   logger: PluginLoggerService;
-  sessionId: string;
   initialSessionId: string | null;
-  subscribeRuntimeEvents: (handler: RuntimeEventHandler) => () => void;
+  subscribeRuntimeEvents: (handler: PiConversationEventHandler) => () => void;
   publishRuntimeEvent: RuntimeEventPublisher;
-  isProviderNativeCommand: (prompt: string) => boolean;
+  resolveProviderNativeCommand: (prompt: string) => Promise<boolean>;
+  refreshCommands?: () => void;
   refreshModels?: () => void;
   observeUsage?: (turnId: string | null) => void;
   cancelBlockingExtensionUiRequests: () => Promise<void>;
@@ -371,8 +482,12 @@ function createRuntimeOperations(params: Readonly<{
   let activeTurn: ActiveTurnState | null = null;
   let activeTurnStartObserved = false;
   let activeTurnAssistantMessageObserved = false;
-  let activeTurnProviderFailure: PiProviderFailureDiagnostic | null = null;
-  let retryingTurnProviderFailure: PiProviderFailureDiagnostic | null = null;
+  type ProviderFailureObservation = Readonly<{
+    diagnostic: PiProviderFailureDiagnostic;
+    evidence: PiProviderFailureLogEvidence;
+  }>;
+  let activeTurnProviderFailure: ProviderFailureObservation | null = null;
+  let retryingTurnProviderFailure: ProviderFailureObservation | null = null;
   let replayingPromptAckFailureRecords = false;
   let settledTurnFailure: Error | null = null;
   let pendingCompletion: PendingCompletion | null = null;
@@ -402,7 +517,6 @@ function createRuntimeOperations(params: Readonly<{
     pendingCompletion = createCompletion();
     params.publishRuntimeEvent({
         kind: 'turn-start',
-        sessionId: params.sessionId,
         emittedAtMs: Date.now(),
         turnId: turn.turnId,
         ...(agentTurnId ? { agentTurnId } : {}),
@@ -439,7 +553,6 @@ function createRuntimeOperations(params: Readonly<{
       });
       params.publishRuntimeEvent({
           kind: 'turn-agent-id-observed',
-          sessionId: params.sessionId,
           emittedAtMs: Date.now(),
           turnId: activeTurn.turnId,
           agentTurnId,
@@ -456,25 +569,25 @@ function createRuntimeOperations(params: Readonly<{
     const providerFailure = activeTurnProviderFailure;
     if (activeTurnAssistantMessageObserved && !providerFailure) return false;
     const emittedAtMs = Date.now();
-    settledTurnFailure = new Error(providerFailure?.sanitizedPreview
+    settledTurnFailure = new Error(providerFailure?.diagnostic.sanitizedPreview
       ?? 'Pi completed the turn without returning an assistant message. Check provider credentials, model availability, and Pi logs.');
     params.publishRuntimeEvent({
       kind: 'turn-failed',
-      sessionId: params.sessionId,
       emittedAtMs,
       turnId: turn.turnId,
       ...(agentTurnId ? { agentTurnId } : {}),
       diagnostic: diagnostic(
-        providerFailure?.code ?? 'pi_empty_provider_response',
-        providerFailure?.sanitizedPreview
+        providerFailure?.diagnostic.code ?? 'pi_empty_provider_response',
+        providerFailure?.diagnostic.sanitizedPreview
           ?? 'Pi completed the turn without returning an assistant message. Check provider credentials, model availability, and Pi logs.',
       ),
     });
     if (providerFailure) {
       params.logger.warn('[PiRuntime] Provider turn failed', {
-        classification: providerFailure.classification,
-        providerCode: providerFailure.code,
-        sanitizedPreview: providerFailure.sanitizedPreview,
+        classification: providerFailure.diagnostic.classification,
+        providerCode: providerFailure.diagnostic.code,
+        retryable: providerFailure.diagnostic.piRetryable,
+        failureRecord: providerFailure.evidence,
       });
     }
     clearActiveTurn();
@@ -492,7 +605,6 @@ function createRuntimeOperations(params: Readonly<{
     }
     params.publishRuntimeEvent({
         kind: 'turn-complete',
-        sessionId: params.sessionId,
         emittedAtMs: Date.now(),
         turnId: turn.turnId,
         ...(terminalProviderTurnId ? { agentTurnId: terminalProviderTurnId } : {}),
@@ -508,7 +620,6 @@ function createRuntimeOperations(params: Readonly<{
     const completion = pendingCompletion;
     params.publishRuntimeEvent({
       kind: 'turn-complete',
-      sessionId: params.sessionId,
       emittedAtMs: Date.now(),
       turnId: turn.turnId,
       ...(turn.agentTurnId ? { agentTurnId: turn.agentTurnId } : {}),
@@ -528,7 +639,6 @@ function createRuntimeOperations(params: Readonly<{
     const providerFailure = activeTurnProviderFailure ?? retryingTurnProviderFailure;
     params.publishRuntimeEvent({
       kind: 'turn-cancelled',
-      sessionId: params.sessionId,
       emittedAtMs: Date.now(),
       turnId: turn.turnId,
       ...(turn.agentTurnId ? { agentTurnId: turn.agentTurnId } : {}),
@@ -536,8 +646,8 @@ function createRuntimeOperations(params: Readonly<{
       ...(providerFailure
         ? {
           diagnostic: diagnostic(
-            providerFailure.code,
-            providerFailure.sanitizedPreview,
+            providerFailure.diagnostic.code,
+            providerFailure.diagnostic.sanitizedPreview,
           ),
         }
         : {}),
@@ -556,7 +666,13 @@ function createRuntimeOperations(params: Readonly<{
       return;
     }
     const turn = activeTurn;
-    const providerFailure = readPiProviderFailureDiagnostic(record);
+    const providerFailureDiagnostic = readPiProviderFailureDiagnostic(record);
+    const providerFailure = providerFailureDiagnostic
+      ? {
+        diagnostic: providerFailureDiagnostic,
+        evidence: buildPiProviderFailureLogEvidence(record),
+      }
+      : null;
     if (
       providerFailure
       && !activeTurnProviderFailure
@@ -566,7 +682,6 @@ function createRuntimeOperations(params: Readonly<{
       retryingTurnProviderFailure = null;
     }
     const projectedEvents = runtimeEventProjector.project(record, {
-      sessionId: params.sessionId,
       turnId: turn?.turnId ?? null,
       agentSessionId: sessionId,
       nowMs: () => Date.now(),
@@ -595,7 +710,7 @@ function createRuntimeOperations(params: Readonly<{
       return;
     }
     const agentEndBoundary = classifyPiAgentEndBoundary(record, {
-      piRetryableProviderFailure: activeTurnProviderFailure?.piRetryable,
+      piRetryableProviderFailure: activeTurnProviderFailure?.diagnostic.piRetryable,
     });
     if (agentEndBoundary === 'retrying') {
       retryingTurnProviderFailure = activeTurnProviderFailure;
@@ -636,7 +751,6 @@ function createRuntimeOperations(params: Readonly<{
       const emittedAtMs = Date.now();
       params.publishRuntimeEvent({
         kind: 'turn-failed',
-        sessionId: params.sessionId,
         emittedAtMs,
         turnId: turn.turnId,
         ...(turn.agentTurnId ? { agentTurnId: turn.agentTurnId } : {}),
@@ -648,7 +762,6 @@ function createRuntimeOperations(params: Readonly<{
     completion?.reject(failure);
     params.publishRuntimeEvent({
         kind: 'runtime-ended',
-        sessionId: params.sessionId,
         emittedAtMs: Date.now(),
         cause: 'processExited',
         retryable: true,
@@ -660,48 +773,63 @@ function createRuntimeOperations(params: Readonly<{
     beginTurnLifecycle(turnId) {
       beginTurn(null, turnId);
     },
-    async openSession(opts?: Readonly<Record<string, unknown>>): Promise<string | null> {
-      const requestedResumeId = readString(opts?.resumeId) ?? readString(opts?.providerSessionId);
+    async openSession(resume, lifecycle): Promise<string | null> {
+      const requestedResumeSelector = readString(resume?.selector);
+      const requestedProviderSessionId = readString(resume?.providerSessionId);
       if (sessionId) {
-        if (requestedResumeId && requestedResumeId !== sessionId) {
-          throw new Error(`Pi session mismatch (expected ${requestedResumeId}, got ${sessionId})`);
+        if (requestedProviderSessionId && requestedProviderSessionId !== sessionId) {
+          throw new Error(`Pi session mismatch (expected ${requestedProviderSessionId}, got ${sessionId})`);
         }
         if (publishedProviderSessionId !== sessionId) {
           publishedProviderSessionId = sessionId;
           params.publishRuntimeEvent({
             kind: 'provider-session-id',
-            sessionId: params.sessionId,
             emittedAtMs: Date.now(),
             providerSessionId: sessionId,
           });
         }
+        params.refreshCommands?.();
         params.refreshModels?.();
         return sessionId;
       }
-      const stateBefore = await params.rpc.send({ type: 'get_state' }, 30_000);
-      sessionId = readSessionIdFromState(stateBefore.data);
-      if (!sessionId && !requestedResumeId) {
-        await params.rpc.send({ type: 'new_session' }, 60_000);
-        const stateAfter = await params.rpc.send({ type: 'get_state' }, 30_000);
-        sessionId = readSessionIdFromState(stateAfter.data);
+      const ownedLifecycle = lifecycle ?? createPiSessionOpenLifecycle();
+      try {
+        const stateBefore = await ownedLifecycle.waitFor(params.rpc.send(
+          { type: 'get_state' },
+          ownedLifecycle.remainingMs('provider session state'),
+        ), 'provider session state');
+        sessionId = readSessionIdFromState(stateBefore.data);
+        if (!sessionId && !requestedResumeSelector) {
+          await ownedLifecycle.waitFor(params.rpc.send(
+            { type: 'new_session' },
+            ownedLifecycle.remainingMs('provider session creation'),
+          ), 'provider session creation');
+          const stateAfter = await ownedLifecycle.waitFor(params.rpc.send(
+            { type: 'get_state' },
+            ownedLifecycle.remainingMs('provider session state'),
+          ), 'provider session state');
+          sessionId = readSessionIdFromState(stateAfter.data);
+        }
+        if (!sessionId && requestedResumeSelector && requestedProviderSessionId) {
+          sessionId = requestedProviderSessionId;
+        }
+        if (!sessionId) {
+          throw new Error('Pi did not return a session id');
+        }
+        if (publishedProviderSessionId !== sessionId) {
+          publishedProviderSessionId = sessionId;
+          params.publishRuntimeEvent({
+            kind: 'provider-session-id',
+            emittedAtMs: Date.now(),
+            providerSessionId: sessionId,
+          });
+        }
+        params.refreshCommands?.();
+        params.refreshModels?.();
+        return sessionId;
+      } finally {
+        if (!lifecycle) ownedLifecycle.dispose();
       }
-      if (!sessionId && requestedResumeId) {
-        sessionId = requestedResumeId;
-      }
-      if (!sessionId) {
-        throw new Error('Pi did not return a session id');
-      }
-      if (publishedProviderSessionId !== sessionId) {
-        publishedProviderSessionId = sessionId;
-        params.publishRuntimeEvent({
-          kind: 'provider-session-id',
-          sessionId: params.sessionId,
-          emittedAtMs: Date.now(),
-          providerSessionId: sessionId,
-        });
-      }
-      params.refreshModels?.();
-      return sessionId;
     },
     async sendTurnPrompt(
       prompt: string,
@@ -720,7 +848,7 @@ function createRuntimeOperations(params: Readonly<{
         cancelledReason: null,
       };
       pendingPromptAdmission = admission;
-      const providerNativeCommand = params.isProviderNativeCommand(prompt);
+      const providerNativeCommand = params.resolveProviderNativeCommand(prompt);
       const accept = () => {
         admission.onAccepted();
         readOrBeginTurn(null, admission.turnId, 'host');
@@ -757,7 +885,17 @@ function createRuntimeOperations(params: Readonly<{
         pendingPromptAdmission = null;
         replayBufferedRecords();
         admission.bufferedRecords.dispose();
-        if (providerNativeCommand && activeTurn && !activeTurnStartObserved) {
+        const completion = pendingCompletion?.promise;
+        const providerNativeCommandKnownBeforeTurnSettled = await Promise.race([
+          providerNativeCommand,
+          ...(completion
+            ? [completion.then(
+                () => false,
+                () => false,
+              )]
+            : []),
+        ]);
+        if (providerNativeCommandKnownBeforeTurnSettled && activeTurn && !activeTurnStartObserved) {
           const state = await params.rpc.send({ type: 'get_state' }, 30_000)
             .then((response) => isRecord(response.data) ? response.data as PiRpcStateData : null)
             .catch(() => null);
@@ -812,7 +950,7 @@ function createRuntimeOperations(params: Readonly<{
       if (!completion) return;
       await withTimeout(completion.promise, opts);
     },
-    subscribeRuntimeEvents(handler: RuntimeEventHandler): () => void {
+    subscribeRuntimeEvents(handler: PiConversationEventHandler): () => void {
       return params.subscribeRuntimeEvents(handler);
     },
     async cancelTurn(turnId, reason): Promise<boolean> {
@@ -930,13 +1068,37 @@ function createRuntimeOperations(params: Readonly<{
 
 export type PiSessionRuntime = AgentSessionRuntime;
 
-function createPiSessionRuntime(params: Readonly<{
-  operations: PiRuntimeTurnOperations;
+export type PiExecutionRunConversationParams = Readonly<{
+  services: PiRuntimeOperationsParams['services'];
   logger: PluginLoggerService;
-  sessionId: string;
-  resumeSessionId: string | null;
+  cwd: string;
+  env: Readonly<Record<string, string>>;
+  unsetEnvKeys?: readonly string[];
+  permissionMode?: PiPermissionMode;
+  initialSessionId?: string | null;
+  resumeSessionSelector?: string | null;
+  resumeProviderSessionId?: string | null;
+  eagerStart?: boolean;
+  sessionOpenLifecycle?: PiSessionOpenLifecycle;
+  happierToolsExtension?: Readonly<{ extensionPath: string; configPath: string }>;
+}>;
+
+export type PiConversationRuntime = Pick<
+  AgentSessionRuntime,
+  'send' | 'cancel' | 'updateConfiguration' | 'compact' | 'dispose'
+> & Readonly<{
+  watch(listener: PiConversationEventHandler): Readonly<{ dispose(): void }>;
+}>;
+
+function createPiConversationRuntime(params: Readonly<{
+  operations: PiRuntimeTurnOperations;
+  permissionMode?: PiPermissionMode;
+  logger: PluginLoggerService;
+  resumeSessionSelector: string | null;
+  resumeProviderSessionId: string | null;
   clearSubscribers: () => void;
-}>): PiSessionRuntime {
+}>): PiConversationRuntime {
+  const launchPermissionPolicy = resolvePiEffectiveLaunchPermissionPolicy(params.permissionMode);
   let disposed = false;
   let activeCompactionId: string | null = null;
   const compactionSubscription = params.operations.subscribeRuntimeEvents((event) => {
@@ -952,7 +1114,6 @@ function createPiSessionRuntime(params: Readonly<{
   const publishInputRejected = (request: AgentSessionSendRequest, reason: PluginDiagnosticData): void => {
     params.operations.publishRuntimeEvent({
       kind: 'input-rejected',
-      sessionId: params.sessionId,
       emittedAtMs: Date.now(),
       inputIds: request.inputIds,
       diagnostic: reason,
@@ -963,7 +1124,6 @@ function createPiSessionRuntime(params: Readonly<{
   const publishInputAccepted = (request: AgentSessionSendRequest): void => {
     params.operations.publishRuntimeEvent({
       kind: 'input-accepted',
-      sessionId: params.sessionId,
       emittedAtMs: Date.now(),
       inputIds: request.inputIds,
       delivery: request.delivery,
@@ -973,7 +1133,6 @@ function createPiSessionRuntime(params: Readonly<{
   const publishInputCustodyUnknown = (request: AgentSessionSendRequest, issue: PluginDiagnosticData): void => {
     params.operations.publishRuntimeEvent({
       kind: 'input-custody-unknown',
-      sessionId: params.sessionId,
       emittedAtMs: Date.now(),
       inputIds: request.inputIds,
       issue,
@@ -984,7 +1143,6 @@ function createPiSessionRuntime(params: Readonly<{
     if (request.delivery.kind === 'steer') {
       params.operations.publishRuntimeEvent({
         kind: 'input-custody-unknown',
-        sessionId: params.sessionId,
         emittedAtMs: Date.now(),
         inputIds: request.inputIds,
         issue,
@@ -993,7 +1151,6 @@ function createPiSessionRuntime(params: Readonly<{
     }
     params.operations.publishRuntimeEvent({
       kind: 'input-delivery-failed',
-      sessionId: params.sessionId,
       emittedAtMs: Date.now(),
       inputIds: request.inputIds,
       delivery: request.delivery,
@@ -1018,7 +1175,12 @@ function createPiSessionRuntime(params: Readonly<{
       let accepted = false;
       try {
         await params.operations.openSession(
-          params.resumeSessionId ? { resumeId: params.resumeSessionId } : undefined,
+          params.resumeSessionSelector && params.resumeProviderSessionId
+            ? {
+              selector: params.resumeSessionSelector,
+              providerSessionId: params.resumeProviderSessionId,
+            }
+            : undefined,
         );
         if (request.delivery.kind === 'steer') {
           await params.operations.steerInFlightTurn(prompt);
@@ -1045,7 +1207,7 @@ function createPiSessionRuntime(params: Readonly<{
           params.logger.warn('[PiRuntime] Provider prompt rejected', {
             classification: providerFailure.classification,
             providerCode: providerFailure.code,
-            sanitizedPreview: providerFailure.sanitizedPreview,
+            retryable: providerFailure.piRetryable,
           });
         }
         const reason = providerFailure
@@ -1057,7 +1219,11 @@ function createPiSessionRuntime(params: Readonly<{
         if (accepted) publishInputDeliveryFailed(request, reason);
         else if (outcomeUnknown) publishInputCustodyUnknown(request, reason);
         else publishInputRejected(request, reason);
-        return { status: 'rejected', diagnostic: reason, retryable: false };
+        return {
+          status: 'rejected',
+          diagnostic: reason,
+          retryable: providerFailure?.piRetryable ?? false,
+        };
       }
     },
     async cancel(request, options) {
@@ -1079,6 +1245,14 @@ function createPiSessionRuntime(params: Readonly<{
     async updateConfiguration(update, options) {
       if (options?.signal?.aborted) {
         return { status: 'unavailable', diagnostic: diagnostic('pi_configuration_aborted', 'Pi configuration update was aborted') };
+      }
+      // Native tool restrictions are launch-only. Refuse the whole snapshot
+      // before model/thinking effects so the host cannot retain unapplied intent.
+      if (resolvePiEffectiveLaunchPermissionPolicy(update.permissionIntent.value ?? undefined) !== launchPermissionPolicy) {
+        return {
+          status: 'unsupported',
+          diagnostic: diagnostic('pi_permission_change_requires_restart', 'Pi permission changes require restarting the native runtime'),
+        };
       }
       try {
         return { status: 'applied', changed: await params.operations.updateSessionRuntimeConfig(update) };
@@ -1123,23 +1297,45 @@ function createPiSessionRuntime(params: Readonly<{
   };
 }
 
-export async function createPiRuntimeOperations(params: PiRuntimeOperationsParams): Promise<PiSessionRuntime> {
+async function createPiConversationRuntimeOperations(
+  params: Omit<PiRuntimeOperationsParams, 'sessionId'>,
+  happierSessionId?: string,
+): Promise<PiConversationRuntime> {
+  const ownedSessionOpenLifecycle = params.eagerStart === true && !params.sessionOpenLifecycle
+    ? createPiSessionOpenLifecycle({
+      onLateCleanupError: (error) => {
+        params.logger.warn('[PiRuntime] Late session-open resource cleanup failed', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+    })
+    : null;
+  const sessionOpenLifecycle = params.sessionOpenLifecycle ?? ownedSessionOpenLifecycle;
+  try {
   const normalizedEnv = normalizeEnv(params.env);
   const requestAuthEnabled = hasPiRequestAuthProvider(normalizedEnv);
   if (requestAuthEnabled) {
     assertPiRequestAuthRuntimeConfigured(normalizedEnv);
   }
   let requestAuthProducerVersion: string | null = null;
-  const resolved = await params.services.exec.systemTools.resolve({
+  const systemToolResolution = params.services.exec.systemTools.resolve({
     toolId: 'pi-cli',
     purpose: 'Run the Pi RPC runtime',
     cwd: params.cwd,
+    ...(sessionOpenLifecycle ? { signal: sessionOpenLifecycle.signal } : {}),
   });
+  const resolved = sessionOpenLifecycle
+    ? await sessionOpenLifecycle.waitFor(systemToolResolution, 'system-tool resolution')
+    : await systemToolResolution;
   const executable = resolved.executable;
   if (requestAuthEnabled) {
-    requestAuthProducerVersion = await requireSupportedPiRequestAuthVersion(params, executable);
+    requestAuthProducerVersion = await requireSupportedPiRequestAuthVersion(
+      params,
+      executable,
+      sessionOpenLifecycle ?? undefined,
+    );
   }
-  const handle = await params.services.exec.clients.spawn(createPiExecSpec({
+  const processSpawn = params.services.exec.clients.spawn(createPiExecSpec({
     ...params,
     env: {
       ...normalizedEnv,
@@ -1147,15 +1343,24 @@ export async function createPiRuntimeOperations(params: PiRuntimeOperationsParam
         ? { [PI_REQUEST_AUTH_PRODUCER_VERSION_ENV]: requestAuthProducerVersion }
         : {}),
     },
-  }, executable));
-  const subscribers = new Set<RuntimeEventHandler>();
-  let retainedAvailableCommandsEvent: AgentSessionRuntimeEvent | null = null;
+  }, executable), sessionOpenLifecycle ? { signal: sessionOpenLifecycle.signal } : undefined);
+  const handle = sessionOpenLifecycle
+    ? await sessionOpenLifecycle.waitFor(
+      processSpawn,
+      'process startup',
+      async (lateHandle) => await lateHandle.dispose(),
+    )
+    : await processSpawn;
+  const subscribers = new Set<PiConversationEventHandler>();
+  let retainedAvailableCommandsEvent: PiRuntimeEvent | null = null;
+  let retainedProviderSessionIdEvent: PiRuntimeEvent | null = null;
   let malformedRuntimeEventPublished = false;
   let terminalRuntimeEventPublished = false;
   let sequence = 0;
-  const publishParsedRuntimeEvent = (event: AgentSessionRuntimeEvent): void => {
+  const publishParsedRuntimeEvent = (event: PiRuntimeEvent): void => {
     if (terminalRuntimeEventPublished) return;
     if (event.kind === 'available-commands') retainedAvailableCommandsEvent = event;
+    if (event.kind === 'provider-session-id') retainedProviderSessionIdEvent = event;
     for (const subscriber of subscribers) {
       subscriber(event);
     }
@@ -1169,10 +1374,8 @@ export async function createPiRuntimeOperations(params: PiRuntimeOperationsParam
     if (malformedRuntimeEventPublished) return;
     malformedRuntimeEventPublished = true;
     const eventKind = isRecord(event) && typeof event.kind === 'string' ? event.kind : null;
-    const parsedDiagnostic = AgentSessionRuntimeEventSchema.safeParse({
-      sequence: sequence + 1,
+    const diagnosticEvent: PiRuntimeEvent = {
       kind: 'runtime-ended',
-      sessionId: params.sessionId,
       emittedAtMs: Math.max(0, Math.trunc(Date.now())),
       cause: 'protocolError',
       retryable: true,
@@ -1187,22 +1390,25 @@ export async function createPiRuntimeOperations(params: PiRuntimeOperationsParam
           })),
         },
       },
-    });
-    if (parsedDiagnostic.success) {
-      sequence += 1;
-      publishParsedRuntimeEvent(parsedDiagnostic.data);
-    }
+    };
+    sequence += 1;
+    publishParsedRuntimeEvent(diagnosticEvent);
   };
-  const publishRuntimeEvent: RuntimeEventPublisher = (event): void => {
-    const parsed = AgentSessionRuntimeEventSchema.safeParse(
-      isRecord(event) ? { ...event, sequence: sequence + 1 } : event,
-    );
-    if (parsed.success) {
-      sequence += 1;
-      publishParsedRuntimeEvent(parsed.data);
-      return;
+  const publishRuntimeEvent = (event: PiRuntimeEvent): void => {
+    if (happierSessionId) {
+      const parsed = AgentSessionRuntimeEventSchema.safeParse({
+        ...event,
+        sequence: sequence + 1,
+        sessionId: happierSessionId,
+        emittedAtMs: event.emittedAtMs ?? Date.now(),
+      });
+      if (!parsed.success) {
+        publishMalformedRuntimeEventDiagnostic(event, parsed.error.issues);
+        return;
+      }
     }
-    publishMalformedRuntimeEventDiagnostic(event, parsed.error.issues);
+    sequence += 1;
+    publishParsedRuntimeEvent(event);
   };
   let operations: RuntimeOperationsWithRecordHandler | null = null;
   let usageObservationSequence = 0;
@@ -1250,7 +1456,14 @@ export async function createPiRuntimeOperations(params: PiRuntimeOperationsParam
     handle,
     onEvent(record) {
       if (record.type === 'runtime_event') {
-        publishRuntimeEvent(record.event);
+        if (!happierSessionId || !isRecord(record.event)) {
+          publishMalformedRuntimeEventDiagnostic(record.event, [{
+            message: 'Detached Pi runtimes do not accept Session-enveloped runtime events.',
+          }]);
+          return;
+        }
+        const { sequence: _sequence, sessionId: _sessionId, ...event } = record.event;
+        publishRuntimeEvent(event as PiRuntimeEvent);
         return;
       }
       const blockingExtensionUiRequest = parsePiBlockingExtensionUiRequest(record);
@@ -1261,23 +1474,33 @@ export async function createPiRuntimeOperations(params: PiRuntimeOperationsParam
       operations?.handleRuntimeRecord(record);
     },
   });
-  let availableCommands: readonly PiAvailableCommand[] = [];
+  let availableCommandsKnown = false;
+  let availableCommandsRefresh: Promise<void> | null = null;
   let availableExtensionCommandNames: ReadonlySet<string> = new Set();
-  try {
-    const response = await rpc.send({ type: 'get_commands' }, 30_000);
-    availableCommands = normalizePiAvailableCommands(response.data);
-    availableExtensionCommandNames = readPiExtensionCommandNames(response.data);
-    publishRuntimeEvent({
-      kind: 'available-commands',
-      sessionId: params.sessionId,
-      emittedAtMs: Date.now(),
-      commands: availableCommands,
+  const refreshAvailableCommands = (): Promise<void> => {
+    if (availableCommandsKnown) return Promise.resolve();
+    if (availableCommandsRefresh) return availableCommandsRefresh;
+    availableCommandsKnown = false;
+    const refresh = rpc.send({ type: 'get_commands' }, 30_000).then((response) => {
+      const availableCommands = normalizePiAvailableCommands(response.data);
+      availableExtensionCommandNames = readPiExtensionCommandNames(response.data);
+      availableCommandsKnown = true;
+      publishRuntimeEvent({
+        kind: 'available-commands',
+        emittedAtMs: Date.now(),
+        commands: [...availableCommands],
+      });
+    }).catch((error: unknown) => {
+      params.logger.warn('[PiRuntime] Command catalog refresh failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
     });
-  } catch (error) {
-    params.logger.warn('[PiRuntime] Command catalog refresh failed', {
-      error: error instanceof Error ? error.message : String(error),
+    availableCommandsRefresh = refresh;
+    void refresh.finally(() => {
+      if (availableCommandsRefresh === refresh) availableCommandsRefresh = null;
     });
-  }
+    return refresh;
+  };
   const modelsSource = params.models
     ? createPiSessionModelsSource({
         readState: async () => (await rpc.send({ type: 'get_state' }, 30_000)).data,
@@ -1292,38 +1515,44 @@ export async function createPiRuntimeOperations(params: PiRuntimeOperationsParam
   operations = createRuntimeOperations({
     rpc,
     logger: params.logger,
-    sessionId: params.sessionId,
     initialSessionId: params.initialSessionId ?? null,
     subscribeRuntimeEvents(handler) {
       subscribers.add(handler);
+      if (retainedProviderSessionIdEvent) handler(retainedProviderSessionIdEvent);
       if (retainedAvailableCommandsEvent) handler(retainedAvailableCommandsEvent);
       return () => {
         subscribers.delete(handler);
       };
     },
     publishRuntimeEvent,
-    isProviderNativeCommand(prompt) {
+    async resolveProviderNativeCommand(prompt) {
       const name = readLeadingPiExtensionCommandName(prompt);
-      return name !== null && availableExtensionCommandNames.has(name);
+      if (name === null) return false;
+      await refreshAvailableCommands();
+      return availableCommandsKnown && availableExtensionCommandNames.has(name);
     },
-    observeUsage(turnId) {
+    refreshCommands: () => { void refreshAvailableCommands(); },
+    ...(happierSessionId ? { observeUsage(turnId: string | null) {
       usageObservationChain = usageObservationChain.then(async () => {
         const response = await rpc.send({ type: 'get_session_stats' }, 30_000);
         const observedAtMs = Date.now();
         const event = projectPiSessionStatsUsage({
           stats: response.data,
-          sessionId: params.sessionId,
+          sessionId: happierSessionId,
           turnId,
           observationId: `pi-usage-${++usageObservationSequence}`,
           observedAtMs,
         });
-        if (event) publishRuntimeEvent(event);
+        if (event) {
+          const { sessionId: _sessionId, ...conversationEvent } = event;
+          publishRuntimeEvent(conversationEvent);
+        }
       }).catch((error) => {
         params.logger.warn('[PiRuntime] Session usage refresh failed', {
           error: error instanceof Error ? error.message : String(error),
         });
       });
-    },
+    } } : {}),
     cancelBlockingExtensionUiRequests,
     ...(modelsSource ? { refreshModels: () => { void modelsSource.refresh(); } } : {}),
   });
@@ -1338,16 +1567,12 @@ export async function createPiRuntimeOperations(params: PiRuntimeOperationsParam
   const unsubscribeProcessExit = rpc.onExit((result) => {
     operations?.handleProcessExit(result);
   });
-  if (params.eagerStart === true) {
-    await operations.openSession(
-      params.resumeSessionId ? { resumeId: params.resumeSessionId } : undefined,
-    );
-  }
-  return createPiSessionRuntime({
+  const runtime = createPiConversationRuntime({
     operations,
+    permissionMode: params.permissionMode,
     logger: params.logger,
-    sessionId: params.sessionId,
-    resumeSessionId: readString(params.resumeSessionId),
+    resumeSessionSelector: readString(params.resumeSessionSelector),
+    resumeProviderSessionId: readString(params.resumeProviderSessionId),
     clearSubscribers: () => {
       modelsBinding?.dispose();
       modelsBinding = null;
@@ -1356,4 +1581,51 @@ export async function createPiRuntimeOperations(params: PiRuntimeOperationsParam
       subscribers.clear();
     },
   });
+  if (params.eagerStart === true) {
+    try {
+      await operations.openSession(
+        params.resumeSessionSelector && params.resumeProviderSessionId
+          ? {
+            selector: params.resumeSessionSelector,
+            providerSessionId: params.resumeProviderSessionId,
+          }
+          : undefined,
+        sessionOpenLifecycle ?? undefined,
+      );
+    } catch (error) {
+      await runtime.dispose();
+      throw error;
+    }
+  }
+  return runtime;
+  } finally {
+    ownedSessionOpenLifecycle?.dispose();
+  }
+}
+
+/** Opens Pi without manufacturing a Happier Session envelope. */
+export async function createPiExecutionRunConversation(
+  params: PiExecutionRunConversationParams,
+): Promise<PiConversationRuntime> {
+  return await createPiConversationRuntimeOperations(params);
+}
+
+export async function createPiRuntimeOperations(params: PiRuntimeOperationsParams): Promise<PiSessionRuntime> {
+  const { sessionId, ...conversationParams } = params;
+  const conversation = await createPiConversationRuntimeOperations(conversationParams, sessionId);
+  let sequence = 0;
+  return {
+    ...conversation,
+    watch(listener) {
+      return conversation.watch((event) => {
+        listener(AgentSessionRuntimeEventSchema.parse({
+          ...event,
+          sequence: ++sequence,
+          sessionId,
+          emittedAtMs: event.emittedAtMs ?? Date.now(),
+        }));
+      });
+    },
+    dispose: async () => await conversation.dispose(),
+  };
 }

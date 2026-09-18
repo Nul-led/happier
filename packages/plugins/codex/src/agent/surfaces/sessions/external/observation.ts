@@ -25,6 +25,7 @@ import {
   projectAgentExternalSessionSourceToCodex,
   type CodexExternalSessionSource,
 } from './models.js';
+import { readExactCodexProviderSessionId } from '../../../../protocol/runtimeDescriptorV1.js';
 
 const RESOURCE_KEY_PREFIX = 'codex-rollout-set-resource-v1:';
 const LINK_KEY_PREFIX = 'codex-rollout-set-link-v1:';
@@ -64,7 +65,9 @@ function resolveIdentity(
   identity: AgentExternalSessionsResolvedIdentity,
   env: NodeJS.ProcessEnv,
 ): ResolvedCodexObservationIdentity {
-  const remoteSessionId = identity.remoteSessionId.trim();
+  // Codex minted this id; observation keys and rollout matching use its exact
+  // bytes, and the length ceiling stays a bound on that raw value.
+  const remoteSessionId = readExactCodexProviderSessionId(identity.remoteSessionId);
   if (
     !remoteSessionId
     || remoteSessionId.length > MAX_REMOTE_SESSION_ID_LENGTH

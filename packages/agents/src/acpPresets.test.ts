@@ -54,6 +54,9 @@ describe('native Agent ACP presets', () => {
       'action_spec_get',
       'action_spec_search',
       'change_title',
+      'execution_run_get',
+      'execution_run_list',
+      'execution_run_wait',
       'session_title_set',
     ]);
     expect(acpPresetExports).not.toHaveProperty('resolveOpenCodeStylePermissionPolicy');

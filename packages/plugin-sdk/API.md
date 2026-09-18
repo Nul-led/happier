@@ -16,6 +16,7 @@
 | `.` | `ComposerAttachmentPrepareRequestV1` | type | daemon |
 | `.` | `ComposerAttachmentPrepareResultV1` | type | daemon |
 | `.` | `ComposerAttachmentResolveRequestV1` | type | daemon |
+| `.` | `ComposerAttachmentResolveRequestV2` | type | daemon |
 | `.` | `ComposerAttachmentResolveResultV1` | type | daemon |
 | `.` | `ComposerAttachmentRuntime` | type | daemon |
 | `.` | `ComposerAttachmentsRegistrationApi` | type | daemon |
@@ -78,8 +79,11 @@
 | `.` | `PluginDaemonDatabaseDefinition` | type | any |
 | `.` | `PluginDaemonDatabaseRuntimeProjection` | type | any |
 | `.` | `PluginDiagnosticData` | type | any |
+| `.` | `PluginEphemeralSharedScope` | type | any |
+| `.` | `PluginEphemeralSharedValueLease` | type | any |
 | `.` | `PluginError` | value | any |
 | `.` | `PluginErrorData` | type | any |
+| `.` | `PluginExecutionScopeV1` | type | daemon |
 | `.` | `PluginIdentity` | type | any |
 | `.` | `PluginInvocationCaller` | type | daemon |
 | `.` | `PluginInvocationContext` | type | daemon |
@@ -92,6 +96,7 @@
 | `.` | `PluginReference` | type | any |
 | `.` | `PluginRemediationData` | type | any |
 | `.` | `PluginRequestInterceptorDefinition` | type | any |
+| `.` | `PluginScopedInvocationContextV1` | type | daemon |
 | `.` | `PluginSearchItemV1` | type | any |
 | `.` | `PluginSearchItemV1Schema` | value | any |
 | `.` | `PluginSearchProviderContributionV1` | type | any |
@@ -123,6 +128,7 @@
 | `.` | `UiSurfaceDefinition` | type | any |
 | `.` | `UiSurfaceDetailedDefinition` | type | any |
 | `.` | `UiSurfaceDetailedDefinitionFor` | type | any |
+| `.` | `UiSurfaceHostedHtmlRendererDefinition` | type | any |
 | `.` | `UiSurfaceHostedWebBuild` | type | any |
 | `.` | `UiSurfaceHostedWebDefinition` | type | any |
 | `.` | `UiSurfaceHostedWebRendererDefinition` | type | any |
@@ -155,6 +161,7 @@
 | `.` | `redactBugReportSensitiveText` | value | any |
 | `.` | `selectCurrentTargetedContribution` | value | any |
 | `.` | `trimBugReportTextToMaxBytes` | value | any |
+| `./actions` | `ActionApprovalRequestCreatedResult` | type | any |
 | `./actions` | `ActionContract` | type | any |
 | `./actions` | `ActionContribution` | type | any |
 | `./actions` | `ActionExecuteResult` | type | any |
@@ -189,6 +196,16 @@
 | `./actions` | `PluginActionInvocationSurfaceV2` | type | any |
 | `./actions` | `PluginActionPlacement` | type | any |
 | `./actions` | `PluginActionResultById` | type | any |
+| `./actions` | `PluginActionWorkflowAuthoredResultReferenceV1` | type | any |
+| `./actions` | `PluginActionWorkflowBlockV1` | type | any |
+| `./actions` | `PluginActionWorkflowConditionV1` | type | any |
+| `./actions` | `PluginActionWorkflowEvaluatorHistoryModeV1` | type | any |
+| `./actions` | `PluginActionWorkflowFailurePolicyV1` | type | any |
+| `./actions` | `PluginActionWorkflowItemExecutionModeV1` | type | any |
+| `./actions` | `PluginActionWorkflowParallelBranchV1` | type | any |
+| `./actions` | `PluginActionWorkflowRepetitionV1` | type | any |
+| `./actions` | `PluginActionWorkflowStepV1` | type | any |
+| `./actions` | `PluginActionWorkflowValueReferenceV1` | type | any |
 | `./actions` | `PluginAgentExternalSessionLinkDataArray` | type | any |
 | `./actions` | `PluginAgentExternalSessionLinkDataObject` | type | any |
 | `./actions` | `PluginAgentExternalSessionLinkDataValue` | type | any |
@@ -208,6 +225,7 @@
 | `./actions` | `actionInputOptionValueKey` | value | any |
 | `./actions` | `getActionSpec` | value | any |
 | `./actions` | `isExternalActionResultWithinResponseEnvelopeLimitV1` | value | any |
+| `./actions` | `isPluginActionApprovalRequestCreated` | value | any |
 | `./actions` | `isPluginActionHandlerInvocationNotStartedAdvisory` | value | any |
 | `./actions` | `isSameActionInputOptionValue` | value | any |
 | `./actions` | `measureExternalActionResultResponseEnvelopeUtf8BytesV1` | value | any |
@@ -284,6 +302,7 @@
 | `./agents/runtime` | `AgentAcpModel` | type | daemon |
 | `./agents/runtime` | `AgentAcpModelControls` | type | daemon |
 | `./agents/runtime` | `AgentAcpModelOption` | type | daemon |
+| `./agents/runtime` | `AgentAcpModelState` | type | daemon |
 | `./agents/runtime` | `AgentAcpNotificationExtension` | type | daemon |
 | `./agents/runtime` | `AgentAcpPromptUsageDefinition` | type | daemon |
 | `./agents/runtime` | `AgentAcpRequestExtension` | type | daemon |
@@ -359,10 +378,18 @@
 | `./agents/runtime` | `AgentDaemonSpawnToolResolutionContextV1` | type | daemon |
 | `./agents/runtime` | `AgentDaemonSpawnValidationResult` | type | daemon |
 | `./agents/runtime` | `AgentDeferredStartupEligibilityInputV1` | type | daemon |
+| `./agents/runtime` | `AgentExecutionRunConversationAdapterOptionsV1` | type | daemon |
+| `./agents/runtime` | `AgentExecutionRunConversationEventV1` | type | daemon |
+| `./agents/runtime` | `AgentExecutionRunConversationRuntimeV1` | type | daemon |
+| `./agents/runtime` | `AgentExecutionRunConversationSendOptionsV1` | type | daemon |
 | `./agents/runtime` | `AgentExecutionRunEvent` | type | daemon |
 | `./agents/runtime` | `AgentExecutionRunEventSchema` | value | daemon |
+| `./agents/runtime` | `AgentExecutionRunHooksServiceV1` | type | daemon |
+| `./agents/runtime` | `AgentExecutionRunHostServicesV1` | type | daemon |
 | `./agents/runtime` | `AgentExecutionRunOpenRequest` | type | daemon |
+| `./agents/runtime` | `AgentExecutionRunResultContractV1` | type | daemon |
 | `./agents/runtime` | `AgentExecutionRunRuntime` | type | daemon |
+| `./agents/runtime` | `AgentExecutionRunRuntimeContextV1` | type | daemon |
 | `./agents/runtime` | `AgentExecutionRunRuntimeFactory` | type | daemon |
 | `./agents/runtime` | `AgentExecutionRunSendResult` | type | daemon |
 | `./agents/runtime` | `AgentExecutionRunStopResult` | type | daemon |
@@ -392,7 +419,9 @@
 | `./agents/runtime` | `AgentProviderBindingPrepareInput` | type | daemon |
 | `./agents/runtime` | `AgentProviderBindingPrepared` | type | daemon |
 | `./agents/runtime` | `AgentProviderBindingResolvedFacts` | type | daemon |
+| `./agents/runtime` | `AgentProviderBindingSourceKey` | type | daemon |
 | `./agents/runtime` | `AgentProviderCliAttachDeclarationV1` | type | daemon |
+| `./agents/runtime` | `AgentProviderCliAttachReachabilityV1` | type | daemon |
 | `./agents/runtime` | `AgentProviderCliAttachTargetResolutionV1` | type | daemon |
 | `./agents/runtime` | `AgentProviderCliAttachTargetV1` | type | daemon |
 | `./agents/runtime` | `AgentProviderCredentialTransport` | type | daemon |
@@ -435,6 +464,7 @@
 | `./agents/runtime` | `AgentSessionConversationRollbackRequest` | type | daemon |
 | `./agents/runtime` | `AgentSessionConversationRollbackResult` | type | daemon |
 | `./agents/runtime` | `AgentSessionDisposeReason` | type | daemon |
+| `./agents/runtime` | `AgentSessionExecutionRunRuntimeFactoryV1` | type | daemon |
 | `./agents/runtime` | `AgentSessionGoalCommittedResult` | type | daemon |
 | `./agents/runtime` | `AgentSessionGoalControl` | type | daemon |
 | `./agents/runtime` | `AgentSessionGoalControlContext` | type | daemon |
@@ -580,6 +610,7 @@
 | `./agents/runtime` | `HandoffRuntimeLocalMetadataV1` | type | daemon |
 | `./agents/runtime` | `HandoffSurfaceV1` | type | daemon |
 | `./agents/runtime` | `ListCheckpointsRequestV1` | type | daemon |
+| `./agents/runtime` | `PluginAgentAcpNativeSessionMcpConfigV2` | type | daemon |
 | `./agents/runtime` | `ProviderBindingCanonicalJsonValue` | type | any |
 | `./agents/runtime` | `ProviderBoundModelRef` | type | daemon |
 | `./agents/runtime` | `ProviderTranscriptDispatchRequestV1` | type | daemon |
@@ -643,6 +674,7 @@
 | `./agents/runtime` | `buildUsageObservationEffect` | value | daemon |
 | `./agents/runtime` | `createAcpToolNameInferencePreset` | value | daemon |
 | `./agents/runtime` | `createAgentSessionPreAdmissionBuffer` | value | daemon |
+| `./agents/runtime` | `createExecutionRunHostBackendFromConversationRuntime` | value | daemon |
 | `./agents/runtime` | `createFiniteExecutionRunHostRuntime` | value | daemon |
 | `./agents/runtime` | `isRuntimeConfigUpdateOutcomeApplied` | value | daemon |
 | `./agents/runtime` | `normalizeAcpPermissionIntent` | value | daemon |
@@ -745,6 +777,7 @@
 | `./connected-accounts` | `AuthPkceChallenge` | type | any |
 | `./connected-accounts` | `AuthPromptTextInput` | type | any |
 | `./connected-accounts` | `AuthPromptTextResult` | type | any |
+| `./connected-accounts` | `CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1` | value | any |
 | `./connected-accounts` | `CONNECTED_ACCOUNT_REQUEST_AUTH_CAPABILITY_PATH_ENV` | value | any |
 | `./connected-accounts` | `ConnectedAccountAuthCompletionResult` | type | daemon |
 | `./connected-accounts` | `ConnectedAccountAuthDiagnostic` | type | any |
@@ -934,9 +967,13 @@
 | `./fs` | `FsAtomicWriteInput` | type | daemon |
 | `./fs` | `FsAtomicWriteJsonInput` | type | daemon |
 | `./fs` | `FsAtomicWriteTextInput` | type | daemon |
+| `./fs` | `SecureTempDirectory` | type | daemon |
+| `./fs` | `SecureTempDirectoryInput` | type | daemon |
 | `./fs` | `SecureTempTextFileInput` | type | daemon |
 | `./fs` | `canonicalizePath` | value | daemon |
 | `./fs` | `canonicalizePathSync` | value | daemon |
+| `./fs` | `createAbsolutePathSymlink` | value | daemon |
+| `./fs` | `createSecureTempDirectorySync` | value | daemon |
 | `./fs` | `expandHomePath` | value | daemon |
 | `./fs` | `isCanonicalAbsolutePathInsideRoot` | value | daemon |
 | `./fs` | `resolveConfiguredPath` | value | daemon |
@@ -1001,6 +1038,7 @@
 | `./interactions` | `ApprovalQueueSnapshot` | type | any |
 | `./interactions` | `ApprovalRequest` | type | any |
 | `./interactions` | `ApprovalRequestStatus` | type | any |
+| `./interactions` | `CurrentSessionPresentationIntentV1` | type | any |
 | `./interactions` | `InteractionOptions` | type | any |
 | `./interactions` | `InteractionSeverity` | type | any |
 | `./interactions` | `InteractionTerminalStatusV1` | type | any |
@@ -1099,6 +1137,8 @@
 | `./manifest` | `PluginManifestDiagnostic` | type | any |
 | `./manifest` | `PluginManifestParseResult` | type | any |
 | `./manifest` | `PluginRequestInterceptorContribution` | type | any |
+| `./manifest` | `PluginSystemToolAcpFingerprintV1` | type | any |
+| `./manifest` | `PluginSystemToolReadinessV1` | type | any |
 | `./manifest` | `PluginTestkitManifest` | type | any |
 | `./manifest` | `PublicHostAccessCapability` | type | any |
 | `./manifest` | `compilePluginJsonSchema` | value | any |
@@ -1403,7 +1443,6 @@
 | `./reviews` | `reviewCommentPublicationTargetMatchesV1` | value | any |
 | `./reviews` | `validateReviewCommentPublicationClaimAgainstPlanV1` | value | any |
 | `./reviews` | `validateReviewCommentPublicationResultAgainstPlanV1` | value | any |
-| `./scm` | `ParsedScmRemoteUrl` | type | any |
 | `./scm` | `PluginScmRegistrationApi` | type | daemon |
 | `./scm` | `SCM_COMMIT_MESSAGE_MAX_LENGTH` | value | any |
 | `./scm` | `SCM_COMMIT_PATCH_MAX_COUNT` | value | any |
@@ -1525,6 +1564,7 @@
 | `./scm` | `ScmStashShowResponse` | type | any |
 | `./scm` | `ScmStatusSnapshotRequest` | type | any |
 | `./scm` | `ScmStatusSnapshotResponse` | type | any |
+| `./scm` | `ScmTransportIdentityV1` | type | any |
 | `./scm` | `ScmWorkingEntry` | type | any |
 | `./scm` | `ScmWorkingSnapshot` | type | any |
 | `./scm` | `ScmWorkingSnapshotSchema` | value | any |
@@ -1538,16 +1578,19 @@
 | `./scm` | `ScmWorktreeRemoveResponse` | type | any |
 | `./scm` | `ScmWorktreesEnrichmentRequest` | type | any |
 | `./scm` | `ScmWorktreesEnrichmentResponse` | type | any |
+| `./scm` | `buildWorktreeRelativePath` | value | any |
 | `./scm` | `createScmCapabilities` | value | any |
 | `./scm` | `encodeCompareRef` | value | any |
 | `./scm` | `evaluateScmRemoteMutationPolicy` | value | any |
 | `./scm` | `evaluateScmRemoteMutationPreconditions` | value | daemon |
+| `./scm` | `hasForbiddenGitRefName` | value | any |
 | `./scm` | `isScmPatchBoundToPath` | value | any |
 | `./scm` | `normalizeScmBranchSourceRef` | value | any |
 | `./scm` | `normalizeScmHostingRepositoryIdentity` | value | any |
 | `./scm` | `normalizeScmRemoteName` | value | any |
 | `./scm` | `normalizeScmRemoteRequest` | value | any |
 | `./scm` | `normalizeScmRemoteUrl` | value | any |
+| `./scm` | `normalizeWorktreeDisplayName` | value | any |
 | `./scm` | `parseScmRemoteUrl` | value | any |
 | `./scm` | `resolveScmScopedChangedPaths` | value | any |
 | `./scm` | `sameScmHostingRepositoryIdentity` | value | any |
@@ -1594,7 +1637,9 @@
 | `./scm/backend` | `mapGitScmErrorCode` | value | any |
 | `./scm/backend` | `mapSaplingScmErrorCode` | value | any |
 | `./scm/backend` | `readCurrentBackendRuntimeServices` | value | daemon |
+| `./scm/backend` | `readUntrackedFileStats` | value | daemon |
 | `./scm/backend` | `resolveBackendCommandMaxOutputBytes` | value | daemon |
+| `./scm/backend` | `resolveScmBackendCapabilities` | value | any |
 | `./scm/backend` | `runBackendCommand` | value | daemon |
 | `./scm/backend` | `runWithBackendRuntimeServices` | value | daemon |
 | `./scm/backend` | `supportedCapability` | value | any |

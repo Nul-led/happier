@@ -1,5 +1,5 @@
+import { readUntrackedFileStats } from '@happier-dev/plugin-sdk/scm/backend';
 import { existsSync } from 'fs';
-import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type {
@@ -15,54 +15,7 @@ import { parseGitPatchDiffStats } from './parsing/diffStats.js';
 import { parseSaplingPaths } from './parsing/remotePathsParser.js';
 import { parseSaplingStatusLine } from './parsing/statusParser.js';
 
-const UNTRACKED_STATS_MAX_FILES = 512;
-const UNTRACKED_STATS_MAX_BYTES = 5_000_000;
 
-function countTextLines(buffer: Buffer): number {
-    if (buffer.length === 0) return 0;
-    let lines = 1;
-    for (let i = 0; i < buffer.length; i += 1) {
-        if (buffer[i] === 10) lines += 1;
-    }
-    return lines;
-}
-
-async function computeUntrackedStatsByPath(repoRoot: string, rawPaths: string[]): Promise<Record<string, { pendingAdded: number; isBinary: boolean }>> {
-    const paths = rawPaths.filter((p) => p && p.trim().length > 0).slice(0, UNTRACKED_STATS_MAX_FILES);
-    const statsByPath: Record<string, { pendingAdded: number; isBinary: boolean }> = {};
-
-    for (const relativePath of paths) {
-        if (relativePath === '.') continue;
-        const absPath = join(repoRoot, relativePath);
-        try {
-            const info = await stat(absPath);
-            if (!info.isFile()) continue;
-            if (info.size > UNTRACKED_STATS_MAX_BYTES) {
-                statsByPath[relativePath] = { pendingAdded: 0, isBinary: true };
-                continue;
-            }
-
-            const buf = await readFile(absPath);
-            const isBinary = buf.includes(0);
-            statsByPath[relativePath] = {
-                pendingAdded: isBinary ? 0 : countTextLines(buf),
-                isBinary,
-            };
-        } catch {
-            // Ignore unreadable files (permissions/races).
-        }
-    }
-
-    return statsByPath;
-}
-
-/**
- * Sibling of `detectGitRepo`'s contract (`F-SCM-1`): a detector that could not run must reject, so
- * the host registry reads it as "this backend could not look" rather than as the domain fact "this
- * directory is not under source control". `sl` being absent — the common case on a machine that
- * only uses Git — is exactly such a non-answer, and it must not be counted as an authoritative
- * negative that masks a broken Git alongside it.
- */
 function detectionUnavailable(detail: string): Error {
     return Object.assign(
         new Error(`Unable to determine whether this path is a Sapling repository: ${detail}`),
@@ -232,7 +185,7 @@ export async function getSaplingSnapshot(input: {
     const remotes = parseSaplingPaths(remotesResult.stdout);
 
     const untrackedPaths = statusEntries.filter((entry) => entry.kind === 'untracked').map((entry) => entry.path);
-    const untrackedStatsByPath = repoRoot ? await computeUntrackedStatsByPath(repoRoot, untrackedPaths) : {};
+    const untrackedStatsByPath = repoRoot ? await readUntrackedFileStats(repoRoot, untrackedPaths) : {};
 
     const entries = buildSnapshotEntries(statusEntries, unresolvedPaths).map((entry) => {
         if (entry.kind === 'untracked') {
@@ -244,11 +197,13 @@ export async function getSaplingSnapshot(input: {
                     pendingAdded: stats ? Math.max(0, Number(stats.pendingAdded) || 0) : 0,
                     pendingRemoved: 0,
                     isBinary: stats ? Boolean(stats.isBinary) : false,
+                    ...(stats ? {} : { isComplete: false }),
                 },
             };
         }
 
         const stats = diffStatsByPath.get(entry.path) ?? null;
+        if (!diff.success) return { ...entry, stats: { ...entry.stats, isComplete: false } };
         if (!stats) return entry;
         return {
             ...entry,
@@ -287,6 +242,7 @@ export async function getSaplingSnapshot(input: {
         hasConflicts: unresolvedPaths.size > 0 || entries.some((entry) => entry.kind === 'conflicted'),
         entries,
         totals: {
+            ...(entries.some((entry) => entry.stats.isComplete === false) ? { isComplete: false } : {}),
             includedFiles: 0,
             pendingFiles: entries.length,
             untrackedFiles: entries.filter((entry) => entry.kind === 'untracked').length,

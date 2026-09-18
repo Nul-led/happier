@@ -340,6 +340,8 @@ export const GithubProjectedChangedFileRowV1Schema = defineProtocolObject({
    * the cost of a feature that does not exist yet.
    */
   diffAvailable: GithubBooleanSchema,
+  /** Source-native patch evidence used only by the deterministic Files ordering owner. */
+  importSpecifiers: defineProtocolArray(PathSchema).optional(),
   truncated: defineProtocolLiteral(true).optional(),
 }, { policy: 'closed' });
 

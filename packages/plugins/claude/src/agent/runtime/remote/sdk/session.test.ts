@@ -884,7 +884,7 @@ describe('bindClaudeAgentSdkFallbackSession', () => {
       const hookFile = pluginRequest?.files?.find((file) => file.path === 'hooks/hooks.json');
       expect(hookFile?.json).toMatchObject({
         hooks: {
-          PermissionRequest: [expect.objectContaining({ matcher: '' })],
+          PermissionRequest: [expect.objectContaining({ matcher: '*' })],
           PreToolUse: [expect.objectContaining({ matcher: 'AskUserQuestion' })],
         },
       });
@@ -1070,6 +1070,101 @@ describe('bindClaudeAgentSdkFallbackSession', () => {
       })));
     } finally {
       await activeCase.runtime.resetOrDisposeRuntime().catch(() => undefined);
+    }
+  });
+
+  it('cancels native input during SDK hook setup before provider effect and admits the next turn', async () => {
+    const terminalHost = createTerminalHostFixture();
+    const events = createEventsFixture();
+    const exec = createSdkExecFixture();
+    const sessionHooks = createSessionHooksFixture();
+    let releaseAssets!: () => void;
+    const assetsPending = new Promise<void>((resolve) => { releaseAssets = resolve; });
+    // The filesystem asset boundary is deferred; native admission and SDK submission stay real.
+    sessionHooks.service.resolveForwarderAssets.mockImplementation(async () => {
+      await assetsPending;
+      return {
+        nodeExecutable: '/bin/node',
+        sessionForwarderScript: '/app/session_hook_forwarder.cjs',
+        permissionForwarderScript: '/app/permission_hook_forwarder.cjs',
+      };
+    });
+    const ctx = createPluginContextFixture(terminalHost.service, events.service, {
+      exec: exec.service,
+      sessionHooks: sessionHooks.service,
+    });
+    const operations = createClaudeAgentSdkProviderOperations({
+      ctx,
+      directory: '/tmp/claude-project',
+      launchEnv: {},
+      permissionMode: 'default',
+      happierSessionId: 'happy-cancel-setup',
+    });
+    const session = createClaudeNativeSessionRuntimeFromOperations(operations, {
+      kind: 'create',
+      sessionId: 'happy-cancel-setup',
+      cwd: '/tmp/claude-project',
+      configuration: {
+        mode: { value: null, updatedAtMs: 1 },
+        model: { value: null, updatedAtMs: 1 },
+        permissionIntent: { value: 'default', updatedAtMs: 1 },
+        options: {},
+      },
+    }, {
+      session: {
+        // Host registration ports do not drive SDK submission, cancellation, or event production.
+        services: {
+          activeInput: { bind: () => ({ dispose() {} }) } satisfies Pick<AgentSessionRuntimeContext['session']['services']['activeInput'], 'bind'>,
+          models: { bind: () => ({ dispose() {} }) } satisfies AgentSessionRuntimeContext['session']['services']['models'],
+        },
+      },
+    } as unknown as AgentSessionRuntimeContext);
+    const observed: AgentSessionRuntimeEvent[] = [];
+    const subscription = session.watch((event) => observed.push(event));
+    try {
+      const pending = session.send({
+        inputIds: ['cancelled-input'],
+        input: { text: 'must not reach Claude' },
+        delivery: { kind: 'newTurn', turnId: 'cancelled-turn' },
+      });
+      await vi.waitFor(() => expect(sessionHooks.service.resolveForwarderAssets).toHaveBeenCalledOnce());
+      await expect(session.cancel({ turnId: 'stale-turn' })).resolves.toEqual({ status: 'notRunning' });
+      const cancellation = await session.cancel({ turnId: 'cancelled-turn' });
+      releaseAssets();
+      await expect(pending).resolves.toMatchObject({ status: 'rejected' });
+      expect(cancellation).toEqual({ status: 'requested', turnId: 'cancelled-turn' });
+      expect(exec.spawnClient).not.toHaveBeenCalled();
+      expect(exec.written).toEqual([]);
+      expect(observed.filter((event) => event.kind === 'input-rejected')).toEqual([
+        expect.objectContaining({ inputIds: ['cancelled-input'] }),
+      ]);
+      expect(observed.some((event) => event.kind === 'input-accepted' || event.kind === 'turn-start')).toBe(false);
+      await expect(session.send({
+        inputIds: ['next-input'],
+        input: { text: 'fresh prompt' },
+        delivery: { kind: 'newTurn', turnId: 'next-turn' },
+      })).resolves.toEqual({ status: 'admitted' });
+      expect(exec.written).toContainEqual({ type: 'user', message: { role: 'user', content: 'fresh prompt' } });
+      await expect(session.cancel({ turnId: 'cancelled-turn' })).resolves.toEqual({ status: 'notRunning' });
+      await expect(session.cancel({ turnId: 'next-turn' })).resolves.toEqual({ status: 'requested', turnId: 'next-turn' });
+      // The interrupted query is still draining when the following submission enters setup.
+      const nextPending = session.send({
+        inputIds: ['cancelled-following-input'],
+        input: { text: 'must not reach the draining query' },
+        delivery: { kind: 'newTurn', turnId: 'cancelled-following-turn' },
+      });
+      await expect(session.cancel({ turnId: 'cancelled-following-turn' })).resolves.toEqual({
+        status: 'requested', turnId: 'cancelled-following-turn',
+      });
+      await expect(nextPending).resolves.toMatchObject({ status: 'rejected' });
+      expect(exec.spawnClient).toHaveBeenCalledOnce();
+      expect(exec.written.filter((record) => (
+        typeof record === 'object' && record !== null && 'type' in record && record.type === 'user'
+      ))).toEqual([{ type: 'user', message: { role: 'user', content: 'fresh prompt' } }]);
+    } finally {
+      releaseAssets();
+      subscription.dispose();
+      await session.dispose();
     }
   });
 
@@ -1682,7 +1777,7 @@ describe('bindClaudeAgentSdkFallbackSession', () => {
       happierSessionId: 'happy-session-transport-uncertain',
     }));
     const settlements: unknown[] = [];
-    runtimeEnvelope.nativeRuntime.setOnPromptDeliveryOutcome?.(
+    runtimeEnvelope.nativeRuntime.setOnPromptDeliveryOutcome(
       createSessionProviderInputOutcomeNormalizer({
         getTarget: () => ({
           sessionId: 'happy-session-transport-uncertain',

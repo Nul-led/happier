@@ -4,6 +4,7 @@ import {
   DEFAULT_CLAUDE_UNIFIED_TERMINAL_WORKSPACE_TRUST_POLICY,
   type ClaudeUnifiedTerminalWorkspaceTrustPolicy,
 } from '../../../../agentSettings/definition.js';
+import { readClaudeProviderIdentityValue } from '../../../../protocol/providerIdentity.js';
 import { normalizeClaudeUnifiedTerminalWorkspaceTrustPolicy } from '../../../../protocol/remoteSettings.js';
 import { join } from 'node:path';
 
@@ -142,7 +143,7 @@ function resolveKnownClaudeTranscriptBinding(params: Readonly<{
   launchEnv: Readonly<Record<string, string>>;
   metadata: Readonly<Record<string, unknown>> | null;
 }>): Readonly<{ providerSessionId: string; transcriptPath: string }> | null {
-  const providerSessionId = readString(params.metadata?.claudeSessionId);
+  const providerSessionId = readClaudeProviderIdentityValue(params.metadata?.claudeSessionId);
   if (!providerSessionId) return null;
 
   const transcriptPath =
@@ -270,7 +271,7 @@ export async function bindClaudeUnifiedTerminalSession(params: Readonly<{
   const happierSessionId = readSessionId(params.sessionParams);
   const launchEnv = readEnv(params.sessionParams);
   const initialMetadata = isRecord(params.sessionParams.metadata) ? params.sessionParams.metadata : null;
-  const explicitResumeSessionId = readString(
+  const explicitResumeSessionId = readClaudeProviderIdentityValue(
     (params.sessionParams as Readonly<Record<string, unknown>>).resume,
   );
 

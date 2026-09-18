@@ -231,6 +231,11 @@ export const GitlabProjectedDiscussionRowV1Schema = defineProtocolObject({
   id: IdentifierSchema,
   individualNote: GitlabBooleanSchema,
   /**
+   * The thread's resolution, decoded from GitLab's per-note flags by the same
+   * reader the resolution mutation uses.
+   */
+  resolved: GitlabBooleanSchema,
+  /**
    * The whole returned thread, bounded. The reader's four-reply window is a
    * client-local window over these rows and never a nested HTTP cursor: GitLab
    * documents no per-discussion note pagination.

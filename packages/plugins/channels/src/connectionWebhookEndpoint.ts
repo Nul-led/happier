@@ -4,7 +4,12 @@ import {
   arePluginMachineMaterializationRefsEqual,
   type PluginInvocationContext,
 } from '@happier-dev/plugin-sdk';
-import type { PluginActionInputById, PluginActionResultById } from '@happier-dev/plugin-sdk/actions';
+import { isPluginActionApprovalRequestCreated } from '@happier-dev/plugin-sdk/actions';
+import type {
+  ActionApprovalRequestCreatedResult,
+  PluginActionInputById,
+  PluginActionResultById,
+} from '@happier-dev/plugin-sdk/actions';
 import {
   PluginWebhookEndpointIdV1Schema,
   type PluginWebhookEndpointIdV1,
@@ -167,7 +172,8 @@ export async function assertConversationConnectionWebhookEndpointCorrespondence(
   }>;
   sourceInstanceId: string;
 }>): Promise<void> {
-  let result: PluginActionResultById['plugin.webhook.endpoint.checkCorrespondence'];
+  let result: PluginActionResultById['plugin.webhook.endpoint.checkCorrespondence']
+    | ActionApprovalRequestCreatedResult;
   try {
     result = await input.context.services.actions.execute(
       'plugin.webhook.endpoint.checkCorrespondence',
@@ -183,6 +189,16 @@ export async function assertConversationConnectionWebhookEndpointCorrespondence(
   } catch (cause) {
     if (input.context.signal.aborted) throw cause;
     if (isPluginError(cause)) throw cause;
+    throw webhookEndpointPluginError(
+      'channels_connection_endpoint_correspondence_unavailable',
+      'Endpoint correspondence could not be verified for this durable-push connection.',
+      true,
+    );
+  }
+  // A policy deferral means the correspondence check never ran. It is an
+  // unverified endpoint, not a proven mismatch, so it keeps the retryable
+  // unavailable code rather than the permanent mismatch one.
+  if (isPluginActionApprovalRequestCreated(result)) {
     throw webhookEndpointPluginError(
       'channels_connection_endpoint_correspondence_unavailable',
       'Endpoint correspondence could not be verified for this durable-push connection.',
@@ -237,7 +253,8 @@ export async function convergeConversationConnectionWebhookEndpointTarget(input:
     materializationId: string;
   }>;
 }>): Promise<void> {
-  let converged: PluginActionResultById['plugin.webhook.endpoint.convergeTarget'];
+  let converged: PluginActionResultById['plugin.webhook.endpoint.convergeTarget']
+    | ActionApprovalRequestCreatedResult;
   try {
     converged = await input.context.services.actions.execute(
       'plugin.webhook.endpoint.convergeTarget',
@@ -254,6 +271,15 @@ export async function convergeConversationConnectionWebhookEndpointTarget(input:
   } catch (cause) {
     if (input.context.signal.aborted) throw cause;
     if (isPluginError(cause)) throw cause;
+    throw webhookEndpointPluginError(
+      'channels_connection_transfer_endpoint_unavailable',
+      'The durable-push endpoint could not be converged for connection transfer.',
+      true,
+    );
+  }
+  // A policy deferral means the endpoint never moved, so this transfer attempt
+  // is unavailable and retryable rather than superseded or converged.
+  if (isPluginActionApprovalRequestCreated(converged)) {
     throw webhookEndpointPluginError(
       'channels_connection_transfer_endpoint_unavailable',
       'The durable-push endpoint could not be converged for connection transfer.',

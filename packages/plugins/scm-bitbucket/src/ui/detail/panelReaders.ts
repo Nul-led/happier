@@ -28,6 +28,7 @@ import {
   type BitbucketPagedPageV1,
   type BitbucketPagedStateV1,
 } from './panelState.js';
+import { BITBUCKET_DETAIL_TABS_V1 } from './tabDeclarations.js';
 
 /**
  * The panel-owned readers behind the Bitbucket Cloud detail body.
@@ -35,7 +36,7 @@ import {
  * Each reader's lifetime is the lifetime of the panel that owns its data, and
  * that is a structural fact here rather than a convention: every read below is
  * scoped to its panel's active interval, so leaving aborts the request, rejects
- * a late result, and discards every row the panel held.
+ * a late result, and preserves settled presentation only for a declared retained panel.
  *
  * That lifetime is also the rate budget. Nothing here fetches on mount of the
  * detail surface: a plane's first request is issued when its tab becomes active
@@ -106,6 +107,7 @@ type PageReader<TRow> = (
  */
 function useBitbucketPagedWalk<TRow>(
   readPage: PageReader<TRow>,
+  retention: 'retain' | 'discard' = 'discard',
 ): BitbucketPagedControllerV1<TRow> {
   const [state, dispatch] = useReducer(
     bitbucketPagedReducer<TRow>,
@@ -115,6 +117,8 @@ function useBitbucketPagedWalk<TRow>(
   const { active, activeSignal } = useTabPanelActivity();
   const interval = useRef<AbortSignal | null>(null);
   const requested = useRef<Set<string>>(new Set());
+  const settledReader = useRef<PageReader<TRow> | null>(null);
+  const pendingPosition = useRef<string | null>(null);
   /**
    * Monotonic across the panel's whole life, never derived from the reducer.
    *
@@ -128,22 +132,40 @@ function useBitbucketPagedWalk<TRow>(
     token: number,
     continuation: string | null,
     pageSignal: AbortSignal,
+    start: 'request' | 'refresh' = 'request',
   ): Promise<void> => {
-    dispatch({ kind: 'requestStarted', token });
+    pendingPosition.current = continuation;
+    dispatch(start === 'refresh'
+      ? { kind: 'refreshStarted', token }
+      : { kind: 'requestStarted', token });
     const outcome = await readPage(continuation, pageSignal);
     if (pageSignal.aborted) return;
+    pendingPosition.current = null;
     if (outcome.kind === 'failed') {
+      // Only a position this walk actually consumed may be refused a second time. A page that
+      // failed was never read, and the reader is looking at an enabled control for it.
+      if (continuation !== null) requested.current.delete(continuation);
       dispatch({ kind: 'pageFailed', token, failure: outcome.failure });
       return;
     }
+    settledReader.current = readPage;
     dispatch({ kind: 'pageSettled', token, page: outcome.page });
   }, [readPage]);
 
-  const startWalk = useCallback((pageSignal: AbortSignal): void => {
+  const startWalk = useCallback((
+    pageSignal: AbortSignal,
+    start: 'request' | 'refresh',
+  ): void => {
     requested.current = new Set();
-    dispatch({ kind: 'panelLeft' });
+    // A refresh replaces the walk warm: the reducer keeps the last-known-good rows visible until
+    // the new first page settles, so a refresh that fails leaves the reader what they had rather
+    // than an empty panel.
+    if (start === 'request') {
+      settledReader.current = null;
+      dispatch({ kind: 'panelLeft' });
+    }
     nextToken.current += 1;
-    void runPage(nextToken.current, null, pageSignal);
+    void runPage(nextToken.current, null, pageSignal, start);
   }, [runPage]);
 
   useEffect(() => {
@@ -151,13 +173,22 @@ function useBitbucketPagedWalk<TRow>(
     // never on mount of the detail surface.
     if (!active) return undefined;
     interval.current = activeSignal;
-    startWalk(activeSignal);
+    if (retention !== 'retain' || settledReader.current !== readPage) {
+      startWalk(activeSignal, 'request');
+    }
     return () => {
       interval.current = null;
-      requested.current = new Set();
-      dispatch({ kind: 'panelLeft' });
+      if (retention === 'retain' && settledReader.current === readPage) {
+        if (pendingPosition.current !== null) requested.current.delete(pendingPosition.current);
+        dispatch({ kind: 'walkAbandoned' });
+      } else {
+        requested.current = new Set();
+        settledReader.current = null;
+        dispatch({ kind: 'panelLeft' });
+      }
+      pendingPosition.current = null;
     };
-  }, [active, activeSignal, startWalk]);
+  }, [active, activeSignal, readPage, retention, startWalk]);
 
   const loadMore = useCallback(() => {
     const pageSignal = interval.current;
@@ -172,7 +203,7 @@ function useBitbucketPagedWalk<TRow>(
   const refresh = useCallback(() => {
     const pageSignal = interval.current;
     if (pageSignal === null || state.pending) return;
-    startWalk(pageSignal);
+    startWalk(pageSignal, 'refresh');
   }, [startWalk, state.pending]);
 
   return useMemo(() => ({ state, loadMore, refresh }), [loadMore, refresh, state]);
@@ -361,6 +392,7 @@ export function useBitbucketComments(
 
 export type BitbucketOverviewControllerV1 = Readonly<{
   result: ReturnType<typeof BitbucketOverviewResultV1Schema.parse> | null;
+  failure: TriageSourceFailureV1 | null;
   pending: boolean;
   refresh: () => void;
 }>;
@@ -377,37 +409,55 @@ export function useBitbucketOverview(
   const { instance } = input;
   const { active, activeSignal } = useTabPanelActivity();
   const [result, setResult] = useState<ReturnType<typeof BitbucketOverviewResultV1Schema.parse> | null>(null);
+  const [failure, setFailure] = useState<TriageSourceFailureV1 | null>(null);
   const [pending, setPending] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const request = useMemo(() => ({
+    v: 1,
+    instance,
+    localRef,
+    lastKnownLocator: input.observation.locator,
+  }), [input.observation.locator, instance, localRef]);
+  const settledRequest = useRef<typeof request | null>(null);
+  const lastRefresh = useRef(refreshKey);
 
   useEffect(() => {
     if (!active) return;
+    const retained = settledRequest.current === request;
+    if (retained && lastRefresh.current === refreshKey) return;
+    if (!retained) setResult(null);
+    lastRefresh.current = refreshKey;
     let current = true;
     setPending(true);
-    void execute({
-      v: 1,
-      instance,
-      localRef,
-      lastKnownLocator: input.observation.locator,
-    }, { signal: activeSignal }).then((execution: ExecuteResult) => {
+    setFailure(null);
+    void execute(request, { signal: activeSignal }).then((execution: ExecuteResult) => {
       if (!current || activeSignal.aborted) return;
       const parsed = execution.status === 'success'
         ? BitbucketOverviewResultV1Schema.safeParse(execution.result)
         : null;
-      setResult(parsed?.success === true ? parsed.data : {
-        kind: 'unavailable',
-        failure: dispatchFailure(execution.status, execution.code ?? 'bitbucket-overview-read-failed'),
-      });
+      if (parsed?.success === true && parsed.data.kind === 'overview') {
+        settledRequest.current = request;
+        setResult(parsed.data);
+      } else {
+        setFailure(parsed?.success === true && parsed.data.kind === 'unavailable'
+          ? parsed.data.failure
+          : dispatchFailure(execution.status, execution.code ?? 'bitbucket-overview-read-failed'));
+      }
       setPending(false);
     });
-    return () => { current = false; };
-  }, [active, activeSignal, execute, input.observation.locator, instance, localRef, refreshKey]);
+    return () => {
+      current = false;
+      setPending(false);
+      setFailure(null);
+    };
+  }, [active, activeSignal, execute, request, refreshKey]);
 
   return useMemo(() => ({
     result,
+    failure,
     pending,
-    refresh: () => { if (!pending) setRefreshKey((value) => value + 1); },
-  }), [pending, result]);
+    refresh: () => { if (active && !pending) setRefreshKey((value) => value + 1); },
+  }), [active, failure, pending, result]);
 }
 
 /* ---------------------------------------------------------------------- diff */
@@ -448,7 +498,7 @@ export function useBitbucketDiff(
     if (parsed.data.kind === 'unavailable') {
       return { kind: 'failed' as const, failure: parsed.data.failure };
     }
-    if (continuation === null) setRaw(parsed.data.raw ?? null);
+    if (!signal.aborted && continuation === null) setRaw(parsed.data.raw ?? null);
     return { kind: 'page' as const, page: toPage({
       rows: parsed.data.files,
       omittedRowCount: parsed.data.omittedRowCount,
@@ -457,6 +507,9 @@ export function useBitbucketDiff(
       ...(parsed.data.continuation === undefined ? {} : { continuation: parsed.data.continuation }),
     }) };
   }, [execute, input.observation.locator, instance, localRef]);
-  const controller = useBitbucketPagedWalk(readPage);
+  const controller = useBitbucketPagedWalk(
+    readPage,
+    BITBUCKET_DETAIL_TABS_V1.find((tab) => tab.id === 'diff')?.retention,
+  );
   return useMemo(() => ({ ...controller, raw }), [controller, raw]);
 }

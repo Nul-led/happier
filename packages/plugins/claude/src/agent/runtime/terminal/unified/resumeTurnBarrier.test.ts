@@ -29,6 +29,40 @@ describe('createClaudeUnifiedResumeTurnBarrier', () => {
     expect(cancel).toHaveBeenCalledTimes(1);
   });
 
+  it('releases a provisional resume barrier when startup is waiting for a human before SessionStart', () => {
+    const begin = vi.fn();
+    const cancel = vi.fn();
+    const barrier = createClaudeUnifiedResumeTurnBarrier({
+      intent: { kind: 'resume_native', providerSessionId: 'resume-1' },
+      quietMs: 800,
+      begin,
+      cancel,
+    });
+
+    barrier.beginBeforeProviderRun();
+
+    expect(barrier.observeStartupBlocked()).toBe(true);
+    expect(cancel).toHaveBeenCalledWith('startup_blocked');
+    expect(barrier.isActive()).toBe(false);
+  });
+
+  it('does not release a resume barrier as startup-blocked after SessionStart', () => {
+    const cancel = vi.fn();
+    const barrier = createClaudeUnifiedResumeTurnBarrier({
+      intent: { kind: 'resume_native', providerSessionId: 'resume-1' },
+      quietMs: 800,
+      begin: vi.fn(),
+      cancel,
+    });
+
+    barrier.beginBeforeProviderRun();
+    barrier.observeProviderSessionStart('resume');
+
+    expect(barrier.observeStartupBlocked()).toBe(false);
+    expect(cancel).not.toHaveBeenCalled();
+    expect(barrier.isActive()).toBe(true);
+  });
+
   it('retains a confirmed native continuation and deduplicates replayed evidence', async () => {
     vi.useFakeTimers();
     const begin = vi.fn();

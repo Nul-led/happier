@@ -16,6 +16,9 @@ describe('Codex plugin manifest', () => {
     }
 
     expect(result.manifest.contributes.agents[0]?.catalog?.codingPromptBehavior).toBeUndefined();
+    expect(result.manifest.contributes.agents[0]?.capabilities.sessions.executionRunContext).toEqual({
+      versions: [1],
+    });
   });
 
   it('is canonical data and preserves declared runtime prerequisites', () => {
@@ -59,6 +62,7 @@ describe('Codex plugin manifest', () => {
     expect(PLUGIN_MANIFEST.contributes.connectedAccountDescriptors).toEqual([{
       id: 'openai-codex',
       title: 'Codex',
+      recoveryCredits: { supported: true },
       authentication: {
         defaultModeId: 'oauth',
         modes: [{
@@ -107,6 +111,7 @@ describe('Codex plugin manifest', () => {
       purpose: 'primary',
       service: 'openai-codex',
       required: false,
+      credentialKinds: ['oauth'],
       materializationKinds: ['files'],
     }]);
     expect(result.manifest.contributes.agents[0]?.capabilities.sessions.startupInstructions).toEqual({

@@ -606,6 +606,7 @@ export function createDiscordGatewaySupervisor(options: DiscordGatewaySupervisor
     const key = connectionFactKey(snapshot);
     const facts = pendingFacts.get(key);
     if (!facts || facts.length === 0) return true;
+    let blocksAdmission = false;
     for (const fact of facts) {
       let result: unknown;
       try {
@@ -626,9 +627,21 @@ export function createDiscordGatewaySupervisor(options: DiscordGatewaySupervisor
         pendingFacts.delete(key);
         return false;
       }
+      if (fact.kind === 'historyGap') {
+        await projectDiscordAutomationSourceConnectionStatus(
+          snapshot,
+          'historyGap',
+          context,
+        );
+        // The report mutates Channels' canonical connection admission state.
+        // Do not let this stale pre-report snapshot start a successor worker.
+        // A later reconciliation can start normally only after Channels has
+        // explicitly cleared the gap and returns the connection again.
+        blocksAdmission = true;
+      }
     }
     pendingFacts.delete(key);
-    return true;
+    return !blocksAdmission;
   };
 
   /**

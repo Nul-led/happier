@@ -14,6 +14,7 @@ import {
 } from '@happier-dev/triage-protocol/v1';
 
 import { mintTriageOpaqueIdV1 } from '../../opaqueId.js';
+import { resolvesTriageUnknownSessionStartV1 } from './sessionStartOutcome.js';
 import type {
     TriageStartEntrySessionInputV1,
     TriageStartEntrySessionResultV1,
@@ -181,8 +182,19 @@ export type TriageEntrySessionStartUnavailableReasonV1 =
      */
     | 'profileUnavailable'
     | 'promptUnavailable'
-    /** The Action dispatch did not happen or did not answer in this contract's shape. */
-    | 'dispatch';
+    /** Nothing left this surface: the press failed before the start Action. */
+    | 'dispatch'
+    /**
+     * The start Action left, and what became of it is unknown.
+     *
+     * Deliberately distinct from `dispatch`: the host emits the exact daemon
+     * Action and can then lose its settlement
+     * (`pluginSurfaceActionDispatch.ts`, `plugin_ui_action_outcome_unknown`), so
+     * a Session, a link and a Message may all exist. Saying "nothing was
+     * started" would be false, and the retry this leaves available repeats the
+     * retained identity rather than minting a second one.
+     */
+    | 'startOutcomeUnknown';
 
 /**
  * What became of the action's configured prompt and entry attachment.
@@ -200,10 +212,13 @@ export type TriageEntrySessionStartUnavailableReasonV1 =
  * resolved refuses the press before the Session exists.
  */
 export type TriageEntrySessionDeliveryOutcomeV1 =
-    /** The canonical Session-input admission verdict, exactly as it answered. */
+    /** The canonical `session.message.send` verdict, exactly as it answered. */
     | Readonly<{
         kind: 'send';
-        status: 'notRequested' | 'none' | 'accepted' | 'alreadyAccepted' | 'rejected' | 'outcomeUnknown';
+        status: Extract<
+            TriageStartEntrySessionResultV1,
+            Readonly<{ type: 'opened' | 'linked' | 'openPending' }>
+        >['delivery'];
     }>
     /** Nothing was configured to deliver, so nothing was placed. */
     | Readonly<{ kind: 'none' }>;
@@ -304,12 +319,100 @@ type TriageStartHostV1 = TriageSessionStartHostV1
         ): Promise<SelectActionInputResult>;
     }>;
 
+/** The exact semantic materialization request a prepared start is authorized for. */
+type TriagePreparedReviewRequestV1 = Parameters<typeof projectTriagePrepareReviewWorkspaceInputV1>[0];
+type TriagePreparedReviewOperationV1 =
+    NonNullable<TriageEntrySessionStartRequestV1['reviewWorkspace']>['operation'];
+
+/**
+ * The one authorization a prepared-review start travels with, and the only
+ * place it is asked for.
+ *
+ * The host settles the source's raw input and releases that settlement before
+ * the outer Action leaves (`hostedWebAdapter.ts`, `reactNative/hostApi.ts`, CLI
+ * `actions.ts`), so a carrier is spent by the dispatch that consumed it and can
+ * never be replayed. Asking the SAME question again for the SAME retained
+ * request is a different thing, and it is the only way a start whose response
+ * was lost can reach its preparation owner again: preparation runs INSIDE the
+ * start Action, so without a carrier the orchestrator refuses the workspace and
+ * a recovery could never rejoin what the first press may already have created.
+ */
+type TriagePreparedStartAuthorizationV1 =
+    | Readonly<{
+        status: 'authorized';
+        selection: NonNullable<TriageStartEntrySessionInputV1['prepareReviewWorkspaceSelection']>;
+        options: PluginUiActionExecutionOptions;
+    }>
+    /** The reader closed the source's selection surface. */
+    | Readonly<{ status: 'cancelled' }>
+    /** It settled something no start can be authorized by. */
+    | Readonly<{ status: 'unavailable' }>;
+
+export async function authorizeTriagePreparedReviewWorkspaceV1(
+    host: Pick<TriageStartHostV1, 'selectActionInput'>,
+    operation: TriagePreparedReviewOperationV1,
+    request: TriagePreparedReviewRequestV1,
+    options?: PluginUiActionExecutionOptions,
+): Promise<TriagePreparedStartAuthorizationV1> {
+    const selected = await host.selectActionInput({
+        operation,
+        draft: projectTriagePrepareReviewWorkspaceInputV1(request),
+    }, options);
+    if (selected.kind === 'cancelled') return { status: 'cancelled' };
+    if (selected.kind !== 'submitted' || selected.connectedAccount.kind !== 'selected') {
+        return { status: 'unavailable' };
+    }
+    return {
+        status: 'authorized',
+        selection: {
+            selection: selected.selection,
+            input: selected.input,
+            credentialRef: selected.connectedAccount.ref,
+        },
+        // The selected source operation is consumed exactly once by the outer
+        // start Action's canonical materialization owner.
+        options: {
+            selectedActionInput: { operation, result: selected },
+            consumeSelectedActionInput: true,
+        } as PluginUiActionExecutionOptions,
+    };
+}
+
+/**
+ * The retained request a prepared start must be authorized for again, when it
+ * is that kind of start. Its bytes are the original ones: a recovery repeats
+ * the settled destination, never a re-resolved one.
+ */
+function retainedPreparedRequest(
+    input: TriageStartEntrySessionInputV1,
+): TriagePreparedReviewRequestV1 | null {
+    return input.destination.kind === 'new'
+        && input.destination.materialization.kind === 'reviewWorkspace'
+        ? input.destination.materialization.request
+        : null;
+}
+
+/**
+ * Custody never keeps a spent authorization carrier. It is consumed by the one
+ * dispatch it travelled with, so retaining it could only ever produce a replay.
+ */
+function retainedStartInput(
+    input: TriageStartEntrySessionInputV1,
+): TriageStartEntrySessionInputV1 {
+    if (input.prepareReviewWorkspaceSelection === undefined) return input;
+    const { prepareReviewWorkspaceSelection: _spent, ...retained } = input;
+    return retained;
+}
+
 /**
  * The minimal mounted fact a retry needs, and nothing more.
  *
  * A press that answered `creationPending`, `linkPending` or `openPending` left
  * something real behind: a creation the daemon may already have settled, a
- * Session with no link, or a linked Session that did not open. The header's
+ * Session with no link, or a linked Session that did not open. So did a press
+ * whose own response never came back at all — the Action was emitted either
+ * way — which is why this is taken before the dispatch rather than from its
+ * result. The header's
  * notice has been telling readers that pressing again resumes the same Session
  * — and until this ref existed that was simply untrue, because every press
  * minted a fresh creation key and a fresh delivery key, so a second press
@@ -326,7 +429,14 @@ type TriageEntrySessionStartCustodyV1 = Readonly<{
     /** Which press this belongs to; a different action or entry starts fresh. */
     actionId: string;
     input: TriageStartEntrySessionInputV1;
-    /** The phase the settled start stopped at, when it stopped at one. */
+    /**
+     * The phase the settled start stopped at, when it stopped at one.
+     *
+     * Absent is the OTHER thing this ref remembers, and the two are not the
+     * same: no phase came back at all, so what the dispatch did remains
+     * unknown. A phase resumes itself; an unknown outcome repeats the whole
+     * request under the retained identity.
+     */
     pending?: NonNullable<TriageStartEntrySessionInputV1['resume']>;
     /** Resolved once from the configured review action; link/open retry reuses it. */
     reviewInstructions?: string;
@@ -414,7 +524,7 @@ export function useTriageEntrySessionStart(
      *
      * The delivery half is read from the start's own result rather than
      * re-asked: a `send` already happened, inside the start and before the open,
-     * and the canonical admission verdict it answered with travels on the
+     * and the canonical send verdict it answered with travels on the
      * result. Reporting anything other than that verdict is how a refusal used
      * to reach the reader as success.
      */
@@ -423,15 +533,22 @@ export function useTriageEntrySessionStart(
         input: TriageStartEntrySessionInputV1,
         result: TriageStartEntrySessionResultV1,
         reviewInstructions?: string,
+        /**
+         * The unresolved identity this dispatch was a recovery for, when it was
+         * one. Its first dispatch never answered, so a refusal answered to the
+         * SECOND one describes only itself.
+         */
+        unresolved?: TriageEntrySessionStartCustodyV1,
     ): Promise<void> => {
         // Custody is retained for exactly the arms a retry can resume, and
         // released for every terminal one. A `creationFailed` is terminal by the
         // orchestrator's own rule — no Session id is disclosed — so the next
         // visible press is a new logical request with a new key.
-        custody.current = result.type === 'creationPending'
+        const retained = retainedStartInput(input);
+        const resumable: TriageEntrySessionStartCustodyV1 | null = result.type === 'creationPending'
             ? {
                 actionId: request.action.actionId,
-                input,
+                input: retained,
                 pending: {
                     phase: 'creationPending',
                     ...(result.preparedReviewWorkspace === undefined
@@ -443,7 +560,7 @@ export function useTriageEntrySessionStart(
             : result.type === 'linkPending' || result.type === 'openPending'
                 ? {
                     actionId: request.action.actionId,
-                    input,
+                    input: retained,
                     pending: {
                         phase: result.type,
                         sessionId: result.sessionId,
@@ -469,7 +586,7 @@ export function useTriageEntrySessionStart(
                     && input.delivery !== undefined
                     ? {
                         actionId: request.action.actionId,
-                        input,
+                        input: retained,
                         pending: {
                             phase: 'openPending',
                             sessionId: result.sessionId,
@@ -485,6 +602,29 @@ export function useTriageEntrySessionStart(
         const sessionId = result.type === 'opened' || result.type === 'openPending' || result.type === 'linked'
             ? result.sessionId
             : null;
+        // A result that names the Session, or a phase to resume, answers for the
+        // whole logical request: it was created or rejoined, and nothing about
+        // it is unknown any more. A result that names neither — a refused
+        // preparation, a creation conflict, a mode rejection — answers only for
+        // the dispatch that received it, so it can neither release nor speak for
+        // an EARLIER dispatch whose own reply never arrived.
+        const unresolvedRemains = unresolved !== undefined && !resolvesTriageUnknownSessionStartV1(result);
+        // Releasing there is what let the next press mint a second creation key
+        // and a second delivery key for a Session and a Message that may exist.
+        custody.current = resumable ?? (unresolvedRemains ? unresolved : null);
+        if (unresolvedRemains) {
+            // ...and reporting that refusal as the verdict is the same mistake
+            // told to the reader: every terminal arm's notice says nothing was
+            // created, which is precisely what this surface does not know. The
+            // honest answer is the one it already has for this exact state, and
+            // it is the one whose notice tells them pressing again resumes the
+            // same Session rather than starting a second.
+            if (!retired.current) {
+                setReview(null);
+                setPhase(unavailable('startOutcomeUnknown'));
+            }
+            return;
+        }
         const delivery: TriageEntrySessionDeliveryOutcomeV1 = sessionId === null
             ? { kind: 'none' }
             : input.delivery !== undefined
@@ -537,23 +677,68 @@ export function useTriageEntrySessionStart(
             setPhase(STARTING);
             void (async () => {
                 try {
-                    // The selected provider operation was consumed by the
-                    // initial start. A phase resume carries only the owner's
-                    // returned prepared-workspace facts; replaying the
-                    // connected-account selection would turn a retry into a
-                    // second authorization attempt despite the start Action
-                    // deliberately ignoring it.
-                    const {
-                        prepareReviewWorkspaceSelection: _consumedSelection,
-                        ...retainedInput
-                    } = retained.input;
-                    const input: TriageStartEntrySessionInputV1 = retained.pending === undefined
-                        ? retainedInput
-                        : { ...retainedInput, resume: retained.pending };
-                    const result = await submitTriageEntrySessionStart(host, input);
-                    await settle(request, retained.input, result, retained.reviewInstructions);
+                    // A phase the first start actually reported resumes as that
+                    // phase. Its preparation already ran and the owner echoed
+                    // the facts back, so nothing is authorized a second time —
+                    // and the consumed carrier is never replayed, here or below.
+                    if (retained.pending !== undefined) {
+                        const resumed = await submitTriageEntrySessionStart(
+                            host,
+                            { ...retained.input, resume: retained.pending },
+                        );
+                        await settle(request, retained.input, resumed, retained.reviewInstructions);
+                        return;
+                    }
+
+                    // No phase came back at all: this is the recovery of a
+                    // dispatch whose own response was lost. The retained
+                    // destination, creation key and delivery key are repeated
+                    // exactly, and only a prepared-review start needs anything
+                    // more — its preparation runs inside the start Action, so
+                    // without a current authorization the orchestrator refuses
+                    // the workspace and the recovery could never reach the
+                    // canonical creator's rejoin at all.
+                    const prepared = retainedPreparedRequest(retained.input);
+                    let input = retained.input;
+                    let options: PluginUiActionExecutionOptions | undefined;
+                    if (prepared !== null) {
+                        const operation = request.reviewWorkspace?.operation;
+                        if (operation === undefined) {
+                            // Nothing reachable can authorize the retained
+                            // request, and the first dispatch's outcome is still
+                            // unknown. Custody stays: saying "nothing was
+                            // started" would be a claim this surface cannot make.
+                            if (!retired.current) setPhase(unavailable('startOutcomeUnknown'));
+                            return;
+                        }
+                        setPhase(CHOOSING);
+                        const authorization = await authorizeTriagePreparedReviewWorkspaceV1(
+                            host,
+                            operation,
+                            prepared,
+                        );
+                        if (retired.current) return;
+                        if (authorization.status !== 'authorized') {
+                            // Cancelling or refusing a RECOVERY answers only the
+                            // recovery. Returning to idle would say nothing was
+                            // started, and releasing the retained keys would let
+                            // the next press mint a second identity.
+                            setPhase(unavailable('startOutcomeUnknown'));
+                            return;
+                        }
+                        input = {
+                            ...retained.input,
+                            prepareReviewWorkspaceSelection: authorization.selection,
+                        };
+                        options = authorization.options;
+                        setPhase(STARTING);
+                    }
+                    const result = await submitTriageEntrySessionStart(host, input, options);
+                    await settle(request, retained.input, result, retained.reviewInstructions, retained);
                 } catch {
-                    if (!retired.current) setPhase(unavailable('dispatch'));
+                    // Custody is deliberately left in place: this retry left
+                    // too, so the next press repeats the same identity again.
+                    if (!retired.current) setPhase(unavailable('startOutcomeUnknown'));
                 } finally {
                     inFlight.current = false;
                 }
@@ -563,6 +748,11 @@ export function useTriageEntrySessionStart(
 
         setPhase(RESOLVING);
         void (async () => {
+            // Whether the start Action itself left this surface. Everything
+            // before it — the two catalog reads, the placement read, the host's
+            // New Session surface, the source selection — genuinely starts
+            // nothing when it throws, and saying so remains truthful.
+            let submitted = false;
             try {
                 // 1. BOTH references, resolved before any side effect. A
                 //    configured reference that cannot be honoured refuses the
@@ -789,35 +979,24 @@ export function useTriageEntrySessionStart(
                         setPhase(unavailable('preparedWorkspaceUnsupported'));
                         return;
                     }
-                    const selected = await host.selectActionInput({
-                        operation: request.reviewWorkspace!.operation,
-                        draft: projectTriagePrepareReviewWorkspaceInputV1(
-                            destination.destination.materialization.request,
-                        ),
-                    });
+                    const authorization = await authorizeTriagePreparedReviewWorkspaceV1(
+                        host,
+                        request.reviewWorkspace!.operation,
+                        destination.destination.materialization.request,
+                    );
                     if (retired.current) return;
-                    if (selected.kind === 'cancelled') {
+                    if (authorization.status === 'cancelled') {
+                        // Nothing has left this surface yet, so this cancellation
+                        // genuinely started nothing and spends no identity.
                         setPhase(IDLE);
                         return;
                     }
-                    if (selected.kind !== 'submitted' || selected.connectedAccount.kind !== 'selected') {
+                    if (authorization.status !== 'authorized') {
                         setPhase(unavailable('preparedWorkspaceUnsupported'));
                         return;
                     }
-                    prepareReviewWorkspaceSelection = {
-                        selection: selected.selection,
-                        input: selected.input,
-                        credentialRef: selected.connectedAccount.ref,
-                    };
-                    // The selected source operation is consumed exactly once by
-                    // the outer start Action's canonical materialization owner.
-                    startOptions = {
-                        selectedActionInput: {
-                            operation: request.reviewWorkspace!.operation,
-                            result: selected,
-                        },
-                        consumeSelectedActionInput: true,
-                    } as PluginUiActionExecutionOptions;
+                    prepareReviewWorkspaceSelection = authorization.selection;
+                    startOptions = authorization.options;
                     if (action.target.kind === 'reviewStart') reviewInstructions = promptText!;
                 }
                 setPhase(STARTING);
@@ -851,10 +1030,26 @@ export function useTriageEntrySessionStart(
                         }
                         : {}),
                 };
+                // Custody is taken BEFORE the outward dispatch, not from the
+                // settled result. The whole logical request — its creation key,
+                // its delivery idempotency key and its settled destination — is
+                // decided by now, and the one response that can go missing is
+                // this one. Retaining it only afterwards meant a lost reply left
+                // nothing behind, so the next press resolved everything again
+                // and minted a SECOND creation key and a SECOND delivery key for
+                // the Session and Message the first press may already have made.
+                custody.current = {
+                    actionId: action.actionId,
+                    input: retainedStartInput(input),
+                    ...(reviewInstructions === undefined ? {} : { reviewInstructions }),
+                };
+                submitted = true;
                 const result = await submitTriageEntrySessionStart(host, input, startOptions);
                 await settle(request, input, result, reviewInstructions);
             } catch {
-                if (!retired.current) setPhase(unavailable('dispatch'));
+                if (!retired.current) {
+                    setPhase(unavailable(submitted ? 'startOutcomeUnknown' : 'dispatch'));
+                }
             } finally {
                 inFlight.current = false;
             }

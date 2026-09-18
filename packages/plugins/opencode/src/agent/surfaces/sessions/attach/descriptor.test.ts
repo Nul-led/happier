@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  buildOpenCodeAttachHealthUrl,
+  resolveOpenCodeAttachReachability,
   createOpenCodeAttachArgs,
   resolveOpenCodeAttachTarget,
 } from './descriptor.js';
@@ -41,9 +41,10 @@ describe('OpenCode attach descriptor', () => {
       '--session',
       'oc-session-1',
     ]);
-    expect(buildOpenCodeAttachHealthUrl(target.value)).toBe(
-      'http://127.0.0.1:49196/global/health',
-    );
+    expect(resolveOpenCodeAttachReachability(target.value)).toEqual({
+      kind: 'http',
+      url: 'http://127.0.0.1:49196/global/health',
+    });
   });
 
   it('uses the host-owned managed Session endpoint fallback without overriding an explicit URL', () => {

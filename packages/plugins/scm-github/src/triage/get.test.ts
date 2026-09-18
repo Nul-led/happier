@@ -33,6 +33,27 @@ const ISSUE_REF: GithubTriageEntryLocalRefV1 = Object.freeze({
 
 const ROUTING_TOKEN = 'octo-org/example-app';
 
+/**
+ * The SAME repository as `ISSUE_REF`'s collision scope (`github:4210`) reached under a
+ * new path, which is what a repository rename produces: the id is unchanged and only
+ * the locator is stale.
+ */
+const RENAMED_REPOSITORY_RESPONSE = Object.freeze({
+  ...GITHUB_REPOSITORY_RESPONSE,
+  name: 'renamed-app',
+  full_name: 'octo-org/renamed-app',
+  url: 'https://api.github.com/repos/octo-org/renamed-app',
+  html_url: 'https://github.com/octo-org/renamed-app',
+});
+
+const RENAMED_ISSUE_RESPONSE = Object.freeze({
+  ...GITHUB_ISSUE_RESPONSE,
+  number: 7,
+  url: 'https://api.github.com/repos/octo-org/renamed-app/issues/7',
+  repository_url: 'https://api.github.com/repos/octo-org/renamed-app',
+  html_url: 'https://github.com/octo-org/renamed-app/issues/7',
+});
+
 async function runGet(input: Readonly<{
   localRef: GithubTriageEntryLocalRefV1;
   routingToken?: unknown;
@@ -257,6 +278,127 @@ describe('GitHub triage get', () => {
     expect(transport.requests.filter((request) => request.redirect === 'manual')).toHaveLength(1);
   });
 
+  it('follows the numeric repository redirect a renamed repository actually returns', async () => {
+    // Observed 2026-09-05: `GET /repos/{oldOwner}/{oldRepo}/issues/{n}` on a renamed
+    // repository answers `301` with `Location: .../repositories/{id}/issues/{n}` — a
+    // numeric route, not a `/repos/...` one. Refusing that grammar refuses the only
+    // recovery this entry has.
+    const { observation, transport } = await runGet({
+      localRef: ISSUE_REF,
+      respond: (request) => {
+        if (request.url.endsWith('/repos/octo-org/example-app/issues/7')) {
+          return {
+            status: 301,
+            headers: { Location: 'https://api.github.com/repositories/4210/issues/7' },
+          };
+        }
+        if (request.url.endsWith('/repositories/4210/issues/7')) {
+          return { status: 200, body: RENAMED_ISSUE_RESPONSE };
+        }
+        if (request.url.endsWith('/repos/octo-org/renamed-app')) {
+          return { status: 200, body: RENAMED_REPOSITORY_RESPONSE };
+        }
+        return undefined;
+      },
+    });
+
+    // Same repository id and same number: this is a locator refresh, not a successor.
+    // Emitting `merged` with the entry as its own successor leaves the row unresolved
+    // forever, because merged is never folded as present.
+    expect(observation.kind).toBe('present');
+    if (observation.kind !== 'present') return;
+    expect(observation.localRef).toEqual(ISSUE_REF);
+    expect(observation.locator.routingToken).toBe('octo-org/renamed-app');
+    expect(observation.locator.displayPath).toBe('octo-org/renamed-app#7');
+    expect(transport.requests[0]?.redirect).toBe('manual');
+    expect(transport.requests.filter((request) => request.redirect === 'manual')).toHaveLength(1);
+  });
+
+  it('refreshes the locator rather than merging when a named redirect keeps the identity', async () => {
+    const { observation } = await runGet({
+      localRef: ISSUE_REF,
+      respond: (request) => {
+        if (request.url.endsWith('/repos/octo-org/example-app/issues/7')) {
+          return {
+            status: 301,
+            headers: { Location: 'https://api.github.com/repos/octo-org/renamed-app/issues/7' },
+          };
+        }
+        if (request.url.endsWith('/repos/octo-org/renamed-app/issues/7')) {
+          return { status: 200, body: RENAMED_ISSUE_RESPONSE };
+        }
+        if (request.url.endsWith('/repos/octo-org/renamed-app')) {
+          return { status: 200, body: RENAMED_REPOSITORY_RESPONSE };
+        }
+        return undefined;
+      },
+    });
+
+    expect(observation.kind).toBe('present');
+    if (observation.kind !== 'present') return;
+    expect(observation.localRef).toEqual(ISSUE_REF);
+    expect(observation.locator.routingToken).toBe('octo-org/renamed-app');
+  });
+
+  it('refuses a numeric redirect whose destination repository is not the one it named', async () => {
+    // The numeric route asserts a repository id. A destination body that resolves to a
+    // different repository is not that repository, and following it would rekey the
+    // entry onto an unrelated one.
+    const { observation } = await runGet({
+      localRef: ISSUE_REF,
+      respond: (request) => {
+        if (request.url.endsWith('/repos/octo-org/example-app/issues/7')) {
+          return {
+            status: 301,
+            headers: { Location: 'https://api.github.com/repositories/4210/issues/7' },
+          };
+        }
+        if (request.url.endsWith('/repositories/4210/issues/7')) {
+          return { status: 200, body: RENAMED_ISSUE_RESPONSE };
+        }
+        if (request.url.endsWith('/repos/octo-org/renamed-app')) {
+          return { status: 200, body: GITHUB_OTHER_REPOSITORY_RESPONSE };
+        }
+        return undefined;
+      },
+    });
+
+    expect(observation).toEqual({
+      kind: 'unresolved',
+      localRef: ISSUE_REF,
+      failure: { class: 'unknown', code: 'route-body-mismatch' },
+    });
+  });
+
+  it('refuses a numeric redirect whose destination body names no repository at all', async () => {
+    // A numeric route carries no owner/name, so the destination body is the ONLY
+    // source of the locator. Substituting the old path would republish a locator the
+    // redirect just said was stale.
+    const withoutRepository = Object.fromEntries(
+      Object.entries(RENAMED_ISSUE_RESPONSE).filter(([key]) => key !== 'repository_url'),
+    );
+    const { observation } = await runGet({
+      localRef: ISSUE_REF,
+      respond: (request) => {
+        if (request.url.endsWith('/repos/octo-org/example-app/issues/7')) {
+          return {
+            status: 301,
+            headers: { Location: 'https://api.github.com/repositories/4210/issues/7' },
+          };
+        }
+        return request.url.endsWith('/repositories/4210/issues/7')
+          ? { status: 200, body: withoutRepository }
+          : undefined;
+      },
+    });
+
+    expect(observation).toEqual({
+      kind: 'unresolved',
+      localRef: ISSUE_REF,
+      failure: { class: 'unknown', code: 'route-body-mismatch' },
+    });
+  });
+
   it('rejects a cross-origin, malformed, same-route, or non-issue redirect without following it', async () => {
     const locations = [
       'https://evil.example.com/repos/octo-org/example-tools/issues/41',
@@ -265,6 +407,14 @@ describe('GitHub triage get', () => {
       'https://api.github.com/repos/octo-org/example-tools/pulls/41',
       'https://api.github.com/repos/octo-org/example-tools/issues/41?token=x',
       'https://api.github.com/repos/octo-org/example-tools/issues/0',
+      // The numeric grammar is admitted, but not loosened: a non-positive or
+      // non-decimal repository id, a non-issue collection, and a bad number are the
+      // same refusal they are on the named route.
+      'https://api.github.com/repositories/0/issues/41',
+      'https://api.github.com/repositories/abc/issues/41',
+      'https://api.github.com/repositories/4210/pulls/41',
+      'https://api.github.com/repositories/4210/issues/0',
+      'https://api.github.com/repositories/4210/issues/41#fragment',
     ];
 
     for (const location of locations) {

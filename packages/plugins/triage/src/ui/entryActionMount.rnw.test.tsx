@@ -388,12 +388,8 @@ async function mountShell(harness: Harness): Promise<PluginUiTestkit> {
     let fixture!: PluginUiTestkit;
     await act(async () => {
         fixture = await createPluginUiTestkit({
-            identity: {
-                pluginId: 'happier.triage',
-                pluginVersion: '0.0.0',
-                viewId: 'triage',
-                generation: 'triage-action-mount',
-            },
+            identity: { instanceId: 'fixture-instance-176', mountNonce: 'fixture-mount-176' },
+            authorPlugin: { id: 'happier.triage', version: '0.0.0' },
             surface: renderShellSurface,
             surfaceContext: createSurfaceContextFixture({
                 targetedContributions: {
@@ -452,6 +448,13 @@ async function mountShell(harness: Harness): Promise<PluginUiTestkit> {
                                 kind: 'selected',
                                 fieldPath: 'instance.binding.account',
                                 ref: configuredInstance().binding.account,
+                            },
+                            // The host stamps what the reader actually saw
+                            // beside their choice; the canonical result schema
+                            // requires it.
+                            presentation: {
+                                connectedAccountLabel: 'Example forge',
+                                machineDisplayName: 'Development Mac',
                             },
                         } as never;
                     }

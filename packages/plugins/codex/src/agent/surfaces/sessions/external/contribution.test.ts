@@ -825,6 +825,41 @@ describe('Codex public Agent External Sessions contribution', () => {
     }
   });
 
+  it('resolves link identity with the provider session id byte-exact and rejects blank', async () => {
+    // Codex mints this id; the resolved link identity and the descriptor it
+    // writes must address the same provider session the caller named.
+    const exactRemoteSessionId = '  provider\nses/AB+cd==  ';
+    const codexHome = '/tmp/codex-public-link-identity-exact';
+    const contribution = createCodexExternalSessionsContribution({
+      env: { CODEX_HOME: codexHome } as NodeJS.ProcessEnv,
+    });
+    const source = { kind: 'codexHome', home: 'user', homePath: codexHome } as const;
+
+    expect(await contribution.resolveLinkIdentity({
+      source,
+      remoteSessionId: exactRemoteSessionId,
+      linkData: { codexBackendMode: 'appServer' },
+      ...invocation(),
+    })).toMatchObject({
+      ok: true,
+      value: {
+        remoteSessionId: exactRemoteSessionId,
+        linkData: {
+          runtimeDescriptorV1: {
+            agent: { providerSessionId: exactRemoteSessionId },
+          },
+        },
+      },
+    });
+
+    expect(await contribution.resolveLinkIdentity({
+      source,
+      remoteSessionId: ' \n\t ',
+      linkData: { codexBackendMode: 'appServer' },
+      ...invocation(),
+    })).toMatchObject({ ok: false, code: 'invalid_request' });
+  });
+
   it('canonicalizes supported backend-mode aliases and rejects unsupported link identity modes', async () => {
     const codexHome = '/tmp/codex-public-link-identity';
     const contribution = createCodexExternalSessionsContribution({

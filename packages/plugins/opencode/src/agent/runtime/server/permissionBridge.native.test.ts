@@ -8,7 +8,10 @@ import {
   buildOpenCodePermissionApprovalRequest,
   mapOpenCodeApprovalResultToReply,
   readOpenCodeApprovalReplyMessage,
+  readOpenCodePermissionAsk,
+  readOpenCodePermissionRequestId,
 } from './permissionBridge.js';
+import { normalizeOpenCodeV2PermissionRequest } from './openCodeV2Wire.js';
 
 const ASK = {
   requestId: 'permission-1',
@@ -57,5 +60,75 @@ describe('OpenCode native tool approval bridge', () => {
       kind: 'approval',
       status: 'unavailable',
     })).toBeNull();
+  });
+});
+/**
+ * Bytes OpenCode minted. The request id is replied to at the provider and the
+ * session id routes that reply, so the bridge decides presence only.
+ */
+const PROVIDER_MINTED_SESSION_ID = '  provider\nses/AB+cd==  ';
+const PROVIDER_MINTED_REQUEST_ID = '  provider\nreq/AB+cd==  ';
+
+describe('OpenCode permission request identity', () => {
+  it('reads the permission request id as the exact bytes OpenCode minted', () => {
+    expect(readOpenCodePermissionRequestId({ id: PROVIDER_MINTED_REQUEST_ID }))
+      .toBe(PROVIDER_MINTED_REQUEST_ID);
+    expect(readOpenCodePermissionRequestId({ id: '  \n ' })).toBeNull();
+  });
+
+  it('keeps the ask addressed to the exact request and session bytes', () => {
+    expect(readOpenCodePermissionAsk({
+      id: PROVIDER_MINTED_REQUEST_ID,
+      sessionID: PROVIDER_MINTED_SESSION_ID,
+      permission: 'bash',
+    }, PROVIDER_MINTED_SESSION_ID)).toEqual({
+      requestId: PROVIDER_MINTED_REQUEST_ID,
+      providerSessionId: PROVIDER_MINTED_SESSION_ID,
+      permission: 'bash',
+      patterns: [],
+    });
+  });
+
+  it('refuses an ask whose session id disagrees with the owning session by whitespace', () => {
+    expect(readOpenCodePermissionAsk({
+      id: PROVIDER_MINTED_REQUEST_ID,
+      sessionID: PROVIDER_MINTED_SESSION_ID,
+      permission: 'bash',
+    }, PROVIDER_MINTED_SESSION_ID.trim())).toBeNull();
+  });
+
+  it('validates the whole byte-exact V2 resource list at the canonical permission bridge', () => {
+    const valid = normalizeOpenCodeV2PermissionRequest({
+      id: PROVIDER_MINTED_REQUEST_ID,
+      sessionID: PROVIDER_MINTED_SESSION_ID,
+      action: '  bash\n',
+      resources: ['  src/file.ts\n', '\tcommand --flag  '],
+    });
+    expect(valid).toEqual({
+      id: PROVIDER_MINTED_REQUEST_ID,
+      sessionID: PROVIDER_MINTED_SESSION_ID,
+      permission: '  bash\n',
+      patterns: ['  src/file.ts\n', '\tcommand --flag  '],
+    });
+    expect(readOpenCodePermissionAsk(valid ?? {}, PROVIDER_MINTED_SESSION_ID)).toEqual({
+      requestId: PROVIDER_MINTED_REQUEST_ID,
+      providerSessionId: PROVIDER_MINTED_SESSION_ID,
+      permission: '  bash\n',
+      patterns: ['  src/file.ts\n', '\tcommand --flag  '],
+    });
+
+    const mixedInvalid = normalizeOpenCodeV2PermissionRequest({
+      id: PROVIDER_MINTED_REQUEST_ID,
+      sessionID: PROVIDER_MINTED_SESSION_ID,
+      action: 'bash',
+      resources: ['src/file.ts', 42, 'README.md'],
+    });
+    expect(mixedInvalid).toEqual({
+      id: PROVIDER_MINTED_REQUEST_ID,
+      sessionID: PROVIDER_MINTED_SESSION_ID,
+      permission: 'bash',
+      patterns: ['src/file.ts', 42, 'README.md'],
+    });
+    expect(readOpenCodePermissionAsk(mixedInvalid ?? {}, PROVIDER_MINTED_SESSION_ID)).toBeNull();
   });
 });

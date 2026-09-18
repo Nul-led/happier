@@ -13,7 +13,7 @@ import type {
   AgentSessionModelsSource,
 } from '@happier-dev/plugin-sdk/agents/runtime';
 import { AgentSessionRuntimeEventSchema } from '@happier-dev/plugin-sdk/agents/runtime';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   PI_REQUEST_AUTH_CAPABILITY_PATH_ENV,
@@ -32,6 +32,8 @@ type Capture = {
     source?: 'extension' | 'prompt' | 'skill';
   }>[];
   commandCatalogRequestCount?: number;
+  commandCatalogGate?: Promise<void>;
+  commandCatalogErrors?: string[];
   sessionStatsRequestCount?: number;
   sessionStats?: unknown;
   versionProbeCount?: number;
@@ -45,6 +47,11 @@ type Capture = {
   questionRequests?: unknown[];
   questionResult?: unknown;
   questionHandler?: (request: unknown, options?: Readonly<{ signal?: AbortSignal }>) => Promise<unknown>;
+  systemToolGate?: Promise<void>;
+  systemToolSignal?: AbortSignal;
+  spawnGate?: Promise<void>;
+  spawnSignal?: AbortSignal;
+  handleDisposeCount?: number;
 };
 
 function createRuntimeContext(capture: Capture) {
@@ -58,12 +65,16 @@ function createRuntimeContext(capture: Capture) {
     async write(record: JsonValue) {
       if (isRecord(record) && record.type === 'get_commands' && typeof record.id === 'string') {
         capture.commandCatalogRequestCount = (capture.commandCatalogRequestCount ?? 0) + 1;
+        await capture.commandCatalogGate;
+        const error = capture.commandCatalogErrors?.shift();
         await capture.listener?.({
           type: 'response',
           id: record.id,
           command: 'get_commands',
-          success: true,
-          data: { commands: capture.availableCommands ?? [] },
+          success: error === undefined,
+          ...(error === undefined
+            ? { data: { commands: capture.availableCommands ?? [] } }
+            : { error }),
         });
         return;
       }
@@ -95,8 +106,10 @@ function createRuntimeContext(capture: Capture) {
       onOutput: () => ({ dispose: () => undefined }),
       dispose: async () => undefined,
     },
-    wait: () => exit,
-    dispose: async () => undefined,
+      wait: () => exit,
+      dispose: async () => {
+        capture.handleDisposeCount = (capture.handleDisposeCount ?? 0) + 1;
+      },
   };
   return {
     logger: {
@@ -119,8 +132,10 @@ function createRuntimeContext(capture: Capture) {
       },
       exec: {
         systemTools: {
-          resolve: async () => {
+          resolve: async (request: Readonly<{ signal?: AbortSignal }>) => {
             capture.systemToolResolveCount = (capture.systemToolResolveCount ?? 0) + 1;
+            capture.systemToolSignal = request.signal;
+            await capture.systemToolGate;
             const executable = Object.freeze({
               kind: 'systemTool' as const,
               id: 'pi-cli',
@@ -147,10 +162,15 @@ function createRuntimeContext(capture: Capture) {
           };
         },
         clients: {
-          spawn: async (spec: Extract<PluginProtocolClientSpec, { kind: 'jsonStream' }>) => {
-          capture.specs.push(spec);
-          return handle;
-        },
+          spawn: async (
+            spec: Extract<PluginProtocolClientSpec, { kind: 'jsonStream' }>,
+            options?: Readonly<{ signal?: AbortSignal }>,
+          ) => {
+            capture.spawnSignal = options?.signal;
+            await capture.spawnGate;
+            capture.specs.push(spec);
+            return handle;
+          },
         },
       },
     },
@@ -284,6 +304,195 @@ function configuration(options: Readonly<Record<string, string>>): AgentSessionC
 }
 
 describe('createPiRuntimeOperations', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('includes process resolution in the five-minute eager session-open deadline', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    let releaseSystemTool!: () => void;
+    const capture: Capture = {
+      specs: [],
+      written: [],
+      systemToolGate: new Promise<void>((resolve) => {
+        releaseSystemTool = resolve;
+      }),
+    };
+    let outcome: 'pending' | 'resolved' | 'rejected' = 'pending';
+    const opening = createPiRuntimeOperations({
+      ...createRuntimeContext(capture),
+      cwd: '/tmp/pi-workspace',
+      env: {},
+      sessionId: 'happier-session-1',
+      initialSessionId: null,
+      eagerStart: true,
+    }).then(
+      (runtime) => {
+        outcome = 'resolved';
+        return runtime;
+      },
+      (error: unknown) => {
+        outcome = 'rejected';
+        return error;
+      },
+    );
+
+    await vi.advanceTimersByTimeAsync(61_000);
+    releaseSystemTool();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(capture.written.at(-1)).toMatchObject({ type: 'get_state' });
+
+    await vi.advanceTimersByTimeAsync(239_000);
+    expect(outcome).toBe('rejected');
+    expect(capture.systemToolSignal?.aborted).toBe(true);
+    await expect(opening).resolves.toMatchObject({
+      message: expect.stringMatching(/timed out.*provider session state/i),
+    });
+    expect(capture.handleDisposeCount).toBeGreaterThanOrEqual(1);
+  });
+
+  it.each([
+    { kind: 'create' as const },
+    {
+      kind: 'resume' as const,
+      resumeSessionSelector: '/tmp/pi-session.jsonl',
+      resumeProviderSessionId: 'pi-provider-session-1',
+    },
+  ])('rejects a late $kind process spawn and disposes its handle', async (resume) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    let releaseSpawn!: () => void;
+    const capture: Capture = {
+      specs: [],
+      written: [],
+      spawnGate: new Promise<void>((resolve) => {
+        releaseSpawn = resolve;
+      }),
+    };
+    let outcome: 'pending' | 'resolved' | 'rejected' = 'pending';
+    const opening = createPiRuntimeOperations({
+      ...createRuntimeContext(capture),
+      cwd: '/tmp/pi-workspace',
+      env: {},
+      sessionId: 'happier-session-1',
+      initialSessionId: null,
+      eagerStart: true,
+      ...resume,
+    }).then(
+      (runtime) => {
+        outcome = 'resolved';
+        return runtime;
+      },
+      (error: unknown) => {
+        outcome = 'rejected';
+        return error;
+      },
+    );
+
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(outcome).toBe('rejected');
+    expect(capture.spawnSignal?.aborted).toBe(true);
+    await expect(opening).resolves.toMatchObject({
+      message: expect.stringMatching(/timed out.*process startup/i),
+    });
+
+    releaseSpawn();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(capture.handleDisposeCount).toBe(1);
+    expect(capture.written).toEqual([]);
+  });
+
+  it('keeps eager session-open RPCs alive beyond the former 60-second cutoff', async () => {
+    vi.useFakeTimers();
+    const capture: Capture = { specs: [], written: [] };
+    let settled: 'pending' | 'resolved' | 'rejected' = 'pending';
+    const opening = createPiRuntimeOperations({
+      ...createRuntimeContext(capture),
+      cwd: '/tmp/pi-workspace',
+      env: {},
+      sessionId: 'happier-session-1',
+      initialSessionId: null,
+      eagerStart: true,
+    }).then(
+      (runtime) => {
+        settled = 'resolved';
+        return runtime;
+      },
+      () => {
+        settled = 'rejected';
+        return null;
+      },
+    );
+
+    await vi.advanceTimersByTimeAsync(60_001);
+
+    expect(capture.written.some((entry) => isRecord(entry) && entry.type === 'get_state')).toBe(true);
+    expect(settled).toBe('pending');
+
+    await ackLastCommand(capture, { sessionId: 'pi-provider-session-1' });
+    const runtime = await opening;
+    expect(runtime).not.toBeNull();
+    await runtime?.dispose();
+  });
+
+  it('shares one five-minute deadline across sequential eager session-open RPCs', async () => {
+    vi.useFakeTimers();
+    const capture: Capture = { specs: [], written: [] };
+    let settled: 'pending' | 'resolved' | 'rejected' = 'pending';
+    const opening = createPiRuntimeOperations({
+      ...createRuntimeContext(capture),
+      cwd: '/tmp/pi-workspace',
+      env: {},
+      sessionId: 'happier-session-1',
+      initialSessionId: null,
+      eagerStart: true,
+    }).then(
+      (runtime) => {
+        settled = 'resolved';
+        return runtime;
+      },
+      () => {
+        settled = 'rejected';
+        return null;
+      },
+    );
+
+    await vi.advanceTimersByTimeAsync(4 * 60_000);
+    await ackLastCommand(capture, { sessionId: null });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(capture.written.at(-1)).toEqual(expect.objectContaining({ type: 'new_session' }));
+
+    await vi.advanceTimersByTimeAsync(60_001);
+
+    expect(settled).toBe('rejected');
+    expect(await opening).toBeNull();
+  });
+
+  it('keeps the absolute resume selector separate from the matching native session id', async () => {
+    const capture: Capture = { specs: [], written: [] };
+    const params = {
+      ...createRuntimeContext(capture),
+      cwd: '/tmp/pi-workspace',
+      env: {},
+      sessionId: 'happier-session-1',
+      initialSessionId: 'pi-provider-session-1',
+      resumeSessionSelector: '/home/lee/.pi/agent/sessions/workspace-a/pi-provider-session-1.jsonl',
+      resumeProviderSessionId: 'pi-provider-session-1',
+    };
+    const runtime = await createPiRuntimeOperations(params);
+
+    const prompt = sendPrompt(runtime, 'continue the native session');
+    await waitForWrittenCount(capture, 1);
+    expect(capture.written[0]).toMatchObject({
+      type: 'prompt',
+      message: 'continue the native session',
+    });
+    await ackLastCommand(capture);
+    await expect(prompt).resolves.toEqual({ status: 'admitted' });
+    await runtime.dispose();
+  });
+
   it('answers a blocking Pi extension dialog through the canonical interaction surface', async () => {
     const capture: Capture = {
       specs: [],
@@ -429,18 +638,156 @@ describe('createPiRuntimeOperations', () => {
         { name: '/SKILL:Review' },
       ],
     };
-    const runtime = await createRuntime(capture);
+    const runtime = await createPiRuntimeOperations({
+      ...createRuntimeContext(capture),
+      cwd: '/tmp/pi-workspace',
+      env: {},
+      sessionId: 'happier-session-1',
+      initialSessionId: 'pi-provider-session-1',
+      eagerStart: true,
+    });
     const events: AgentSessionRuntimeEvent[] = [];
     runtime.watch((event) => events.push(AgentSessionRuntimeEventSchema.parse(event)));
 
+    await vi.waitFor(() => {
+      expect(capture.commandCatalogRequestCount).toBe(1);
+      expect(events).toContainEqual(expect.objectContaining({
+        kind: 'available-commands',
+        commands: [
+          { name: 'goal', description: 'Set the session goal' },
+          { name: 'skill:review' },
+        ],
+      }));
+    });
+
+    const prompt = sendPrompt(runtime, 'continue after command discovery');
+    await waitForWrittenCount(capture, 1);
+    await ackCommandAt(capture, 0);
+    await expect(prompt).resolves.toEqual({ status: 'admitted' });
     expect(capture.commandCatalogRequestCount).toBe(1);
-    expect(events).toContainEqual(expect.objectContaining({
-      kind: 'available-commands',
-      commands: [
-        { name: 'goal', description: 'Set the session goal' },
-        { name: 'skill:review' },
-      ],
-    }));
+
+    await runtime.dispose();
+  });
+
+  it('reuses in-flight command discovery before applying extension-command no-turn settlement', async () => {
+    let releaseCommandCatalog!: () => void;
+    const capture: Capture = {
+      specs: [],
+      written: [],
+      availableCommands: [{ name: 'goal', source: 'extension' }],
+      commandCatalogGate: new Promise<void>((resolve) => {
+        releaseCommandCatalog = resolve;
+      }),
+    };
+    const runtime = await createPiRuntimeOperations({
+      ...createRuntimeContext(capture),
+      cwd: '/tmp/pi-workspace',
+      env: {},
+      sessionId: 'happier-session-1',
+      initialSessionId: 'pi-provider-session-1',
+      eagerStart: true,
+    });
+    expect(capture.commandCatalogRequestCount).toBe(1);
+
+    const submission = sendPrompt(runtime, '/goal fix authentication');
+    await waitForWrittenCount(capture, 1);
+    expect(capture.written[0]).toMatchObject({
+      type: 'prompt',
+      message: '/goal fix authentication',
+    });
+    await ackCommandAt(capture, 0);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(capture.written).toHaveLength(1);
+
+    releaseCommandCatalog();
+    await waitForWrittenCount(capture, 2);
+    expect(capture.commandCatalogRequestCount).toBe(1);
+    expect(capture.written[1]).toMatchObject({ type: 'get_state' });
+    await ackCommandAt(capture, 1, {
+      sessionId: 'pi-provider-session-1',
+      isStreaming: false,
+      isCompacting: false,
+    });
+    await expect(submission).resolves.toEqual({ status: 'admitted' });
+
+    await runtime.dispose();
+  });
+
+  it('retries a settled failed command refresh on later session use', async () => {
+    const capture: Capture = {
+      specs: [],
+      written: [],
+      warnings: [],
+      availableCommands: [{ name: 'goal', source: 'extension' }],
+      commandCatalogErrors: ['Provider command catalog temporarily unavailable'],
+    };
+    const runtime = await createPiRuntimeOperations({
+      ...createRuntimeContext(capture),
+      cwd: '/tmp/pi-workspace',
+      env: {},
+      sessionId: 'happier-session-1',
+      initialSessionId: 'pi-provider-session-1',
+      eagerStart: true,
+    });
+    await vi.waitFor(() => expect(capture.warnings).toHaveLength(1));
+    expect(capture.commandCatalogRequestCount).toBe(1);
+
+    const submission = sendPrompt(runtime, '/goal fix authentication');
+    await waitForWrittenCount(capture, 1);
+    await ackCommandAt(capture, 0);
+    await waitForWrittenCount(capture, 2);
+    expect(capture.commandCatalogRequestCount).toBe(2);
+    expect(capture.written[1]).toMatchObject({ type: 'get_state' });
+    await ackCommandAt(capture, 1, {
+      sessionId: 'pi-provider-session-1',
+      isStreaming: false,
+      isCompacting: false,
+    });
+    await expect(submission).resolves.toEqual({ status: 'admitted' });
+
+    await runtime.dispose();
+  });
+
+  it('does not let optional command discovery delay eager session opening or ordinary prompts', async () => {
+    let releaseCommandCatalog!: () => void;
+    const capture: Capture = {
+      specs: [],
+      written: [],
+      commandCatalogGate: new Promise<void>((resolve) => {
+        releaseCommandCatalog = resolve;
+      }),
+    };
+    const opening = createPiRuntimeOperations({
+      ...createRuntimeContext(capture),
+      cwd: '/tmp/pi-workspace',
+      env: {},
+      sessionId: 'happier-session-1',
+      initialSessionId: 'pi-provider-session-1',
+      eagerStart: true,
+    });
+
+    await vi.waitFor(() => expect(capture.commandCatalogRequestCount).toBe(1));
+    const openingObservation = await Promise.race([
+      opening.then((runtime) => ({ kind: 'opened' as const, runtime })),
+      new Promise<{ kind: 'waiting' }>((resolve) => {
+        setTimeout(() => resolve({ kind: 'waiting' }), 20);
+      }),
+    ]);
+
+    releaseCommandCatalog();
+    const runtime = openingObservation.kind === 'opened'
+      ? openingObservation.runtime
+      : await opening;
+    expect(openingObservation.kind).toBe('opened');
+
+    const prompt = sendPrompt(runtime, 'continue with the implementation');
+    await waitForWrittenCount(capture, 1);
+    expect(capture.written[0]).toMatchObject({
+      type: 'prompt',
+      message: 'continue with the implementation',
+    });
+    await ackCommandAt(capture, 0);
+    await expect(prompt).resolves.toEqual({ status: 'admitted' });
 
     await runtime.dispose();
   });
@@ -956,6 +1303,62 @@ describe('createPiRuntimeOperations', () => {
     }
   });
 
+  it.each([
+    ['yolo', 'read-only'],
+    ['read-only', 'yolo'],
+  ])('rejects launch-only permission changes from %s to %s without partially applying configuration', async (initial, requested) => {
+    const capture: Capture = { specs: [], written: [] };
+    const runtime = await createPiRuntimeOperations({
+      ...createRuntimeContext(capture),
+      cwd: '/tmp/pi-workspace',
+      env: {},
+      sessionId: 'happier-session-1',
+      permissionMode: initial,
+    });
+
+    await expect(runtime.updateConfiguration!({
+      ...configuration({}),
+      permissionIntent: { value: requested, updatedAtMs: 2 },
+    })).resolves.toMatchObject({ status: 'unsupported' });
+    expect(capture.written).toEqual([]);
+
+    await expect(runtime.updateConfiguration!({
+      ...configuration({ reasoning_effort: 'high' }),
+      model: { value: 'openai/gpt-4o-mini', updatedAtMs: 2 },
+      permissionIntent: { value: requested, updatedAtMs: 2 },
+    })).resolves.toMatchObject({ status: 'unsupported' });
+    expect(capture.written).toEqual([]);
+    await runtime.dispose();
+  });
+
+  it.each([
+    ['default', 'auto'],
+    ['safe-yolo', 'workspace_write'],
+    ['plan', 'read-only'],
+  ] as const)('preserves model and thinking updates for the unchanged effective launch permission from %s to %s', async (initial, requested) => {
+    const capture: Capture = { specs: [], written: [] };
+    const runtime = await createPiRuntimeOperations({
+      ...createRuntimeContext(capture),
+      cwd: '/tmp/pi-workspace',
+      env: {},
+      sessionId: 'happier-session-1',
+      permissionMode: initial,
+    });
+    const update = runtime.updateConfiguration!({
+      ...configuration({ reasoning_effort: 'high' }),
+      permissionIntent: { value: requested, updatedAtMs: 2 },
+      model: { value: 'openai/gpt-4o-mini', updatedAtMs: 2 },
+    });
+    await waitForWrittenCount(capture, 1);
+    expect(capture.written[0]).toMatchObject({ type: 'set_model', provider: 'openai', modelId: 'gpt-4o-mini' });
+    await ackLastCommand(capture);
+    await waitForWrittenCount(capture, 2);
+    expect(capture.written[1]).toMatchObject({ type: 'set_thinking_level', level: 'high' });
+    await ackLastCommand(capture);
+    await expect(update).resolves.toEqual({ status: 'applied', changed: ['model', 'options'] });
+    await runtime.dispose();
+  });
+
   it('applies canonical reasoning_effort runtime config updates to Pi thinking level', async () => {
     const capture: Capture = { specs: [], written: [] };
     const runtime = await createRuntime(capture);
@@ -1199,6 +1602,7 @@ describe('createPiRuntimeOperations', () => {
   });
 
   it('classifies an exact negative prompt ACK as rejected before effect', async () => {
+    const echoedPromptSentinel = 'PI_PROMPT_SENTINEL_PRE_ACCEPT_7C1E';
     const capture: Capture = { specs: [], written: [], warnings: [] };
     const runtime = await createRuntime(capture);
     const events: AgentSessionRuntimeEvent[] = [];
@@ -1209,13 +1613,16 @@ describe('createPiRuntimeOperations', () => {
       delivery: { kind: 'newTurn', turnId: 'pi-turn-no-evidence' },
     });
     await waitForWrittenCount(capture, 1);
-    await failLastCommand(capture, 'Provider session failed');
+    await failLastCommand(
+      capture,
+      `429 {"error":{"code":"rate_limit_error","message":"Provider echoed ${echoedPromptSentinel}"}}`,
+    );
 
     await expect(prompt).resolves.toMatchObject({
       status: 'rejected',
       diagnostic: expect.objectContaining({
-        code: 'pi_provider_session_error',
-        message: 'Pi provider rejected the prompt before acceptance without details',
+        code: 'rate_limit_error',
+        message: expect.stringContaining(echoedPromptSentinel),
       }),
     });
     expect(events).toEqual(expect.arrayContaining([
@@ -1227,11 +1634,34 @@ describe('createPiRuntimeOperations', () => {
         '[PiRuntime] Provider prompt rejected',
         {
           classification: 'pi_provider_failure',
-          providerCode: 'pi_provider_session_error',
-          sanitizedPreview: 'Pi provider rejected the prompt before acceptance without details',
+          providerCode: 'rate_limit_error',
+          retryable: true,
         },
       ],
     ]);
+    expect(JSON.stringify(capture.warnings)).not.toContain(echoedPromptSentinel);
+    await runtime.dispose();
+  });
+
+  it('preserves retryability for an explicit pre-acceptance transient Provider rejection', async () => {
+    const capture: Capture = { specs: [], written: [], warnings: [] };
+    const runtime = await createRuntime(capture);
+
+    const prompt = sendPrompt(runtime, 'retryable provider request', {
+      inputIds: ['pi-input-retryable-nack'],
+      delivery: { kind: 'newTurn', turnId: 'pi-turn-retryable-nack' },
+    });
+    await waitForWrittenCount(capture, 1);
+    await failLastCommand(
+      capture,
+      '429 {"error":{"code":"rate_limit_error","message":"Too many requests"}}',
+    );
+
+    await expect(prompt).resolves.toMatchObject({
+      status: 'rejected',
+      diagnostic: expect.objectContaining({ code: 'rate_limit_error' }),
+      retryable: true,
+    });
     await runtime.dispose();
   });
 
@@ -1323,7 +1753,7 @@ describe('createPiRuntimeOperations', () => {
       await Promise.resolve();
       await vi.advanceTimersByTimeAsync(30_000);
 
-      await expect(prompt).resolves.toMatchObject({ status: 'rejected' });
+      await expect(prompt).resolves.toMatchObject({ status: 'rejected', retryable: false });
       expect(capture.written).toHaveLength(1);
       expect(events).toEqual(expect.arrayContaining([
         expect.objectContaining({
@@ -1617,6 +2047,7 @@ describe('createPiRuntimeOperations', () => {
   });
 
   it('publishes and logs only the normalized safe fields from a structured Provider failure', async () => {
+    const echoedPromptSentinel = 'PI_PROMPT_SENTINEL_ACCEPTED_TURN_9B4D';
     const capture: Capture = { specs: [], written: [], warnings: [] };
     const runtime = await createRuntime(capture);
     const events: AgentSessionRuntimeEvent[] = [];
@@ -1636,7 +2067,7 @@ describe('createPiRuntimeOperations', () => {
         content: [],
         stopReason: 'error',
         errorMessage:
-          '401: {"error":{"code":"provider_auth_failed","message":"Credential sk-proj-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa was rejected"},"request_body":"secret prompt payload"}',
+          `401: {"error":{"code":"provider_auth_failed","message":"Provider echoed ${echoedPromptSentinel}; credential sk-proj-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa was rejected"},"request_body":"secret prompt payload"}`,
       },
     });
     await emit(capture, { type: 'agent_end', willRetry: false });
@@ -1647,7 +2078,7 @@ describe('createPiRuntimeOperations', () => {
         diagnostic: {
           code: 'provider_auth_failed',
           severity: 'error',
-          message: 'Credential [REDACTED] was rejected',
+          message: expect.stringContaining(echoedPromptSentinel),
         },
       }),
     ]));
@@ -1657,12 +2088,74 @@ describe('createPiRuntimeOperations', () => {
         {
           classification: 'pi_provider_failure',
           providerCode: 'provider_auth_failed',
-          sanitizedPreview: 'Credential [REDACTED] was rejected',
+          retryable: false,
+          failureRecord: {
+            record: { type: 'message_end' },
+            messageShape: {
+              role: 'assistant',
+              provider: 'openai-codex',
+              model: 'gpt-5.6-luna',
+              stopReason: 'error',
+            },
+          },
         },
       ],
     ]);
-    expect(JSON.stringify({ events, warnings: capture.warnings })).not.toContain('sk-proj-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
-    expect(JSON.stringify({ events, warnings: capture.warnings })).not.toContain('secret prompt payload');
+    expect(JSON.stringify(capture.warnings)).not.toContain(echoedPromptSentinel);
+    expect(JSON.stringify(capture.warnings)).not.toContain('sk-proj-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+    expect(JSON.stringify(capture.warnings)).not.toContain('secret prompt payload');
+    await runtime.dispose();
+  });
+
+  it('publishes the structured diagnostic from a Pi turn_failed record without an assistant message', async () => {
+    const capture: Capture = { specs: [], written: [], warnings: [] };
+    const runtime = await createRuntime(capture);
+    const events: AgentSessionRuntimeEvent[] = [];
+    runtime.watch((event) => events.push(event));
+
+    const prompt = sendPrompt(runtime, 'hello');
+    await waitForWrittenCount(capture, 1);
+    await ackLastCommand(capture);
+    await expect(prompt).resolves.toEqual({ status: 'admitted' });
+
+    await emit(capture, { type: 'turn_start', turnId: 'provider-turn-1' });
+    await emit(capture, {
+      type: 'turn_failed',
+      turnId: 'provider-turn-1',
+      code: 'rate_limit_exceeded',
+      status: 429,
+      detail: 'Service temporarily unavailable. Please retry.',
+    });
+    await emit(capture, { type: 'agent_end', willRetry: false });
+
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'turn-failed',
+        diagnostic: {
+          code: 'rate_limit_exceeded',
+          severity: 'error',
+          message: 'Service temporarily unavailable. Please retry.',
+        },
+      }),
+    ]));
+    expect(capture.warnings).toEqual([
+      [
+        '[PiRuntime] Provider turn failed',
+        {
+          classification: 'pi_provider_failure',
+          providerCode: 'rate_limit_exceeded',
+          retryable: true,
+          failureRecord: {
+            record: {
+              type: 'turn_failed',
+              code: 'rate_limit_exceeded',
+              status: 429,
+              turnId: 'provider-turn-1',
+            },
+          },
+        },
+      ],
+    ]);
     await runtime.dispose();
   });
 
@@ -1843,9 +2336,10 @@ describe('createPiRuntimeOperations', () => {
 
     await ackCommandAt(capture, 0);
     await expect(prompt).resolves.toEqual({ status: 'admitted' });
-    expect(events.map((event) => event.kind)).toEqual([
+    expect(events.map((event) => event.kind).filter((kind) => ![
       'available-commands',
       'provider-session-id',
+    ].includes(kind))).toEqual([
       'input-accepted',
       'turn-start',
       'turn-cancelled',
@@ -1872,9 +2366,10 @@ describe('createPiRuntimeOperations', () => {
     });
     await emit(capture, { type: 'agent_end', willRetry: false });
 
-    expect(events.map((event) => event.kind)).toEqual([
+    expect(events.map((event) => event.kind).filter((kind) => ![
       'available-commands',
       'provider-session-id',
+    ].includes(kind))).toEqual([
       'input-accepted',
       'turn-start',
       'turn-cancelled',
@@ -1911,9 +2406,10 @@ describe('createPiRuntimeOperations', () => {
     await ackLastCommand(capture);
     await expect(cancel).resolves.toEqual({ status: 'requested', turnId: 'pi-turn-1' });
 
-    expect(events.map((event) => event.kind)).toEqual([
+    expect(events.map((event) => event.kind).filter((kind) => ![
       'available-commands',
       'provider-session-id',
+    ].includes(kind))).toEqual([
       'input-accepted',
       'turn-start',
       'turn-cancelled',

@@ -1,3 +1,4 @@
+import { readClaudeProviderIdentityValue } from '../../../../protocol/providerIdentity.js';
 import { normalizeClaudeAgentSdkProviderTaskId } from './providerTaskStatus.js';
 import type { SDKHookResponseMessage } from '../../../sdk/types.js';
 
@@ -95,9 +96,9 @@ function readHookTaskActivity(
 ): ClaudeProviderTaskActivity | null {
   const eventName = readHookEventName(row);
   if (!eventName) return null;
-  const sessionId = normalizedString(row.session_id)
-    ?? normalizedString(row.sessionId)
-    ?? normalizedString(contextualSessionId);
+  const sessionId = readClaudeProviderIdentityValue(row.session_id)
+    ?? readClaudeProviderIdentityValue(row.sessionId)
+    ?? readClaudeProviderIdentityValue(contextualSessionId);
   if (!sessionId) return null;
 
   const sidechainAgentId = normalizeClaudeAgentSdkProviderTaskId(row.agent_id);
@@ -192,12 +193,12 @@ export function isClaudeProviderActivityHookObservationLoss(
   currentProviderSessionId: string | null | undefined,
 ): boolean {
   const row = record(value);
-  const currentSessionId = normalizedString(currentProviderSessionId);
+  const currentSessionId = readClaudeProviderIdentityValue(currentProviderSessionId);
   if (
     !row
     || !currentSessionId
     || !isSdkHookResponseMessage(row)
-    || normalizedString(row.session_id) !== currentSessionId
+    || readClaudeProviderIdentityValue(row.session_id) !== currentSessionId
     || isReplayClaudeAgentSdkMessage(row)
   ) return false;
 
@@ -217,7 +218,8 @@ function readStrictClaudeProviderTaskActivity(
   const hookActivity = readHookTaskActivity(row, contextualSessionId);
   if (hookActivity) return hookActivity;
   if (row.type !== 'system') return null;
-  const sessionId = normalizedString(row.session_id) ?? normalizedString(contextualSessionId);
+  const sessionId = readClaudeProviderIdentityValue(row.session_id)
+    ?? readClaudeProviderIdentityValue(contextualSessionId);
   const taskId = normalizeClaudeAgentSdkProviderTaskId(row.task_id);
   if (!sessionId || !taskId) return null;
   if (row.subtype === 'task_started') {

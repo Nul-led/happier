@@ -199,6 +199,7 @@ function createUnavailablePresentation(): PresentationService {
         );
     };
     return Object.freeze({
+        present: fail,
         notify: fail,
         status: Object.freeze({ set: fail }),
         widget: Object.freeze({ set: fail }),
@@ -637,6 +638,7 @@ export async function createPluginTestkit(
             kind: 'plugin' as const,
             pluginId: manifest.id,
             contribution: Object.freeze({ id: source.localId, qualifiedId: source.qualifiedId }),
+            immutableGenerationId: syntheticImmutableGenerationId,
             materialization,
             ...(originSurface === undefined ? {} : { originSurface }),
         });
@@ -647,11 +649,14 @@ export async function createPluginTestkit(
         caller: PluginActionCaller,
     ): boolean {
         const currentCaller = resolvePluginActionCaller(source);
-        const currentMaterialization = currentCaller?.materialization;
+        if (currentCaller === null) return false;
+
+        const currentMaterialization = currentCaller.materialization;
         const callerMaterialization = caller.materialization;
         return currentMaterialization !== undefined
             && callerMaterialization !== undefined
-            && arePluginMachineMaterializationRefsEqual(currentMaterialization, callerMaterialization);
+            && arePluginMachineMaterializationRefsEqual(currentMaterialization, callerMaterialization)
+            && currentCaller.immutableGenerationId === caller.immutableGenerationId;
     }
 
     function throwIfContributedActionCallerInactive(

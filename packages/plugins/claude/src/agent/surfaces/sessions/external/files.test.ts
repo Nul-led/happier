@@ -297,4 +297,44 @@ describe('Claude JSONL session file resolution', () => {
             remoteSessionId: 'real',
         })).resolves.toMatchObject({ projectId: 'project-a' });
     });
+    it('never resolves a sibling transcript for a padded provider session id', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-claude-exact-session-id-'));
+        roots.push(root);
+        const configDir = join(root, '.claude');
+        const projectDir = join(configDir, 'projects', 'project-a');
+        await mkdir(projectDir, { recursive: true });
+        await writeFile(join(projectDir, 'padded-session.jsonl'), '{"type":"user"}\n', 'utf8');
+
+        // `padded-session` and `  padded-session  ` are different ids. Trimming the
+        // request would hand back the first one's transcript for the second one.
+        await expect(resolveClaudeJsonlSessionFile({
+            source: { kind: 'claudeConfig', configDir, projectId: 'project-a' },
+            env: {},
+            remoteSessionId: '  padded-session  ',
+        })).resolves.toBeNull();
+        await expect(findClaudeJsonlSessionsById({
+            source: { kind: 'claudeConfig', configDir },
+            env: {},
+            remoteSessionId: '  padded-session  ',
+        })).resolves.toMatchObject({ matches: [] });
+
+        await expect(resolveClaudeJsonlSessionFile({
+            source: { kind: 'claudeConfig', configDir, projectId: 'project-a' },
+            env: {},
+            remoteSessionId: 'padded-session',
+        })).resolves.toMatchObject({ projectId: 'project-a' });
+    });
+
+    it('fails closed on a provider session id that cannot name a transcript file', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-claude-unsafe-session-id-'));
+        roots.push(root);
+        const configDir = join(root, '.claude');
+        await mkdir(join(configDir, 'projects', 'project-a'), { recursive: true });
+
+        await expect(resolveClaudeJsonlSessionFile({
+            source: { kind: 'claudeConfig', configDir, projectId: 'project-a' },
+            env: {},
+            remoteSessionId: '  provider\nses/AB+cd==  ',
+        })).resolves.toBeNull();
+    });
 });

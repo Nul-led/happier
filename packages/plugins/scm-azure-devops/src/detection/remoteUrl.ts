@@ -3,4 +3,4 @@
 // shared by all first-party SCM hosting plugins so any future third-party SCM
 // hosting plugin can opt into the same rejection policy.
 export { encodeCompareRef, parseScmRemoteUrl, stripTrailingSlash } from '@happier-dev/plugin-sdk/scm';
-export type { ParsedScmRemoteUrl } from '@happier-dev/plugin-sdk/scm';
+export type { ScmTransportIdentityV1 } from '@happier-dev/plugin-sdk/scm';

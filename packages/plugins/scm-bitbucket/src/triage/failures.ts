@@ -25,6 +25,47 @@ export type BitbucketTriageFailure = Readonly<{
   retryNotBeforeMs?: number;
 }>;
 
+/**
+ * A response whose status said the request succeeded and whose body this build could not parse.
+ *
+ * It is a contract failure for a read — there is nothing to project — but it is NOT evidence that
+ * the request had no effect: Bitbucket already answered `2xx`. The code is distinct from an
+ * ordinary refusal so a write settlement can tell those two apart at one place.
+ */
+export const BITBUCKET_MALFORMED_SUCCESS_RESPONSE_CODE = 'malformed-success-response';
+
+/**
+ * Whether a failed provider write may still have been applied, and therefore owes a confirming
+ * read rather than a no-effect conclusion.
+ *
+ * A transient transport/server answer cannot prove Bitbucket did not apply a dispatched command,
+ * and caller cancellation has the same epistemic boundary: the source must stop, but it cannot say
+ * a request that raced the cancellation never reached the forge. An undecodable success body is the
+ * third case — the status already said the command was applied.
+ *
+ * Authentication, permission, rate-limit, ordinary HTTP and request-shape failures are Bitbucket
+ * refusing this command, so confirming them could adopt a later unrelated change as this write's
+ * success.
+ */
+export function isBitbucketPossiblyAppliedFailure(failure: BitbucketTriageFailure): boolean {
+  return failure.class === 'transient'
+    || failure.class === 'cancelled'
+    || failure.code === BITBUCKET_MALFORMED_SUCCESS_RESPONSE_CODE;
+}
+
+/**
+ * Whether a failure ends a whole scan rather than shortening one lane or enumeration.
+ *
+ * A credential, throttle or cancellation answer is about the account, not about this collection.
+ * Continuing past one would spend the remaining budget on requests that cannot succeed and would
+ * publish an account-level outage as a smaller workspace.
+ */
+export function isBitbucketTerminatingScanFailure(failure: BitbucketTriageFailure): boolean {
+  return failure.class === 'cancelled'
+    || failure.class === 'rateLimit'
+    || failure.class === 'authentication';
+}
+
 export function createBitbucketFailure(
   failureClass: BitbucketFailureClass,
   code: string,

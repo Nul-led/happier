@@ -33,6 +33,9 @@
           "source": "static",
           "staticModels": [
             {
+              "aliases": [
+                "MiniMax-M3[1m]"
+              ],
               "capabilities": {
                 "toolRoundTrips": "supported"
               },
@@ -172,6 +175,9 @@
           "source": "static",
           "staticModels": [
             {
+              "aliases": [
+                "MiniMax-M3[1m]"
+              ],
               "capabilities": {
                 "toolRoundTrips": "supported"
               },

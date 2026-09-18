@@ -600,3 +600,43 @@ describe('resolveCodexHomeFromRolloutFilePath', () => {
     expect(resolveCodexHomeFromRolloutFilePath('/home/user/.codex/session-files/rollout-session.jsonl')).toBeNull();
   });
 });
+
+describe('inventoryCodexRootSessionRolloutFiles provider-session identity', () => {
+  beforeEach(async () => {
+    const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+    fsBoundary.open.mockReset();
+    fsBoundary.open.mockImplementation(actual.open);
+    fsBoundary.readdir.mockReset();
+    fsBoundary.readdir.mockImplementation(actual.readdir);
+  });
+
+  it('matches a rollout whose recorded session id carries exact provider bytes', async () => {
+    // Codex writes the id into session_meta verbatim and callers now request it
+    // verbatim, so the inventory must compare the recorded bytes rather than a
+    // trimmed rewrite of them.
+    const exactRemoteSessionId = '  provider\nses/AB+cd==  ';
+    const codexHome = await mkdtemp(join(tmpdir(), 'happier-codex-rollout-exact-id-'));
+    const dayDir = join(codexHome, 'sessions', '2026', '02', '14');
+    await mkdir(dayDir, { recursive: true });
+    const rolloutFile = join(dayDir, 'rollout-2026-02-14T08-28-05-exact.jsonl');
+    await writeFile(
+      rolloutFile,
+      JSON.stringify({ type: 'session_meta', payload: { id: exactRemoteSessionId } }),
+      'utf8',
+    );
+
+    const inventory = await inventoryCodexRootSessionRolloutFiles({
+      codexHome,
+      remoteSessionIds: [exactRemoteSessionId],
+      signal: new AbortController().signal,
+    });
+
+    expect(inventory.requested[0]).toMatchObject({
+      remoteSessionId: exactRemoteSessionId,
+      files: [expect.objectContaining({
+        filePath: rolloutFile,
+        sessionId: exactRemoteSessionId,
+      })],
+    });
+  });
+});

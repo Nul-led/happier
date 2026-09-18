@@ -5,16 +5,19 @@ import {
 } from './mcpRegistration.js';
 import type { OpenCodeRuntimeContext } from './runtimeContext.js';
 import type { OpenCodeServerClient } from './openCodeServerClient.js';
+import { OpenCodeServerUnsupportedOperationError } from './openCodeServerClient.js';
 
 function createRegistrationHarness() {
   const debug = vi.fn();
+  const warn = vi.fn();
   const mcpAdd = vi.fn<OpenCodeServerClient['mcpAdd']>(async () => ({ status: 'connected' }));
   return {
     ctx: {
-      logger: { debug },
+      logger: { debug, warn },
     } as unknown as OpenCodeRuntimeContext,
     client: { mcpAdd } as unknown as OpenCodeServerClient,
     debug,
+    warn,
     mcpAdd,
   };
 }
@@ -115,6 +118,37 @@ describe('registerOpenCodeMcpServers', () => {
         message: expect.stringMatching(/bridge tools unavailable/iu),
       }),
     });
+  });
+
+  it('separates a server that cannot take dynamic registrations from one that refused them', async () => {
+    const harness = createRegistrationHarness();
+    harness.mcpAdd.mockRejectedValue(new OpenCodeServerUnsupportedOperationError({
+      operation: 'mcp_registration',
+      dialect: 'v2',
+      message: 'OpenCode V2 servers expose no dynamic MCP registration route',
+    }));
+
+    // The pinned V2 protocol declares no MCP group at all, so there is nothing
+    // to fail: the capability is absent. Reporting that as `failed` would make
+    // every ordinary V2 prompt fail closed on a route that never existed.
+    await expect(registerOpenCodeMcpServers({
+      ctx: harness.ctx,
+      client: harness.client,
+      directory: '/repo',
+      mcpServers: {
+        optional: { command: '/bin/optional' },
+        happier: { command: '/bin/happier-mcp' },
+      },
+    })).resolves.toMatchObject({
+      requiredHappier: {
+        status: 'unsupported',
+        reason: expect.stringMatching(/dynamic MCP registration/iu),
+      },
+    });
+    expect(harness.warn).toHaveBeenCalledWith(
+      expect.stringContaining('dynamic MCP registration'),
+      expect.objectContaining({ dialect: 'v2' }),
+    );
   });
 
   it('reports missing required Happier configuration as a settled failure', async () => {

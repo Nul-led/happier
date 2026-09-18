@@ -40,6 +40,8 @@ export function projectTriagePickerCorpusFacts(input: Readonly<{
             entryRef: row.entryRef,
             title: display.title,
             scopeLabel: display.scopeLabel,
+            identifierLabel: display.identifierLabel,
+            lifecycleLabel: display.lifecycleLabel,
             // Projected by the one search owner, so the picker answers a query
             // exactly as the list does over these same rows.
             search: projectTriageEntrySearchText(row.observations),

@@ -107,6 +107,7 @@ function projectedEvent(eventId = EVENT_ID): SentryEventProjectionV1 {
 
 function rawEvent(eventId = EVENT_ID) {
   return {
+    groupID: ENTRY_ID,
     eventID: eventId,
     dateCreated: '2026-02-03T04:05:06.000Z',
     title: 'ChargeDeclined: card was declined',
@@ -183,6 +184,13 @@ function disclosedCandidate(accountId = 'account-1') {
 }
 
 describe('the Sentry selected-evidence Composer reference', () => {
+  it('does not dispatch selected evidence that now belongs to another issue', async () => {
+    const candidate = disclosedCandidate();
+    const harness = host({ status: 200, body: { ...rawEvent(), groupID: '9999' } });
+    await expect(resolveSentryEvidenceReference(candidate.candidate.id, harness.context))
+      .rejects.toMatchObject({ code: 'sentry/evidence-unavailable' });
+    expect(harness.request).toHaveBeenCalledTimes(1);
+  });
   it('encodes only frozen identity and refuses over-bound candidates', () => {
     const candidate = disclosedCandidate();
     expect(decodeSentryEvidenceCandidate(candidate.candidate.id)).toEqual({
@@ -273,6 +281,26 @@ describe('the Sentry selected-evidence Composer reference', () => {
     expect(resolved.context).not.toContain('person@example.com');
     expect(resolved.context).not.toContain('checkout-user');
     expect(resolved.context).not.toContain('must-not-survive');
+  });
+
+  it('keeps a value annotated beside an empty `rem` out of the dispatched evidence', async () => {
+    const candidate = disclosedCandidate();
+    const event = {
+      ...rawEvent(),
+      location: '/Users/ada/scrubbed-path/checkout.ts',
+      _meta: {
+        location: { '': { rem: [], chunks: [{ type: 'redaction', text: '[Filtered]' }] } },
+      },
+    };
+
+    const resolved = await resolveSentryEvidenceReference(
+      candidate.candidate.id,
+      host({ status: 200, body: event }).context,
+    );
+
+    expect(resolved.context).not.toContain('scrubbed-path');
+    expect(resolved.context).not.toContain('Location:');
+    expect(resolved.context).toContain('1 provider-scrubbed field(s)');
   });
 
   it('preserves a protocol-valid timestamp outside the JavaScript Date range without throwing', async () => {

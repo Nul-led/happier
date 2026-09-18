@@ -36,7 +36,7 @@ import {
   type CursorCycleWalkV1,
 } from '@happier-dev/triage-sources/runtime';
 import { classifySentryFailure } from '../api/sentryFailure.js';
-import { parseSentryLinkHeader } from '../api/sentryLinkHeader.js';
+import { readSentryNextPageRelation } from '../api/sentryLinkHeader.js';
 import {
   buildSentryIssueEventUrl,
   buildSentryIssueEventsUrl,
@@ -44,8 +44,14 @@ import {
   buildSentryTagValuesUrl,
   type SentryEventSelectorV1,
 } from '../api/sentryRoutes.js';
-import { mapSentryIssueState } from '../entries/sentryIssueMapping.js';
-import type { SentryInvokedInstanceV1 } from '../instances/sentryCollisionScope.js';
+import {
+  admitSentryIssueResponseIdentity,
+  mapSentryIssueState,
+} from '../entries/sentryIssueMapping.js';
+import {
+  isSentryNumericId,
+  type SentryInvokedInstanceV1,
+} from '../instances/sentryCollisionScope.js';
 import {
   projectSentryEventForDisplay,
   type SentryEventProjectionV1,
@@ -143,30 +149,27 @@ function verifyNextCursor(
   expectedPath: string,
   position: CursorCycleWalkV1 | null,
 ): SentryNextPageV1 {
-  const link = parseSentryLinkHeader(headers);
+  const relation = readSentryNextPageRelation(headers);
   // An absent header is not a finished walk, and it is also not a reason to
   // discard the rows already read. The walk stops and the panel says so.
-  if (!link.present) return stoppedShort('paginationHeaderAbsent');
-  const { next } = link;
-  // No `next` relation, or one Sentry itself marks as carrying no further
-  // results, is the provider stating the collection ended.
-  if (next === null || !next.hasResults) return WALK_END;
-  if (next.cursor === null || next.cursor === '') {
-    return stoppedShort('paginationCursorMalformed');
-  }
+  if (relation.kind === 'headerAbsent') return stoppedShort('paginationHeaderAbsent');
+  // Neither is pagination metadata this source cannot read: only `results="false"`
+  // is Sentry stating the collection ended.
+  if (relation.kind === 'unusable') return stoppedShort('paginationCursorMalformed');
+  if (relation.kind === 'exhausted') return WALK_END;
   // Non-progress is "this walk has been here already", not merely "this page
   // pointed at itself". The shared cycle owner watches the position that
   // produced this response AND one earlier saved position, so the one-step
   // repeat stays caught and an `A → B → A` alternation — invisible to a
   // comparison that can only see the current request — is caught with it,
   // without evidence whose width grows with every "Load more".
-  const advanced = advanceCursorCycleWalkV1(position, next.cursor);
+  const advanced = advanceCursorCycleWalkV1(position, relation.cursor);
   if (advanced.kind === 'revisited') {
     return stoppedShort('paginationCursorNotAdvancing');
   }
   let url: URL;
   try {
-    url = new URL(next.url);
+    url = new URL(relation.url);
   } catch {
     return stoppedShort('paginationCursorMalformed');
   }
@@ -283,6 +286,21 @@ export async function readSentryIssueProjection(
   }
   const body = decoded.body;
 
+  // The same comparison the canonical `get` makes, through the same owner
+  // (`SENTRY.md` §4.1). A detail read has no `merged` arm to report a successor
+  // with, so the honest answer is a stated refusal rather than another issue's
+  // state rendered beneath this entry's identity.
+  const identity = admitSentryIssueResponseIdentity(body, input.entryId);
+  if (identity.kind === 'unreadable') {
+    return failed(classifySentryFailure({ kind: 'unparseable', operation: 'issue' }));
+  }
+  if (identity.kind === 'superseded') {
+    return failed(Object.freeze({
+      class: 'unknown' as const,
+      code: SENTRY_FAILURE_CODES.issueIdentityMismatch,
+    }));
+  }
+
   switch (input.projection) {
     case 'overview':
       return Object.freeze({ ok: true as const, value: projectIssueOverview(body) });
@@ -323,6 +341,8 @@ export type SentryEventsPageInputV1 = Readonly<{
   instance: SentryInvokedInstanceV1;
   entryId: string;
   limit: number;
+  /** The reader's explicit spread choice, frozen for this whole walk (§7.4). */
+  sample: boolean;
   /**
    * Where this walk stands: the position to request and the earlier one its
    * cycle probe is watching. `null` on the first page, which has requested none.
@@ -341,6 +361,7 @@ export async function readSentryIssueEventsPage(
       instance: input.instance,
       entryId: input.entryId,
       perPage: input.limit,
+      sample: input.sample,
       ...(input.position === null ? {} : { cursor: input.position.cursor }),
     });
   } catch {
@@ -475,10 +496,22 @@ export async function readSentryEventProjection(
   const decoded = decodeBody(outcome.response, 'event', input.nowMs);
   if (!decoded.ok) return failed(decoded.failure);
 
-  // The projector is the only reader of this body, so it is also the only thing that can
-  // say the body is not an event. `null` settles here the same way the events LIST
-  // settles a body that is not its declared array: as a refused read, never as a
-  // successful occurrence with nothing in it.
+  // The issue-scoped route alone cannot establish response membership after a
+  // merge. Admit the public event's groupID before either selected or
+  // representative evidence can reach detail or Composer consumers.
+  if (!isRecord(decoded.body) || typeof decoded.body.groupID !== 'string'
+    || !isSentryNumericId(decoded.body.groupID)) {
+    return failed(classifySentryFailure({ kind: 'unparseable', operation: 'event' }));
+  }
+  if (decoded.body.groupID !== input.entryId) {
+    return failed(Object.freeze({
+      class: 'unknown' as const,
+      code: SENTRY_FAILURE_CODES.issueIdentityMismatch,
+    }));
+  }
+
+  // The projector validates the evidence shape: an invalid body is a refused
+  // read, never a successful occurrence with nothing in it.
   const projection = projectSentryEventForDisplay(decoded.body);
   if (projection === null) {
     return failed(classifySentryFailure({ kind: 'unparseable', operation: 'event' }));

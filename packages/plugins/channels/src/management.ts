@@ -9,6 +9,7 @@ import {
 import { pluginJsonValuesEqual } from '@happier-dev/plugin-sdk/protocol';
 import type { PluginAccountStorageScope } from '@happier-dev/plugin-sdk/storage';
 import { PLUGIN_COLLECTION_QUERY_MAX_ROWS_V1 } from '@happier-dev/plugin-sdk/collections';
+import { isPluginActionApprovalRequestCreated } from '@happier-dev/plugin-sdk/actions';
 import type {
   AdmittedTargetedOperationExecutionHandle,
   PluginActionResultById,
@@ -1401,7 +1402,7 @@ async function verifyAutomationBindingTarget(
   target: Extract<ConversationBindingTargetV1, Readonly<{ kind: 'automation' }>>,
   context: PluginInvocationContext,
 ): Promise<PluginActionResultById['automation.conversation.target.verify']> {
-  const verification: PluginActionResultById['automation.conversation.target.verify'] = await context.services.actions.execute(
+  const verification = await context.services.actions.execute(
     'automation.conversation.target.verify',
     {
       automationId: target.automationId,
@@ -1412,6 +1413,16 @@ async function verifyAutomationBindingTarget(
     { signal: context.signal },
   );
   assertNotAborted(context.signal);
+  // A policy deferral means Automation never verified this target. It is not a
+  // verdict, so it must not be recorded as `notVerified` with a reason the
+  // owner did not give; the binding write fails closed and retryable instead.
+  if (isPluginActionApprovalRequestCreated(verification)) {
+    throw pluginError(
+      'channels_automation_target_verification_unavailable',
+      'The Automation target could not be verified for this conversation binding.',
+      true,
+    );
+  }
   return verification;
 }
 

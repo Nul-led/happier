@@ -40,7 +40,7 @@
                         "accountId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                          "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                           "type": "string"
                         },
                         "service": {
@@ -49,13 +49,13 @@
                             "localId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                               "type": "string"
                             },
                             "pluginId": {
                               "maxLength": 256,
                               "minLength": 3,
-                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                               "type": "string"
                             }
                           },
@@ -113,13 +113,13 @@
                         "localId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                           "type": "string"
                         },
                         "pluginId": {
                           "maxLength": 256,
                           "minLength": 3,
-                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                           "type": "string"
                         }
                       },
@@ -311,13 +311,13 @@
                     "localId": {
                       "maxLength": 256,
                       "minLength": 1,
-                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                       "type": "string"
                     },
                     "pluginId": {
                       "maxLength": 256,
                       "minLength": 3,
-                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                       "type": "string"
                     }
                   },
@@ -370,13 +370,13 @@
                     "localId": {
                       "maxLength": 256,
                       "minLength": 1,
-                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                       "type": "string"
                     },
                     "pluginId": {
                       "maxLength": 256,
                       "minLength": 3,
-                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                       "type": "string"
                     }
                   },
@@ -526,13 +526,13 @@
                     "localId": {
                       "maxLength": 256,
                       "minLength": 1,
-                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                       "type": "string"
                     },
                     "pluginId": {
                       "maxLength": 256,
                       "minLength": 3,
-                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                       "type": "string"
                     }
                   },
@@ -635,13 +635,13 @@
                           "localId": {
                             "maxLength": 256,
                             "minLength": 1,
-                            "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                            "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                             "type": "string"
                           },
                           "pluginId": {
                             "maxLength": 256,
                             "minLength": 3,
-                            "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                            "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                             "type": "string"
                           }
                         },
@@ -670,13 +670,13 @@
                           "localId": {
                             "maxLength": 256,
                             "minLength": 1,
-                            "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                            "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                             "type": "string"
                           },
                           "pluginId": {
                             "maxLength": 256,
                             "minLength": 3,
-                            "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                            "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                             "type": "string"
                           }
                         },
@@ -729,13 +729,13 @@
                           "localId": {
                             "maxLength": 256,
                             "minLength": 1,
-                            "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                            "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                             "type": "string"
                           },
                           "pluginId": {
                             "maxLength": 256,
                             "minLength": 3,
-                            "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                            "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                             "type": "string"
                           }
                         },
@@ -869,7 +869,7 @@
                     "cursor": {
                       "maxLength": 4096,
                       "minLength": 1,
-                      "pattern": "^[A-Za-z0-9_-]+$",
+                      "pattern": "^[A-Za-z0-9_-]+$(?![\\s\\S])",
                       "type": "string"
                     },
                     "kind": {
@@ -954,13 +954,13 @@
                       "localId": {
                         "maxLength": 256,
                         "minLength": 1,
-                        "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                        "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                         "type": "string"
                       },
                       "pluginId": {
                         "maxLength": 256,
                         "minLength": 3,
-                        "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                        "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                         "type": "string"
                       }
                     },
@@ -990,7 +990,7 @@
             "configuredSourcesNextCursor": {
               "maxLength": 4096,
               "minLength": 1,
-              "pattern": "^[A-Za-z0-9_-]+$",
+              "pattern": "^[A-Za-z0-9_-]+$(?![\\s\\S])",
               "type": "string"
             },
             "configuredSourcesStatus": {
@@ -1226,13 +1226,13 @@
                           "localId": {
                             "maxLength": 256,
                             "minLength": 1,
-                            "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                            "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                             "type": "string"
                           },
                           "pluginId": {
                             "maxLength": 256,
                             "minLength": 3,
-                            "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                            "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                             "type": "string"
                           }
                         },
@@ -1331,13 +1331,13 @@
                               "localId": {
                                 "maxLength": 256,
                                 "minLength": 1,
-                                "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                 "type": "string"
                               },
                               "pluginId": {
                                 "maxLength": 256,
                                 "minLength": 3,
-                                "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                 "type": "string"
                               }
                             },
@@ -1892,13 +1892,13 @@
                                           "localId": {
                                             "maxLength": 256,
                                             "minLength": 1,
-                                            "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                            "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                             "type": "string"
                                           },
                                           "pluginId": {
                                             "maxLength": 256,
                                             "minLength": 3,
-                                            "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                            "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                             "type": "string"
                                           }
                                         },
@@ -2534,13 +2534,13 @@
                                             "localId": {
                                               "maxLength": 256,
                                               "minLength": 1,
-                                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                               "type": "string"
                                             },
                                             "pluginId": {
                                               "maxLength": 256,
                                               "minLength": 3,
-                                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                               "type": "string"
                                             }
                                           },
@@ -2796,11 +2796,18 @@
         "dangerLevel": "safe",
         "description": "Finds pull requests, issues and error groups matching what the reader typed.",
         "execution": {
-          "target": "daemon"
+          "client": {
+            "artifactId": "triage-search-action-native",
+            "exportName": "createTriageSearchEntriesActionHandler",
+            "modulePath": "./searchEntries"
+          },
+          "platforms": [
+            "web",
+            "ios",
+            "android"
+          ],
+          "target": "client"
         },
-        "hostAccess": [
-          "account-storage"
-        ],
         "id": "entries/search-v1",
         "inputSchema": {
           "$schema": "http://json-schema.org/draft-07/schema#",
@@ -2833,6 +2840,89 @@
                 "additionalProperties": false,
                 "properties": {
                   "command": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "action": {
+                            "maxLength": 256,
+                            "minLength": 1,
+                            "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
+                            "type": "string"
+                          },
+                          "input": {
+                            "x-happier-max-serialized-utf8-bytes": 8192
+                          },
+                          "kind": {
+                            "const": "executeAction"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "action"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "destination": {
+                            "anyOf": [
+                              {
+                                "maxLength": 256,
+                                "minLength": 1,
+                                "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
+                                "type": "string"
+                              },
+                              {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "localId": {
+                                    "maxLength": 256,
+                                    "minLength": 1,
+                                    "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
+                                    "type": "string"
+                                  },
+                                  "pluginId": {
+                                    "maxLength": 256,
+                                    "minLength": 3,
+                                    "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "pluginId",
+                                  "localId"
+                                ],
+                                "type": "object"
+                              }
+                            ]
+                          },
+                          "input": {
+                            "x-happier-max-serialized-utf8-bytes": 8192
+                          },
+                          "instanceKey": {
+                            "minLength": 1,
+                            "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
+                            "type": "string",
+                            "x-happier-max-utf8-bytes": 256
+                          },
+                          "kind": {
+                            "const": "openSurface"
+                          },
+                          "subPath": {
+                            "pattern": "^(?![\\s\\S]*(?:^|/)\\.{1,2}(?:/|$))[^\\u0000-\\u001f\\u007f]*$(?![\\s\\S])",
+                            "type": "string",
+                            "x-happier-max-utf8-bytes": 1024
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "destination"
+                        ],
+                        "type": "object"
+                      }
+                    ],
                     "x-happier-max-serialized-utf8-bytes": 9984
                   },
                   "icon": {
@@ -3023,13 +3113,13 @@
                         "localId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                           "type": "string"
                         },
                         "pluginId": {
                           "maxLength": 256,
                           "minLength": 3,
-                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                           "type": "string"
                         }
                       },
@@ -3093,13 +3183,13 @@
                         "localId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                           "type": "string"
                         },
                         "pluginId": {
                           "maxLength": 256,
                           "minLength": 3,
-                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                           "type": "string"
                         }
                       },
@@ -3187,7 +3277,7 @@
             "cursor": {
               "maxLength": 4096,
               "minLength": 1,
-              "pattern": "^[A-Za-z0-9_-]+$",
+              "pattern": "^[A-Za-z0-9_-]+$(?![\\s\\S])",
               "type": "string"
             },
             "limit": {
@@ -3213,7 +3303,7 @@
             "nextCursor": {
               "maxLength": 4096,
               "minLength": 1,
-              "pattern": "^[A-Za-z0-9_-]+$",
+              "pattern": "^[A-Za-z0-9_-]+$(?![\\s\\S])",
               "type": "string"
             },
             "pins": {
@@ -3269,13 +3359,13 @@
                           "localId": {
                             "maxLength": 256,
                             "minLength": 1,
-                            "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                            "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                             "type": "string"
                           },
                           "pluginId": {
                             "maxLength": 256,
                             "minLength": 3,
-                            "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                            "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                             "type": "string"
                           }
                         },
@@ -3420,13 +3510,13 @@
                     "localId": {
                       "maxLength": 256,
                       "minLength": 1,
-                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                       "type": "string"
                     },
                     "pluginId": {
                       "maxLength": 256,
                       "minLength": 3,
-                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                       "type": "string"
                     }
                   },
@@ -3595,13 +3685,13 @@
                               "localId": {
                                 "maxLength": 256,
                                 "minLength": 1,
-                                "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                 "type": "string"
                               },
                               "pluginId": {
                                 "maxLength": 256,
                                 "minLength": 3,
-                                "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                 "type": "string"
                               }
                             },
@@ -3774,13 +3864,13 @@
                                         "localId": {
                                           "maxLength": 256,
                                           "minLength": 1,
-                                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                           "type": "string"
                                         },
                                         "pluginId": {
                                           "maxLength": 256,
                                           "minLength": 3,
-                                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                           "type": "string"
                                         }
                                       },
@@ -3811,7 +3901,7 @@
                                             "accountId": {
                                               "maxLength": 256,
                                               "minLength": 1,
-                                              "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                                              "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                                               "type": "string"
                                             },
                                             "service": {
@@ -3820,13 +3910,13 @@
                                                 "localId": {
                                                   "maxLength": 256,
                                                   "minLength": 1,
-                                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                                   "type": "string"
                                                 },
                                                 "pluginId": {
                                                   "maxLength": 256,
                                                   "minLength": 3,
-                                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                                   "type": "string"
                                                 }
                                               },
@@ -3884,13 +3974,13 @@
                                             "localId": {
                                               "maxLength": 256,
                                               "minLength": 1,
-                                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                               "type": "string"
                                             },
                                             "pluginId": {
                                               "maxLength": 256,
                                               "minLength": 3,
-                                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                               "type": "string"
                                             }
                                           },
@@ -4248,13 +4338,13 @@
                     "localId": {
                       "maxLength": 256,
                       "minLength": 1,
-                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                       "type": "string"
                     },
                     "pluginId": {
                       "maxLength": 256,
                       "minLength": 3,
-                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                       "type": "string"
                     }
                   },
@@ -4292,7 +4382,7 @@
                     "accountId": {
                       "maxLength": 256,
                       "minLength": 1,
-                      "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                      "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                       "type": "string"
                     },
                     "service": {
@@ -4301,13 +4391,13 @@
                         "localId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                           "type": "string"
                         },
                         "pluginId": {
                           "maxLength": 256,
                           "minLength": 3,
-                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                           "type": "string"
                         }
                       },
@@ -4334,7 +4424,7 @@
                         "contributionId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                           "type": "string"
                         },
                         "immutableGenerationId": {
@@ -4346,7 +4436,7 @@
                         "pluginId": {
                           "maxLength": 256,
                           "minLength": 3,
-                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                           "type": "string"
                         }
                       },
@@ -4363,7 +4453,7 @@
                         "pointId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                           "type": "string"
                         },
                         "protocol": {
@@ -4372,7 +4462,7 @@
                             "id": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^(?:[a-z0-9]+(?:[-/][a-z0-9]+)*|(?!(?:[a-z0-9-]+\\.)*(?:__proto__|constructor|prototype)(?:\\.|/))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+/[a-z0-9]+(?:[-/][a-z0-9]+)*)$",
+                              "pattern": "^(?:[a-z0-9]+(?:[-/][a-z0-9]+)*|(?!(?:[a-z0-9-]+\\.)*(?:__proto__|constructor|prototype)(?:\\.|/))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+/[a-z0-9]+(?:[-/][a-z0-9]+)*)$(?![\\s\\S])",
                               "type": "string"
                             },
                             "version": {
@@ -4406,7 +4496,7 @@
                         "pluginId": {
                           "maxLength": 256,
                           "minLength": 3,
-                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                           "type": "string"
                         }
                       },
@@ -4590,6 +4680,12 @@
                         },
                         {
                           "const": "rejected"
+                        },
+                        {
+                          "const": "failed"
+                        },
+                        {
+                          "const": "cancelled"
                         }
                       ]
                     },
@@ -4808,6 +4904,12 @@
                       "const": "rejected"
                     },
                     {
+                      "const": "failed"
+                    },
+                    {
+                      "const": "cancelled"
+                    },
+                    {
                       "const": "outcomeUnknown"
                     }
                   ]
@@ -4980,13 +5082,13 @@
                             "localId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                               "type": "string"
                             },
                             "pluginId": {
                               "maxLength": 256,
                               "minLength": 3,
-                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                               "type": "string"
                             }
                           },
@@ -5017,7 +5119,7 @@
                                 "accountId": {
                                   "maxLength": 256,
                                   "minLength": 1,
-                                  "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                                  "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                                   "type": "string"
                                 },
                                 "service": {
@@ -5026,13 +5128,13 @@
                                     "localId": {
                                       "maxLength": 256,
                                       "minLength": 1,
-                                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                       "type": "string"
                                     },
                                     "pluginId": {
                                       "maxLength": 256,
                                       "minLength": 3,
-                                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                       "type": "string"
                                     }
                                   },
@@ -5090,13 +5192,13 @@
                                 "localId": {
                                   "maxLength": 256,
                                   "minLength": 1,
-                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                   "type": "string"
                                 },
                                 "pluginId": {
                                   "maxLength": 256,
                                   "minLength": 3,
-                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                   "type": "string"
                                 }
                               },
@@ -5325,6 +5427,12 @@
                       "const": "rejected"
                     },
                     {
+                      "const": "failed"
+                    },
+                    {
+                      "const": "cancelled"
+                    },
+                    {
                       "const": "outcomeUnknown"
                     }
                   ]
@@ -5507,13 +5615,13 @@
                             "localId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                               "type": "string"
                             },
                             "pluginId": {
                               "maxLength": 256,
                               "minLength": 3,
-                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                               "type": "string"
                             }
                           },
@@ -5544,7 +5652,7 @@
                                 "accountId": {
                                   "maxLength": 256,
                                   "minLength": 1,
-                                  "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                                  "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                                   "type": "string"
                                 },
                                 "service": {
@@ -5553,13 +5661,13 @@
                                     "localId": {
                                       "maxLength": 256,
                                       "minLength": 1,
-                                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                       "type": "string"
                                     },
                                     "pluginId": {
                                       "maxLength": 256,
                                       "minLength": 3,
-                                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                       "type": "string"
                                     }
                                   },
@@ -5617,13 +5725,13 @@
                                 "localId": {
                                   "maxLength": 256,
                                   "minLength": 1,
-                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                   "type": "string"
                                 },
                                 "pluginId": {
                                   "maxLength": 256,
                                   "minLength": 3,
-                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                   "type": "string"
                                 }
                               },
@@ -5853,6 +5961,12 @@
                       "const": "rejected"
                     },
                     {
+                      "const": "failed"
+                    },
+                    {
+                      "const": "cancelled"
+                    },
+                    {
                       "const": "outcomeUnknown"
                     }
                   ]
@@ -6035,6 +6149,12 @@
                     },
                     {
                       "const": "rejected"
+                    },
+                    {
+                      "const": "failed"
+                    },
+                    {
+                      "const": "cancelled"
                     },
                     {
                       "const": "outcomeUnknown"
@@ -6512,13 +6632,13 @@
                         "localId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                           "type": "string"
                         },
                         "pluginId": {
                           "maxLength": 256,
                           "minLength": 3,
-                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                           "type": "string"
                         }
                       },
@@ -6549,7 +6669,7 @@
                             "accountId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                              "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                               "type": "string"
                             },
                             "service": {
@@ -6558,13 +6678,13 @@
                                 "localId": {
                                   "maxLength": 256,
                                   "minLength": 1,
-                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                   "type": "string"
                                 },
                                 "pluginId": {
                                   "maxLength": 256,
                                   "minLength": 3,
-                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                   "type": "string"
                                 }
                               },
@@ -6622,13 +6742,13 @@
                             "localId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                               "type": "string"
                             },
                             "pluginId": {
                               "maxLength": 256,
                               "minLength": 3,
-                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                               "type": "string"
                             }
                           },
@@ -6840,6 +6960,23 @@
             {
               "additionalProperties": false,
               "properties": {
+                "failedEngineIds": {
+                  "items": {
+                    "minLength": 1,
+                    "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "startedEngineIds": {
+                  "items": {
+                    "minLength": 1,
+                    "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                    "type": "string"
+                  },
+                  "minItems": 1,
+                  "type": "array"
+                },
                 "status": {
                   "const": "started"
                 },
@@ -6849,7 +6986,9 @@
               },
               "required": [
                 "v",
-                "status"
+                "status",
+                "startedEngineIds",
+                "failedEngineIds"
               ],
               "type": "object"
             },
@@ -6875,6 +7014,9 @@
                     },
                     {
                       "const": "reviewRejected"
+                    },
+                    {
+                      "const": "noEngineStarted"
                     }
                   ]
                 },
@@ -6948,13 +7090,13 @@
                     "localId": {
                       "maxLength": 256,
                       "minLength": 1,
-                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                       "type": "string"
                     },
                     "pluginId": {
                       "maxLength": 256,
                       "minLength": 3,
-                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                       "type": "string"
                     }
                   },
@@ -7059,7 +7201,7 @@
                             "accountId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                              "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                               "type": "string"
                             },
                             "service": {
@@ -7068,13 +7210,13 @@
                                 "localId": {
                                   "maxLength": 256,
                                   "minLength": 1,
-                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                   "type": "string"
                                 },
                                 "pluginId": {
                                   "maxLength": 256,
                                   "minLength": 3,
-                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                   "type": "string"
                                 }
                               },
@@ -7213,7 +7355,7 @@
                             "accountId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                              "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                               "type": "string"
                             },
                             "service": {
@@ -7222,13 +7364,13 @@
                                 "localId": {
                                   "maxLength": 256,
                                   "minLength": 1,
-                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                   "type": "string"
                                 },
                                 "pluginId": {
                                   "maxLength": 256,
                                   "minLength": 3,
-                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                   "type": "string"
                                 }
                               },
@@ -7397,7 +7539,7 @@
                             "accountId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                              "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                               "type": "string"
                             },
                             "service": {
@@ -7406,13 +7548,13 @@
                                 "localId": {
                                   "maxLength": 256,
                                   "minLength": 1,
-                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                   "type": "string"
                                 },
                                 "pluginId": {
                                   "maxLength": 256,
                                   "minLength": 3,
-                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                   "type": "string"
                                 }
                               },
@@ -7748,7 +7890,7 @@
                                   "accountId": {
                                     "maxLength": 256,
                                     "minLength": 1,
-                                    "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                                    "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                                     "type": "string"
                                   },
                                   "service": {
@@ -7757,13 +7899,13 @@
                                       "localId": {
                                         "maxLength": 256,
                                         "minLength": 1,
-                                        "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                        "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                         "type": "string"
                                       },
                                       "pluginId": {
                                         "maxLength": 256,
                                         "minLength": 3,
-                                        "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                        "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                         "type": "string"
                                       }
                                     },
@@ -7821,13 +7963,13 @@
                                   "localId": {
                                     "maxLength": 256,
                                     "minLength": 1,
-                                    "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                    "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                     "type": "string"
                                   },
                                   "pluginId": {
                                     "maxLength": 256,
                                     "minLength": 3,
-                                    "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                    "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                     "type": "string"
                                   }
                                 },
@@ -8020,13 +8162,13 @@
                     "localId": {
                       "maxLength": 256,
                       "minLength": 1,
-                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                       "type": "string"
                     },
                     "pluginId": {
                       "maxLength": 256,
                       "minLength": 3,
-                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                       "type": "string"
                     }
                   },
@@ -8048,7 +8190,7 @@
             "linkedSessionsCursor": {
               "maxLength": 4096,
               "minLength": 1,
-              "pattern": "^[A-Za-z0-9_-]+$",
+              "pattern": "^[A-Za-z0-9_-]+$(?![\\s\\S])",
               "type": "string"
             },
             "sourceInstanceId": {
@@ -8087,7 +8229,7 @@
                             "accountId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                              "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                               "type": "string"
                             },
                             "service": {
@@ -8096,13 +8238,13 @@
                                 "localId": {
                                   "maxLength": 256,
                                   "minLength": 1,
-                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                   "type": "string"
                                 },
                                 "pluginId": {
                                   "maxLength": 256,
                                   "minLength": 3,
-                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                   "type": "string"
                                 }
                               },
@@ -8160,13 +8302,13 @@
                             "localId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                               "type": "string"
                             },
                             "pluginId": {
                               "maxLength": 256,
                               "minLength": 3,
-                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                               "type": "string"
                             }
                           },
@@ -8275,7 +8417,7 @@
                 "linkedSessionsNextCursor": {
                   "maxLength": 4096,
                   "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_-]+$",
+                  "pattern": "^[A-Za-z0-9_-]+$(?![\\s\\S])",
                   "type": "string"
                 }
               },
@@ -8361,13 +8503,13 @@
                     "localId": {
                       "maxLength": 256,
                       "minLength": 1,
-                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                       "type": "string"
                     },
                     "pluginId": {
                       "maxLength": 256,
                       "minLength": 3,
-                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                       "type": "string"
                     }
                   },
@@ -8467,13 +8609,13 @@
                         "localId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                           "type": "string"
                         },
                         "pluginId": {
                           "maxLength": 256,
                           "minLength": 3,
-                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                           "type": "string"
                         }
                       },
@@ -9021,13 +9163,13 @@
                                     "localId": {
                                       "maxLength": 256,
                                       "minLength": 1,
-                                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                       "type": "string"
                                     },
                                     "pluginId": {
                                       "maxLength": 256,
                                       "minLength": 3,
-                                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                       "type": "string"
                                     }
                                   },
@@ -9286,13 +9428,13 @@
                                 "localId": {
                                   "maxLength": 256,
                                   "minLength": 1,
-                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                   "type": "string"
                                 },
                                 "pluginId": {
                                   "maxLength": 256,
                                   "minLength": 3,
-                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                   "type": "string"
                                 }
                               },
@@ -9321,13 +9463,13 @@
                                 "localId": {
                                   "maxLength": 256,
                                   "minLength": 1,
-                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                   "type": "string"
                                 },
                                 "pluginId": {
                                   "maxLength": 256,
                                   "minLength": 3,
-                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                   "type": "string"
                                 }
                               },
@@ -9380,13 +9522,13 @@
                                 "localId": {
                                   "maxLength": 256,
                                   "minLength": 1,
-                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                   "type": "string"
                                 },
                                 "pluginId": {
                                   "maxLength": 256,
                                   "minLength": 3,
-                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                   "type": "string"
                                 }
                               },
@@ -9572,13 +9714,13 @@
                               "localId": {
                                 "maxLength": 256,
                                 "minLength": 1,
-                                "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                 "type": "string"
                               },
                               "pluginId": {
                                 "maxLength": 256,
                                 "minLength": 3,
-                                "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                 "type": "string"
                               }
                             },
@@ -9607,13 +9749,13 @@
                               "localId": {
                                 "maxLength": 256,
                                 "minLength": 1,
-                                "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                 "type": "string"
                               },
                               "pluginId": {
                                 "maxLength": 256,
                                 "minLength": 3,
-                                "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                 "type": "string"
                               }
                             },
@@ -9666,13 +9808,13 @@
                               "localId": {
                                 "maxLength": 256,
                                 "minLength": 1,
-                                "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                 "type": "string"
                               },
                               "pluginId": {
                                 "maxLength": 256,
                                 "minLength": 3,
-                                "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                 "type": "string"
                               }
                             },
@@ -9832,13 +9974,13 @@
                               "localId": {
                                 "maxLength": 256,
                                 "minLength": 1,
-                                "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                 "type": "string"
                               },
                               "pluginId": {
                                 "maxLength": 256,
                                 "minLength": 3,
-                                "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                 "type": "string"
                               }
                             },
@@ -9867,13 +10009,13 @@
                               "localId": {
                                 "maxLength": 256,
                                 "minLength": 1,
-                                "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                 "type": "string"
                               },
                               "pluginId": {
                                 "maxLength": 256,
                                 "minLength": 3,
-                                "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                 "type": "string"
                               }
                             },
@@ -9926,13 +10068,13 @@
                               "localId": {
                                 "maxLength": 256,
                                 "minLength": 1,
-                                "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                 "type": "string"
                               },
                               "pluginId": {
                                 "maxLength": 256,
                                 "minLength": 3,
-                                "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                 "type": "string"
                               }
                             },
@@ -10235,13 +10377,13 @@
                                 "localId": {
                                   "maxLength": 256,
                                   "minLength": 1,
-                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                   "type": "string"
                                 },
                                 "pluginId": {
                                   "maxLength": 256,
                                   "minLength": 3,
-                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                   "type": "string"
                                 }
                               },
@@ -10270,13 +10412,13 @@
                                 "localId": {
                                   "maxLength": 256,
                                   "minLength": 1,
-                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                   "type": "string"
                                 },
                                 "pluginId": {
                                   "maxLength": 256,
                                   "minLength": 3,
-                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                   "type": "string"
                                 }
                               },
@@ -10329,13 +10471,13 @@
                                 "localId": {
                                   "maxLength": 256,
                                   "minLength": 1,
-                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                   "type": "string"
                                 },
                                 "pluginId": {
                                   "maxLength": 256,
                                   "minLength": 3,
-                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                   "type": "string"
                                 }
                               },
@@ -11376,7 +11518,8 @@
           "renderer": "entry-picker"
         },
         "runtime": {
-          "resolveForDispatch": true
+          "resolveForDispatch": true,
+          "resolveForDispatchV2": true
         },
         "title": "PRs & Issues",
         "valueSchema": {
@@ -11410,13 +11553,13 @@
                     "localId": {
                       "maxLength": 256,
                       "minLength": 1,
-                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                       "type": "string"
                     },
                     "pluginId": {
                       "maxLength": 256,
                       "minLength": 3,
-                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                       "type": "string"
                     }
                   },
@@ -11474,13 +11617,13 @@
                     "localId": {
                       "maxLength": 256,
                       "minLength": 1,
-                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                       "type": "string"
                     },
                     "pluginId": {
                       "maxLength": 256,
                       "minLength": 3,
-                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                       "type": "string"
                     }
                   },
@@ -11677,7 +11820,7 @@
                                   "accountId": {
                                     "maxLength": 256,
                                     "minLength": 1,
-                                    "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                                    "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                                     "type": "string"
                                   },
                                   "service": {
@@ -11686,13 +11829,13 @@
                                       "localId": {
                                         "maxLength": 256,
                                         "minLength": 1,
-                                        "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                        "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                         "type": "string"
                                       },
                                       "pluginId": {
                                         "maxLength": 256,
                                         "minLength": 3,
-                                        "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                        "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                         "type": "string"
                                       }
                                     },
@@ -11750,13 +11893,13 @@
                                   "localId": {
                                     "maxLength": 256,
                                     "minLength": 1,
-                                    "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                    "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                     "type": "string"
                                   },
                                   "pluginId": {
                                     "maxLength": 256,
                                     "minLength": 3,
-                                    "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                    "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                     "type": "string"
                                   }
                                 },
@@ -12664,7 +12807,7 @@
                                       "accountId": {
                                         "maxLength": 256,
                                         "minLength": 1,
-                                        "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                                        "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                                         "type": "string"
                                       },
                                       "service": {
@@ -12673,13 +12816,13 @@
                                           "localId": {
                                             "maxLength": 256,
                                             "minLength": 1,
-                                            "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                            "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                             "type": "string"
                                           },
                                           "pluginId": {
                                             "maxLength": 256,
                                             "minLength": 3,
-                                            "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                            "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                             "type": "string"
                                           }
                                         },
@@ -12804,7 +12947,7 @@
                                       "accountId": {
                                         "maxLength": 256,
                                         "minLength": 1,
-                                        "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                                        "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                                         "type": "string"
                                       },
                                       "service": {
@@ -12813,13 +12956,13 @@
                                           "localId": {
                                             "maxLength": 256,
                                             "minLength": 1,
-                                            "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                            "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                             "type": "string"
                                           },
                                           "pluginId": {
                                             "maxLength": 256,
                                             "minLength": 3,
-                                            "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                            "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                             "type": "string"
                                           }
                                         },
@@ -12940,7 +13083,7 @@
                                       "accountId": {
                                         "maxLength": 256,
                                         "minLength": 1,
-                                        "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                                        "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                                         "type": "string"
                                       },
                                       "service": {
@@ -12949,13 +13092,13 @@
                                           "localId": {
                                             "maxLength": 256,
                                             "minLength": 1,
-                                            "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                            "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                             "type": "string"
                                           },
                                           "pluginId": {
                                             "maxLength": 256,
                                             "minLength": 3,
-                                            "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                            "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                             "type": "string"
                                           }
                                         },
@@ -13129,7 +13272,7 @@
                                       "accountId": {
                                         "maxLength": 256,
                                         "minLength": 1,
-                                        "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                                        "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                                         "type": "string"
                                       },
                                       "service": {
@@ -13138,13 +13281,13 @@
                                           "localId": {
                                             "maxLength": 256,
                                             "minLength": 1,
-                                            "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                            "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                             "type": "string"
                                           },
                                           "pluginId": {
                                             "maxLength": 256,
                                             "minLength": 3,
-                                            "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                            "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                             "type": "string"
                                           }
                                         },
@@ -13354,13 +13497,13 @@
                               "localId": {
                                 "maxLength": 256,
                                 "minLength": 1,
-                                "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                 "type": "string"
                               },
                               "pluginId": {
                                 "maxLength": 256,
                                 "minLength": 3,
-                                "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                 "type": "string"
                               }
                             },
@@ -13391,7 +13534,7 @@
                                   "accountId": {
                                     "maxLength": 256,
                                     "minLength": 1,
-                                    "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                                    "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                                     "type": "string"
                                   },
                                   "service": {
@@ -13400,13 +13543,13 @@
                                       "localId": {
                                         "maxLength": 256,
                                         "minLength": 1,
-                                        "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                        "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                         "type": "string"
                                       },
                                       "pluginId": {
                                         "maxLength": 256,
                                         "minLength": 3,
-                                        "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                        "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                         "type": "string"
                                       }
                                     },
@@ -13464,13 +13607,13 @@
                                   "localId": {
                                     "maxLength": 256,
                                     "minLength": 1,
-                                    "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                    "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                     "type": "string"
                                   },
                                   "pluginId": {
                                     "maxLength": 256,
                                     "minLength": 3,
-                                    "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                    "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                     "type": "string"
                                   }
                                 },
@@ -13904,7 +14047,7 @@
                                       "accountId": {
                                         "maxLength": 256,
                                         "minLength": 1,
-                                        "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                                        "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                                         "type": "string"
                                       },
                                       "service": {
@@ -13913,13 +14056,13 @@
                                           "localId": {
                                             "maxLength": 256,
                                             "minLength": 1,
-                                            "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                            "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                             "type": "string"
                                           },
                                           "pluginId": {
                                             "maxLength": 256,
                                             "minLength": 3,
-                                            "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                            "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                             "type": "string"
                                           }
                                         },
@@ -13977,13 +14120,13 @@
                                       "localId": {
                                         "maxLength": 256,
                                         "minLength": 1,
-                                        "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                        "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                         "type": "string"
                                       },
                                       "pluginId": {
                                         "maxLength": 256,
                                         "minLength": 3,
-                                        "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                        "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                         "type": "string"
                                       }
                                     },
@@ -14100,7 +14243,7 @@
                                       "accountId": {
                                         "maxLength": 256,
                                         "minLength": 1,
-                                        "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                                        "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                                         "type": "string"
                                       },
                                       "service": {
@@ -14109,13 +14252,13 @@
                                           "localId": {
                                             "maxLength": 256,
                                             "minLength": 1,
-                                            "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                            "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                             "type": "string"
                                           },
                                           "pluginId": {
                                             "maxLength": 256,
                                             "minLength": 3,
-                                            "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                            "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                             "type": "string"
                                           }
                                         },
@@ -14173,13 +14316,13 @@
                                       "localId": {
                                         "maxLength": 256,
                                         "minLength": 1,
-                                        "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                        "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                         "type": "string"
                                       },
                                       "pluginId": {
                                         "maxLength": 256,
                                         "minLength": 3,
-                                        "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                        "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                         "type": "string"
                                       }
                                     },
@@ -15929,13 +16072,13 @@
                               "localId": {
                                 "maxLength": 256,
                                 "minLength": 1,
-                                "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                 "type": "string"
                               },
                               "pluginId": {
                                 "maxLength": 256,
                                 "minLength": 3,
-                                "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                 "type": "string"
                               }
                             },
@@ -15966,7 +16109,7 @@
                                   "accountId": {
                                     "maxLength": 256,
                                     "minLength": 1,
-                                    "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                                    "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                                     "type": "string"
                                   },
                                   "service": {
@@ -15975,13 +16118,13 @@
                                       "localId": {
                                         "maxLength": 256,
                                         "minLength": 1,
-                                        "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                        "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                         "type": "string"
                                       },
                                       "pluginId": {
                                         "maxLength": 256,
                                         "minLength": 3,
-                                        "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                        "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                         "type": "string"
                                       }
                                     },
@@ -16039,13 +16182,13 @@
                                   "localId": {
                                     "maxLength": 256,
                                     "minLength": 1,
-                                    "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                    "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                     "type": "string"
                                   },
                                   "pluginId": {
                                     "maxLength": 256,
                                     "minLength": 3,
-                                    "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                    "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                     "type": "string"
                                   }
                                 },
@@ -16353,7 +16496,7 @@
                                 "accountId": {
                                   "maxLength": 256,
                                   "minLength": 1,
-                                  "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                                  "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                                   "type": "string"
                                 },
                                 "service": {
@@ -16362,13 +16505,13 @@
                                     "localId": {
                                       "maxLength": 256,
                                       "minLength": 1,
-                                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                       "type": "string"
                                     },
                                     "pluginId": {
                                       "maxLength": 256,
                                       "minLength": 3,
-                                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                       "type": "string"
                                     }
                                   },
@@ -16426,13 +16569,13 @@
                                 "localId": {
                                   "maxLength": 256,
                                   "minLength": 1,
-                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                   "type": "string"
                                 },
                                 "pluginId": {
                                   "maxLength": 256,
                                   "minLength": 3,
-                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                   "type": "string"
                                 }
                               },
@@ -16575,13 +16718,13 @@
                                 "localId": {
                                   "maxLength": 256,
                                   "minLength": 1,
-                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                   "type": "string"
                                 },
                                 "pluginId": {
                                   "maxLength": 256,
                                   "minLength": 3,
-                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                   "type": "string"
                                 }
                               },
@@ -17359,6 +17502,7 @@
             "plugins.triage.surface.reviewChooser.open": "Open session",
             "plugins.triage.surface.reviewChooser.openFailed": "The linked session could not be opened.",
             "plugins.triage.surface.reviewChooser.opening": "Opening the session…",
+            "plugins.triage.surface.reviewChooser.partial": "Some of the review engines you chose did not start. Trying again starts only those, and the reviews already running are left alone.",
             "plugins.triage.surface.reviewChooser.refused": "The pull request changed or the review could not be started. The linked session is still available.",
             "plugins.triage.surface.reviewChooser.required": "Choose at least one review engine before starting.",
             "plugins.triage.surface.reviewChooser.start": "Start review",
@@ -17369,11 +17513,21 @@
             "plugins.triage.surface.routeWriteFailed.rejected": "Happier refused the location change, so the last settled view was restored. Try again.",
             "plugins.triage.surface.routeWriteFailed.title": "This page could not be updated",
             "plugins.triage.surface.routeWriteFailed.unavailable": "This screen cannot update its shareable location, so the last settled view was restored.",
+            "plugins.triage.surface.row.absent": "No longer reported by the source",
             "plugins.triage.surface.row.deselect": "Deselect {title}",
             "plugins.triage.surface.row.moreActions": "More actions for {title}",
+            "plugins.triage.surface.row.notSynchronized": "Not yet synchronized",
             "plugins.triage.surface.row.pin": "Pin {title}",
             "plugins.triage.surface.row.select": "Select {title}",
+            "plugins.triage.surface.row.stale": "Stale",
+            "plugins.triage.surface.row.staleSince": "Stale, last seen",
+            "plugins.triage.surface.row.state.active": "Active",
+            "plugins.triage.surface.row.state.closed": "Closed",
+            "plugins.triage.surface.row.state.resolved": "Resolved",
+            "plugins.triage.surface.row.state.suppressed": "Suppressed",
+            "plugins.triage.surface.row.state.unknown": "State unknown",
             "plugins.triage.surface.row.unpin": "Unpin {title}",
+            "plugins.triage.surface.row.unresolved": "Could not be read in the last pass",
             "plugins.triage.surface.search": "Search PRs & Issues",
             "plugins.triage.surface.section.done": "Done",
             "plugins.triage.surface.section.open": "Open",
@@ -17692,6 +17846,7 @@
             "plugins.triage.surface.reviewChooser.open": "Session öffnen",
             "plugins.triage.surface.reviewChooser.openFailed": "Die verknüpfte Session konnte nicht geöffnet werden.",
             "plugins.triage.surface.reviewChooser.opening": "Session wird geöffnet…",
+            "plugins.triage.surface.reviewChooser.partial": "Einige der gewählten Review-Engines wurden nicht gestartet. Ein erneuter Versuch startet nur diese; die bereits laufenden Reviews bleiben unberührt.",
             "plugins.triage.surface.reviewChooser.refused": "Der Pull Request hat sich geändert oder das Review konnte nicht gestartet werden. Die verknüpfte Session ist weiterhin verfügbar.",
             "plugins.triage.surface.reviewChooser.required": "Wähle vor dem Start mindestens eine Review-Engine aus.",
             "plugins.triage.surface.reviewChooser.start": "Review starten",
@@ -17702,11 +17857,21 @@
             "plugins.triage.surface.routeWriteFailed.rejected": "Happier hat die Ortsänderung abgelehnt. Daher wurde die zuletzt bestätigte Ansicht wiederhergestellt. Versuche es erneut.",
             "plugins.triage.surface.routeWriteFailed.title": "Diese Seite konnte nicht aktualisiert werden",
             "plugins.triage.surface.routeWriteFailed.unavailable": "Diese Ansicht kann ihren teilbaren Ort nicht aktualisieren. Daher wurde die zuletzt bestätigte Ansicht wiederhergestellt.",
+            "plugins.triage.surface.row.absent": "Von der Quelle nicht mehr gemeldet",
             "plugins.triage.surface.row.deselect": "Auswahl von {title} aufheben",
             "plugins.triage.surface.row.moreActions": "Weitere Aktionen für {title}",
+            "plugins.triage.surface.row.notSynchronized": "Noch nicht synchronisiert",
             "plugins.triage.surface.row.pin": "{title} anheften",
             "plugins.triage.surface.row.select": "{title} auswählen",
+            "plugins.triage.surface.row.stale": "Veraltet",
+            "plugins.triage.surface.row.staleSince": "Veraltet, zuletzt gesehen",
+            "plugins.triage.surface.row.state.active": "Aktiv",
+            "plugins.triage.surface.row.state.closed": "Geschlossen",
+            "plugins.triage.surface.row.state.resolved": "Erledigt",
+            "plugins.triage.surface.row.state.suppressed": "Unterdrückt",
+            "plugins.triage.surface.row.state.unknown": "Status unbekannt",
             "plugins.triage.surface.row.unpin": "Anheftung von {title} lösen",
+            "plugins.triage.surface.row.unresolved": "Konnte im letzten Durchlauf nicht gelesen werden",
             "plugins.triage.surface.search": "PRs & Issues durchsuchen",
             "plugins.triage.surface.section.done": "Erledigt",
             "plugins.triage.surface.section.open": "Offen",
@@ -18025,6 +18190,7 @@
             "plugins.triage.surface.reviewChooser.open": "Открыть сессию",
             "plugins.triage.surface.reviewChooser.openFailed": "Не удалось открыть связанную сессию.",
             "plugins.triage.surface.reviewChooser.opening": "Открытие сессии…",
+            "plugins.triage.surface.reviewChooser.partial": "Некоторые из выбранных движков проверки не запустились. Повторная попытка запустит только их, а уже идущие проверки останутся без изменений.",
             "plugins.triage.surface.reviewChooser.refused": "Запрос на слияние изменился или проверку не удалось запустить. Связанная сессия по-прежнему доступна.",
             "plugins.triage.surface.reviewChooser.required": "Перед запуском выберите хотя бы одно средство проверки.",
             "plugins.triage.surface.reviewChooser.start": "Начать проверку",
@@ -18035,11 +18201,21 @@
             "plugins.triage.surface.routeWriteFailed.rejected": "Happier отклонил изменение адреса, поэтому восстановлен последний подтверждённый вид. Повторите попытку.",
             "plugins.triage.surface.routeWriteFailed.title": "Не удалось обновить эту страницу",
             "plugins.triage.surface.routeWriteFailed.unavailable": "Этот экран не может обновить общую ссылку, поэтому восстановлен последний подтверждённый вид.",
+            "plugins.triage.surface.row.absent": "Источник больше не сообщает об этом",
             "plugins.triage.surface.row.deselect": "Снять выбор с {title}",
             "plugins.triage.surface.row.moreActions": "Другие действия для {title}",
+            "plugins.triage.surface.row.notSynchronized": "Ещё не синхронизировано",
             "plugins.triage.surface.row.pin": "Закрепить {title}",
             "plugins.triage.surface.row.select": "Выбрать {title}",
+            "plugins.triage.surface.row.stale": "Устарело",
+            "plugins.triage.surface.row.staleSince": "Устарело, последний раз видели",
+            "plugins.triage.surface.row.state.active": "Активно",
+            "plugins.triage.surface.row.state.closed": "Закрыто",
+            "plugins.triage.surface.row.state.resolved": "Решено",
+            "plugins.triage.surface.row.state.suppressed": "Скрыто",
+            "plugins.triage.surface.row.state.unknown": "Состояние неизвестно",
             "plugins.triage.surface.row.unpin": "Открепить {title}",
+            "plugins.triage.surface.row.unresolved": "Не удалось прочитать в последнем проходе",
             "plugins.triage.surface.search": "Поиск PRs & Issues",
             "plugins.triage.surface.section.done": "Завершенный",
             "plugins.triage.surface.section.open": "Открытый",
@@ -18358,6 +18534,7 @@
             "plugins.triage.surface.reviewChooser.open": "Otwórz sesję",
             "plugins.triage.surface.reviewChooser.openFailed": "Nie udało się otworzyć powiązanej sesji.",
             "plugins.triage.surface.reviewChooser.opening": "Otwieranie sesji…",
+            "plugins.triage.surface.reviewChooser.partial": "Część wybranych silników przeglądu nie wystartowała. Ponowna próba uruchomi tylko je, a już działające przeglądy pozostaną nietknięte.",
             "plugins.triage.surface.reviewChooser.refused": "Pull request się zmienił lub nie udało się rozpocząć przeglądu. Powiązana sesja jest nadal dostępna.",
             "plugins.triage.surface.reviewChooser.required": "Przed rozpoczęciem wybierz co najmniej jeden silnik przeglądu.",
             "plugins.triage.surface.reviewChooser.start": "Rozpocznij przegląd",
@@ -18368,11 +18545,21 @@
             "plugins.triage.surface.routeWriteFailed.rejected": "Happier odrzucił zmianę lokalizacji, więc przywrócono ostatni zatwierdzony widok. Spróbuj ponownie.",
             "plugins.triage.surface.routeWriteFailed.title": "Nie udało się zaktualizować tej strony",
             "plugins.triage.surface.routeWriteFailed.unavailable": "Ten ekran nie może zaktualizować udostępnianej lokalizacji, więc przywrócono ostatni zatwierdzony widok.",
+            "plugins.triage.surface.row.absent": "Źródło już tego nie zgłasza",
             "plugins.triage.surface.row.deselect": "Odznacz {title}",
             "plugins.triage.surface.row.moreActions": "Więcej akcji dla {title}",
+            "plugins.triage.surface.row.notSynchronized": "Jeszcze nie zsynchronizowano",
             "plugins.triage.surface.row.pin": "Przypnij {title}",
             "plugins.triage.surface.row.select": "Zaznacz {title}",
+            "plugins.triage.surface.row.stale": "Nieaktualne",
+            "plugins.triage.surface.row.staleSince": "Nieaktualne, ostatnio widziane",
+            "plugins.triage.surface.row.state.active": "Aktywne",
+            "plugins.triage.surface.row.state.closed": "Zamknięte",
+            "plugins.triage.surface.row.state.resolved": "Rozwiązane",
+            "plugins.triage.surface.row.state.suppressed": "Wyciszone",
+            "plugins.triage.surface.row.state.unknown": "Stan nieznany",
             "plugins.triage.surface.row.unpin": "Odepnij {title}",
+            "plugins.triage.surface.row.unresolved": "Nie udało się odczytać w ostatnim przebiegu",
             "plugins.triage.surface.search": "Szukaj w PRs & Issues",
             "plugins.triage.surface.section.done": "Zakończone",
             "plugins.triage.surface.section.open": "Otwarte",
@@ -18691,6 +18878,7 @@
             "plugins.triage.surface.reviewChooser.open": "Abrir sesión",
             "plugins.triage.surface.reviewChooser.openFailed": "No se pudo abrir la sesión vinculada.",
             "plugins.triage.surface.reviewChooser.opening": "Abriendo la sesión…",
+            "plugins.triage.surface.reviewChooser.partial": "Algunos de los motores de revisión que elegiste no se iniciaron. Volver a intentarlo inicia solo esos y deja intactas las revisiones ya en curso.",
             "plugins.triage.surface.reviewChooser.refused": "El pull request cambió o no se pudo iniciar la revisión. La sesión vinculada sigue disponible.",
             "plugins.triage.surface.reviewChooser.required": "Elige al menos un motor de revisión antes de empezar.",
             "plugins.triage.surface.reviewChooser.start": "Iniciar revisión",
@@ -18701,11 +18889,21 @@
             "plugins.triage.surface.routeWriteFailed.rejected": "Happier rechazó el cambio de ubicación, así que se restauró la última vista confirmada. Inténtalo de nuevo.",
             "plugins.triage.surface.routeWriteFailed.title": "No se pudo actualizar esta página",
             "plugins.triage.surface.routeWriteFailed.unavailable": "Esta pantalla no puede actualizar su ubicación compartible, así que se restauró la última vista confirmada.",
+            "plugins.triage.surface.row.absent": "La fuente ya no lo informa",
             "plugins.triage.surface.row.deselect": "Anular la selección de {title}",
             "plugins.triage.surface.row.moreActions": "Más acciones para {title}",
+            "plugins.triage.surface.row.notSynchronized": "Aún no se ha sincronizado",
             "plugins.triage.surface.row.pin": "Fijar {title}",
             "plugins.triage.surface.row.select": "Seleccionar {title}",
+            "plugins.triage.surface.row.stale": "Desactualizado",
+            "plugins.triage.surface.row.staleSince": "Desactualizado, visto por última vez",
+            "plugins.triage.surface.row.state.active": "Activo",
+            "plugins.triage.surface.row.state.closed": "Cerrado",
+            "plugins.triage.surface.row.state.resolved": "Resuelto",
+            "plugins.triage.surface.row.state.suppressed": "Silenciado",
+            "plugins.triage.surface.row.state.unknown": "Estado desconocido",
             "plugins.triage.surface.row.unpin": "Dejar de fijar {title}",
+            "plugins.triage.surface.row.unresolved": "No se pudo leer en la última pasada",
             "plugins.triage.surface.search": "Buscar en PRs & Issues",
             "plugins.triage.surface.section.done": "Hecho",
             "plugins.triage.surface.section.open": "Abierto",
@@ -19024,6 +19222,7 @@
             "plugins.triage.surface.reviewChooser.open": "Ouvrir la session",
             "plugins.triage.surface.reviewChooser.openFailed": "La session liée n’a pas pu être ouverte.",
             "plugins.triage.surface.reviewChooser.opening": "Ouverture de la session…",
+            "plugins.triage.surface.reviewChooser.partial": "Certains des moteurs de revue choisis n’ont pas démarré. Réessayer ne lance que ceux-là et laisse intactes les revues déjà en cours.",
             "plugins.triage.surface.reviewChooser.refused": "La pull request a changé ou la revue n’a pas pu démarrer. La session liée reste disponible.",
             "plugins.triage.surface.reviewChooser.required": "Choisissez au moins un moteur de revue avant de commencer.",
             "plugins.triage.surface.reviewChooser.start": "Démarrer la revue",
@@ -19034,11 +19233,21 @@
             "plugins.triage.surface.routeWriteFailed.rejected": "Happier a refusé le changement d’emplacement. La dernière vue confirmée a donc été restaurée. Réessayez.",
             "plugins.triage.surface.routeWriteFailed.title": "Impossible de mettre cette page à jour",
             "plugins.triage.surface.routeWriteFailed.unavailable": "Cet écran ne peut pas mettre à jour son emplacement partageable. La dernière vue confirmée a donc été restaurée.",
+            "plugins.triage.surface.row.absent": "La source ne le signale plus",
             "plugins.triage.surface.row.deselect": "Désélectionner {title}",
             "plugins.triage.surface.row.moreActions": "Plus d’actions pour {title}",
+            "plugins.triage.surface.row.notSynchronized": "Pas encore synchronisé",
             "plugins.triage.surface.row.pin": "Épingler {title}",
             "plugins.triage.surface.row.select": "Sélectionner {title}",
+            "plugins.triage.surface.row.stale": "Périmé",
+            "plugins.triage.surface.row.staleSince": "Périmé, vu pour la dernière fois",
+            "plugins.triage.surface.row.state.active": "Actif",
+            "plugins.triage.surface.row.state.closed": "Fermé",
+            "plugins.triage.surface.row.state.resolved": "Résolu",
+            "plugins.triage.surface.row.state.suppressed": "Masqué",
+            "plugins.triage.surface.row.state.unknown": "État inconnu",
             "plugins.triage.surface.row.unpin": "Désépingler {title}",
+            "plugins.triage.surface.row.unresolved": "N’a pas pu être lu lors du dernier passage",
             "plugins.triage.surface.search": "Rechercher dans PRs & Issues",
             "plugins.triage.surface.section.done": "Terminé",
             "plugins.triage.surface.section.open": "Ouvert",
@@ -19357,6 +19566,7 @@
             "plugins.triage.surface.reviewChooser.open": "Apri sessione",
             "plugins.triage.surface.reviewChooser.openFailed": "Impossibile aprire la sessione collegata.",
             "plugins.triage.surface.reviewChooser.opening": "Apertura della sessione…",
+            "plugins.triage.surface.reviewChooser.partial": "Alcuni dei motori di revisione scelti non sono partiti. Riprovare avvia solo quelli e lascia intatte le revisioni già in corso.",
             "plugins.triage.surface.reviewChooser.refused": "La pull request è cambiata o non è stato possibile avviare la revisione. La sessione collegata resta disponibile.",
             "plugins.triage.surface.reviewChooser.required": "Scegli almeno un motore di revisione prima di iniziare.",
             "plugins.triage.surface.reviewChooser.start": "Avvia revisione",
@@ -19367,11 +19577,21 @@
             "plugins.triage.surface.routeWriteFailed.rejected": "Happier ha rifiutato la modifica della posizione, quindi è stata ripristinata l’ultima vista confermata. Riprova.",
             "plugins.triage.surface.routeWriteFailed.title": "Impossibile aggiornare questa pagina",
             "plugins.triage.surface.routeWriteFailed.unavailable": "Questa schermata non può aggiornare la posizione condivisibile, quindi è stata ripristinata l’ultima vista confermata.",
+            "plugins.triage.surface.row.absent": "La fonte non lo segnala più",
             "plugins.triage.surface.row.deselect": "Deseleziona {title}",
             "plugins.triage.surface.row.moreActions": "Altre azioni per {title}",
+            "plugins.triage.surface.row.notSynchronized": "Non ancora sincronizzato",
             "plugins.triage.surface.row.pin": "Fissa {title}",
             "plugins.triage.surface.row.select": "Seleziona {title}",
+            "plugins.triage.surface.row.stale": "Non aggiornato",
+            "plugins.triage.surface.row.staleSince": "Non aggiornato, visto l’ultima volta",
+            "plugins.triage.surface.row.state.active": "Attivo",
+            "plugins.triage.surface.row.state.closed": "Chiuso",
+            "plugins.triage.surface.row.state.resolved": "Risolto",
+            "plugins.triage.surface.row.state.suppressed": "Silenziato",
+            "plugins.triage.surface.row.state.unknown": "Stato sconosciuto",
             "plugins.triage.surface.row.unpin": "Rimuovi {title} dai fissati",
+            "plugins.triage.surface.row.unresolved": "Non è stato possibile leggerlo nell’ultimo passaggio",
             "plugins.triage.surface.search": "Cerca in PRs & Issues",
             "plugins.triage.surface.section.done": "Fatto",
             "plugins.triage.surface.section.open": "Aperto",
@@ -19690,6 +19910,7 @@
             "plugins.triage.surface.reviewChooser.open": "Abrir sessão",
             "plugins.triage.surface.reviewChooser.openFailed": "Não foi possível abrir a sessão associada.",
             "plugins.triage.surface.reviewChooser.opening": "A abrir a sessão…",
+            "plugins.triage.surface.reviewChooser.partial": "Alguns dos motores de revisão que escolheu não iniciaram. Tentar de novo inicia apenas esses e deixa intactas as revisões já em curso.",
             "plugins.triage.surface.reviewChooser.refused": "O pull request mudou ou não foi possível iniciar a revisão. A sessão associada continua disponível.",
             "plugins.triage.surface.reviewChooser.required": "Escolha pelo menos um motor de revisão antes de começar.",
             "plugins.triage.surface.reviewChooser.start": "Iniciar revisão",
@@ -19700,11 +19921,21 @@
             "plugins.triage.surface.routeWriteFailed.rejected": "O Happier recusou a alteração da localização, por isso a última vista confirmada foi restaurada. Tenta novamente.",
             "plugins.triage.surface.routeWriteFailed.title": "Não foi possível atualizar esta página",
             "plugins.triage.surface.routeWriteFailed.unavailable": "Este ecrã não pode atualizar a localização partilhável, por isso a última vista confirmada foi restaurada.",
+            "plugins.triage.surface.row.absent": "A fonte já não o comunica",
             "plugins.triage.surface.row.deselect": "Desmarcar {title}",
             "plugins.triage.surface.row.moreActions": "Mais ações para {title}",
+            "plugins.triage.surface.row.notSynchronized": "Ainda não sincronizado",
             "plugins.triage.surface.row.pin": "Fixar {title}",
             "plugins.triage.surface.row.select": "Selecionar {title}",
+            "plugins.triage.surface.row.stale": "Desatualizado",
+            "plugins.triage.surface.row.staleSince": "Desatualizado, visto pela última vez",
+            "plugins.triage.surface.row.state.active": "Ativo",
+            "plugins.triage.surface.row.state.closed": "Fechado",
+            "plugins.triage.surface.row.state.resolved": "Resolvido",
+            "plugins.triage.surface.row.state.suppressed": "Silenciado",
+            "plugins.triage.surface.row.state.unknown": "Estado desconhecido",
             "plugins.triage.surface.row.unpin": "Desafixar {title}",
+            "plugins.triage.surface.row.unresolved": "Não foi possível ler na última passagem",
             "plugins.triage.surface.search": "Pesquisar PRs & Issues",
             "plugins.triage.surface.section.done": "Feito",
             "plugins.triage.surface.section.open": "Aberto",
@@ -20023,6 +20254,7 @@
             "plugins.triage.surface.reviewChooser.open": "Obre la sessió",
             "plugins.triage.surface.reviewChooser.openFailed": "No s’ha pogut obrir la sessió enllaçada.",
             "plugins.triage.surface.reviewChooser.opening": "S’està obrint la sessió…",
+            "plugins.triage.surface.reviewChooser.partial": "Alguns dels motors de revisió que has triat no s’han iniciat. Tornar-ho a provar només inicia aquests i deixa intactes les revisions ja en curs.",
             "plugins.triage.surface.reviewChooser.refused": "La pull request ha canviat o no s’ha pogut iniciar la revisió. La sessió enllaçada continua disponible.",
             "plugins.triage.surface.reviewChooser.required": "Trieu com a mínim un motor de revisió abans de començar.",
             "plugins.triage.surface.reviewChooser.start": "Inicia la revisió",
@@ -20033,11 +20265,21 @@
             "plugins.triage.surface.routeWriteFailed.rejected": "Happier ha rebutjat el canvi d’ubicació, així que s’ha restaurat l’última vista confirmada. Torna-ho a provar.",
             "plugins.triage.surface.routeWriteFailed.title": "No s’ha pogut actualitzar aquesta pàgina",
             "plugins.triage.surface.routeWriteFailed.unavailable": "Aquesta pantalla no pot actualitzar la ubicació compartible, així que s’ha restaurat l’última vista confirmada.",
+            "plugins.triage.surface.row.absent": "La font ja no ho informa",
             "plugins.triage.surface.row.deselect": "Desselecciona {title}",
             "plugins.triage.surface.row.moreActions": "Més accions per a {title}",
+            "plugins.triage.surface.row.notSynchronized": "Encara no s’ha sincronitzat",
             "plugins.triage.surface.row.pin": "Fixa {title}",
             "plugins.triage.surface.row.select": "Selecciona {title}",
+            "plugins.triage.surface.row.stale": "Desactualitzat",
+            "plugins.triage.surface.row.staleSince": "Desactualitzat, vist per darrera vegada",
+            "plugins.triage.surface.row.state.active": "Actiu",
+            "plugins.triage.surface.row.state.closed": "Tancat",
+            "plugins.triage.surface.row.state.resolved": "Resolt",
+            "plugins.triage.surface.row.state.suppressed": "Silenciat",
+            "plugins.triage.surface.row.state.unknown": "Estat desconegut",
             "plugins.triage.surface.row.unpin": "Deixa de fixar {title}",
+            "plugins.triage.surface.row.unresolved": "No s’ha pogut llegir en la darrera passada",
             "plugins.triage.surface.search": "Cerca a PRs & Issues",
             "plugins.triage.surface.section.done": "Fet",
             "plugins.triage.surface.section.open": "Obert",
@@ -20356,6 +20598,7 @@
             "plugins.triage.surface.reviewChooser.open": "打开会话",
             "plugins.triage.surface.reviewChooser.openFailed": "无法打开已关联的会话。",
             "plugins.triage.surface.reviewChooser.opening": "正在打开会话…",
+            "plugins.triage.surface.reviewChooser.partial": "你选择的部分审查引擎没有启动。再次尝试只会启动这些引擎，已在运行的审查不受影响。",
             "plugins.triage.surface.reviewChooser.refused": "拉取请求已更改，或无法开始审查。已关联的会话仍然可用。",
             "plugins.triage.surface.reviewChooser.required": "开始前请至少选择一个审查引擎。",
             "plugins.triage.surface.reviewChooser.start": "开始审查",
@@ -20366,11 +20609,21 @@
             "plugins.triage.surface.routeWriteFailed.rejected": "Happier 拒绝了位置更改，因此已恢复上次确认的视图。请重试。",
             "plugins.triage.surface.routeWriteFailed.title": "无法更新此页面",
             "plugins.triage.surface.routeWriteFailed.unavailable": "此屏幕无法更新可共享位置，因此已恢复上次确认的视图。",
+            "plugins.triage.surface.row.absent": "来源已不再报告该条目",
             "plugins.triage.surface.row.deselect": "取消选择 {title}",
             "plugins.triage.surface.row.moreActions": "{title} 的更多操作",
+            "plugins.triage.surface.row.notSynchronized": "尚未同步",
             "plugins.triage.surface.row.pin": "置顶 {title}",
             "plugins.triage.surface.row.select": "选择 {title}",
+            "plugins.triage.surface.row.stale": "已过期",
+            "plugins.triage.surface.row.staleSince": "已过期，最后一次读取于",
+            "plugins.triage.surface.row.state.active": "进行中",
+            "plugins.triage.surface.row.state.closed": "已关闭",
+            "plugins.triage.surface.row.state.resolved": "已解决",
+            "plugins.triage.surface.row.state.suppressed": "已忽略",
+            "plugins.triage.surface.row.state.unknown": "状态未知",
             "plugins.triage.surface.row.unpin": "取消置顶 {title}",
+            "plugins.triage.surface.row.unresolved": "上一次读取未能读到",
             "plugins.triage.surface.search": "搜索 PRs & Issues",
             "plugins.triage.surface.section.done": "完成",
             "plugins.triage.surface.section.open": "打开",
@@ -20689,6 +20942,7 @@
             "plugins.triage.surface.reviewChooser.open": "開啟工作階段",
             "plugins.triage.surface.reviewChooser.openFailed": "無法開啟已關聯的工作階段。",
             "plugins.triage.surface.reviewChooser.opening": "正在開啟工作階段…",
+            "plugins.triage.surface.reviewChooser.partial": "你選擇的部分審查引擎沒有啟動。再試一次只會啟動這些引擎，已在執行的審查不受影響。",
             "plugins.triage.surface.reviewChooser.refused": "提取請求已變更，或無法開始審查。已關聯的工作階段仍可使用。",
             "plugins.triage.surface.reviewChooser.required": "開始前請至少選擇一個審查引擎。",
             "plugins.triage.surface.reviewChooser.start": "開始審查",
@@ -20699,11 +20953,21 @@
             "plugins.triage.surface.routeWriteFailed.rejected": "Happier 拒絕了位置變更，因此已還原上次確認的檢視。請再試一次。",
             "plugins.triage.surface.routeWriteFailed.title": "無法更新此頁面",
             "plugins.triage.surface.routeWriteFailed.unavailable": "此畫面無法更新可分享的位置，因此已還原上次確認的檢視。",
+            "plugins.triage.surface.row.absent": "來源已不再回報此項目",
             "plugins.triage.surface.row.deselect": "取消選取 {title}",
             "plugins.triage.surface.row.moreActions": "{title} 的更多操作",
+            "plugins.triage.surface.row.notSynchronized": "尚未同步",
             "plugins.triage.surface.row.pin": "置頂 {title}",
             "plugins.triage.surface.row.select": "選取 {title}",
+            "plugins.triage.surface.row.stale": "已過期",
+            "plugins.triage.surface.row.staleSince": "已過期，最後一次讀取於",
+            "plugins.triage.surface.row.state.active": "進行中",
+            "plugins.triage.surface.row.state.closed": "已關閉",
+            "plugins.triage.surface.row.state.resolved": "已解決",
+            "plugins.triage.surface.row.state.suppressed": "已忽略",
+            "plugins.triage.surface.row.state.unknown": "狀態未知",
             "plugins.triage.surface.row.unpin": "取消置頂 {title}",
+            "plugins.triage.surface.row.unresolved": "上一次讀取未能讀到",
             "plugins.triage.surface.search": "搜尋 PRs & Issues",
             "plugins.triage.surface.section.done": "已完成",
             "plugins.triage.surface.section.open": "已開啟",
@@ -21022,6 +21286,7 @@
             "plugins.triage.surface.reviewChooser.open": "セッションを開く",
             "plugins.triage.surface.reviewChooser.openFailed": "リンク済みセッションを開けませんでした。",
             "plugins.triage.surface.reviewChooser.opening": "セッションを開いています…",
+            "plugins.triage.surface.reviewChooser.partial": "選んだレビューエンジンの一部が開始しませんでした。もう一度試すとそれらだけを開始し、すでに実行中のレビューはそのままです。",
             "plugins.triage.surface.reviewChooser.refused": "プルリクエストが変更されたか、レビューを開始できませんでした。リンク済みセッションは引き続き利用できます。",
             "plugins.triage.surface.reviewChooser.required": "開始する前にレビューエンジンを 1 つ以上選択してください。",
             "plugins.triage.surface.reviewChooser.start": "レビューを開始",
@@ -21032,11 +21297,21 @@
             "plugins.triage.surface.routeWriteFailed.rejected": "Happier が場所の変更を拒否したため、最後に確定した表示を復元しました。もう一度お試しください。",
             "plugins.triage.surface.routeWriteFailed.title": "このページを更新できませんでした",
             "plugins.triage.surface.routeWriteFailed.unavailable": "この画面では共有可能な場所を更新できないため、最後に確定した表示を復元しました。",
+            "plugins.triage.surface.row.absent": "ソースが報告しなくなりました",
             "plugins.triage.surface.row.deselect": "{title} の選択を解除",
             "plugins.triage.surface.row.moreActions": "{title} のその他の操作",
+            "plugins.triage.surface.row.notSynchronized": "まだ同期されていません",
             "plugins.triage.surface.row.pin": "{title} をピン留め",
             "plugins.triage.surface.row.select": "{title} を選択",
+            "plugins.triage.surface.row.stale": "古い情報",
+            "plugins.triage.surface.row.staleSince": "古い情報、最終取得",
+            "plugins.triage.surface.row.state.active": "進行中",
+            "plugins.triage.surface.row.state.closed": "クローズ済み",
+            "plugins.triage.surface.row.state.resolved": "解決済み",
+            "plugins.triage.surface.row.state.suppressed": "非表示",
+            "plugins.triage.surface.row.state.unknown": "状態不明",
             "plugins.triage.surface.row.unpin": "{title} のピン留めを解除",
+            "plugins.triage.surface.row.unresolved": "前回の読み取りでは取得できませんでした",
             "plugins.triage.surface.search": "PRs & Issues を検索",
             "plugins.triage.surface.section.done": "完了",
             "plugins.triage.surface.section.open": "開かれている",

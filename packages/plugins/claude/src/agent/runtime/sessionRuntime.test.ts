@@ -26,7 +26,6 @@ function createRecordingOperations(): Readonly<{
             userMessageSeqs?: readonly number[];
         }>;
     }>>;
-    emit(event: ClaudeProviderEvent): void;
     emitDeliveryOutcome(outcome: ClaudeProviderPromptDeliveryOutcome): void;
 }> {
     const normalPrompts: Array<Readonly<{
@@ -83,11 +82,6 @@ function createRecordingOperations(): Readonly<{
         operations,
         normalPrompts,
         steers,
-        emit(event) {
-            for (const handler of eventHandlers) {
-                handler(event);
-            }
-        },
         emitDeliveryOutcome(outcome) {
             deliveryOutcomeHandler?.(outcome);
         },
@@ -121,34 +115,11 @@ describe('createClaudeTestSessionRuntime', () => {
         ]);
     });
 
-    it('translates the exact Claude Agent SDK submission result without downstream event inference', async () => {
-        const { operations, emit } = createRecordingOperations();
-        const runtime = createClaudeTestSessionRuntime(operations);
-        const accepted: Array<Readonly<{ userMessageSeq: number | null; userMessageSeqs?: readonly number[] }>> = [];
-        runtime.setOnPromptAcceptedByProvider?.((info) => accepted.push(info));
-
-        await expect(runtime.send({ text: 'normal prompt' }, { userMessageSeq: 44 }))
-            .resolves
-            .toEqual({ status: 'accepted' });
-
-        expect(accepted).toEqual([{ userMessageSeq: 44, userMessageSeqs: [44] }]);
-
-        emit({
-            kind: 'message-delta',
-            sessionId: 'happier-session-1',
-            turnId: 'claude-sdk-turn-1',
-            emittedAtMs: 1,
-            delta: { text: 'hello' },
-        });
-
-        expect(accepted).toEqual([{ userMessageSeq: 44, userMessageSeqs: [44] }]);
-    });
-
     it('forwards typed prompt delivery outcomes from Claude operations with stable identity intact', () => {
         const { operations, emitDeliveryOutcome } = createRecordingOperations();
         const runtime = createClaudeTestSessionRuntime(operations);
         const outcomes: ClaudeProviderPromptDeliveryOutcome[] = [];
-        runtime.setOnPromptDeliveryOutcome?.((outcome) => outcomes.push(outcome));
+        runtime.setOnPromptDeliveryOutcome((outcome) => outcomes.push(outcome));
 
         emitDeliveryOutcome({
             type: 'custody_observed',

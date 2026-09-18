@@ -20,8 +20,17 @@ type DetectionResult = Readonly<{
 }>;
 
 type Adapter = Readonly<{
-  detectRemote(input: Readonly<{ remoteName: string | null; remoteUrl: string }>): DetectionResult | null;
-  buildCompareUrl(input: Readonly<{ provider: DetectionResult; base: string; head: string }>): string | null;
+  detectRemote(input: Readonly<{
+    remoteName: string | null;
+    remoteUrl: string;
+    connectedAccountBases?: readonly string[];
+  }>): DetectionResult | null;
+  buildCompareUrl(input: Readonly<{
+    provider: DetectionResult;
+    base: string;
+    head: string;
+    connectedAccountBases?: readonly string[];
+  }>): string | null;
 }>;
 
 describe('bundled GitLab SCM hosting provider plugin', () => {
@@ -130,6 +139,135 @@ describe('bundled GitLab SCM hosting provider plugin', () => {
       remoteName: 'origin',
       remoteUrl: 'file:///gitlab.com/happier-dev/mobile/app.git',
     })).toBeNull();
+  });
+
+  describe('configured self-managed deployments', () => {
+    const adapter = gitlabHostingProviderAdapter as Adapter;
+
+    it('recognizes a configured deployment on the default port and keeps its exact base', () => {
+      expect(adapter.detectRemote({
+        remoteName: 'origin',
+        remoteUrl: 'https://gitlab.example.test/platform/mobile/app.git',
+        connectedAccountBases: ['https://gitlab.example.test'],
+      })).toMatchObject({
+        id: 'happier.scm.forge.gitlab/gitlab',
+        kind: 'gitlab',
+        baseUrl: 'https://gitlab.example.test',
+        nameWithOwner: 'platform/mobile/app',
+        repositoryWebUrl: 'https://gitlab.example.test/platform/mobile/app',
+        remoteName: 'origin',
+      });
+    });
+
+    it('recognizes a configured deployment on a custom port without folding the port into the host', () => {
+      expect(adapter.detectRemote({
+        remoteName: 'origin',
+        remoteUrl: 'https://gitlab.example.test:8443/platform/app.git',
+        connectedAccountBases: ['https://gitlab.example.test:8443'],
+      })).toMatchObject({
+        baseUrl: 'https://gitlab.example.test:8443',
+        nameWithOwner: 'platform/app',
+        urlSafety: {
+          allowedBaseUrls: ['https://gitlab.example.test:8443'],
+          allowedOrigins: ['https://gitlab.example.test:8443'],
+        },
+      });
+    });
+
+    it('recognizes a configured deployment behind a path prefix and excludes the prefix from the repository', () => {
+      expect(adapter.detectRemote({
+        remoteName: 'origin',
+        remoteUrl: 'https://code.internal.test/GitLab/platform/mobile/app.git',
+        connectedAccountBases: ['https://code.internal.test/GitLab'],
+      })).toMatchObject({
+        baseUrl: 'https://code.internal.test/GitLab',
+        nameWithOwner: 'platform/mobile/app',
+        repositoryWebUrl: 'https://code.internal.test/GitLab/platform/mobile/app',
+      });
+    });
+
+    it('keeps two deployments mounted under one host apart by their configured prefixes', () => {
+      expect(adapter.detectRemote({
+        remoteName: 'origin',
+        remoteUrl: 'https://code.internal.test/beta/platform/app.git',
+        connectedAccountBases: ['https://code.internal.test/alpha', 'https://code.internal.test/beta'],
+      })).toMatchObject({
+        baseUrl: 'https://code.internal.test/beta',
+        nameWithOwner: 'platform/app',
+      });
+    });
+
+    it('recognizes the same deployment reached over ssh and scp syntax', () => {
+      expect(adapter.detectRemote({
+        remoteName: 'origin',
+        remoteUrl: 'ssh://git@gitlab.example.test:22/platform/app.git',
+        connectedAccountBases: ['https://gitlab.example.test'],
+      })).toMatchObject({ baseUrl: 'https://gitlab.example.test', nameWithOwner: 'platform/app' });
+      expect(adapter.detectRemote({
+        remoteName: 'origin',
+        remoteUrl: 'git@gitlab.example.test:platform/app.git',
+        connectedAccountBases: ['https://gitlab.example.test'],
+      })).toMatchObject({ baseUrl: 'https://gitlab.example.test', nameWithOwner: 'platform/app' });
+    });
+
+    it('never matches a remote whose port or deployment differs from every configured base', () => {
+      expect(adapter.detectRemote({
+        remoteName: 'origin',
+        remoteUrl: 'https://gitlab.example.test:9443/platform/app.git',
+        connectedAccountBases: ['https://gitlab.example.test:8443'],
+      })).toBeNull();
+      expect(adapter.detectRemote({
+        remoteName: 'origin',
+        remoteUrl: 'https://gitlab.example.test/platform/app.git',
+        connectedAccountBases: ['https://gitlab.example.test:8443'],
+      })).toBeNull();
+      expect(adapter.detectRemote({
+        remoteName: 'origin',
+        remoteUrl: 'https://other.example.test/platform/app.git',
+        connectedAccountBases: ['https://gitlab.example.test'],
+      })).toBeNull();
+      expect(adapter.detectRemote({
+        remoteName: 'origin',
+        remoteUrl: 'https://code.internal.test/other/platform/app.git',
+        connectedAccountBases: ['https://code.internal.test/GitLab'],
+      })).toBeNull();
+    });
+
+    it('leaves GitLab.com recognition unchanged and does not widen it through a configured base', () => {
+      expect(adapter.detectRemote({
+        remoteName: 'origin',
+        remoteUrl: 'https://gitlab.com/happier-dev/app.git',
+      })).toMatchObject({ baseUrl: 'https://gitlab.com', nameWithOwner: 'happier-dev/app' });
+      expect(adapter.detectRemote({
+        remoteName: 'origin',
+        remoteUrl: 'https://gitlab.com:8443/happier-dev/app.git',
+        connectedAccountBases: ['https://gitlab.com'],
+      })).toBeNull();
+    });
+
+    it('builds a compare URL for a configured deployment only when the base is the configured one', () => {
+      const provider = adapter.detectRemote({
+        remoteName: 'origin',
+        remoteUrl: 'https://gitlab.example.test:8443/platform/app.git',
+        connectedAccountBases: ['https://gitlab.example.test:8443'],
+      });
+      expect(provider).not.toBeNull();
+      if (!provider) return;
+
+      expect(adapter.buildCompareUrl({
+        provider,
+        base: 'main',
+        head: 'feature/auth',
+        connectedAccountBases: ['https://gitlab.example.test:8443'],
+      })).toBe('https://gitlab.example.test:8443/platform/app/-/compare/main...feature%2Fauth');
+      expect(adapter.buildCompareUrl({
+        provider,
+        base: 'main',
+        head: 'feature/auth',
+        connectedAccountBases: ['https://gitlab.example.test:9443'],
+      })).toBeNull();
+      expect(adapter.buildCompareUrl({ provider, base: 'main', head: 'feature/auth' })).toBeNull();
+    });
   });
 
   it('builds encoded GitLab compare URLs without write or CLI behavior', async () => {

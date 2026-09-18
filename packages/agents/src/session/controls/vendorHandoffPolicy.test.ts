@@ -17,11 +17,12 @@ describe('vendorHandoffPolicy', () => {
   });
 
   it('resolves vendor handoff ids from metadata using the vendor resume field', () => {
-    expect(resolveVendorHandoffIdFromSessionMetadata('claude', { claudeSessionId: ' c1 ' })).toBe('c1');
+    // Delegates to the one resume-id owner, so the Agent's bytes survive.
+    expect(resolveVendorHandoffIdFromSessionMetadata('claude', { claudeSessionId: ' c1 ' })).toBe(' c1 ');
     expect(resolveVendorHandoffIdFromSessionMetadata('claude', { claudeSessionId: '   ' })).toBeNull();
   });
 
-  it('prefers vendor session ids from agentRuntimeDescriptorV1 for handoff ids', () => {
+  it('keeps the released flat vendor id authoritative instead of interpreting descriptor payloads', () => {
     expect(resolveVendorHandoffIdFromSessionMetadata('codex', {
       agentRuntimeDescriptorV1: {
         v: 1,
@@ -29,7 +30,7 @@ describe('vendorHandoffPolicy', () => {
         provider: { backendMode: 'appServer', providerSessionId: 'runtime_thread' },
       },
       codexSessionId: 'legacy_thread',
-    })).toBe('runtime_thread');
+    })).toBe('legacy_thread');
   });
 
   it('rejects unsupported direct handoff when the provider does not support direct session storage', () => {
@@ -89,7 +90,7 @@ describe('vendorHandoffPolicy', () => {
           },
         },
       }),
-    ).toEqual({ eligible: false, reasonCode: 'storage_mode_unsupported' });
+    ).toEqual({ eligible: false, reasonCode: 'handoff_unsupported' });
   });
 
   it('uses the declared Codex runtime default when session metadata has no runtime identity', () => {
@@ -102,7 +103,7 @@ describe('vendorHandoffPolicy', () => {
     ).toEqual({ eligible: true, vendorHandoffId: 'x1' });
   });
 
-  it('allows codex handoff when the canonical runtime descriptor proves an eligible backend mode', () => {
+  it('does not derive Codex handoff support from an opaque runtime descriptor payload', () => {
     expect(
       evaluateVendorHandoffEligibility({
         agentId: 'codex',
@@ -116,7 +117,7 @@ describe('vendorHandoffPolicy', () => {
           },
         },
       }),
-    ).toEqual({ eligible: true, vendorHandoffId: 'x1' });
+    ).toEqual({ eligible: false, reasonCode: 'handoff_unsupported' });
   });
 
   it('prefers the canonical runtime descriptor over legacy codex backend metadata', () => {

@@ -194,6 +194,8 @@ export {
 export {
   AGENT_LOCAL_CLI_CONFIG,
   CANONICAL_AGENT_LOCAL_CLI_CONFIG,
+  CANONICAL_AGENT_MANAGED_CLI_INSTALL_DECLARED,
+  agentDeclaresManagedCliInstall,
   getAgentLocalCliConfig,
   type AgentCliSupportKind,
   type AgentCliLaunchCommand,
@@ -312,6 +314,7 @@ export {
   readActiveSessionModelSelectionFromMetadata,
   resolveAmbientProviderConnectionForModelIntent,
   resolveModelSelectionIntentFromSessionMetadata,
+  readSessionModelSelectionV2FromMetadata,
   resolveMetadataStringOverrideV1,
   resolvePermissionIntentFromSessionMetadata,
   type AmbientProviderConnectionForModelIntent,

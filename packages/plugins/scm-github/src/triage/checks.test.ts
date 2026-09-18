@@ -146,6 +146,45 @@ describe('GitHub pull-request checks', () => {
     expect(incomplete.surface.observations).toHaveLength(1);
   });
 
+  it('never says the whole suite passed from a known-incomplete check collection', async () => {
+    // A suite this walk could not finish reading can still be failing on a page it
+    // never saw, so `allPassing` and a whole-suite breakdown are claims the rows do
+    // not support. What the rows DO prove — an observed failure — is kept.
+    const allReadPassed = await readChecks((request) => (request.url.includes('/check-runs')
+      ? {
+        status: 200,
+        body: githubCheckRunsResponse({
+          runs: [githubCheckRun({ id: 1, name: 'build', status: 'completed', conclusion: 'success' })],
+          totalCount: 4_200,
+        }),
+      }
+      : emptyStatus()));
+    const oneReadFailed = await readChecks((request) => (request.url.includes('/check-runs')
+      ? {
+        status: 200,
+        body: githubCheckRunsResponse({
+          runs: [
+            githubCheckRun({ id: 1, name: 'build', status: 'completed', conclusion: 'success' }),
+            githubCheckRun({ id: 2, name: 'lint', status: 'completed', conclusion: 'failure' }),
+          ],
+          totalCount: 4_200,
+        }),
+      }
+      : emptyStatus()));
+
+    expect(allReadPassed.surface.state).toBe('knownIncomplete');
+    expect(allReadPassed.surface.observations).toHaveLength(1);
+    expect(allReadPassed.surface.rowState).toBeNull();
+    // Absent is never zero: a `0 failing` over a suite nobody could finish reading
+    // is a fabricated fact, exactly as it is for an unreadable one.
+    expect(allReadPassed.surface.failingCount).toBeNull();
+    expect(allReadPassed.surface.runningCount).toBeNull();
+    expect(allReadPassed.surface.passingCount).toBeNull();
+
+    expect(oneReadFailed.surface.state).toBe('knownIncomplete');
+    expect(oneReadFailed.surface.rowState).toEqual({ kind: 'failing', failingCount: 1 });
+  });
+
   it('reports a check walk stopped by its own page budget as known-incomplete', async () => {
     // Every page advertises another page, so the walk exhausts its page budget while
     // GitHub is still offering rows. `total_count` stays small and honest, so the

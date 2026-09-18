@@ -6,13 +6,14 @@ export type ConversationActionDeclarationV1 = Readonly<{
     resultSchema?: PluginJsonSchema;
 }>;
 
-/** The finite provider-facing core Action declaration map for Channels V1. */
+/** The finite plugin-facing core Action declaration map for Channels V1. */
 export type ConversationCoreProviderActionDeclarationsV1 = Readonly<{
     observationIngest: ConversationActionDeclarationV1;
     connectionsList: ConversationActionDeclarationV1;
     connectionRead: ConversationActionDeclarationV1;
     transportFactReport: ConversationActionDeclarationV1;
     automationResultDeliver: ConversationActionDeclarationV1;
+    permissionMediationSourceCurrentness: ConversationActionDeclarationV1;
 }>;
 
 /** The finite present-user/core management Action declaration map for Channels V1. */

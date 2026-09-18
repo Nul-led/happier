@@ -11,6 +11,7 @@ type RunSystemToolResult =
   }>
   | Readonly<{
     ok: false;
+    reasonCode?: string;
     errorMessage: string;
   }>;
 
@@ -31,11 +32,11 @@ describe('OhMyPi daemon spawn prerequisites', () => {
       stderr: '',
     });
 
-    await expect(resolveOhMyPiDaemonSpawnPrerequisites({
-      cwd: '/repo',
-      tools: fixture.tools,
-    })).resolves.toMatchObject({
-      ok: false,
+    await expect(resolveOhMyPiDaemonSpawnPrerequisites(
+      { cwd: '/repo' },
+      { tools: fixture.tools },
+    )).resolves.toMatchObject({
+      decision: 'deny',
       reasonCode: 'ohmypi_models_unavailable',
       errorMessage: expect.stringContaining('No models available'),
     });
@@ -59,10 +60,10 @@ describe('OhMyPi daemon spawn prerequisites', () => {
       stderr: '',
     });
 
-    await expect(resolveOhMyPiDaemonSpawnPrerequisites({
-      cwd: '/repo',
-      tools: fixture.tools,
-    })).resolves.toEqual({ ok: true });
+    await expect(resolveOhMyPiDaemonSpawnPrerequisites(
+      { cwd: '/repo' },
+      { tools: fixture.tools },
+    )).resolves.toEqual({ decision: 'allow' });
   });
 
   it('passes materialized runtime-selection env to the pre-spawn model probe', async () => {
@@ -76,13 +77,13 @@ describe('OhMyPi daemon spawn prerequisites', () => {
       stderr: '',
     });
 
-    await expect(resolveOhMyPiDaemonSpawnPrerequisites({
-      cwd: '/repo',
-      env: {
-        OPENAI_API_KEY: 'sk-materialized',
+    await expect(resolveOhMyPiDaemonSpawnPrerequisites(
+      {
+        cwd: '/repo',
+        runtimeSelection: { env: { OPENAI_API_KEY: 'sk-materialized' } },
       },
-      tools: fixture.tools,
-    })).resolves.toEqual({ ok: true });
+      { tools: fixture.tools },
+    )).resolves.toEqual({ decision: 'allow' });
 
     expect(fixture.runSystemTool).toHaveBeenCalledWith(expect.objectContaining({
       env: {
@@ -104,13 +105,26 @@ describe('OhMyPi daemon spawn prerequisites', () => {
       stderr: '',
     });
 
-    await expect(resolveOhMyPiDaemonSpawnPrerequisites({
-      cwd: '/repo',
-      tools: fixture.tools,
-    })).resolves.toMatchObject({
-      ok: false,
+    await expect(resolveOhMyPiDaemonSpawnPrerequisites(
+      { cwd: '/repo' },
+      { tools: fixture.tools },
+    )).resolves.toMatchObject({
+      decision: 'deny',
       reasonCode: 'ohmypi_models_unavailable',
       errorMessage: expect.stringContaining('chat-capable models'),
     });
+  });
+
+  it('treats a list-models timeout as inconclusive and lets the runtime own startup', async () => {
+    const fixture = createSpawnTools({
+      ok: false,
+      reasonCode: 'timeout',
+      errorMessage: 'model discovery timed out',
+    });
+
+    await expect(resolveOhMyPiDaemonSpawnPrerequisites(
+      { cwd: '/repo' },
+      { tools: fixture.tools },
+    )).resolves.toEqual({ decision: 'allow' });
   });
 });

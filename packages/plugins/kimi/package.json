@@ -13,14 +13,6 @@
     "./manifest": {
       "types": "./dist/manifest.d.ts",
       "default": "./dist/manifest.js"
-    },
-    "./agent/acp/definition": {
-      "types": "./dist/agent/acp/definition.d.ts",
-      "default": "./dist/agent/acp/definition.js"
-    },
-    "./agent/acp/pythonSelectorEnv": {
-      "types": "./dist/agent/acp/pythonSelectorEnv.d.ts",
-      "default": "./dist/agent/acp/pythonSelectorEnv.js"
     }
   },
   "files": [

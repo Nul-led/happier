@@ -34,6 +34,11 @@ import { codexExternalSessionHooksContribution } from './agent/surfaces/sessions
 import { codexExternalSessionObservationContribution } from './agent/surfaces/sessions/external/observation.js';
 import { codexExternalSessionTakeoverContribution } from './agent/surfaces/sessions/external/takeover.js';
 import { supportsCodexVendorResume } from './agent/surfaces/sessions/resume/support.js';
+import {
+  createCodexAttachArgs,
+  resolveCodexAttachReachability,
+  resolveCodexAttachTarget,
+} from './agent/surfaces/sessions/attachDescriptor.js';
 import { CODEX_AGENT_SETTINGS_CONTRIBUTION } from './agentSettings/definition.js';
 import { CODEX_VOICE_PROVIDER_CONTRIBUTION_ID } from './constants.js';
 import { openAiCodexConnectedAccountRuntime } from './connectedAccounts/openAiCodexRuntime.js';
@@ -100,13 +105,13 @@ export const CODEX_PLUGIN = definePlugin({
     }, {
       id: 'openai-codex-quota',
       capability: 'network',
-      reason: 'Read quota for the exact OpenAI Codex Connected Account.',
+      reason: 'Read quota and consume recovery credits for the exact OpenAI Codex Connected Account.',
       scope: {
         targets: [
           { kind: 'fixedOrigin', origin: 'https://chatgpt.com' },
           { kind: 'connectedAccountOrigin', service: 'openai-codex' },
         ],
-        methods: ['GET'],
+        methods: ['GET', 'POST'],
       },
     }],
     optional: [],
@@ -115,6 +120,7 @@ export const CODEX_PLUGIN = definePlugin({
     'openai-codex': {
       declaration: {
         title: 'Codex',
+        recoveryCredits: { supported: true },
         authentication: {
           defaultModeId: 'oauth',
           modes: [{
@@ -257,6 +263,7 @@ export const CODEX_PLUGIN = definePlugin({
             continuationVerification: { intents: ['resume', 'fork'], requirement: 'required' },
             workStateSources: [{ id: 'goals', itemKinds: ['goal'] }],
             startupInstructions: { versions: [1] },
+            executionRunContext: { versions: [1] },
           },
         }),
         providerRequirements: {
@@ -377,6 +384,11 @@ export const CODEX_PLUGIN = definePlugin({
         supportsVendorResume: supportsCodexVendorResume,
       },
       providerBinding: CODEX_PROVIDER_BINDING_ADAPTER_V1,
+      providerCliAttach: {
+        resolveTarget: resolveCodexAttachTarget,
+        createArgs: createCodexAttachArgs,
+        resolveReachability: resolveCodexAttachReachability,
+      },
       sessionRunnerFactory: {
         module: './agent/runtime/engine',
         export: 'createCodexAgentRuntime',

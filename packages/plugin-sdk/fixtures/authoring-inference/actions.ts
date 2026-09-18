@@ -252,6 +252,9 @@ const { manifest, activate } = definePlugin({
           contributedWithOrigin.executionOrigin.materializationRef.pluginId === contributedAction.pluginId,
           'contributed Action execution origin was not host-stamped for its exact target',
         );
+        if (!('status' in hostResult)) {
+          throw new Error('remote permission response was deferred for approval');
+        }
         assert(
           hostResult.status === 'applied'
             && hostResult.decision === 'allow'

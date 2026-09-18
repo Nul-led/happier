@@ -47,6 +47,7 @@ describe('Claude plugin AgentRuntime capabilities', () => {
         source: 'goals',
       },
       runtimeActivitySnapshots: true,
+      executionRunContext: { versions: [1] },
       workStateSources: [{ id: 'goals', itemKinds: ['goal'] }],
     });
     expect(agent?.capabilities).not.toHaveProperty('executionRuns');

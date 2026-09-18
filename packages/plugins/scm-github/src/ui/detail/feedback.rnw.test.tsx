@@ -125,12 +125,8 @@ async function mountFeedback(
   let fixture!: PluginUiTestkit;
   await act(async () => {
     fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: GITHUB_PLUGIN_ID,
-        pluginVersion: '0.0.0',
-        viewId: 'github-triage-detail',
-        generation: 'github-triage-feedback-mount',
-      },
+      identity: { instanceId: 'fixture-instance-201', mountNonce: 'fixture-mount-201' },
+      authorPlugin: { id: GITHUB_PLUGIN_ID, version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createSurfaceContextFixture({ platform }),
       adapter: createPluginUiRnwSemanticSurfaceAdapter(),
@@ -652,6 +648,43 @@ describe('the mounted GitHub Feedback plane', () => {
     await expect(detail.getByText('1 failing')).resolves.toEqual({ content: '1 failing' });
     await expect(detail.getByText('Part of this feedback could not be read'))
       .resolves.toEqual({ content: 'Part of this feedback could not be read' });
+  });
+
+  it('discloses a known-incomplete check suite instead of reporting nothing wrong', async () => {
+    // The read SUCCEEDED — this is not a failed connection — but GitHub did not
+    // list the whole suite, so the unread part may be exactly where a failure
+    // is. A silent empty plane here reads as "CI is clean".
+    answers.checks = {
+      kind: 'checks',
+      headRevision: HEAD_REVISION,
+      state: 'knownIncomplete',
+      rows: [],
+      omittedRowCount: 0,
+      projectionTruncated: false,
+    };
+    const detail = await mountFeedback(launchInput('pull-request'));
+    await openFeedback(detail);
+
+    await expect(detail.getByText('This check suite is larger than GitHub will list'))
+      .resolves.toEqual({ content: 'This check suite is larger than GitHub will list' });
+    await expect(detail.queryByText(
+      'No comment has been left on this pull request, and GitHub reports nothing wrong with it.',
+    )).resolves.toBeUndefined();
+    // An incomplete read is not a failed one, and the two must not collapse into
+    // one banner that sends the reader looking for a connection error.
+    await expect(detail.queryByText('Part of this feedback could not be read'))
+      .resolves.toBeUndefined();
+  });
+
+  it('still reports nothing wrong when the checks read is complete and empty', async () => {
+    const detail = await mountFeedback(launchInput('pull-request'));
+    await openFeedback(detail);
+
+    await expect(detail.getByText(
+      'No comment has been left on this pull request, and GitHub reports nothing wrong with it.',
+    )).resolves.toMatchObject({ content: expect.any(String) });
+    await expect(detail.queryByText('This check suite is larger than GitHub will list'))
+      .resolves.toBeUndefined();
   });
 
   it('collapses a mobile review thread to its first reply and exact reply count', async () => {

@@ -12,12 +12,12 @@ func TestManagedPurposeConfigurationRequiresAndPropagatesModelListDeclaration(t 
 	}{
 		{
 			name:               "enabled",
-			configuration:      `{"v":2,"modelListEnabled":true,"purposes":[{"id":"claude","provider":"claude","consumer":{"pluginId":"happier.provider.cliproxyapi","localId":"cliproxyapi"},"purpose":"anthropic-upstream","allowedHttpsOrigin":"https://api.anthropic.com","protocols":["anthropic"]}]}`,
+			configuration:      `{"v":3,"modelListEnabled":true,"purposes":[{"id":"claude","provider":"claude","consumer":{"pluginId":"happier.provider.cliproxyapi","localId":"cliproxyapi"},"purpose":"anthropic-upstream","allowedHttpsOrigin":"https://api.anthropic.com","protocols":["anthropic"]}]}`,
 			wantModelListRoute: true,
 		},
 		{
 			name:               "disabled",
-			configuration:      `{"v":2,"modelListEnabled":false,"purposes":[{"id":"claude","provider":"claude","consumer":{"pluginId":"happier.provider.cliproxyapi","localId":"cliproxyapi"},"purpose":"anthropic-upstream","allowedHttpsOrigin":"https://api.anthropic.com","protocols":["anthropic"]}]}`,
+			configuration:      `{"v":3,"modelListEnabled":false,"purposes":[{"id":"claude","provider":"claude","consumer":{"pluginId":"happier.provider.cliproxyapi","localId":"cliproxyapi"},"purpose":"anthropic-upstream","allowedHttpsOrigin":"https://api.anthropic.com","protocols":["anthropic"]}]}`,
 			wantModelListRoute: false,
 		},
 	} {
@@ -56,5 +56,17 @@ func TestManagedPurposeConfigurationRequiresAndPropagatesModelListDeclaration(t 
 	)
 	if err == nil {
 		t.Fatal("ParseManagedPurposeConfiguration() accepted a missing model-list declaration")
+	}
+}
+
+func TestParseManagedPurposeConfigurationAcceptsProviderConnectionPassThrough(t *testing.T) {
+	t.Parallel()
+
+	configuration, err := ParseManagedPurposeConfiguration(`{"v":3,"modelListEnabled":false,"purposes":[],"providerConnection":{"protocol":"openai-responses","downstreamBasePath":"/v1"}}`)
+	if err != nil {
+		t.Fatalf("ParseManagedPurposeConfiguration() error = %v", err)
+	}
+	if configuration.ProviderConnection == nil {
+		t.Fatal("provider connection pass-through configuration was not retained")
 	}
 }

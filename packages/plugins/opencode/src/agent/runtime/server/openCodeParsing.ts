@@ -8,10 +8,9 @@ export function normalizeString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-/** Validate an opaque provider identifier for presence without changing its bytes. */
-export function readNonBlankOpaqueIdentifier(value: unknown): string | null {
-  return typeof value === 'string' && value.trim().length > 0 ? value : null;
-}
+// One plugin-scoped owner of the opaque-identifier rule; re-exported here so
+// runtime-server callers keep their existing import path.
+export { readNonBlankOpaqueIdentifier } from '../../../protocol/opaqueIdentifier.js';
 
 export function normalizeNonNegativeInteger(value: unknown): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) return null;

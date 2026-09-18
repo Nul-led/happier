@@ -5,6 +5,11 @@ import { CLAUDE_PLUGIN, PLUGIN_MANIFEST } from './manifest.js';
 import { CLAUDE_AGENT_SETTINGS_CONTRIBUTION } from './agentSettings/definition.js';
 
 describe('Claude plugin manifest', () => {
+  it('declares the truthful detached execution context facet', () => {
+    expect(PLUGIN_MANIFEST.contributes.agents[0]?.capabilities.sessions.executionRunContext)
+      .toEqual({ versions: [1] });
+  });
+
   it('round-trips through canonical manifest ingestion as data only', () => {
     const objectResult = ingestPluginManifestV2(PLUGIN_MANIFEST);
     expect(objectResult).toMatchObject({ ok: true });

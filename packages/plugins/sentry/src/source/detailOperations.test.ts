@@ -348,6 +348,7 @@ describe('Sentry detail operations', () => {
       headers: {},
       body: {
         eventID: 'a'.repeat(32),
+        groupID: ENTRY_ID,
         entries: [{ type: 'stacktrace', data: { frames } }],
       },
     }]);
@@ -504,6 +505,67 @@ describe('Sentry detail operations', () => {
     expect(new URL(String(second.request.mock.calls[0]?.[0]?.url)).searchParams.get('cursor'))
       .toBe('0:100:0');
     expect(page2).toMatchObject({ kind: 'events', rows: [] });
+  });
+
+  /**
+   * The spread is a property of the WALK, not of one request.
+   *
+   * `[SCHEMA]` `sample=true` reorders the retained events; a walk that asked for
+   * the spread and then continued without it would page through a differently
+   * ordered collection with a cursor minted against the first one. The mode is
+   * therefore frozen in the continuation this source mints, and a continuation
+   * carrying the other mode is refused rather than followed (`SENTRY.md` §7.4).
+   */
+  it('freezes the reader’s spread choice through the walk it started', async () => {
+    const first = host([{
+      status: 200,
+      headers: {
+        Link: '<https://de.sentry.io/api/0/organizations/7701/issues/1234/events/?cursor=0:100:0>;'
+          + ' rel="next"; results="true"; cursor="0:100:0"',
+      },
+      body: [{ eventID: 'e1', title: 'boom', dateCreated: '2026-01-02T00:00:00.000Z' }],
+    }]);
+    const page1 = await listSentryIssueEvents({
+      v: 1,
+      instance: configuredInstance(),
+      localRef: localRef(),
+      limit: 100,
+      sample: true,
+    }, first.context);
+
+    expect(() => SentryIssueEventsResultV1Schema.parse(page1)).not.toThrow();
+    expect(new URL(String(first.request.mock.calls[0]?.[0]?.url)).searchParams.get('sample'))
+      .toBe('true');
+    expect(page1.kind).toBe('events');
+    if (page1.kind !== 'events') return;
+    expect(page1.continuation).toBeDefined();
+
+    const second = host([{ status: 200, headers: {}, body: [] }]);
+    const page2 = await listSentryIssueEvents({
+      v: 1,
+      instance: configuredInstance(),
+      localRef: localRef(),
+      limit: 100,
+      sample: true,
+      continuation: page1.continuation,
+    }, second.context);
+    const followed = new URL(String(second.request.mock.calls[0]?.[0]?.url));
+    expect(followed.searchParams.get('sample')).toBe('true');
+    expect(followed.searchParams.get('cursor')).toBe('0:100:0');
+    expect(page2.kind).toBe('events');
+
+    // The same cursor under the ordinary ordering is a position this walk never
+    // established, so it is refused instead of followed.
+    const switched = host([{ status: 200, headers: {}, body: [] }]);
+    const page3 = await listSentryIssueEvents({
+      v: 1,
+      instance: configuredInstance(),
+      localRef: localRef(),
+      limit: 100,
+      continuation: page1.continuation,
+    }, switched.context);
+    expect(page3).toMatchObject({ kind: 'unavailable' });
+    expect(switched.request).not.toHaveBeenCalled();
   });
 
   it('stops a walk whose provider alternates between two pages', async () => {

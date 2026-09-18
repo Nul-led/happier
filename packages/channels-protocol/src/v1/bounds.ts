@@ -13,6 +13,7 @@ export const CONVERSATION_CORE_PROVIDER_ACTION_IDS_V1 = Object.freeze({
     connectionRead: 'provider/connection-read-v1',
     transportFactReport: 'provider/transport-fact-report-v1',
     automationResultDeliver: 'automation/result-deliver-v1',
+    permissionMediationSourceCurrentness: 'permission-mediation/source-currentness-v1',
 });
 
 /**

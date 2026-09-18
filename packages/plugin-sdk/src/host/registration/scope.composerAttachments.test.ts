@@ -3,7 +3,12 @@ import { describe, expect, it } from 'vitest';
 import { createPluginRegistrationScope } from './index.js';
 
 function createAttachmentScope(
-    requiredFields: readonly ('prepareForSend' | 'resolveForDispatch' | 'afterMessageAccepted')[],
+    requiredFields: readonly (
+        | 'prepareForSend'
+        | 'resolveForDispatch'
+        | 'resolveForDispatchV2'
+        | 'afterMessageAccepted'
+    )[],
 ) {
     return createPluginRegistrationScope({
         pluginId: 'acme.composer',
@@ -29,6 +34,20 @@ describe('composer attachment registration', () => {
         expect(registration?.family).toBe('composerAttachments');
         expect(registration?.value).toEqual({
             prepareForSend: expect.any(Function),
+        });
+    });
+
+    it('publishes the execution-run-capable dispatch callback when declared', () => {
+        const scope = createAttachmentScope(['resolveForDispatchV2']);
+        scope.api.composerAttachments.register('issue', {
+            resolveForDispatchV2: async () => ({ attachments: [] }),
+        });
+
+        const [registration] = scope.commit();
+
+        expect(registration?.family).toBe('composerAttachments');
+        expect(registration?.value).toEqual({
+            resolveForDispatchV2: expect.any(Function),
         });
     });
 

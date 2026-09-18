@@ -65,6 +65,9 @@ import {
   updateConversationBindingForInvocation,
   updateConversationConnectionForInvocation,
 } from './management.js';
+import {
+  readConversationPermissionMediationSourceCurrentnessForInvocation,
+} from './outwardDelivery.js';
 import { createConversationOutwardDeliverySupervisor } from './outwardDeliverySupervisor.js';
 import { createConversationPairingResourceRuntime } from './pairingResource.js';
 import {
@@ -95,6 +98,7 @@ import {
   CHANNELS_SESSION_CONVERSATIONS_HEADER_ACTION_ID,
   CHANNELS_SESSION_CONVERSATIONS_RESOURCE_ID,
   CHANNELS_SESSION_CONVERSATIONS_VIEW_ID,
+  CHANNELS_SESSION_CONVERSATIONS_WIDGET_ID,
   CHANNELS_SETTINGS_PAGE_ID,
 } from './sessionSurfaceIds.js';
 import { CHANNELS_UI_TRANSLATION_BUNDLES } from './ui/translations.js';
@@ -125,6 +129,7 @@ export {
   CHANNELS_SESSION_CONVERSATIONS_HEADER_ACTION_ID,
   CHANNELS_SESSION_CONVERSATIONS_RESOURCE_ID,
   CHANNELS_SESSION_CONVERSATIONS_VIEW_ID,
+  CHANNELS_SESSION_CONVERSATIONS_WIDGET_ID,
 } from './sessionSurfaceIds.js';
 
 /**
@@ -149,6 +154,18 @@ export const CHANNELS_UI = {
       fallback: 'External conversations',
     },
     icon: 'globe' as const,
+  }, {
+    // The Board/Companion host owns placement and geometry. Channels reuses
+    // the same read-only Session projection and renderer as its destination;
+    // this declaration adds no widget-specific data or execution path.
+    id: CHANNELS_SESSION_CONVERSATIONS_WIDGET_ID,
+    container: 'sessionWidget' as const,
+    target: { kind: 'session' as const },
+    renderer: CHANNELS_RENDERER_ID,
+    title: {
+      key: 'plugins.channels.session.title',
+      fallback: 'External conversations',
+    },
   }],
   renderers: [{
     id: CHANNELS_RENDERER_ID,
@@ -820,6 +837,17 @@ function createChannelsPlugin() {
         execution: { target: 'daemon' },
         hostAccess: ['account-storage'],
         run: readConversationProviderConnectionForInvocation,
+      },
+      [CONVERSATION_CORE_PROVIDER_ACTION_IDS_V1.permissionMediationSourceCurrentness]: {
+        ...CONVERSATION_CORE_PROVIDER_ACTION_DECLARATIONS_V1.permissionMediationSourceCurrentness,
+        title: 'Check mediated conversation source currentness',
+        description: 'Checks whether one accepted mediated source witness is still current.',
+        scopes: ['global'],
+        surfaces: ['plugin'],
+        dangerLevel: 'safe',
+        execution: { target: 'daemon' },
+        hostAccess: ['account-storage'],
+        run: readConversationPermissionMediationSourceCurrentnessForInvocation,
       },
       [CONVERSATION_CORE_PROVIDER_ACTION_IDS_V1.transportFactReport]: {
         ...CONVERSATION_CORE_PROVIDER_ACTION_DECLARATIONS_V1.transportFactReport,

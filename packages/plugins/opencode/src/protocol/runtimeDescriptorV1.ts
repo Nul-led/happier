@@ -1,3 +1,5 @@
+import { readNonBlankOpaqueIdentifier } from './opaqueIdentifier.js';
+
 export type OpenCodeBackendMode = 'server' | 'acp';
 
 type RuntimeDescriptorAgentExtra = Readonly<{
@@ -68,9 +70,10 @@ function readAgentIdCompat(record: Readonly<Record<string, unknown>>): string | 
   return agentId ?? providerId;
 }
 
+/** OpenCode minted this id: presence only, bytes preserved. */
 function readProviderSessionIdCompat(record: Readonly<Record<string, unknown>>): string | null {
-  return normalizeTrimmedString(record.providerSessionId)
-    ?? normalizeTrimmedString(record.vendorSessionId); // legacy vendorSessionId read-compat
+  return readNonBlankOpaqueIdentifier(record.providerSessionId)
+    ?? readNonBlankOpaqueIdentifier(record.vendorSessionId); // legacy vendorSessionId read-compat
 }
 
 export function normalizeOpenCodeBackendMode(raw: unknown): OpenCodeBackendMode {
@@ -125,7 +128,7 @@ export function normalizeOpenCodeServerBaseUrlExplicit(raw: unknown): boolean {
 
 function buildOpenCodeRuntimeDescriptorAgentExtra(params: BuildOpenCodeAgentRuntimeDescriptorParams): RuntimeDescriptorAgentExtra {
   const backendMode = normalizeOpenCodeBackendMode(params.backendMode);
-  const providerSessionId = normalizeTrimmedString(params.providerSessionId);
+  const providerSessionId = readNonBlankOpaqueIdentifier(params.providerSessionId);
   const requestedServerBaseUrlExplicit = normalizeOpenCodeServerBaseUrlExplicit(params.serverBaseUrlExplicit);
   const serverBaseUrl = requestedServerBaseUrlExplicit ? normalizeOpenCodeServerBaseUrl(params.serverBaseUrl) : null;
   const serverBaseUrlExplicit = Boolean(serverBaseUrl && requestedServerBaseUrlExplicit);
@@ -197,7 +200,7 @@ export function buildOpenCodeAgentRuntimeDescriptorV1(
   params: BuildOpenCodeAgentRuntimeDescriptorParams,
 ): OpenCodeAgentRuntimeDescriptorV1 {
   const backendMode = normalizeOpenCodeBackendMode(params.backendMode);
-  const providerSessionId = normalizeTrimmedString(params.providerSessionId);
+  const providerSessionId = readNonBlankOpaqueIdentifier(params.providerSessionId);
   const requestedServerBaseUrlExplicit = normalizeOpenCodeServerBaseUrlExplicit(params.serverBaseUrlExplicit);
   const serverBaseUrl = requestedServerBaseUrlExplicit ? normalizeOpenCodeServerBaseUrl(params.serverBaseUrl) : null;
   const serverBaseUrlExplicit = Boolean(serverBaseUrl && requestedServerBaseUrlExplicit);

@@ -10,9 +10,8 @@ import type { GithubProjectedChangedFileRowV1 } from '../projection.js';
  * `List` grouping owner.
  *
  * It creates no tree, no generic ordering framework and no second file model.
- * The rich diff body remains held under B6; nothing here reads or needs a patch,
- * and the ordering is computed entirely from the provider path facts the
- * boundary projector already published.
+ * The projector supplies only directly readable relative import declarations,
+ * never patch bodies. Missing or ambiguous evidence keeps lexical ordering.
  *
  * Every rule below is a recognition rule, never a guess. A test file whose
  * source counterpart is not in this pull request stays in the test band rather
@@ -177,6 +176,71 @@ function comparePaths(left: string, right: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
+/** Only complete single-line JS/TS static imports in added/context patch lines. */
+export function readGithubChangedFileImportSpecifiers(path: string, patch: unknown): readonly string[] {
+  if (typeof patch !== 'string' || !/\.[cm]?[jt]sx?$/u.test(path)) return [];
+  const imports = new Set<string>();
+  let inHunk = false;
+  let inComment = false;
+  for (const line of patch.split(/\r?\n/u)) {
+    if (line.startsWith('@@')) { inHunk = true; inComment = false; continue; }
+    if (!inHunk || (line[0] !== '+' && line[0] !== ' ') || line.startsWith('+++')) continue;
+    const statement = line.slice(1).trim();
+    if (inComment) { if (statement.includes('*/')) inComment = false; continue; }
+    if (statement.startsWith('/*')) { inComment = !statement.includes('*/'); continue; }
+    const match = /^import\s+(?:(?:type\s+)?[\w$*{}, \t]+\s+from\s+)?(['"])(\.{1,2}\/[^'"\r\n\\]+)\1\s*;?\s*(?:\/\/.*)?$/u.exec(statement);
+    if (match?.[2]) imports.add(match[2]);
+  }
+  return [...imports].sort(comparePaths);
+}
+
+/** Resolve only an unambiguous changed JS/TS path; no aliases or repository scan. */
+function importedSourcePath(importer: string, specifier: string, sourcePaths: ReadonlySet<string>): string | null {
+  if (!specifier.startsWith('./') && !specifier.startsWith('../')) return null;
+  const segments = [...directoryOf(importer).split('/'), ...specifier.split('/')];
+  const normalized: string[] = [];
+  for (const segment of segments) {
+    if (segment === '' || segment === '.') continue;
+    if (segment === '..') { if (normalized.length === 0) return null; normalized.pop(); }
+    else normalized.push(segment);
+  }
+  const base = normalized.join('/');
+  if (sourcePaths.has(base)) return base;
+  const extensions = ['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts', '.mjs', '.cjs'];
+  const candidates = /\.[^/]+$/u.test(base)
+    ? /\.[cm]?js$/u.test(base)
+      ? [base.replace(/\.js$/u, '.ts').replace(/\.mjs$/u, '.mts').replace(/\.cjs$/u, '.cts')]
+      : []
+    : extensions.flatMap((extension) => [base + extension, `${base}/index${extension}`]);
+  const matches = candidates.filter((candidate) => sourcePaths.has(candidate));
+  return matches.length === 1 ? matches[0]! : null;
+}
+
+function orderSourcePaths(rows: readonly GithubProjectedChangedFileRowV1[]): readonly string[] {
+  const lexical = rows.map((row) => row.path).sort(comparePaths);
+  const normalizedPaths = new Set(lexical.map(normalizePath));
+  const dependencies = new Map(rows.map((row) => [row.path, new Set(
+    (row.importSpecifiers ?? []).flatMap((specifier) => {
+      const path = importedSourcePath(row.path, specifier, normalizedPaths);
+      return path === null || path === normalizePath(row.path) ? [] : [path];
+    }),
+  )]));
+  const remaining = new Set(lexical);
+  const ordered: string[] = [];
+  const emitted = new Set<string>();
+  while (remaining.size > 0) {
+    const next = lexical.find((path) => remaining.has(path)
+      && [...dependencies.get(path)!].every((dependency) => emitted.has(dependency)));
+    // A cycle cannot supply a truthful dependency order; retain the stable
+    // lexical band rather than let provider arrival order break the tie.
+    if (next === undefined) return lexical;
+    remaining.delete(next);
+    emitted.add(normalizePath(next));
+    ordered.push(next);
+  }
+  return ordered;
+}
+
 /**
  * Finds the changed source path a changed test is recognizably paired with.
  *
@@ -218,8 +282,9 @@ function findPairedSourcePath(
 /**
  * Orders one changed-file set into its deterministic reading order.
  *
- * Bands run source, then tests, then generated output. Inside the source and
- * generated bands the order is normalized path order. Inside the test band a
+ * Bands run source, then tests, then generated output. Source dependencies
+ * precede their importers when the patch proves the relationship; otherwise
+ * normalized path order breaks ties. Generated paths stay lexical. In the test band a
  * paired test follows its source file's position, so the tests read in the same
  * order as the code they cover, and an unpaired test sorts after every paired
  * one in path order rather than being interleaved on a guess.
@@ -232,10 +297,9 @@ export function orderGithubChangedFiles(
     band: classifyGithubChangedFile(row.path),
   }));
 
-  const sourcePaths = banded
+  const sourcePaths = orderSourcePaths(banded
     .filter((entry) => entry.band === 'source')
-    .map((entry) => entry.row.path)
-    .sort(comparePaths);
+    .map((entry) => entry.row));
   const sourceRank = new Map<string, number>(
     sourcePaths.map((path, index) => [path, index] as const),
   );
@@ -269,7 +333,7 @@ export function orderGithubChangedFiles(
     }));
   }
 
-  source.sort((left, right) => comparePaths(left.row.path, right.row.path));
+  source.sort((left, right) => sourceRank.get(left.row.path)! - sourceRank.get(right.row.path)!);
   generated.sort((left, right) => comparePaths(left.row.path, right.row.path));
   tests.sort((left, right) => (
     left.rank - right.rank || comparePaths(left.row.path, right.row.path)

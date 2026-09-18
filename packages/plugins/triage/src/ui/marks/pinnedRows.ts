@@ -1,7 +1,10 @@
 import type { TriageEntryRefV1 } from '@happier-dev/triage-protocol/v1';
 
 import { triageEntryRowKey, type TriageListRowV1 } from '../../projection/listWindow.js';
-import { projectTriageEntryDisplay } from '../window/entryDisplay.js';
+import {
+  projectTriageEntryDisplay,
+  type TriageEntryDisplayTextV1,
+} from '../window/entryDisplay.js';
 import type { TriagePinnedEntryV1 } from './pinCommand.js';
 
 /**
@@ -26,9 +29,22 @@ export type TriageListDisplayRowV1 = Readonly<{
   entryRef: TriageEntryRefV1;
   title: string;
   scopeLabel: string;
+  /** Source-authored address, or retained scope and opaque identity when unread. */
+  identifierLabel?: string;
   /** The quiet trailing line: why it needs the reader, or why it cannot be shown. */
   detail: string | null;
   tone: 'neutral' | 'warning' | 'danger';
+  /**
+   * The facts a row draws and announces: what kind of thing
+   * it is, which lifecycle it is in, and whether what is on screen is still
+   * current (`core/SURFACE.md` §7.1). They are carried on the row rather than
+   * re-derived per surface, for the same reason its title is.
+   */
+  kindId: string;
+  lifecycleLabel: string | null;
+  observedAtMs: number | null;
+  /** The window's own freshness claim about the rows it published. */
+  stale: boolean;
   pinned: boolean;
   /** Whether this mount's projection holds the entry this row names. */
   materialized: boolean;
@@ -51,6 +67,16 @@ export type TriageListDisplayRowV1 = Readonly<{
  * missing subtitle.
  */
 const UNMATERIALIZED_PIN_DETAIL = 'Not yet synchronized';
+const UNMATERIALIZED_PIN_DETAIL_KEY = 'plugins.triage.surface.row.notSynchronized';
+
+/**
+ * How a projected row is told the things the projection itself cannot know:
+ * the reader's own words, and whether the window it came from is current.
+ */
+export type TriageListRowProjectionOptionsV1 = Readonly<{
+  text?: TriageEntryDisplayTextV1;
+  stale?: boolean;
+}>;
 
 export function indexTriagePinsByEntry(
   pins: readonly TriagePinnedEntryV1[],
@@ -64,18 +90,24 @@ export function indexTriagePinsByEntry(
 export function projectTriageWindowRow(
   row: TriageListRowV1,
   pins: ReadonlyMap<string, TriagePinnedEntryV1>,
+  options: TriageListRowProjectionOptionsV1 = {},
 ): TriageListDisplayRowV1 {
-  const display = projectTriageEntryDisplay(row);
+  const display = projectTriageEntryDisplay(row, options.text);
   return Object.freeze({
     key: display.key,
     entryRef: row.entryRef,
     title: display.title,
     scopeLabel: display.scopeLabel,
+    identifierLabel: display.identifierLabel,
     detail: display.detail,
     tone: display.tone,
     pinned: pins.has(display.key),
     materialized: true,
     sourceInstanceId: row.selected.kind === 'selected' ? row.selected.sourceInstanceId : null,
+    kindId: display.kindId,
+    lifecycleLabel: display.lifecycleLabel,
+    observedAtMs: display.observedAtMs,
+    stale: options.stale === true,
   });
 }
 
@@ -86,14 +118,16 @@ export function projectTriageWindowRow(
 export function projectTriagePinnedRow(
   pin: TriagePinnedEntryV1,
   projected: TriageListRowV1 | null,
+  options: TriageListRowProjectionOptionsV1 = {},
 ): TriageListDisplayRowV1 {
   if (projected !== null) {
-    const display = projectTriageEntryDisplay(projected);
+    const display = projectTriageEntryDisplay(projected, options.text);
     return Object.freeze({
       key: display.key,
       entryRef: projected.entryRef,
       title: display.title,
       scopeLabel: display.scopeLabel,
+      identifierLabel: display.identifierLabel,
       detail: display.detail,
       tone: display.tone,
       pinned: true,
@@ -101,19 +135,34 @@ export function projectTriagePinnedRow(
       sourceInstanceId: projected.selected.kind === 'selected'
         ? projected.selected.sourceInstanceId
         : null,
+      kindId: display.kindId,
+      lifecycleLabel: display.lifecycleLabel,
+      observedAtMs: display.observedAtMs,
+      stale: options.stale === true,
     });
   }
+  const text = options.text;
   return Object.freeze({
     key: triageEntryRowKey(pin.entryRef),
     entryRef: pin.entryRef,
     title: pin.displayAtMark.title,
     scopeLabel: pin.displayAtMark.scopeLabel,
-    detail: UNMATERIALIZED_PIN_DETAIL,
+    identifierLabel: `${pin.displayAtMark.scopeLabel} · ${pin.entryRef.entryId}`,
+    detail: text === undefined
+      ? UNMATERIALIZED_PIN_DETAIL
+      : text(UNMATERIALIZED_PIN_DETAIL_KEY, UNMATERIALIZED_PIN_DETAIL),
     tone: 'neutral',
     pinned: true,
     materialized: false,
     // A pin this mount never materialized names no present observation, so
     // there is nothing to open and the row must not pretend otherwise.
     sourceInstanceId: null,
+    kindId: pin.entryRef.kindId,
+    // No pass materialized this entry, so this mount knows no lifecycle and no
+    // observation moment for it. Its own detail already says exactly that, and
+    // calling it stale as well would state the same absence twice.
+    lifecycleLabel: null,
+    observedAtMs: null,
+    stale: false,
   });
 }

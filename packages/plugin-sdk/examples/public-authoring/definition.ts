@@ -3,6 +3,7 @@ import {
     defineComposerControl,
     defineComposerReference,
     defineComposerRegion,
+    defineUiSurfaceDefinition,
     type DefinePluginInput,
 } from '@happier-dev/plugin-sdk';
 import {
@@ -67,6 +68,34 @@ type PublicAuthoringDefinition = DefinePluginInput<
 
 const MEDIATED_VOICE_CREDENTIAL_SLOT_ID = VoiceCredentialSlotIdSchema.parse('api_key');
 const RAW_VOICE_CREDENTIAL_SLOT_ID = VoiceCredentialSlotIdSchema.parse('raw_key');
+
+const reviewServicesHostedHtmlSurface = defineUiSurfaceDefinition({
+    id: 'review-services-hosted-html',
+    placement: 'servicesPanel',
+    target: { kind: 'services' },
+    title: 'Review service status',
+    renderer: {
+        kind: 'hostedHtml',
+        source: {
+            kind: 'html',
+            html: '<main><h1>Review service</h1><p>Ready for review.</p></main>',
+        },
+    },
+});
+
+const reviewProjectHostedHtmlSurface = defineUiSurfaceDefinition({
+    id: 'review-project-hosted-html',
+    placement: 'rightSidebarTab',
+    target: { kind: 'project' },
+    title: 'Review project status',
+    renderer: {
+        kind: 'hostedHtml',
+        source: {
+            kind: 'html',
+            html: '<main><h1>Project review</h1><p>Ready for review.</p></main>',
+        },
+    },
+});
 
 export const publicAuthoringDefinition: PublicAuthoringDefinition = {
     id: 'examples.public-sdk-review-assistant',
@@ -286,6 +315,7 @@ export const publicAuthoringDefinition: PublicAuthoringDefinition = {
             'add-review-evidence': defineComposerControl({
                 label: 'Add review evidence',
                 icon: 'file',
+                scopes: ['workflowAuthoring'],
                 interaction: {
                     kind: 'attachmentPicker',
                     attachment: 'review-evidence',
@@ -301,6 +331,7 @@ export const publicAuthoringDefinition: PublicAuthoringDefinition = {
                     renderer: 'review-native',
                     fallbackRenderers: ['review-web'],
                 },
+                scopes: ['workflowAuthoring'],
             }),
         },
     },
@@ -449,6 +480,10 @@ export const publicAuthoringDefinition: PublicAuthoringDefinition = {
         },
     },
     ui: {
+        surfaces: [
+            reviewServicesHostedHtmlSurface,
+            reviewProjectHostedHtmlSurface,
+        ],
         views: [
             {
                 id: 'review-panel',
@@ -563,6 +598,18 @@ export const publicAuthoringDefinition: PublicAuthoringDefinition = {
                 renderer: 'review-native',
                 fallbackRenderers: ['review-web'],
                 title: 'Review teammate details',
+            },
+            {
+                // Embedded Session content a Board/Details/sidebar/Companion
+                // host frames as one widget. It declares no destination, no
+                // instance policy and no placement: the host owns geometry and
+                // the declared renderer chain owns technical fallback.
+                id: 'review-status-widget',
+                container: 'sessionWidget',
+                target: { kind: 'session' },
+                renderer: 'review-native',
+                fallbackRenderers: ['review-web'],
+                title: 'Review status',
             },
         ],
         renderers: [

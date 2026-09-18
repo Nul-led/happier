@@ -3,6 +3,8 @@ import { PluginError } from '@happier-dev/plugin-sdk';
 import { createPluginTestkit } from '@happier-dev/plugin-sdk/testing';
 import type {
   AgentAcpRuntimeOptions,
+  AgentExecutionRunRuntime,
+  AgentExecutionRunRuntimeContextV1,
   AgentSessionOpenRequest,
   AgentSessionRuntime,
   AgentSessionRuntimeContext,
@@ -101,6 +103,52 @@ describe('OhMyPi plugin activation', () => {
       decision: 'deny',
       reasonCode: 'ohmypi_models_unavailable',
     });
+    await fixture.dispose();
+  });
+
+  it('opens detached execution through the ACP Run composer without manufacturing a Session', async () => {
+    const fixture = await createPluginTestkit({ manifest: PLUGIN_MANIFEST, module: { activate } });
+    const factory = fixture.registration('agents', 'ohmypi')?.factory;
+    if (!factory) throw new Error('Expected OhMyPi Agent factory');
+    const runtime = await factory({
+      plugin: { id: 'happier.agent.ohmypi', version: '0.0.0' },
+      agent: { id: 'ohmypi' },
+      signal: new AbortController().signal,
+    });
+    const run = {
+      send: vi.fn(async () => ({ status: 'admitted' as const })),
+      stop: vi.fn(async () => ({ status: 'requested' as const })),
+      watch: () => ({ dispose() {} }),
+      dispose: vi.fn(async () => undefined),
+    } satisfies AgentExecutionRunRuntime;
+    const open = vi.fn();
+    const openExecutionRunV1 = vi.fn(async () => run);
+    const context = {
+      protocols: { acp: { open, openExecutionRunV1 } },
+      services: { connectedAccounts: createUnboundConnectedAccounts() },
+      signal: new AbortController().signal,
+      scope: { kind: 'execution_run', executionRunId: 'ohmypi-run-1' },
+      executionRun: { id: 'ohmypi-run-1', services: {} },
+    } as unknown as AgentExecutionRunRuntimeContextV1;
+
+    const opened = await runtime.sessions.executionRunContextV1?.open({
+      kind: 'create',
+      runId: 'ohmypi-run-1',
+      cwd: '/workspace',
+      profile: { pluginId: 'happier.agent.ohmypi', localId: 'default' },
+      input: { text: 'Run detached.' },
+    }, context);
+
+    expect(context).not.toHaveProperty('session');
+    expect(open).not.toHaveBeenCalled();
+    expect(openExecutionRunV1).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'create',
+      runId: 'ohmypi-run-1',
+    }), expect.objectContaining({
+      transport: expect.objectContaining({ kind: 'stdio' }),
+    }));
+    expect(opened).toBeDefined();
+    await opened?.dispose();
     await fixture.dispose();
   });
 

@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { isCanonicalAbsolutePathInsideRoot } from '@happier-dev/cli-common/path';
+import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol/strings/opaqueIdentifier';
 
 export type TerminalBreadcrumbValidationContext<TInput> = Readonly<{
   input: TInput;
@@ -91,8 +92,8 @@ export function createTerminalBreadcrumbResolver<TInput, TSource>(
     };
     if (!config.validateSessionFile(sessionFilePath, context)) return undefined;
 
-    const remoteSessionId = config.parseSessionId(sessionFilePath)?.trim();
-    if (!remoteSessionId) return undefined;
+    const remoteSessionId = readNonBlankOpaqueIdentifier(config.parseSessionId(sessionFilePath));
+    if (remoteSessionId === null) return undefined;
 
     return config.projectSource({
       ...context,

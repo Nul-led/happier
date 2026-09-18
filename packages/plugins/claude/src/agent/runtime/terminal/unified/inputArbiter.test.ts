@@ -49,6 +49,87 @@ describe('createClaudeUnifiedInputArbiter', () => {
     vi.useRealTimers();
   });
 
+  it('settles a turn-neutral goal control at terminal injection and admits the following prompt', async () => {
+    const goalControl = promptInput('goal-clear', { kind: 'rpc' });
+    const nextPrompt = promptInput('next-prompt');
+    const injectPrompt = vi.fn(async () => injected());
+    const onPromptInjected = vi.fn();
+    const onPromptAccepted = vi.fn();
+    const arbiter = createClaudeUnifiedInputArbiter({
+      injectPrompt,
+      onPromptInjected,
+      onPromptAccepted,
+    });
+
+    arbiter.observeReadiness(readiness());
+    const goalDelivery = arbiter.enqueueTurnNeutralControl(goalControl);
+    await expect(goalDelivery).resolves.toBeUndefined();
+
+    expect(onPromptInjected).not.toHaveBeenCalled();
+    expect(onPromptAccepted).not.toHaveBeenCalled();
+    expect(arbiter.snapshot()).toMatchObject({
+      queuedCount: 0,
+      providerAcceptancePendingCount: 0,
+      headInputState: 'submitted',
+    });
+
+    arbiter.enqueue(nextPrompt);
+    await arbiter.drain();
+
+    expect(injectPrompt).toHaveBeenCalledTimes(2);
+    expect(onPromptInjected).toHaveBeenCalledOnce();
+    expect(onPromptAccepted).not.toHaveBeenCalled();
+    expect(arbiter.snapshot()).toMatchObject({
+      queuedCount: 1,
+      providerAcceptancePendingCount: 1,
+      headInputState: 'awaiting_provider_acceptance',
+    });
+
+    arbiter.dispose();
+  });
+
+  it('rejects a failed turn-neutral control without invoking provider-prompt lifecycle callbacks', async () => {
+    const goalControl = promptInput('goal-clear-failed', { kind: 'rpc' });
+    const onPromptInjected = vi.fn();
+    const onPromptAccepted = vi.fn();
+    const onPromptTerminallyRejectedBeforeProvider = vi.fn();
+    const onInjectionFailure = vi.fn();
+    const onUndeliverableInputs = vi.fn();
+    const arbiter = createClaudeUnifiedInputArbiter({
+      injectPrompt: vi.fn(async () => ({
+        status: 'failed' as const,
+        reason: 'invalid_prompt_text' as const,
+        phase: 'before_write' as const,
+        duplicateRisk: 'none' as const,
+        recoverable: false,
+        observedAt: 1_100,
+      })),
+      onPromptInjected,
+      onPromptAccepted,
+      onPromptTerminallyRejectedBeforeProvider,
+      onInjectionFailure,
+      onUndeliverableInputs,
+    });
+
+    arbiter.observeReadiness(readiness());
+    await expect(arbiter.enqueueTurnNeutralControl(goalControl)).rejects.toThrow(
+      'claude_unified_terminal_control_injection_failed: invalid_prompt_text',
+    );
+
+    expect(onPromptInjected).not.toHaveBeenCalled();
+    expect(onPromptAccepted).not.toHaveBeenCalled();
+    expect(onPromptTerminallyRejectedBeforeProvider).not.toHaveBeenCalled();
+    expect(onInjectionFailure).not.toHaveBeenCalled();
+    expect(arbiter.snapshot()).toMatchObject({
+      queuedCount: 0,
+      providerAcceptancePendingCount: 0,
+      headInputState: 'failed_terminal',
+    });
+
+    arbiter.dispose();
+    expect(onUndeliverableInputs).not.toHaveBeenCalled();
+  });
+
   it('waits for provider confirmation after terminal-host injection before submitting the prompt', async () => {
     const onPromptInjected = vi.fn();
     const onPromptAccepted = vi.fn();

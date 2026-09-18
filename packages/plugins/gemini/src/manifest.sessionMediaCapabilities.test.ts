@@ -25,7 +25,7 @@ describe('Gemini plugin session media capabilities', () => {
       capabilities: {
         sessions: {
           open: ['create', 'resume'],
-          delivery: ['newTurn', 'steer', 'followUp'],
+          delivery: ['newTurn', 'followUp'],
           cancel: true,
         },
       },

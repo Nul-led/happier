@@ -89,6 +89,12 @@ function changedFilePage(paths: readonly string[], continuation: string | null):
 
 const FIRST_PAGE = changedFilePage(['src/alpha.ts', 'src/beta.ts'], 'github-files-page-2');
 const SECOND_PAGE = changedFilePage(['src/gamma.ts'], null);
+/** A second page that advertises the position it was itself served from. */
+const SECOND_PAGE_REPEATING = changedFilePage(['src/gamma.ts'], 'github-files-page-2');
+const PAGE_REFUSED = {
+  kind: 'unavailable',
+  failure: { class: 'transient', code: 'github-files-page-refused' },
+} as JsonValue;
 
 const dispatched: string[] = [];
 const changedFileContinuations: Array<string | undefined> = [];
@@ -105,6 +111,11 @@ const mounted: PluginUiTestkit[] = [];
  */
 let secondPageGate: Promise<void> | null = null;
 let refreshedFirstPageGate: Promise<void> | null = null;
+/**
+ * Answers for the second-page position, in order, when a case needs that
+ * position to answer differently on successive asks.
+ */
+const secondPageAnswers: JsonValue[] = [];
 
 function openSecondPageGate(): () => void {
   let release!: () => void;
@@ -122,12 +133,8 @@ async function mountDetail(): Promise<PluginUiTestkit> {
   let fixture!: PluginUiTestkit;
   await act(async () => {
     fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: GITHUB_PLUGIN_ID,
-        pluginVersion: '0.0.0',
-        viewId: 'github-triage-detail',
-        generation: 'github-files-retention-mount',
-      },
+      identity: { instanceId: 'fixture-instance-200', mountNonce: 'fixture-mount-200' },
+      authorPlugin: { id: GITHUB_PLUGIN_ID, version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createSurfaceContextFixture(),
       adapter: createPluginUiRnwSemanticSurfaceAdapter(),
@@ -147,7 +154,7 @@ async function mountDetail(): Promise<PluginUiTestkit> {
             }
             if (continuation === undefined) return FIRST_PAGE;
             if (secondPageGate !== null) await secondPageGate;
-            return SECOND_PAGE;
+            return secondPageAnswers.shift() ?? SECOND_PAGE;
           }
           if (localId === GITHUB_TRIAGE_DETAIL_ACTION_IDS_V1.listTimeline) {
             // Rows, not an empty page: a discard panel that had nothing to keep
@@ -205,6 +212,7 @@ function readCount(localId: string): number {
 afterEach(async () => {
   dispatched.splice(0);
   changedFileContinuations.splice(0);
+  secondPageAnswers.splice(0);
   secondPageGate = null;
   refreshedFirstPageGate = null;
   for (const fixture of mounted.splice(0)) await fixture.dispose();
@@ -317,6 +325,53 @@ describe('the mounted GitHub Files panel across a tab leave', () => {
       .resolves.toEqual({ content: '2 changed file(s) read.' });
     await expect(detail.getByText('src/alpha.ts')).resolves.toEqual({ content: 'src/alpha.ts' });
     expect(await detail.queryByText('src/gamma.ts')).toBeUndefined();
+  });
+
+  it('asks GitHub again for the page it refused, from the control the reader is looking at', async () => {
+    const detail = await mountDetail();
+    await openTab(detail, 'Files');
+    await expect(detail.getByText('2 changed file(s) read.'))
+      .resolves.toEqual({ content: '2 changed file(s) read.' });
+
+    secondPageAnswers.push(PAGE_REFUSED);
+    await pressLoadMore(detail);
+    // The failure leaves the rows already read on screen and the control mounted
+    // and enabled, so the reader is being offered a retry.
+    await expect(detail.getByText('2 changed file(s) read.'))
+      .resolves.toEqual({ content: '2 changed file(s) read.' });
+    expect(readCount(GITHUB_TRIAGE_DETAIL_ACTION_IDS_V1.listChangedFiles)).toBe(2);
+
+    await pressLoadMore(detail);
+
+    // A page that failed was never read, so the position is still owed and the
+    // press must reach it rather than being silently swallowed.
+    expect(readCount(GITHUB_TRIAGE_DETAIL_ACTION_IDS_V1.listChangedFiles)).toBe(3);
+    expect(changedFileContinuations).toEqual([
+      undefined,
+      'github-files-page-2',
+      'github-files-page-2',
+    ]);
+    await expect(detail.getByText('src/gamma.ts')).resolves.toEqual({ content: 'src/gamma.ts' });
+    await expect(detail.getByText('3 changed file(s) read.'))
+      .resolves.toEqual({ content: '3 changed file(s) read.' });
+  });
+
+  it('still refuses a position GitHub already served, however often it re-advertises it', async () => {
+    const detail = await mountDetail();
+    await openTab(detail, 'Files');
+    secondPageAnswers.push(SECOND_PAGE_REPEATING);
+    await pressLoadMore(detail);
+    await expect(detail.getByText('3 changed file(s) read.'))
+      .resolves.toEqual({ content: '3 changed file(s) read.' });
+    expect(readCount(GITHUB_TRIAGE_DETAIL_ACTION_IDS_V1.listChangedFiles)).toBe(2);
+
+    await pressLoadMore(detail);
+
+    // This position DID answer once. Reading it again is the loop the walk's own
+    // guard exists to stop, and releasing failed positions must not release it.
+    expect(readCount(GITHUB_TRIAGE_DETAIL_ACTION_IDS_V1.listChangedFiles)).toBe(2);
+    await expect(detail.getByText('3 changed file(s) read.'))
+      .resolves.toEqual({ content: '3 changed file(s) read.' });
   });
 
   it('still restarts a panel that declares discard', async () => {

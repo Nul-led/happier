@@ -6,6 +6,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { PluginUiHostApi } from '@happier-dev/plugin-sdk/ui';
 import type { TriageEntryRepositoryRefV1 } from '@happier-dev/triage-protocol/v1';
+import {
+    TRIAGE_SOURCES_CONTRIBUTION_POINT_ID_V1,
+    TRIAGE_SOURCES_CONTRIBUTION_PROTOCOL_ID_V1,
+    TRIAGE_SOURCES_CONTRIBUTION_PROTOCOL_VERSION_V1,
+} from '@happier-dev/triage-protocol/v1';
+import { TESTKIT_OBSERVED_REVISION, testkitConfiguredInstance } from '../../sessions/testkit/entrySessionTestkit.test-support.js';
+import { testkitLocator } from '../../corpus/testkit/observations.test-support.js';
+import type { TriageStartEntrySessionInputV1 } from '../../actions/entrySessionProtocol.js';
 
 const mocked = vi.hoisted(() => ({
     host: null as PluginUiHostApi | null,
@@ -218,6 +226,135 @@ describe('bulk cancellation ownership', () => {
 });
 
 describe('bulk placement ownership', () => {
+    it.each(['lostReply', 'cancelledSelection'] as const)('starts ordinary PR repairs through selected preparation and preserves per-unit recovery: %s', async (recovery) => {
+        const starts: TriageStartEntrySessionInputV1[] = [];
+        const selections: unknown[] = [];
+        const carriers: unknown[] = [];
+        let authorizationCalls = 0;
+        const source = ENTRY.entryRef.source;
+        const operation = {
+            point: { pointId: TRIAGE_SOURCES_CONTRIBUTION_POINT_ID_V1, protocol: { id: TRIAGE_SOURCES_CONTRIBUTION_PROTOCOL_ID_V1, version: TRIAGE_SOURCES_CONTRIBUTION_PROTOCOL_VERSION_V1 } },
+            contributor: { pluginId: source.pluginId, contributionId: source.localId, immutableGenerationId: 'source-generation' },
+            role: 'prepareReviewWorkspace',
+            action: { pluginId: source.pluginId, localId: 'prepare-review-workspace' },
+        };
+        const entries = (recovery === 'cancelledSelection' ? ['17', '18', '19'] : ['17', '18']).map((id) => {
+            const entry = repositoryEntry(id, REPOSITORY_A);
+            return { ...entry, reviewWorkspace: { operation, preparation: {
+                instance: testkitConfiguredInstance(), entryRef: entry.entryRef,
+                lastKnownLocator: testkitLocator(), observed: TESTKIT_OBSERVED_REVISION,
+            } } };
+        });
+        const host = {
+            version: () => ({ methods: ['selectActionInput'] }),
+            selectActionInput: async (request: { operation?: typeof operation; draft?: unknown }) => {
+                if (request.operation !== undefined) {
+                    authorizationCalls += 1;
+                    if (recovery === 'cancelledSelection' && authorizationCalls === 2) return { kind: 'cancelled' };
+                    const result = {
+                        kind: 'submitted', action: operation.action, input: request.draft,
+                        selection: { target: { pluginId: 'happier.triage', immutableGenerationId: 'triage-generation' }, point: operation.point, contributor: operation.contributor },
+                        connectedAccount: { kind: 'selected', fieldPath: 'instance.binding.account', ref: testkitConfiguredInstance().binding.account },
+                    };
+                    selections.push(result);
+                    return result;
+                }
+                return { kind: 'serverStartDraft', draft: {
+                    executionTarget: { serverId: 'server-a', machineId: 'machine-a' },
+                    agentTarget: { kind: 'agent', identity: { pluginId: 'happier.test.agent', localId: 'agent' } },
+                    directory: '/workspace',
+                } };
+            },
+            executeAction: async (actionId: string, input: TriageStartEntrySessionInputV1, options?: { selectedActionInput?: unknown }) => {
+                if (actionId === 'projects.list') return { truncated: false, items: [{
+                    projectKey: { id: 'project-a' }, serverId: 'server-a', machineId: 'machine-a', rootPath: '/workspace',
+                    forge: REPOSITORY_A, reachable: true, worktrees: [],
+                }] };
+                if (actionId !== 'sessions/start-entry-v1') throw new Error('unexpected action');
+                starts.push(input);
+                carriers.push(options?.selectedActionInput);
+                if (recovery === 'lostReply' && starts.length === 2) throw new Error('lost reply');
+                return { v: 1, type: 'linked', sessionId: `session-${input.entryRef.entryId}`, disposition: starts.length === 1 ? 'created' : 'rejoined', delivery: 'accepted', finalOpen: 'suppressed' };
+            },
+        } as unknown as PluginUiHostApi;
+        await mount(host);
+        await act(async () => { controller?.run({ action: { ...repositoryAction(), workspaceMode: 'pull_request' }, destination: 'oneSessionPerEntry', entries }); });
+        await flush();
+        if (recovery === 'cancelledSelection') {
+            expect(starts).toHaveLength(1);
+            expect(controller?.phase).toMatchObject({ kind: 'settled', results: [
+                { status: 'settled' }, { status: 'settled', outcome: { start: { type: 'workspacePreparationFailed' } } }, { status: 'notStarted' },
+            ] });
+            expect(controller?.retryable).toBe(true);
+            await act(async () => { controller?.retry(); });
+            await flush();
+            expect(starts.map((start) => start.entryRef.entryId)).toEqual(['17', '18', '19']);
+            expect(carriers).toEqual(selections.map((result) => ({ operation, result })));
+            return;
+        }
+        expect(starts).toHaveLength(2);
+        expect(starts.map((start) => start.entryRef.entryId)).toEqual(['17', '18']);
+        expect(starts.map((start) => start.destination)).toEqual(entries.map((entry) => expect.objectContaining({
+            materialization: { kind: 'reviewWorkspace', request: expect.objectContaining({ entryRef: entry.entryRef, workspace: { serverId: 'server-a', machineId: 'machine-a', rootPath: '/workspace' } }) },
+        })));
+        expect(starts[0]?.destination).not.toEqual(starts[1]?.destination);
+        expect(controller?.retryable).toBe(true);
+        await act(async () => { controller?.retry(); });
+        await flush();
+        expect(starts).toHaveLength(3);
+        expect(starts[2]?.destination).toEqual(starts[1]?.destination);
+        expect(starts[2]?.delivery).toEqual(starts[1]?.delivery);
+        expect(selections).toHaveLength(3);
+        expect(carriers).toEqual(selections.map((result) => ({ operation, result })));
+    });
+
+    it('rejoins the original start after response loss and an early offline retry refusal', async () => {
+        const starts: Array<Readonly<{ destination: { creationKey: string }; delivery: { idempotencyKey: string } }>> = [];
+        const sessions = new Set<string>();
+        const inputs = new Set<string>();
+        let choices = 0;
+        const host = {
+            version: () => ({ methods: ['selectActionInput'] }),
+            selectActionInput: async () => {
+                choices += 1;
+                return {
+                    kind: 'serverStartDraft',
+                    draft: {
+                        executionTarget: { serverId: 'server-a', machineId: 'machine-a' },
+                        agentTarget: { kind: 'agent', identity: { pluginId: 'happier.test.agent', localId: 'agent' } },
+                        directory: '/workspace',
+                    },
+                };
+            },
+            executeAction: async (actionId: string, input: typeof starts[number]) => {
+                if (actionId === 'projects.list') return { items: [], truncated: false };
+                if (actionId !== 'sessions/start-entry-v1') throw new Error('unexpected action');
+                starts.push(input);
+                if (starts.length === 2) return { v: 1, type: 'creationFailed' };
+                sessions.add(input.destination.creationKey);
+                inputs.add(input.delivery.idempotencyKey);
+                if (starts.length === 1) throw new Error('reply lost after admission');
+                return { v: 1, type: 'linked', sessionId: 'session-original', disposition: 'rejoined', delivery: 'alreadyAccepted', finalOpen: 'suppressed' };
+            },
+        } as unknown as PluginUiHostApi;
+        await mount(host);
+        await act(async () => { controller?.run({ action: action(null), destination: 'oneSessionPerEntry', entries: [ENTRY] }); });
+        await flush();
+        expect(controller?.retryable).toBe(true);
+        await act(async () => { controller?.retry(); });
+        await flush();
+        expect(controller?.retryable).toBe(true);
+        await act(async () => { controller?.retry(); });
+        await flush();
+        expect(starts).toHaveLength(3);
+        expect(starts[1]).toEqual(starts[0]);
+        expect(starts[2]).toEqual(starts[0]);
+        expect(sessions.size).toBe(1);
+        expect(inputs.size).toBe(1);
+        expect(choices).toBe(1);
+        expect(controller?.phase).toMatchObject({ kind: 'settled', results: [{ status: 'settled', outcome: { start: { sessionId: 'session-original' } } }] });
+    });
+
     it('keeps promptless Ask on the authoring destination instead of sending attachments alone', async () => {
         let hostCalls = 0;
         const host = {
@@ -336,39 +473,45 @@ describe('bulk placement ownership', () => {
         expect(controller?.phase.kind).toBe('settled');
     });
 
-    it('refuses one shared repository Session when the selection has no common placement identity', async () => {
+    it.each(['differentRepositories', 'mixedErrorAndRepository'] as const)('asks for an explicit shared project without inferring one from mismatched identities: %s', async (selection) => {
         let selected = false;
         let started = false;
         const host = {
             version: () => ({ methods: ['selectActionInput'] }),
             selectActionInput: async () => {
                 selected = true;
-                throw new Error('triage:test:shouldNotSelect');
+                return { kind: 'serverStartDraft', draft: {
+                    executionTarget: { serverId: 'server-a', machineId: 'machine-a' },
+                    agentTarget: { kind: 'agent', identity: { pluginId: 'happier.test.agent', localId: 'agent' } },
+                    directory: '/user-selected-project',
+                } };
             },
             executeAction: async (actionId: string) => {
                 if (actionId === 'projects.list') return { items: [], truncated: false };
-                if (actionId === 'sessions/start-entry-v1') started = true;
+                if (actionId === 'sessions/start-entry-v1') {
+                    started = true;
+                    return { v: 1, type: 'opened', sessionId: 'shared-session', disposition: 'created', delivery: 'accepted' };
+                }
                 return null;
             },
         } as unknown as PluginUiHostApi;
         await mount(host);
         await act(async () => {
             controller?.run({
-                action: repositoryAction(),
+                action: { ...repositoryAction(), appliesTo: ['pullRequest', 'errorIssue'] },
                 destination: 'oneSessionForAllEntries',
                 entries: [
                     repositoryEntry('17', REPOSITORY_A),
-                    repositoryEntry('18', REPOSITORY_B),
+                    selection === 'differentRepositories' ? repositoryEntry('18', REPOSITORY_B) : {
+                        ...ENTRY, key: 'error-18', entryRef: { ...ENTRY.entryRef, entryId: 'error-18' }, workflowSubject: 'errorIssue',
+                    },
                 ],
             });
         });
         await flush();
 
-        expect(selected).toBe(false);
-        expect(started).toBe(false);
-        expect(controller?.phase).toEqual({
-            kind: 'unavailable',
-            reason: 'sharedPlacementIncompatible',
-        });
+        expect(selected).toBe(true);
+        expect(started).toBe(true);
+        expect(controller?.phase.kind).toBe('settled');
     });
 });

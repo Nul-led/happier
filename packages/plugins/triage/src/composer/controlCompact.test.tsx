@@ -95,12 +95,8 @@ async function mountControl(options: Readonly<{
     let fixture!: PluginUiTestkit;
     await act(async () => {
         fixture = await createPluginUiTestkit({
-            identity: {
-                pluginId: 'happier.triage',
-                pluginVersion: '0.0.0',
-                viewId: 'triage-entries-control',
-                generation: 'control-mount',
-            },
+            identity: { instanceId: 'fixture-instance-170', mountNonce: 'fixture-mount-170' },
+            authorPlugin: { id: 'happier.triage', version: '0.0.0' },
             surface: renderEntriesControlCompactSurface,
             surfaceContext: createSurfaceContextFixture(
                 options.translations === undefined ? {} : { translations: options.translations },

@@ -1,6 +1,7 @@
 import type {
   RuntimeDescriptorV1,
   ProviderBoundModelRef,
+  SessionModelSelectionV2,
   SessionMetadata,
   SessionStateFieldId,
   SessionStateFieldValue,
@@ -8,6 +9,7 @@ import type {
 import {
   ProviderBoundModelRefSchema,
   SessionModelSelectionIntentV1Schema,
+  SessionModelSelectionV2Schema,
 } from '@happier-dev/protocol';
 
 import type { SessionStateFieldWriteValue } from './_types.js';
@@ -169,6 +171,51 @@ export function createModelIntentMetadataCasCandidate(input: Readonly<{
         && persistedSelection.providerConnectionId === selection.providerConnectionId
         && persistedSelection.modelId === selection.modelId;
       return next;
+    },
+    readState: () => ({ accepted, updatedAt }),
+  });
+}
+
+/**
+ * V2 companion of the existing model-intent CAS owner. Team selections cannot
+ * be projected onto the V1 Provider-connection tuple without changing their
+ * meaning, so they remain exact under the V2 metadata key while sharing the
+ * same owner ordering and retry semantics.
+ */
+export function createModelIntentV2MetadataCasCandidate(input: Readonly<{
+  selection: SessionModelSelectionV2;
+  nowMs?: () => number;
+}>): Readonly<{
+  update<TMetadata extends SessionMetadata>(metadata: TMetadata): TMetadata;
+  readState(): Readonly<{ accepted: boolean; updatedAt: number | null }>;
+}> {
+  const requested = SessionModelSelectionV2Schema.parse(input.selection);
+  const nowMs = input.nowMs ?? Date.now;
+  let updatedAt: number | null = null;
+  let accepted = false;
+
+  return Object.freeze({
+    update<TMetadata extends SessionMetadata>(metadata: TMetadata): TMetadata {
+      accepted = false;
+      const record = metadata as Record<string, unknown>;
+      const currentV2 = SessionModelSelectionV2Schema.safeParse(record.modelSelectionIntentV2);
+      const currentV1 = SessionModelSelectionIntentV1Schema.safeParse(record.modelSelectionIntentV1);
+      const currentUpdatedAt = Math.max(
+        currentV2.success ? currentV2.data.updatedAt : 0,
+        currentV1.success ? currentV1.data.updatedAt : 0,
+      );
+      updatedAt ??= Math.max(nowMs(), currentUpdatedAt + 1);
+      if (currentUpdatedAt >= updatedAt) return metadata;
+
+      const persisted = SessionModelSelectionV2Schema.parse({ ...requested, updatedAt });
+      const next: Record<string, unknown> = {
+        ...record,
+        modelSelectionIntentV2: persisted,
+      };
+      delete next.modelSelectionIntentV1;
+      delete next.modelOverrideV1;
+      accepted = true;
+      return next as TMetadata;
     },
     readState: () => ({ accepted, updatedAt }),
   });

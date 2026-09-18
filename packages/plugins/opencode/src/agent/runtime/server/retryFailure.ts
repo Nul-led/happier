@@ -9,7 +9,7 @@ import {
   type OpenCodeServerRuntimeState,
 } from './state.js';
 import type { OpenCodeRuntimeContext } from './runtimeContext.js';
-import type { OpenCodeRuntimeEvent, OpenCodeRuntimeIssue } from './runtimeEvents.js';
+import type { OpenCodeRuntimeEvent, OpenCodeRuntimeIssue, OpenCodeRuntimeScope } from './runtimeEvents.js';
 
 function normalizeRetryAfterMs(value: number | undefined): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) return null;
@@ -34,7 +34,7 @@ export async function maybeFailOnOpenCodeRetryStatus(params: Readonly<{
   publishRuntimeEvent: (event: OpenCodeRuntimeEvent) => void;
   status: unknown;
   state: OpenCodeServerRuntimeState;
-  happierSessionId: string;
+  scope: OpenCodeRuntimeScope;
   stopNativeRetry: () => Promise<void>;
 }>): Promise<boolean> {
   const retryError = buildOpenCodeRetryStatusError(params.status);
@@ -60,7 +60,7 @@ export async function maybeFailOnOpenCodeRetryStatus(params: Readonly<{
   await params.stopNativeRetry();
   await publishOpenCodeTurnFailed({
     publishRuntimeEvent: params.publishRuntimeEvent,
-    sessionId: params.happierSessionId,
+    scope: params.scope,
     turnId,
     issue,
     emittedAtMs: issue.occurredAt,

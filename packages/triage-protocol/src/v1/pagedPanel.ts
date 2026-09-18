@@ -74,7 +74,20 @@ export type TriagePagedPanelEventV1<TRow, TFailure, TIncomplete = never> =
     }>
     | Readonly<{ kind: 'pageFailed'; token: number; failure: TFailure }>
     /** The owning panel interval explicitly chose a cold reset. */
-    | Readonly<{ kind: 'panelLeft' }>;
+    | Readonly<{ kind: 'panelLeft' }>
+    /**
+     * The owning interval ended while a request was in flight, in a panel that
+     * keeps its settled pages.
+     *
+     * That request was aborted with the interval, so its result can never
+     * arrive. `pending` describes a request that no longer exists, and a panel
+     * returning to it would show a busy walk nothing is driving. Dropping it is
+     * not a failure — the provider never refused anything — and not a reset,
+     * because the pages that did settle are exactly what the reader returns to.
+     *
+     * A panel that has settled nothing to keep sends `panelLeft` instead.
+     */
+    | Readonly<{ kind: 'walkAbandoned' }>;
 
 const INITIAL = Object.freeze({
     kind: 'idle' as const,
@@ -152,6 +165,19 @@ export function triagePagedPanelReducer<TRow, TFailure, TIncomplete = never>(
                     : event.page.incomplete ?? state.incomplete,
                 failure: null,
                 token: state.token,
+            };
+        }
+        case 'walkAbandoned': {
+            if (!state.pending) return state;
+            return {
+                ...state,
+                // A start event over an empty settled page had moved the panel to
+                // `loading`; nothing is loading any more, and the settled page is
+                // what the reader has.
+                kind: state.kind === 'loading' ? 'ready' : state.kind,
+                pending: false,
+                refreshing: false,
+                canLoadMore: state.continuation !== null,
             };
         }
         case 'pageFailed': {

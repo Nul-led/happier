@@ -458,6 +458,46 @@ describe('executeSentryScanPage', () => {
     expect(result.continuation).toBeNull();
   });
 
+  /**
+   * A finished walk is the strongest health this source can report, and it is
+   * reserved for the one statement the provider actually makes: `rel="next"`
+   * with `results="false"`. Pagination metadata this source cannot read is a
+   * walk that stopped short — the rows already read stay, and the page says so.
+   */
+  it('never reports unreadable pagination metadata as a finished walk', async () => {
+    for (const link of [
+      // A `Link` value carrying no readable relation at all.
+      'not a link',
+      // `[DOC]` a cursor-paginated response states both directions, so a header
+      // with only `previous` is not the provider declaring the collection over.
+      '<https://us.sentry.io/api/0/organizations/7701/issues/?&cursor=a>;'
+        + ' rel="previous"; results="false"',
+      // A next relation stating no results indicator at all.
+      '<https://us.sentry.io/api/0/organizations/7701/issues/?&cursor=a>; rel="next"',
+      // An indicator that is neither true nor false.
+      '<https://us.sentry.io/api/0/organizations/7701/issues/?&cursor=a>;'
+        + ' rel="next"; results="maybe"',
+    ]) {
+      const { client } = clientReturning({
+        ...issuesListPage1,
+        headers: { ...issuesListPage1.headers, link },
+      });
+
+      const result = await initialPage(client);
+
+      expect(result.kind, link).toBe('page');
+      if (result.kind !== 'page') continue;
+      // The valid rows this page carried are still applied.
+      expect(result.observations.map((snapshot) => snapshot.localRef.entryId), link)
+        .toEqual(['5501001', '5501002']);
+      expect(result.health, link).toEqual({
+        kind: 'partial',
+        reason: 'sentry-pagination-cursor-malformed',
+      });
+      expect(result.continuation, link).toBeNull();
+    }
+  });
+
   it('keeps minting a frontier however long a genuinely advancing walk runs', async () => {
     // Non-progress evidence must stay constant-space: evidence that grows with
     // the walk creates a page ceiling nobody declared. The predecessor position

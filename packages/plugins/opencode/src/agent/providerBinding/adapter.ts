@@ -35,17 +35,22 @@ type SupportedProtocol = keyof typeof DRIVER_BY_PROTOCOL;
 
 function createOpenCodeProviderKey(input: Readonly<{
   agentTargetKey: string;
-  connectionId: string;
+  bindingKey: string;
 }>): string {
   const digest = createHash('sha256')
     .update('happier.opencode.provider-binding.v1\0', 'utf8')
     .update(input.agentTargetKey, 'utf8')
     .update('\0', 'utf8')
-    .update(input.connectionId, 'utf8')
+    .update(input.bindingKey, 'utf8')
     .update(`\0adapter-version:${OPENCODE_PROVIDER_BINDING_ADAPTER_VERSION_V1}`, 'utf8')
     .digest('hex')
     .slice(0, 32);
   return `happier_${digest}`;
+}
+
+function sourceBindingKey(input: Readonly<{ bindingKey?: string; connectionId?: string }>): string {
+  return input.bindingKey ?? input.connectionId
+    ?? (() => { throw new Error('OpenCode provider binding requires a source binding key'); })();
 }
 
 function prepareOpenCodeProviderBindingV1(
@@ -54,14 +59,17 @@ function prepareOpenCodeProviderBindingV1(
   return {
     v: 1,
     materialization: 'configFile',
-    adapterBindingKey: createOpenCodeProviderKey(input),
+    adapterBindingKey: createOpenCodeProviderKey({
+      agentTargetKey: input.agentTargetKey,
+      bindingKey: sourceBindingKey(input),
+    }),
   };
 }
 
 function assertPreparedBindingMatches(input: AgentProviderBindingMaterializeInput): string {
   const expected = createOpenCodeProviderKey({
     agentTargetKey: input.binding.agentTargetKey,
-    connectionId: input.binding.selection.connectionId,
+    bindingKey: sourceBindingKey(input.binding.selection),
   });
   if (input.prepared.materialization !== 'configFile'
     || input.prepared.adapterBindingKey !== expected) {

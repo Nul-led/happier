@@ -1,4 +1,7 @@
-import { createScmCapabilitiesFromBackendCapabilities } from '@happier-dev/plugin-sdk/scm/backend';
+import {
+    createScmCapabilitiesFromBackendCapabilities,
+    resolveScmBackendCapabilities,
+} from '@happier-dev/plugin-sdk/scm/backend';
 import type {
     BackendRuntimeRegistration as ScmBackendRuntimeRegistration,
 } from '@happier-dev/plugin-sdk/scm/backend';
@@ -50,7 +53,11 @@ export function createSaplingScmBackendRegistration(): ScmBackendRuntimeRegistra
                         backendId: SAPLING_SCM_BACKEND_ID,
                         repoMode: context.detection.mode ?? undefined,
                         isRepo: context.detection.isRepo,
-                        capabilities: createScmCapabilitiesFromBackendCapabilities(SAPLING_SCM_BACKEND_CAPABILITIES),
+                        capabilities: createScmCapabilitiesFromBackendCapabilities(resolveScmBackendCapabilities({
+                            declaredCapabilities: SAPLING_SCM_BACKEND_CAPABILITIES,
+                            mode: context.detection.mode,
+                            supportedRepoModes: ['.sl', '.git'],
+                        })),
                     };
                 },
             },

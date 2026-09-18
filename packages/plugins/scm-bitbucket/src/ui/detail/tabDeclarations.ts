@@ -30,8 +30,8 @@ export type BitbucketDetailTabIdV1 =
 
 /** Which read a panel's content comes from. */
 export type BitbucketDetailTabReadPlaneV1 =
-  /** The applied observation only; this panel issues no provider read. */
-  | 'observation'
+  /** The native description and observation from one authoritative PR read. */
+  | 'overview'
   /** The one endpoint carrying approvals, updates and comments together. */
   | 'activity'
   /** The raw-diff redirect and diffstat collection. */
@@ -60,8 +60,8 @@ export const BITBUCKET_DETAIL_TABS_V1: readonly BitbucketDetailTabDeclarationV1[
     title: 'Overview',
     titleKey: 'plugins.bitbucket.ui.tabs.overview',
     retention: 'retain' as const,
-    retainedState: 'its one reader scroll anchor only; it holds no provider read to keep',
-    readPlane: 'observation' as const,
+    retainedState: 'the native description presentation and reader scroll anchor; inactive reads abort',
+    readPlane: 'overview' as const,
     scrollOwner: 'scrollArea' as const,
   }),
   Object.freeze({

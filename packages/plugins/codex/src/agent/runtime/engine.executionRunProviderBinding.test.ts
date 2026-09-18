@@ -72,16 +72,13 @@ describe('Codex Provider-bound Sessions', () => {
       launchEnvironment,
     }, context);
 
-    expect(openCodexNativeAppServerSession).toHaveBeenCalledWith(
-      expect.objectContaining({
-        kind: 'create',
-        sessionId: 'run-provider-codex',
-        configuration,
-        providerBinding,
-        launchEnvironment,
-      }),
-      context,
-    );
+    expect(openCodexNativeAppServerSession.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+      kind: 'create',
+      sessionId: 'run-provider-codex',
+      configuration,
+      providerBinding,
+      launchEnvironment,
+    }));
     expect(connectedAccounts.watch).not.toHaveBeenCalled();
     expect(connectedAccounts.getBinding).not.toHaveBeenCalled();
     expect(connectedAccounts.materialize).not.toHaveBeenCalled();

@@ -342,6 +342,12 @@ function normalizeCollaborationModeMasks(value: unknown): CollaborationModeMask[
     return out;
 }
 
+export function hasCodexAppServerCollaborationMode(value: unknown, modeId: string): boolean {
+    const requestedModeId = normalizeString(modeId);
+    return requestedModeId !== null
+        && normalizeCollaborationModeMasks(value).some((entry) => entry.id === requestedModeId);
+}
+
 function resolveCurrentId(
     value: unknown,
     options: readonly SessionControlOption[],

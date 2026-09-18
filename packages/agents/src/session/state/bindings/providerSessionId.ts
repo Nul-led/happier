@@ -1,5 +1,6 @@
 import {
   AgentNativeResumeIdentityV1Schema,
+  readNonBlankOpaqueIdentifier,
   readRuntimeDescriptorV1FromMetadata,
   type SessionMetadata,
 } from '@happier-dev/protocol';
@@ -57,19 +58,13 @@ export function getAgentNativeSessionLogPathMetadataKey(
   return NATIVE_SESSION_LOG_PATH_METADATA_KEY_BY_RESUME_ID_KEY[vendorResumeIdMetadataKey] ?? null;
 }
 
-function asTrimmedString(value: unknown): string | null {
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  return trimmed || null;
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function readLegacyProviderSessionId(metadata: SessionMetadata): string | null {
   for (const key of LEGACY_PROVIDER_SESSION_ID_KEYS) {
-    const value = asTrimmedString((metadata as Record<string, unknown>)[key]);
+    const value = readNonBlankOpaqueIdentifier((metadata as Record<string, unknown>)[key]);
     if (value) return value;
   }
   return null;
@@ -91,7 +86,8 @@ function resolveProviderSessionIdMetadataKey(metadata: SessionMetadata): Provide
   }
 
   for (const key of LEGACY_PROVIDER_SESSION_ID_KEYS) {
-    if (asTrimmedString((metadata as Record<string, unknown>)[key])) {
+    // Presence only: this selects which metadata slot is in use, never a value.
+    if (readNonBlankOpaqueIdentifier((metadata as Record<string, unknown>)[key])) {
       return key;
     }
   }
@@ -143,7 +139,9 @@ export function writeProviderSessionIdSessionState<TMetadata extends Record<stri
     nativeSessionLogPath?: string | null;
   }>,
 ): TMetadata {
-  const next = typeof update.value === 'string' ? update.value.trim() : '';
+  // The Agent minted this id; it is stored byte for byte. Only presence is
+  // decided here, and an all-whitespace value still means "no identity".
+  const next = readNonBlankOpaqueIdentifier(update.value);
   if (!next) {
     // `null` is the explicit clear operation. It must only remove the selected
     // Agent's id (and its paired log path), never every provider's identity.

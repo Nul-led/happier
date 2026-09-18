@@ -144,12 +144,8 @@ async function mountShell(subPath?: string): Promise<Readonly<{
     let fixture!: PluginUiTestkit;
     await act(async () => {
         fixture = await createPluginUiTestkit({
-            identity: {
-                pluginId: 'happier.triage',
-                pluginVersion: '0.0.0',
-                viewId: 'triage',
-                generation: 'triage-lens-mount',
-            },
+            identity: { instanceId: 'fixture-instance-177', mountNonce: 'fixture-mount-177' },
+            authorPlugin: { id: 'happier.triage', version: '0.0.0' },
             surface: renderShellSurface,
             surfaceContext: createSurfaceContextFixture(),
             adapter: createPluginUiRnwSemanticSurfaceAdapter({ ephemeralSharedScope }),

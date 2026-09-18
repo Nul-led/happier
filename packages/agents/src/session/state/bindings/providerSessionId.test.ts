@@ -41,10 +41,16 @@ describe('providerSessionId session-state binding', () => {
   });
 
   it('falls back to legacy top-level provider resume marker keys', () => {
+    // The Agent minted this id and is its only reader, so the persisted bytes
+    // are returned exactly; only presence is decided here.
     expect(readProviderSessionIdSessionState({
       codexSessionId: ' codex-thread ',
     })).toEqual({
-      value: 'codex-thread',
+      value: ' codex-thread ',
+      updatedAt: null,
+    });
+    expect(readProviderSessionIdSessionState({ codexSessionId: '   ' })).toEqual({
+      value: null,
       updatedAt: null,
     });
   });

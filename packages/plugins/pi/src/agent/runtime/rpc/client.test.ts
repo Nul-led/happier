@@ -59,6 +59,48 @@ function createHarness(write: (value: JsonValue) => Promise<void>) {
 }
 
 describe('createPiJsonStreamRpcClient', () => {
+  it('starts the response deadline only after the transport write settles successfully', async () => {
+    vi.useFakeTimers();
+    try {
+      const writeStarted = deferred<void>();
+      const writeResult = deferred<void>();
+      const harness = createHarness(async () => {
+        writeStarted.resolve();
+        await writeResult.promise;
+      });
+
+      const request = harness.client.send({ type: 'get_state' }, 100);
+      let settled = false;
+      const observed = request.then(
+        (value) => {
+          settled = true;
+          return { ok: true as const, value };
+        },
+        (error: unknown) => {
+          settled = true;
+          return { ok: false as const, error };
+        },
+      );
+      await writeStarted.promise;
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(settled).toBe(false);
+
+      writeResult.resolve();
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(99);
+      expect(settled).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(1);
+      const outcome = await observed;
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) {
+        expect(outcome.error).toEqual(expect.objectContaining({ message: 'Pi get_state command timed out' }));
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('rejects a written request from the single terminal result instead of waiting for its timeout', async () => {
     const writeStarted = deferred<void>();
     const harness = createHarness(async () => {

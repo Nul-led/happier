@@ -588,9 +588,70 @@ describe('OpenAI Codex Connected Account', () => {
           { kind: 'fixedOrigin', origin: 'https://chatgpt.com' },
           { kind: 'connectedAccountOrigin', service: 'openai-codex' },
         ]),
-        methods: ['GET'],
+        methods: ['GET', 'POST'],
       },
     });
+  });
+
+  it('reads recovery credits using exact-account credentials and maps unavailable statuses', async () => {
+    const runtime = activateConnectedAccountRuntime();
+    const request = vi.fn(async () => ({
+      status: 200,
+      finalUrl: 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits',
+      headers: {},
+      body: new TextEncoder().encode(JSON.stringify({
+        available_count: 1,
+        credits: [
+          { id: 'credit-1', status: 'available', expires_at: 1_800_000_000 },
+          { id: 'credit-2', status: 'redeemed' },
+        ],
+      })),
+    }));
+    const context = {
+      ...materializationContext(credentialStore(new Map([
+        ['accessToken', 'selected-token'], ['providerAccountId', 'selected-account'],
+      ])).store),
+      services: { http: { request } },
+    } as Parameters<NonNullable<PluginConnectedAccountRuntime['recoveryCredits']>['read']>[0];
+    expect(runtime.recoveryCredits).toBeDefined();
+    await expect(runtime.recoveryCredits!.read(context)).resolves.toEqual({
+      observedAtMs: expect.any(Number), availableCount: 1,
+      credits: [
+        { providerCreditId: 'credit-1', status: 'available', expiresAtMs: 1_800_000_000_000 },
+        { providerCreditId: 'credit-2', status: 'unavailable' },
+      ],
+    });
+    expect(request).toHaveBeenCalledWith(expect.objectContaining({
+      method: 'GET',
+      url: 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits',
+      headers: { Authorization: 'Bearer selected-token', 'ChatGPT-Account-Id': 'selected-account', Accept: 'application/json' },
+    }), { signal: context.signal });
+  });
+
+  it.each([
+    ['reset', 'consumed'], ['already_redeemed', 'already_consumed'],
+    ['no_credit', 'not_available'], ['nothing_to_reset', 'nothing_to_reset'],
+  ])('consumes recovery credits and maps %s without retrying the provider mutation', async (code, status) => {
+    const runtime = activateConnectedAccountRuntime();
+    const request = vi.fn(async () => ({
+      status: 200, finalUrl: 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume',
+      headers: {}, body: new TextEncoder().encode(JSON.stringify({ code })),
+    }));
+    const context = {
+      ...materializationContext(credentialStore(new Map([
+        ['accessToken', 'selected-token'], ['providerAccountId', 'selected-account'],
+      ])).store),
+      services: { http: { request } },
+    } as Parameters<NonNullable<PluginConnectedAccountRuntime['recoveryCredits']>['consume']>[1];
+    expect(runtime.recoveryCredits).toBeDefined();
+    await expect(runtime.recoveryCredits!.consume({ idempotencyKey: 'redeem-1', providerCreditId: 'credit-1' }, context))
+      .resolves.toEqual({ status });
+    expect(request).toHaveBeenCalledExactlyOnceWith({
+      method: 'POST', url: 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume',
+      headers: { Authorization: 'Bearer selected-token', 'ChatGPT-Account-Id': 'selected-account', Accept: 'application/json' },
+      body: new TextEncoder().encode(JSON.stringify({ redeem_request_id: 'redeem-1', credit_id: 'credit-1' })),
+      redirect: 'error',
+    }, { signal: context.signal });
   });
 
   it('allows the host to mint identity when OpenAI returns no stable account id', async () => {

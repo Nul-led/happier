@@ -14,7 +14,10 @@ describe('Codex B.5 surface declarations', () => {
   it('uses only native Agent surface capabilities instead of legacy daemon handler declarations', () => {
     const backend = getCodexBackend();
     expect(backend).not.toHaveProperty('surfaceHandlers');
-    expect(backend.capabilities.surfaces).toEqual(['terminal', 'externalSessions']);
+    // Codex uses its provider's native attach flow. The terminal capability is
+    // reserved for Agents whose definition declares `terminal_host`; the
+    // capability projector must not let this manifest become a second owner.
+    expect(backend.capabilities.surfaces).toEqual(['externalSessions']);
     expect(backend.capabilities.sessions.open).toEqual(['create', 'resume', 'fork']);
     expect(backend.capabilities.sessions.delivery).toEqual(['newTurn', 'steer']);
     expect(backend.capabilities).not.toHaveProperty('executionRuns');

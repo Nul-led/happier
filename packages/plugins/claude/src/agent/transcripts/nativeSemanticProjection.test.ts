@@ -391,6 +391,29 @@ describe('Claude native transcript semantic projection', () => {
     })).toBeNull();
   });
 
+  it('keeps sidechain compact boundaries out of the parent terminal lifecycle', () => {
+    const sidechainCompactBoundary = {
+      type: 'system',
+      subtype: 'compact_boundary',
+      uuid: 'sidechain-compact-boundary',
+      isSidechain: true,
+    } as const;
+
+    expect(classifyClaudeNativeTranscriptRow(sidechainCompactBoundary)).toMatchObject({
+      sidechain: true,
+      lifecycle: { kind: 'compact_boundary' },
+      nativeBoundary: {
+        kind: 'compact_boundary',
+        id: 'sidechain-compact-boundary',
+      },
+    });
+    expect(projectClaudeTranscriptRowToProviderPayload({
+      providerSessionId: 'claude-session',
+      row: sidechainCompactBoundary,
+      suppressPriorEraTurnClosure: false,
+    })).toBeNull();
+  });
+
   it('keeps sidechain hook lifecycle meaning in the same Claude semantic owner', () => {
     expect(classifyClaudeNativeHookLifecycle({
       eventName: 'PostToolUse',

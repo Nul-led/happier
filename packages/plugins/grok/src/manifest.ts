@@ -45,6 +45,7 @@ export const { manifest: PLUGIN_MANIFEST, activate } = definePlugin({
             delivery: ['newTurn', 'steer', 'followUp'],
             cancel: true,
             configuration: true,
+            executionRunContext: { versions: [1] },
             // Grok is a plain ACP stdio Agent: neither its runtime nor the
             // shared ACP protocol emits `runtime-activity-snapshot`, so
             // claiming the capability would pin `runtime.activity` at

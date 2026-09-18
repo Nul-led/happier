@@ -14,11 +14,31 @@ export type CodexAppServerMcpServerConfig = Readonly<{
     env?: Readonly<Record<string, string>>;
 }>;
 
+const MAX_CODEX_HAPPIER_MCP_TOOL_CALL_TIMEOUT_MS = 2_147_000_000;
+// Happier execution waits may omit their deadline, but Codex requires a fixed positive
+// tool_timeout_sec. Use the Node-safe maximum (~24.8 days) as the closest supported outer
+// safety ceiling; this intentionally approximates rather than claims to be an unbounded wait.
+const DEFAULT_CODEX_HAPPIER_MCP_TOOL_CALL_TIMEOUT_MS = MAX_CODEX_HAPPIER_MCP_TOOL_CALL_TIMEOUT_MS;
+const MIN_CODEX_HAPPIER_MCP_TOOL_CALL_TIMEOUT_MS = 60_000;
+
 const CODEX_HAPPIER_MCP_STATIC_APPROVAL_TOOL_NAME_SET = new Set(
     ACP_HAPPIER_MCP_BRIDGE_STATIC_APPROVAL_TOOL_NAMES.filter((toolName) => (
         resolveAcpToolPermissionPolicy('plan')[toolName] === 'allow'
     )),
 );
+
+function readCodexHappierMcpToolCallTimeoutMs(
+    processEnv: Readonly<Record<string, string | undefined>> | undefined,
+): number {
+    const parsed = Number.parseInt(
+        String(processEnv?.HAPPIER_CODEX_HAPPIER_MCP_TOOL_CALL_TIMEOUT_MS ?? '').trim(),
+        10,
+    );
+    if (!Number.isFinite(parsed) || parsed < MIN_CODEX_HAPPIER_MCP_TOOL_CALL_TIMEOUT_MS) {
+        return DEFAULT_CODEX_HAPPIER_MCP_TOOL_CALL_TIMEOUT_MS;
+    }
+    return Math.min(parsed, MAX_CODEX_HAPPIER_MCP_TOOL_CALL_TIMEOUT_MS);
+}
 
 function quoteTomlString(value: string): string {
     return JSON.stringify(value);
@@ -69,6 +89,9 @@ function appendHappierMcpStaticApprovalOverrides(overrides: string[], injectedKe
 
 export function buildCodexAppServerConfigOverrides(
     mcpServers: Readonly<Record<string, CodexAppServerMcpServerConfig>>,
+    options: Readonly<{
+        processEnv?: Readonly<Record<string, string | undefined>>;
+    }> = {},
 ): string[] {
     const serverNames = Object.keys(mcpServers);
     if (serverNames.length === 0) {
@@ -92,6 +115,8 @@ export function buildCodexAppServerConfigOverrides(
         }
         overrides.push(`mcp_servers.${injectedKey}.enabled=true`);
         if (isFirstPartyHappierMcpBridgeServerName(serverName)) {
+            const timeoutMs = readCodexHappierMcpToolCallTimeoutMs(options.processEnv);
+            overrides.push(`mcp_servers.${injectedKey}.tool_timeout_sec=${timeoutMs / 1_000}`);
             appendHappierMcpStaticApprovalOverrides(overrides, injectedKey);
         }
     }

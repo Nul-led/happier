@@ -854,7 +854,7 @@ describe('External Session hooks public contract', () => {
         }
     });
 
-    it('validates mapped identity/facts and normalizes remoteSessionId', () => {
+    it('validates mapped identity/facts and preserves the opaque remoteSessionId bytes', () => {
         const qualifiedFactVariants = [
             {
                 kind: 'liveness',
@@ -909,21 +909,52 @@ describe('External Session hooks public contract', () => {
             ok: true,
             value: { kind: 'ignored' },
         });
+        // Agent-minted remote session identity is opaque: surrounding
+        // whitespace, embedded newlines and base64 bytes are part of the
+        // identity the Agent hands back to itself. Rewriting it here produced
+        // an id the host's fail-closed ingress could no longer match.
+        const opaqueRemoteSessionId = '  provider\nses/AB+cd==  ';
         expect(validateAgentExternalSessionHookMapEventResult({
             ...mapResult,
             value: {
                 ...mapResult.value,
-                remoteSessionId: '  native-17  ',
+                remoteSessionId: opaqueRemoteSessionId,
                 facts: [],
             },
         })).toEqual({
             ...mapResult,
             value: {
                 ...mapResult.value,
-                remoteSessionId: 'native-17',
+                remoteSessionId: opaqueRemoteSessionId,
                 facts: [],
             },
         });
+        const maxRemoteSessionId =
+            AGENT_EXTERNAL_SESSION_HOOK_LIMITS.maxRemoteSessionIdCodeUnits;
+        for (const blank of ['', ' ', '\n \t', ' '.repeat(maxRemoteSessionId)]) {
+            rejected(() => validateAgentExternalSessionHookMapEventResult({
+                ...mapResult,
+                value: { ...mapResult.value, remoteSessionId: blank, facts: [] },
+            }));
+        }
+        // The configured bound is measured on the raw bytes, so padding cannot
+        // smuggle an over-bound identity past it.
+        expect(validateAgentExternalSessionHookMapEventResult({
+            ...mapResult,
+            value: {
+                ...mapResult.value,
+                remoteSessionId: 'r'.repeat(maxRemoteSessionId),
+                facts: [],
+            },
+        }).ok).toBe(true);
+        rejected(() => validateAgentExternalSessionHookMapEventResult({
+            ...mapResult,
+            value: {
+                ...mapResult.value,
+                remoteSessionId: ` ${'r'.repeat(maxRemoteSessionId)} `,
+                facts: [],
+            },
+        }));
         const qualifiedResult = validateAgentExternalSessionHookMapEventResult({
             ...mapResult,
             value: {

@@ -340,6 +340,8 @@ const triageSettledDeliveryOutcomeMembers = [
     defineProtocolLiteral('accepted'),
     defineProtocolLiteral('alreadyAccepted'),
     defineProtocolLiteral('rejected'),
+    defineProtocolLiteral('failed'),
+    defineProtocolLiteral('cancelled'),
 ] as const;
 
 const triageSettledDeliveryOutcome = defineProtocolUnion(triageSettledDeliveryOutcomeMembers);
@@ -419,7 +421,16 @@ export const TriageStartEntrySessionInputV1Schema = defineProtocolObject({
     destination: TriageStartEntrySessionDestinationV1Schema,
     delivery: TriageStartEntrySessionDeliveryV1Schema.optional(),
     finalOpen: TriageStartEntrySessionFinalOpenV1Schema.optional(),
-    /** Present only for the initial selected-PR preparation, never a retry. */
+    /**
+     * The one current authorization a selected-PR preparation runs under.
+     *
+     * Never a spent carrier: the host releases each settlement before the outer
+     * Action leaves, so this is always the settlement of the question that was
+     * asked for THIS dispatch. A phase `resume` carries none at all — it echoes
+     * the owner's returned facts instead of preparing again — while a dispatch
+     * that must prepare, including the repeat of one whose response was lost,
+     * carries a current one.
+     */
     prepareReviewWorkspaceSelection: TriageStartEntrySessionPrepareReviewWorkspaceSelectionV1Schema.optional(),
     resume: TriageStartEntrySessionResumeV1Schema.optional(),
 }, { policy: 'closed' });
@@ -459,10 +470,22 @@ export type TriageStartPullRequestReviewInputV1 = ReturnType<
     typeof TriageStartPullRequestReviewInputV1Schema.parse
 >;
 
+/**
+ * What became of each engine the reader chose.
+ *
+ * The canonical `review.start` fan-out answers one keyed outcome per requested
+ * engine INSIDE an outer success, so "the Action succeeded" and "a review is
+ * running" are different facts. Both halves travel: a partial start must be
+ * able to say which engines are running without offering to start them twice,
+ * and a fan-out that started nothing at all is a refusal rather than a Session
+ * opened as a review with no runs.
+ */
 export const TriageStartPullRequestReviewResultV1Schema = defineProtocolUnion([
     defineProtocolObject({
         v: defineProtocolLiteral(1),
         status: defineProtocolLiteral('started'),
+        startedEngineIds: defineProtocolArray(reviewEngineId, { minItems: 1 }),
+        failedEngineIds: defineProtocolArray(reviewEngineId),
     }, { policy: 'closed' }),
     defineProtocolObject({
         v: defineProtocolLiteral(1),
@@ -474,6 +497,8 @@ export const TriageStartPullRequestReviewResultV1Schema = defineProtocolUnion([
             defineProtocolLiteral('workspaceMismatch'),
             defineProtocolLiteral('scopeRefused'),
             defineProtocolLiteral('reviewRejected'),
+            /** The fan-out ran and every chosen engine refused to start. */
+            defineProtocolLiteral('noEngineStarted'),
         ]),
     }, { policy: 'closed' }),
 ]);
@@ -491,8 +516,9 @@ export type TriageStartPullRequestReviewResultV1 = ReturnType<
  * restated here.
  */
 /**
- * The canonical Session-input admission verdict, plus the two arms that mean the
- * send never reached admission.
+ * The canonical `session.message.send` verdict, plus the two arms that mean the
+ * send never reached admission. The canonical verdict includes terminal
+ * `failed` and `cancelled` outcomes when the caller waits for the admitted turn.
  *
  * It exists on the wire because the surface cannot ask again: the delivery
  * happened inside the start, before the open. Every arm is reported as itself —

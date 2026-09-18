@@ -34,6 +34,35 @@ function readDestinationLocalId(context: RenderContext): string | null {
     return mount.kind === 'destination' ? mount.destination.localId : null;
 }
 
+/**
+ * The embedded Session-widget mount, or `null`.
+ *
+ * A widget is NOT a destination: it has no destination identity, so a renderer
+ * shared with destinations must read the embedded role instead of falling
+ * through to its default view.
+ */
+function readSessionWidgetMount(
+    context: RenderContext,
+): Readonly<{ presentation: 'content' | 'fill' }> | null {
+    const mount = context.surface.mount;
+    return mount.kind === 'embedded' && mount.role === 'sessionWidget'
+        ? { presentation: mount.presentation }
+        : null;
+}
+
+/**
+ * The one bounded input this widget accepts. The host stores it with the Board
+ * item and passes it back verbatim at every mount; anything else is ignored
+ * rather than guessed at.
+ */
+function readReviewWidgetView(launchInput: unknown): 'summary' | 'detail' {
+    if (launchInput && typeof launchInput === 'object' && !Array.isArray(launchInput)) {
+        const view = (launchInput as Readonly<Record<string, unknown>>).view;
+        if (view === 'detail') return 'detail';
+    }
+    return 'summary';
+}
+
 type OpenableContentPanelState = Readonly<{ kind: 'loading' }>
     | Readonly<{ kind: 'ready'; result: ReviewOpenableContentResult }>
     | Readonly<{ kind: 'error' }>;
@@ -315,7 +344,113 @@ function ReviewOpenableContentPanel({
  * entry installs the package-local provider, so this surface consumes the
  * mounted host API without a second bridge, resource store, or lifecycle.
  */
+/**
+ * The embedded Session widget.
+ *
+ * It is the same declared surface a Board, Details, sidebar, Companion or mobile
+ * host frames — this renderer adapts to the space it is given rather than to a
+ * Happier shell name. `content` is a framed card whose host owns bounds and
+ * scrolling; `fill` owns its own content scroll.
+ */
+function ReviewStatusWidget({
+    context,
+    presentation,
+}: Readonly<{
+    context: RenderContext;
+    presentation: 'content' | 'fill';
+}>) {
+    const view = readReviewWidgetView(context.launchInput);
+    const { resource, refresh } = useLivePluginResource('review-session-status');
+
+    if (context.surface.target.kind !== 'session') {
+        return (
+            <ErrorState
+                title="Review status needs a Session"
+                description="This widget reads the review status of the Session it is placed in."
+            />
+        );
+    }
+
+    const refreshAction = <Action.Refresh title="Refresh status" onRefresh={refresh} />;
+    if (resource.value === undefined) {
+        if (resource.error) {
+            return (
+                <ErrorState
+                    title="Review status is unavailable"
+                    description="The current Session status could not be loaded."
+                    action={refreshAction}
+                />
+            );
+        }
+        return resource.pending !== 'idle'
+            ? <LoadingState title="Loading review status" />
+            : (
+                <EmptyState
+                    title="No review status"
+                    description="This Session does not have a declared review status yet."
+                    action={refreshAction}
+                />
+            );
+    }
+
+    const summary = resource.value.contentType === 'text/plain'
+        ? new TextDecoder().decode(resource.value.bytes).trim()
+        : '';
+    if (summary.length === 0) {
+        return (
+            <EmptyState
+                title="No review status"
+                description="This Session does not have a declared review status yet."
+                action={refreshAction}
+            />
+        );
+    }
+
+    const refreshing = resource.pending === 'refresh';
+    const stale = resource.freshness === 'stale' || resource.error !== undefined;
+    // A compact host gets one current fact and one action; the expanded host may
+    // show the full status body.
+    const body = (
+        <Card padding={presentation === 'fill' ? 'large' : 'medium'}>
+            <Stack gap="small">
+                <Status
+                    tone={stale ? 'warning' : 'success'}
+                    label={refreshing
+                        ? 'Refreshing review status'
+                        : stale
+                            ? 'Showing last known review status'
+                            : 'Current review status'}
+                    pulsing={refreshing}
+                />
+                <Text value="Review status" variant="title" />
+                <Text
+                    value={summary}
+                    selectable
+                    {...(view === 'summary' ? { numberOfLines: 3 } : {})}
+                />
+                <Action.Execute
+                    action="review-summary"
+                    input={{ transcript: summary }}
+                    title="Summarize review"
+                />
+                {refreshAction}
+            </Stack>
+        </Card>
+    );
+
+    // Only the expanded mount owns its own scroll; a `content` widget stays
+    // inside the host's scroll owner.
+    return presentation === 'fill'
+        ? <ReviewFrame accessibilityLabel="Review status">{body}</ReviewFrame>
+        : body;
+}
+
 function ReviewPanel(context: RenderContext) {
+    const sessionWidget = readSessionWidgetMount(context);
+    if (sessionWidget) {
+        return <ReviewStatusWidget context={context} presentation={sessionWidget.presentation} />;
+    }
+
     const destinationLocalId = readDestinationLocalId(context);
     if (destinationLocalId === REVIEW_SESSION_STATUS_VIEW_ID) {
         return context.surface.target.kind === 'session'

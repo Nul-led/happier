@@ -111,7 +111,8 @@ function directSendOutcome(
     }
     if (result.delivery === 'accepted' || result.delivery === 'alreadyAccepted') return 'applied';
     if (result.delivery === 'outcomeUnknown') return 'uncertain';
-    if (result.delivery === 'rejected' || result.delivery === 'none') return 'refused';
+    if (result.delivery === 'rejected' || result.delivery === 'failed'
+        || result.delivery === 'cancelled' || result.delivery === 'none') return 'refused';
     return 'notRequested';
 }
 

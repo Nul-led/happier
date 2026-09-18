@@ -63,9 +63,9 @@ const PUBLIC_ACTION_TYPE_CLOSURE = [
  * TypeScript's structural printer; all Action ids and map rows are derived.
  */
 const TYPE_PROJECTIONS = [
-  // These helpers are intentionally file-local. Public Action signatures use
-  // them transitively, but exposing their raw Protocol vocabulary would add
-  // duplicate SDK entry points rather than an author capability.
+  // Action-map support types are projected under SDK-owned names. Recursive
+  // workflow signatures must remain nameable by authors, while their source
+  // definitions and validation continue to have one canonical Protocol owner.
   { relativePath: 'packages/protocol/src/plugins/contributions/publicTypes.ts', name: 'PluginPolicyExpressionV2', export: true, local: true },
   { relativePath: 'packages/protocol/src/actions/actionUiPlacements.ts', name: 'ActionUiPlacement', export: true },
   { relativePath: 'packages/protocol/src/sessions/work/state/sessionWorkStateRpc.ts', name: 'SessionUsageLimitCheckNowRequestV1Input', export: true },
@@ -78,11 +78,35 @@ const TYPE_PROJECTIONS = [
   { relativePath: 'packages/protocol/src/actions/actionInputHintsRuntime.ts', name: 'ActionInputOptionValue', export: true },
   { relativePath: 'packages/protocol/src/actions/actionInputHintsRuntime.ts', name: 'ActionInputPredicate', export: true },
   { relativePath: 'packages/protocol/src/actions/actionInputHintsRuntime.ts', name: 'EffectiveActionInputField', export: true },
+  { relativePath: 'packages/protocol/src/actions/actionExecutionResult.ts', name: 'ActionApprovalRequestCreatedResult', export: true },
   { relativePath: 'packages/protocol/src/actions/actionExecutionResult.ts', name: 'ActionExecuteResult', export: true },
   { relativePath: 'packages/protocol/src/machines/administration/pluginMachineExecutionOriginV1.ts', name: 'PluginMachineExecutionOriginV1', export: true },
   { relativePath: 'packages/protocol/src/plugins/actions/v2.ts', name: 'PluginActionContributionV2', export: true },
   { relativePath: 'packages/protocol/src/plugins/actions/v2.ts', name: 'PluginToolContributionV2', export: true },
   { relativePath: 'packages/protocol/src/plugins/contributions/v2.ts', name: 'PluginCommandContributionV2', export: true },
+  // Workflow Actions retain named authored aliases when TypeScript prints
+  // their recursive structural map rows. Publish that closed declaration
+  // graph as Action-map projections; every definition is still generated from
+  // the canonical workflow owner rather than maintained as a second model.
+  { relativePath: 'packages/protocol/src/workflows/workflowReferenceV1.ts', name: 'WorkflowAuthoredResultReference', outputName: 'PluginActionWorkflowAuthoredResultReferenceV1', export: true, rewriteReferences: true },
+  { relativePath: 'packages/protocol/src/workflows/workflowReferenceV1.ts', name: 'WorkflowValueReference', outputName: 'PluginActionWorkflowValueReferenceV1', export: true, rewriteReferences: true },
+  { relativePath: 'packages/protocol/src/workflows/workflowReferenceV1.ts', name: 'WorkflowCondition', outputName: 'PluginActionWorkflowConditionV1', export: true, rewriteReferences: true },
+  { relativePath: 'packages/protocol/src/sessions/metadata/runtimeDescriptorV1.ts', name: 'PortableRuntimeDescriptorV1', outputName: 'PluginActionWorkflowPortableRuntimeDescriptorV1', export: true, rewriteReferences: true },
+  { relativePath: 'packages/protocol/src/workflows/workflowV1.ts', name: 'WorkflowSessionAuthoringSelection', outputName: 'PluginActionWorkflowSessionAuthoringSelectionV1', export: true, rewriteReferences: true },
+  { relativePath: 'packages/protocol/src/workflows/workflowV1.ts', name: 'WorkflowStepExecutionSelection', outputName: 'PluginActionWorkflowStepExecutionSelectionV1', export: true, rewriteReferences: true },
+  { relativePath: 'packages/protocol/src/workflows/workflowV1.ts', name: 'WorkflowStep', outputName: 'PluginActionWorkflowStepV1', export: true, rewriteReferences: true },
+  { relativePath: 'packages/protocol/src/workflows/workflowV1.ts', name: 'WorkflowFailurePolicy', outputName: 'PluginActionWorkflowFailurePolicyV1', export: true, rewriteReferences: true },
+  { relativePath: 'packages/protocol/src/workflows/workflowV1.ts', name: 'WorkflowItemExecutionMode', outputName: 'PluginActionWorkflowItemExecutionModeV1', export: true, rewriteReferences: true },
+  { relativePath: 'packages/protocol/src/workflows/workflowV1.ts', name: 'WorkflowEvaluatorHistoryMode', outputName: 'PluginActionWorkflowEvaluatorHistoryModeV1', export: true, rewriteReferences: true },
+  { relativePath: 'packages/protocol/src/workflows/workflowV1.ts', name: 'WorkflowParallelBranch', outputName: 'PluginActionWorkflowParallelBranchV1', export: true, rewriteReferences: true },
+  { relativePath: 'packages/protocol/src/workflows/workflowV1.ts', name: 'WorkflowRepetition', outputName: 'PluginActionWorkflowRepetitionV1', export: true, rewriteReferences: true },
+  {
+    relativePath: 'packages/protocol/src/workflows/workflowV1.ts',
+    name: 'WorkflowBlock',
+    outputName: 'PluginActionWorkflowBlockV1',
+    export: true,
+    rewriteReferences: true,
+  },
   {
     relativePath: 'packages/protocol/src/actions/actionSpecs.ts',
     name: 'PluginInvocableActionSpec',
@@ -177,7 +201,41 @@ function renderTypeAlias(name, typeText, exported) {
   if (diagnostics.length > 0) {
     throw new Error(`${name} structural projection is not valid TypeScript: ${ts.flattenDiagnosticMessageText(diagnostics[0].messageText, '\n')}`);
   }
-  return printer.printFile(source).trimEnd();
+  return canonicalizeGeneratedTypeOrder(source.text);
+}
+
+export function canonicalizeGeneratedTypeOrder(sourceText) {
+  const source = ts.createSourceFile(
+    'actionTypeMap.generated.ts',
+    sourceText,
+    ts.ScriptTarget.ES2022,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const transformed = ts.transform(source, [
+    (context) => {
+      const visit = (node) => {
+        const visited = ts.visitEachChild(node, visit, context);
+        if (!ts.isUnionTypeNode(visited) && !ts.isIntersectionTypeNode(visited)) {
+          return visited;
+        }
+        const members = [...visited.types].sort((left, right) => {
+          const leftText = printer.printNode(ts.EmitHint.Unspecified, left, source);
+          const rightText = printer.printNode(ts.EmitHint.Unspecified, right, source);
+          return leftText < rightText ? -1 : leftText > rightText ? 1 : 0;
+        });
+        return ts.isUnionTypeNode(visited)
+          ? ts.factory.updateUnionTypeNode(visited, members)
+          : ts.factory.updateIntersectionTypeNode(visited, members);
+      };
+      return (root) => ts.visitNode(root, visit);
+    },
+  ]);
+  try {
+    return printer.printFile(transformed.transformed[0]).trimEnd();
+  } finally {
+    transformed.dispose();
+  }
 }
 
 /**
@@ -199,6 +257,34 @@ export function renderActionTypeProjection(name, typeText) {
     : projected;
 }
 
+export function renderActionMapProjectionType(checker, type, sourceFile, name, actionIds, onPhase) {
+  // TypeScript can expand the mapped Action type once in seconds. Resolving
+  // and printing every property separately repeatedly instantiates the same
+  // 462-member conditional union and grows superlinearly with the catalog.
+  // `validateGeneratedModule` compiles this structural result, compares its
+  // exact keys with `actionIds`, and rejects any/unknown values before publish.
+  return checker.typeToString(type, undefined, TYPE_FORMAT_FLAGS);
+}
+
+function renderProjectionType(checker, type, sourceFile, name, actionIds, onPhase) {
+  const typeText = name === 'PluginActionInputById' || name === 'PluginActionResultById'
+    ? renderActionMapProjectionType(checker, type, sourceFile, name, actionIds, onPhase)
+    : checker.typeToString(type, undefined, TYPE_FORMAT_FLAGS);
+  return rewriteProjectedTypeReferences(renderActionTypeProjection(name, typeText));
+}
+
+function rewriteProjectedTypeReferences(typeText) {
+  return TYPE_PROJECTIONS
+    .filter(({ outputName, rewriteReferences }) => rewriteReferences && outputName)
+    .reduce(
+      (current, { name, outputName }) => current.replaceAll(
+        new RegExp(`\\b${name}\\b`, 'gu'),
+        outputName,
+      ),
+      typeText,
+    );
+}
+
 export async function writeFileIfChanged(path, content) {
   try {
     if (await readFile(path, 'utf8') === content) return false;
@@ -209,10 +295,31 @@ export async function writeFileIfChanged(path, content) {
   return true;
 }
 
+function describeFirstDifference(current, expected) {
+  let offset = 0;
+  const sharedLength = Math.min(current.length, expected.length);
+  while (offset < sharedLength && current[offset] === expected[offset]) offset += 1;
+  const line = current.slice(0, offset).split('\n').length;
+  const currentLine = current.split('\n')[line - 1] ?? '<end of file>';
+  const expectedLine = expected.split('\n')[line - 1] ?? '<end of file>';
+  return `first difference at line ${line}: current=${JSON.stringify(currentLine)} expected=${JSON.stringify(expectedLine)}`;
+}
+
 function mapKeys(checker, type, name) {
   const keys = checker.getPropertiesOfType(type).map((property) => property.name).sort();
   if (keys.length === 0) throw new Error(`${name} must retain at least one literal Action key.`);
   return keys;
+}
+
+function literalStringUnionValues(type, name) {
+  const members = type.isUnion() ? type.types : [type];
+  const values = members.map((member) => (
+    (member.flags & ts.TypeFlags.StringLiteral) !== 0 ? member.value : undefined
+  ));
+  if (values.some((value) => value === undefined) || values.length === 0) {
+    throw new Error(`${name} must remain a non-empty union of literal Action ids.`);
+  }
+  return values;
 }
 
 function assertSameKeys(left, right, description) {
@@ -329,34 +436,39 @@ export function validateGeneratedModule(output, expectedInputKeys, expectedResul
   assertConcreteMapValues(checker, resultMap, sourceFile, 'Generated PluginActionResultById');
 }
 
-function renderStructuralModule(onPhase = () => {}) {
+export function renderStructuralModule(onPhase = () => {}) {
   const { checker, program } = requireProtocolProgram();
   onPhase('protocol-program');
+  const actionIdSourceFile = sourceFileFor(
+    program,
+    'packages/protocol/src/actions/pluginActionSurface.ts',
+  );
+  const actionIds = literalStringUnionValues(
+    projectedType(checker, actionIdSourceFile, { name: 'PluginInvocableActionId' }),
+    'Protocol PluginInvocableActionId',
+  );
   const projections = TYPE_PROJECTIONS.map((projection) => {
     const sourceFile = sourceFileFor(program, projection.relativePath);
     const type = projectedType(checker, sourceFile, projection);
+    const rendered = renderTypeAlias(
+      projection.outputName ?? projection.name,
+      renderProjectionType(checker, type, sourceFile, projection.name, actionIds, onPhase),
+      projection.export,
+    );
+    onPhase(`projection:${projection.name}`);
     return {
       ...projection,
       sourceFile,
       type,
-      rendered: renderTypeAlias(
-        projection.outputName ?? projection.name,
-        renderActionTypeProjection(
-          projection.name,
-          checker.typeToString(type, undefined, TYPE_FORMAT_FLAGS),
-        ),
-        projection.export,
-      ),
+      rendered,
     };
   });
   const inputMap = projections.find((projection) => projection.name === 'PluginActionInputById');
   const resultMap = projections.find((projection) => projection.name === 'PluginActionResultById');
   if (!inputMap || !resultMap) throw new Error('Action type projections must include exact input and result maps.');
-  const inputKeys = mapKeys(checker, inputMap.type, 'Protocol PluginActionInputById');
-  const resultKeys = mapKeys(checker, resultMap.type, 'Protocol PluginActionResultById');
+  const inputKeys = [...actionIds].sort();
+  const resultKeys = [...actionIds].sort();
   assertSameKeys(inputKeys, resultKeys, 'Protocol Action input/result maps');
-  assertConcreteMapValues(checker, inputMap.type, inputMap.sourceFile, 'Protocol PluginActionInputById');
-  assertConcreteMapValues(checker, resultMap.type, resultMap.sourceFile, 'Protocol PluginActionResultById');
 
   const output = [
     '// This file is generated by scripts/generateActionTypeMap.mjs. Do not edit by hand.',
@@ -364,7 +476,7 @@ function renderStructuralModule(onPhase = () => {}) {
     '',
     "import type { JsonValue, PluginJsonSchema, PluginJsonValueV2 } from '../identity.js';",
     "import type { AgentExternalSessionTranscriptRawRecord } from '../externalSessions.js';",
-    "import type { PluginUiJsonValueV1 } from '../ui/publicContract.js';",
+    "import type { PluginUiDeclarativeNodeV2 as PluginDeclarativeNodeV2, PluginUiJsonValueV1 } from '../ui/publicContract.js';",
     '',
     ...PUBLIC_ACTION_TYPE_CLOSURE,
     '',
@@ -379,26 +491,42 @@ function renderStructuralModule(onPhase = () => {}) {
   return Object.freeze({ inputKeys, output, resultKeys });
 }
 
-async function runActionTypeMap(mode) {
+export function prepareActionTypeMap() {
   const timing = createActionTypeMapTimingReporter();
   const { inputKeys, output, resultKeys } = renderStructuralModule(timing);
   validateGeneratedModule(output, inputKeys, resultKeys);
   timing('generated-module-validation');
+  return Object.freeze({ inputKeys, output, resultKeys, timing });
+}
 
+export async function publishPreparedActionTypeMap(mode, prepared, { assertOwned }) {
+  const { output, timing } = prepared;
   if (mode === '--write') {
+    // Structural derivation and validation are synchronous and can outlive a
+    // workspace-visible lease after a crashed/paused owner. Fence the only
+    // publication point against the current canonical lock owner.
+    assertOwned();
     await writeFileIfChanged(OUTPUT_PATH, output);
   } else {
     const current = await readFile(OUTPUT_PATH, 'utf8');
     if (current !== output) {
-      throw new Error(`Generated Action type map is stale: ${OUTPUT_PATH}. Run yarn generate:action-type-map.`);
+      throw new Error(
+        `Generated Action type map is stale: ${OUTPUT_PATH} (${describeFirstDifference(current, output)}). Run yarn generate:action-type-map.`,
+      );
     }
   }
   timing(mode === '--write' ? 'publication-write' : 'publication-check');
 }
 
+async function runActionTypeMap(mode, lockContext) {
+  return await publishPreparedActionTypeMap(mode, prepareActionTypeMap(), lockContext);
+}
+
 export async function runActionTypeMapWithWorkspaceLock({
   mode,
-  run = runActionTypeMap,
+  run,
+  prepare = prepareActionTypeMap,
+  publish = publishPreparedActionTypeMap,
   lockPath = WORKSPACE_BUILD_LOCK_PATH,
   env = process.env,
   lockOptions = {},
@@ -406,8 +534,16 @@ export async function runActionTypeMapWithWorkspaceLock({
   if (mode !== '--check' && mode !== '--write') {
     throw new Error('Action type map mode must be --check or --write');
   }
+  // Type derivation and semantic validation are read-only and can synchronously
+  // occupy the event loop for longer than the shared lock's stale-owner window.
+  // Keep only the filesystem publication/check inside the canonical lock so a
+  // healthy compiler cannot lose its lease merely because its heartbeat timer
+  // could not run.
+  const prepared = run ? null : prepare(mode);
   return await withWorkspaceBundleLock(
-    async () => await run(mode),
+    async (lockContext) => run
+      ? await run(mode, lockContext)
+      : await publish(mode, prepared, lockContext),
     {
       ...lockOptions,
       lockPath,

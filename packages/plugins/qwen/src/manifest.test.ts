@@ -22,7 +22,14 @@ describe('Qwen plugin manifest', () => {
         agents: [{
           id: 'qwen', title: 'Qwen Code', primary: 'sessions',
           runtime: { kind: 'custom' },
-          capabilities: { sessions: { open: ['create', 'resume'], delivery: ['newTurn', 'steer', 'followUp'], cancel: true } },
+          capabilities: {
+            sessions: {
+              open: ['create', 'resume'],
+              delivery: ['newTurn', 'followUp'],
+              cancel: true,
+              executionRunContext: { versions: [1] },
+            },
+          },
         }],
         systemTools: [{ id: 'qwen-cli', executableNames: ['qwen'] }],
       },

@@ -1,6 +1,9 @@
 import type { BitbucketTriageApiClient } from './apiClient.js';
 import type { BitbucketRepositoryRef } from './entries.js';
-import type { BitbucketTriageFailure } from './failures.js';
+import {
+  isBitbucketTerminatingScanFailure,
+  type BitbucketTriageFailure,
+} from './failures.js';
 import {
   advanceCursorCycleWalkV1,
   type CursorCycleProbeV1,
@@ -88,6 +91,15 @@ export function createBitbucketRepositoryEnumerator(
             ...(input.signal === undefined ? {} : { signal: input.signal }),
           });
           if (!listing.ok) return { kind: 'failed', failure: listing.failure };
+          // The walker deliberately keeps the items a failed page was preceded by, so a listing
+          // failure arrives on the `ok` arm. A credential, throttle or cancellation answer is
+          // still about the account rather than about this collection: it ends the scan with its
+          // class and Bitbucket's own retry evidence intact, instead of being flattened into
+          // "this workspace has fewer repositories".
+          if (listing.failure !== undefined
+            && isBitbucketTerminatingScanFailure(listing.failure)) {
+            return { kind: 'failed', failure: listing.failure };
+          }
           if (listing.repositories.length === 0 && listing.nextUrl === null) {
             // The listing could not be read at all. An enumeration that stopped short is discovery
             // evidence the walk carries to its settling page, never a smaller complete workspace.
@@ -101,7 +113,11 @@ export function createBitbucketRepositoryEnumerator(
           const advanced = listing.nextUrl === null
             ? null
             : advanceCursorCycleWalkV1(requestWalk, listing.nextUrl);
-          pageEndsIncomplete = advanced?.kind === 'revisited';
+          // A page that admitted repositories but cannot be continued — an undecodable row, a
+          // rejected `next`, a nonterminal failure after the first page — is the end of what this
+          // enumeration can reach, not the end of the workspace.
+          pageEndsIncomplete = advanced?.kind === 'revisited'
+            || (listing.nextUrl === null && !listing.complete);
           page = {
             url: requestUrl,
             repositories: listing.repositories,

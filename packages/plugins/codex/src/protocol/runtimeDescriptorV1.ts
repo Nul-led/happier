@@ -22,6 +22,7 @@ type CodexRuntimeDescriptorAgentExtra = Readonly<{
   runtimeHandle?: Readonly<{
     backendMode?: CodexBackendMode;
     providerSessionId?: string;
+    appServerEndpoint?: string;
     homePath?: string;
     home?: 'user' | 'connectedService';
     connectedServiceId?: string;
@@ -34,6 +35,7 @@ type CodexRuntimeDescriptorAgentExtra = Readonly<{
 type CodexAgentRuntimeDescriptorAgentPayload = Readonly<{
   backendMode: CodexBackendMode;
   providerSessionId?: string;
+  appServerEndpoint?: string;
   homePath?: string;
   home?: 'user' | 'connectedService';
   connectedServiceId?: string;
@@ -52,6 +54,7 @@ export type CanonicalCodexAgentRuntimeDescriptorV1 = Readonly<{
   agentId: 'codex';
   backendMode: CodexBackendMode | null;
   providerSessionId: string | null;
+  appServerEndpoint: string | null;
   home: 'user' | 'connectedService' | null;
   connectedServiceId: string | null;
   connectedServiceProfileId: string | null;
@@ -62,6 +65,7 @@ export type CanonicalCodexAgentRuntimeDescriptorV1 = Readonly<{
 export type BuildCodexAgentRuntimeDescriptorParams = Readonly<{
   backendMode: CodexBackendMode;
   providerSessionId?: string | null;
+  appServerEndpoint?: string | null;
   home?: 'user' | 'connectedService' | null;
   connectedServiceId?: string | null;
   connectedServiceProfileId?: string | null;
@@ -88,6 +92,20 @@ function normalizeTrimmedString(value: unknown): string | null {
   return trimmed || null;
 }
 
+/**
+ * Codex mints provider session ids — app-server thread ids, ACP session ids and
+ * native rollout ids — and their bytes are the provider's own identity. Resume,
+ * fork, handoff, follow, takeover and observation all have to address the
+ * session the provider named, so this reader decides presence only and never
+ * rewrites the value. Happier-owned identifiers, paths, labels and modes keep
+ * their own trimming normalizers; this is the single owner for provider session
+ * identity across the Codex package.
+ */
+export function readExactCodexProviderSessionId(value: unknown): string | null {
+  if (typeof value !== 'string' || value.trim().length === 0) return null;
+  return value;
+}
+
 function readAgentIdCompat(record: Readonly<Record<string, unknown>>): string | null {
   const hasAgentId = Object.hasOwn(record, 'agentId');
   const hasProviderId = Object.hasOwn(record, 'providerId');
@@ -99,8 +117,8 @@ function readAgentIdCompat(record: Readonly<Record<string, unknown>>): string | 
 }
 
 function readProviderSessionIdCompat(record: Readonly<Record<string, unknown>>): string | null {
-  return normalizeTrimmedString(record.providerSessionId)
-    ?? normalizeTrimmedString(record.vendorSessionId); // legacy vendorSessionId read-compat
+  return readExactCodexProviderSessionId(record.providerSessionId)
+    ?? readExactCodexProviderSessionId(record.vendorSessionId); // legacy vendorSessionId read-compat
 }
 
 function normalizeCodexHome(value: unknown): CanonicalCodexAgentRuntimeDescriptorV1['home'] {
@@ -138,7 +156,8 @@ function normalizeCodexConnectedServiceFields(params: Readonly<{
 function buildCodexRuntimeHandleAgentExtra(
   params: BuildCodexAgentRuntimeDescriptorParams,
 ): CodexRuntimeDescriptorAgentExtra {
-  const providerSessionId = normalizeTrimmedString(params.providerSessionId);
+  const providerSessionId = readExactCodexProviderSessionId(params.providerSessionId);
+  const appServerEndpoint = normalizeTrimmedString(params.appServerEndpoint);
   const home = normalizeCodexHome(params.home);
   const connectedServiceFields = normalizeCodexConnectedServiceFields({
     home,
@@ -154,6 +173,7 @@ function buildCodexRuntimeHandleAgentExtra(
     runtimeHandle: {
       backendMode: params.backendMode,
       ...(providerSessionId ? { providerSessionId } : {}),
+      ...(appServerEndpoint ? { appServerEndpoint } : {}),
       ...(home ? { home } : {}),
       ...(connectedServiceFields.connectedServiceId ? { connectedServiceId: connectedServiceFields.connectedServiceId } : {}),
       ...(connectedServiceFields.connectedServiceProfileId
@@ -190,6 +210,7 @@ function readCanonicalCodexAgentExtra(value: unknown) {
   return {
     backendMode: normalizeCodexBackendMode(runtimeHandle.backendMode),
     providerSessionId: readProviderSessionIdCompat(runtimeHandle),
+    appServerEndpoint: normalizeTrimmedString(runtimeHandle.appServerEndpoint),
     home,
     ...connectedServiceFields,
   };
@@ -227,7 +248,8 @@ export function readCodexAgentRuntimeDescriptorV1(value: unknown): CodexAgentRun
 export function buildCodexAgentRuntimeDescriptorV1(
   params: BuildCodexAgentRuntimeDescriptorParams,
 ): CodexAgentRuntimeDescriptorV1 {
-  const providerSessionId = normalizeTrimmedString(params.providerSessionId);
+  const providerSessionId = readExactCodexProviderSessionId(params.providerSessionId);
+  const appServerEndpoint = normalizeTrimmedString(params.appServerEndpoint);
   const home = normalizeCodexHome(params.home);
   const connectedServiceFields = normalizeCodexConnectedServiceFields({
     home,
@@ -243,6 +265,7 @@ export function buildCodexAgentRuntimeDescriptorV1(
     agent: {
       backendMode: params.backendMode,
       ...(providerSessionId ? { providerSessionId } : {}),
+      ...(appServerEndpoint ? { appServerEndpoint } : {}),
       ...(home ? { home } : {}),
       ...(connectedServiceFields.connectedServiceId ? { connectedServiceId: connectedServiceFields.connectedServiceId } : {}),
       ...(connectedServiceFields.connectedServiceProfileId
@@ -255,6 +278,7 @@ export function buildCodexAgentRuntimeDescriptorV1(
       agentExtra: buildCodexRuntimeHandleAgentExtra({
         ...params,
         providerSessionId,
+        appServerEndpoint,
         home,
         ...connectedServiceFields,
       }),
@@ -285,6 +309,7 @@ export function readCanonicalCodexAgentRuntimeDescriptorV1(
     agentId: 'codex',
     backendMode: agentExtra?.backendMode ?? normalizeCodexBackendMode(descriptor.agent.backendMode),
     providerSessionId: agentExtra?.providerSessionId ?? readProviderSessionIdCompat(descriptor.agent),
+    appServerEndpoint: agentExtra?.appServerEndpoint ?? normalizeTrimmedString(descriptor.agent.appServerEndpoint),
     home,
     ...connectedServiceFields,
   };
@@ -311,6 +336,7 @@ export function readStrictCanonicalCodexAgentRuntimeDescriptorV1(
       new Set([
         'backendMode',
         'providerSessionId',
+        'appServerEndpoint',
         'vendorSessionId',
         'homePath',
         'home',
@@ -349,6 +375,7 @@ export function readStrictCanonicalCodexAgentRuntimeDescriptorV1(
           new Set([
             'backendMode',
             'providerSessionId',
+            'appServerEndpoint',
             'vendorSessionId',
             'homePath',
             'home',

@@ -12,6 +12,7 @@ import {
   projectTriagePinnedRow,
   projectTriageWindowRow,
   type TriageListDisplayRowV1,
+  type TriageListRowProjectionOptionsV1,
 } from '../marks/pinnedRows.js';
 
 /**
@@ -131,6 +132,13 @@ export function planTriageListSections(input: Readonly<{
   coverage: TriageListWindowV1['coverage'];
   /** Whether the bounded marks page left pins it did not carry. */
   morePins: boolean;
+  /**
+   * How the rows say the words this plugin authors, and whether the window they
+   * came from is still current. Both belong to the row projection rather than
+   * to the renderer: a reader moving row by row never reaches the page's own
+   * freshness line, so each row states it (`core/SURFACE.md` §7.1).
+   */
+  display?: TriageListRowProjectionOptionsV1;
 }>): readonly TriageListSectionV1[] {
   const pinIndex = indexTriagePinsByEntry(input.pins);
   const projectedByKey = new Map<string, TriageListRowV1>();
@@ -139,12 +147,13 @@ export function planTriageListSections(input: Readonly<{
   const pinnedRows = input.pins.map((pin) => projectTriagePinnedRow(
     pin,
     projectedByKey.get(triageEntryRowKey(pin.entryRef)) ?? null,
+    input.display,
   ));
 
   const byLane = new Map<CorpusLaneV1, TriageListDisplayRowV1[]>();
   for (const lane of CORPUS_LANES) byLane.set(lane, []);
   for (const row of input.rows) {
-    const display = projectTriageWindowRow(row, pinIndex);
+    const display = projectTriageWindowRow(row, pinIndex, input.display);
     if (display.pinned) continue;
     byLane.get(row.lane)?.push(display);
   }

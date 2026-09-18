@@ -9,7 +9,10 @@ import {
   type CodexAppServerClient,
   type DisposableCodexAppServerClient,
 } from '../../../runtime/appServer/client.js';
-import { buildCodexAgentRuntimeDescriptorV1 } from '../../../../protocol/runtimeDescriptorV1.js';
+import {
+  buildCodexAgentRuntimeDescriptorV1,
+  readExactCodexProviderSessionId,
+} from '../../../../protocol/runtimeDescriptorV1.js';
 import {
   type CodexRolloutCandidateEntry,
   type CodexRolloutCandidateGroup,
@@ -362,7 +365,8 @@ async function buildRolloutCandidate(params: Readonly<{
     latestMeta?.id,
     earliestMeta?.id,
     params.remoteSessionId,
-  ].find((value): value is string => typeof value === 'string' && value.trim().length > 0) ?? params.remoteSessionId;
+  ].find((value): value is string => readExactCodexProviderSessionId(value) !== null)
+    ?? params.remoteSessionId;
   const cwd = latestMeta && typeof latestMeta.cwd === 'string' && latestMeta.cwd.trim()
     ? latestMeta.cwd.trim()
     : undefined;

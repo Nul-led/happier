@@ -2,6 +2,7 @@ import {
     PLUGIN_HOSTED_WEB_ACCOUNT_DATA_BRIDGE_KIND_V1,
     PLUGIN_UI_HOST_API_WIRE_VERSION_V1,
     PluginHostedWebBridgeBootstrapEnvelopeV1Schema,
+    PluginHostedWebBridgeBootstrapConfigV1Schema,
     PluginHostedWebBridgeEnvelopeV1Schema,
     PluginHostedWebBridgeHostMessageEnvelopeV1Schema,
     PluginHostedWebBridgeResponseEnvelopeV1Schema,
@@ -14,6 +15,7 @@ import {
     type PluginHostedWebAccountDataBridgeOperationV1,
     type PluginHostedWebAccountDataBridgeResponseV1,
     type PluginHostedWebBridgeBootstrapPayloadV1,
+    type PluginHostedWebBridgeBootstrapConfigV1,
     type PluginHostedWebBridgeEnvelopeV1,
     type PluginUiHostApiWireEnvelopeV1,
     type PluginUiHostApiWireIdentityV1,
@@ -30,15 +32,33 @@ type HostedWebMessageEvent = Readonly<{
     data?: unknown;
     origin?: string;
     source?: unknown;
+    ports?: readonly HostedWebMessagePort[];
+}>;
+
+type HostedWebMessagePort = {
+    onmessage: ((event: Readonly<{ data?: unknown }>) => void) | null;
+    postMessage(message: unknown): void;
+    start(): void;
+    close(): void;
+};
+
+type HostedWebMessageChannel = Readonly<{
+    port1: HostedWebMessagePort;
+    port2: HostedWebMessagePort;
 }>;
 
 export interface HostedWebPluginUiClientRealm {
     readonly location?: Readonly<{ href?: string }>;
     readonly parent?: Readonly<{
-        postMessage(message: unknown, targetOrigin: string): void;
+        postMessage(message: unknown, targetOrigin: string, transfer?: readonly unknown[]): void;
     }>;
+    readonly MessageChannel?: new () => HostedWebMessageChannel;
     readonly ReactNativeWebView?: Readonly<{
         postMessage(message: string): void;
+    }>;
+    readonly document?: Readonly<{
+        addEventListener(type: 'click', listener: (event: unknown) => void, options?: unknown): void;
+        removeEventListener(type: 'click', listener: (event: unknown) => void, options?: unknown): void;
     }>;
     addEventListener(type: 'message', listener: (event: unknown) => void): void;
     removeEventListener(type: 'message', listener: (event: unknown) => void): void;
@@ -48,14 +68,7 @@ export type AwaitHostedWebPluginUiHostApiClientBootstrapOptions = Readonly<{
     signal?: AbortSignal;
 }>;
 
-type HostedWebBootstrapConfig = Readonly<{
-    pluginId: string;
-    contributionId: string;
-    surfaceId: string;
-    nonce: string;
-    frameOrigin: string;
-    hostOrigin: string;
-}>;
+type HostedWebBootstrapConfig = Readonly<PluginHostedWebBridgeBootstrapConfigV1>;
 
 type HostedWebBootstrapState = 'preBootstrap' | 'readySent' | 'bootstrapped' | 'disconnected';
 
@@ -117,20 +130,12 @@ function readRequiredQueryValue(url: URL, key: string): string | null {
     return value ? value : null;
 }
 
-function readExactHttpOrigin(value: string): string | null {
-    try {
-        const parsed = new URL(value);
-        return (parsed.protocol === 'http:' || parsed.protocol === 'https:')
-            && parsed.origin === value
-            && parsed.origin !== 'null'
-            ? value
-            : null;
-    } catch {
-        return null;
-    }
-}
-
 function readHostedWebBootstrapConfig(realm: HostedWebPluginUiClientRealm): HostedWebBootstrapConfig | null {
+    const inlineConfig: unknown = Reflect.get(realm, '__HAPPIER_UI_FRAME_BOOTSTRAP_V1__');
+    if (inlineConfig !== undefined) {
+        const parsed = PluginHostedWebBridgeBootstrapConfigV1Schema.safeParse(inlineConfig);
+        return parsed.success ? parsed.data : null;
+    }
     const href = realm.location?.href;
     if (typeof href !== 'string' || href.trim() === '') return null;
     let url: URL;
@@ -140,20 +145,16 @@ function readHostedWebBootstrapConfig(realm: HostedWebPluginUiClientRealm): Host
         return null;
     }
     const frameOrigin = readPluginHostedWebBridgeFrameOriginV1(url);
-    const pluginId = readRequiredQueryValue(url, 'happierPluginId');
-    const contributionId = readRequiredQueryValue(url, 'happierContributionId');
-    const surfaceId = readRequiredQueryValue(url, 'happierSurfaceId');
+    const instanceId = readRequiredQueryValue(url, 'happierInstanceId');
     const nonce = readRequiredQueryValue(url, 'happierBridgeNonce');
-    const hostOrigin = readExactHttpOrigin(readRequiredQueryValue(url, 'happierHostOrigin') ?? '');
-    if (!frameOrigin || !pluginId || !contributionId || !surfaceId || !nonce || !hostOrigin) return null;
-    return Object.freeze({
-        pluginId,
-        contributionId,
-        surfaceId,
-        nonce,
+    const hostOrigin = readRequiredQueryValue(url, 'happierHostOrigin');
+    if (!frameOrigin || !instanceId || !nonce || !hostOrigin) return null;
+    const parsed = PluginHostedWebBridgeBootstrapConfigV1Schema.safeParse({
+        identity: Object.freeze({ instanceId, mountNonce: nonce }),
         frameOrigin,
         hostOrigin,
     });
+    return parsed.success ? parsed.data : null;
 }
 
 function readMessageData(raw: unknown): unknown {
@@ -169,19 +170,10 @@ function readMessageData(raw: unknown): unknown {
 function addressesThisSurface(
     config: HostedWebBootstrapConfig,
     envelope: Readonly<{
-        pluginId: string;
-        contributionId: string;
-        surfaceId: string;
-        sessionId?: string;
-        nonce: string;
+        identity: PluginUiHostApiWireIdentityV1;
     }>,
-    expectedSessionId: string | undefined,
 ): boolean {
-    return envelope.pluginId === config.pluginId
-        && envelope.contributionId === config.contributionId
-        && envelope.surfaceId === config.surfaceId
-        && (expectedSessionId === undefined || envelope.sessionId === expectedSessionId)
-        && envelope.nonce === config.nonce;
+    return pluginUiHostApiWireIdentitiesEqual(config.identity, envelope.identity);
 }
 
 function asBootstrap(
@@ -190,6 +182,7 @@ function asBootstrap(
 ): PluginUiHostApiClientBootstrap {
     return Object.freeze({
         identity: payload.identity,
+        ...(payload.authorPlugin === undefined ? {} : { authorPlugin: payload.authorPlugin }),
         transport,
         ...(payload.launchInput === undefined ? {} : { launchInput: payload.launchInput }),
         ...(payload.subPath === undefined ? {} : { subPath: payload.subPath }),
@@ -246,10 +239,6 @@ function createHostedWebBootstrapController(
 
     let state: HostedWebBootstrapState = 'preBootstrap';
     let identity: PluginUiHostApiWireIdentityV1 | null = null;
-    // The first ready is nonce-bound and intentionally sessionless. The
-    // verified bootstrap becomes the canonical Session identity for every
-    // subsequent bridge message.
-    let boundSessionId: string | undefined;
     let bootstrap: PluginUiHostApiClientBootstrap | null = null;
     let terminalError: PluginUiHostApiClientError | null = null;
     let sequence = 0;
@@ -257,6 +246,7 @@ function createHostedWebBootstrapController(
     let readyAcknowledged = false;
     let accountDataCapability = false;
     let createAccountDataTransport: (() => HostedWebAccountDataTransport) | null = null;
+    let documentPort: HostedWebMessagePort | null = null;
     let timeout: ReturnType<typeof setTimeout> | null = null;
     const sentSequences = new Set<number>();
     const listeners = new Set<(message: unknown) => void>();
@@ -273,6 +263,7 @@ function createHostedWebBootstrapController(
     });
 
     const removeListener = () => realm.removeEventListener('message', handleMessage);
+    let removeExternalLinkCarrier: () => void = () => {};
     const clearBootstrapTimeout = () => {
         if (timeout !== null) {
             clearTimeout(timeout);
@@ -282,6 +273,10 @@ function createHostedWebBootstrapController(
     const sendEnvelope = (envelope: PluginHostedWebBridgeEnvelopeV1): void => {
         if (typeof nativePostMessage === 'function') {
             Reflect.apply(nativePostMessage, realm.ReactNativeWebView, [JSON.stringify(envelope)]);
+            return;
+        }
+        if (documentPort) {
+            documentPort.postMessage(envelope);
             return;
         }
         parent?.postMessage(envelope, config.hostOrigin);
@@ -304,6 +299,9 @@ function createHostedWebBootstrapController(
         state = 'disconnected';
         clearBootstrapTimeout();
         removeListener();
+        removeExternalLinkCarrier();
+        documentPort?.close();
+        documentPort = null;
         const error = new PluginUiHostApiClientError(code, message);
         terminalError = error;
         if (currentIdentity) {
@@ -322,6 +320,8 @@ function createHostedWebBootstrapController(
         state = 'disconnected';
         clearBootstrapTimeout();
         removeListener();
+        documentPort?.close();
+        documentPort = null;
         const error = new PluginUiHostApiClientError(
             'ui_host_bridge_disconnected',
             `The hosted plugin UI bridge was disconnected: ${reason}`,
@@ -346,12 +346,11 @@ function createHostedWebBootstrapController(
             fail('ui_host_bootstrap_invalid', 'The hosted plugin UI received a duplicate bootstrap.');
             return;
         }
-        if (payload.identity.pluginId !== config.pluginId) {
+        if (!pluginUiHostApiWireIdentitiesEqual(payload.identity, config.identity)) {
             fail('ui_host_bootstrap_invalid', 'The hosted plugin UI bootstrap did not match its bound surface.');
             return;
         }
         identity = payload.identity;
-        boundSessionId = payload.identity.sessionId;
         const transport: PluginUiHostApiClientBootstrap['transport'] = Object.freeze({
             send(message: PluginUiHostApiWireEnvelopeV1) {
                 if (state !== 'bootstrapped' || !identity) {
@@ -368,11 +367,7 @@ function createHostedWebBootstrapController(
                 sentSequences.add(sequence);
                 sendEnvelope(PluginHostedWebBridgeEnvelopeV1Schema.parse({
                     version: 1,
-                    pluginId: config.pluginId,
-                    contributionId: config.contributionId,
-                    surfaceId: config.surfaceId,
-                    ...(boundSessionId === undefined ? {} : { sessionId: boundSessionId }),
-                    nonce: config.nonce,
+                    identity: config.identity,
                     sequence,
                     kind: 'hostApi',
                     payload: wire,
@@ -434,11 +429,7 @@ function createHostedWebBootstrapController(
                         sequence += 1;
                         sendEnvelope(PluginHostedWebBridgeEnvelopeV1Schema.parse({
                             version: 1,
-                            pluginId: config.pluginId,
-                            contributionId: config.contributionId,
-                            surfaceId: config.surfaceId,
-                            ...(boundSessionId === undefined ? {} : { sessionId: boundSessionId }),
-                            nonce: config.nonce,
+                            identity: config.identity,
                             sequence,
                             kind: PLUGIN_HOSTED_WEB_ACCOUNT_DATA_BRIDGE_KIND_V1,
                             payload: { kind: 'cancel', requestSequence },
@@ -461,11 +452,7 @@ function createHostedWebBootstrapController(
                     accountDataPending.set(requestSequence, pending);
                     sendEnvelope(PluginHostedWebBridgeEnvelopeV1Schema.parse({
                         version: 1,
-                        pluginId: config.pluginId,
-                        contributionId: config.contributionId,
-                        surfaceId: config.surfaceId,
-                        ...(boundSessionId === undefined ? {} : { sessionId: boundSessionId }),
-                        nonce: config.nonce,
+                        identity: config.identity,
                         sequence: requestSequence,
                         kind: PLUGIN_HOSTED_WEB_ACCOUNT_DATA_BRIDGE_KIND_V1,
                         payload: { kind: 'request', operation: parsed.data },
@@ -518,14 +505,10 @@ function createHostedWebBootstrapController(
         installAccountDataTransport();
         resolveReadiness(acceptedBootstrap);
     };
-    const handleMessage = (rawEvent: unknown): void => {
-        const event = rawEvent && typeof rawEvent === 'object' ? rawEvent as HostedWebMessageEvent : {};
-        if (typeof nativePostMessage !== 'function'
-            && (event.source !== parent || event.origin !== config.hostOrigin)) return;
-        const data = readMessageData(event);
+    const handleHostData = (data: unknown): void => {
         const hostMessage = PluginHostedWebBridgeHostMessageEnvelopeV1Schema.safeParse(data);
         if (hostMessage.success && hostMessage.data.kind === 'bootstrap') {
-            if (!addressesThisSurface(config, hostMessage.data, boundSessionId)) return;
+            if (!addressesThisSurface(config, hostMessage.data)) return;
             if (hostMessage.data.origin !== config.frameOrigin) {
                 fail('ui_host_bootstrap_invalid', 'The hosted plugin UI bootstrap origin did not match the frame origin.');
                 return;
@@ -535,7 +518,7 @@ function createHostedWebBootstrapController(
         }
         const response = PluginHostedWebBridgeResponseEnvelopeV1Schema.safeParse(data);
         if (response.success
-            && addressesThisSurface(config, response.data, boundSessionId)
+            && addressesThisSurface(config, response.data)
             && readySequence !== null
             && response.data.requestSequence === readySequence) {
             readyAcknowledged = true;
@@ -546,7 +529,7 @@ function createHostedWebBootstrapController(
         }
         if (state !== 'bootstrapped') return;
         if (hostMessage.success && hostMessage.data.kind === 'hostApi') {
-            if (!addressesThisSurface(config, hostMessage.data, boundSessionId)) return;
+            if (!addressesThisSurface(config, hostMessage.data)) return;
             deliver(hostMessage.data.payload);
             if (hostMessage.data.payload.kind === 'disconnected') {
                 disconnectFromHost(hostMessage.data.payload.reason);
@@ -554,11 +537,11 @@ function createHostedWebBootstrapController(
             return;
         }
         if (hostMessage.success && hostMessage.data.kind === PLUGIN_HOSTED_WEB_ACCOUNT_DATA_BRIDGE_KIND_V1) {
-            if (!addressesThisSurface(config, hostMessage.data, boundSessionId)) return;
+            if (!addressesThisSurface(config, hostMessage.data)) return;
             for (const listener of accountDataListeners) listener(hostMessage.data.payload);
             return;
         }
-        if (!response.success || !addressesThisSurface(config, response.data, boundSessionId)) return;
+        if (!response.success || !addressesThisSurface(config, response.data)) return;
         const collectionPending = accountDataPending.get(response.data.requestSequence);
         if (collectionPending) {
             if (response.data.kind !== 'result') {
@@ -583,21 +566,77 @@ function createHostedWebBootstrapController(
         const wire = PluginUiHostApiWireEnvelopeV1Schema.safeParse(response.data.payload);
         if (wire.success) deliver(wire.data);
     };
+    const handleMessage = (rawEvent: unknown): void => {
+        const event = rawEvent && typeof rawEvent === 'object' ? rawEvent as HostedWebMessageEvent : {};
+        if (typeof nativePostMessage !== 'function'
+            && (event.source !== parent || event.origin !== config.hostOrigin)) return;
+        const data = readMessageData(event);
+        handleHostData(data);
+    };
 
     realm.addEventListener('message', handleMessage);
+    if (typeof nativePostMessage !== 'function'
+        && Reflect.get(realm, '__HAPPIER_UI_FRAME_EXTERNAL_LINKS_V1__') === true
+        && realm.document) {
+        const handleClick = (rawEvent: unknown): void => {
+            if (!rawEvent || typeof rawEvent !== 'object' || Reflect.get(rawEvent, 'isTrusted') !== true) return;
+            if (Reflect.get(rawEvent, 'defaultPrevented') === true
+                || Reflect.get(rawEvent, 'button') !== 0
+                || Reflect.get(rawEvent, 'metaKey') === true
+                || Reflect.get(rawEvent, 'ctrlKey') === true
+                || Reflect.get(rawEvent, 'shiftKey') === true
+                || Reflect.get(rawEvent, 'altKey') === true) return;
+            const target = Reflect.get(rawEvent, 'target');
+            const closest = target && typeof target === 'object' ? Reflect.get(target, 'closest') : null;
+            const anchor = typeof closest === 'function' ? Reflect.apply(closest, target, ['a[href]']) : null;
+            const href = anchor && typeof anchor === 'object' ? Reflect.get(anchor, 'href') : null;
+            const preventDefault = Reflect.get(rawEvent, 'preventDefault');
+            if (typeof preventDefault === 'function') Reflect.apply(preventDefault, rawEvent, []);
+            if (typeof href !== 'string') return;
+            let parsed: URL;
+            try {
+                parsed = new URL(href);
+            } catch {
+                return;
+            }
+            if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return;
+            sequence += 1;
+            sendEnvelope(PluginHostedWebBridgeEnvelopeV1Schema.parse({
+                version: 1,
+                identity: config.identity,
+                sequence,
+                kind: 'openExternal',
+                payload: { url: parsed.href },
+            }));
+        };
+        realm.document.addEventListener('click', handleClick, true);
+        removeExternalLinkCarrier = () => realm.document?.removeEventListener('click', handleClick, true);
+    }
     state = 'readySent';
     sequence += 1;
     readySequence = sequence;
-    sendEnvelope(PluginHostedWebBridgeEnvelopeV1Schema.parse({
+    const readyEnvelope = PluginHostedWebBridgeEnvelopeV1Schema.parse({
         version: 1,
-        pluginId: config.pluginId,
-        contributionId: config.contributionId,
-        surfaceId: config.surfaceId,
-        nonce: config.nonce,
+        identity: config.identity,
         sequence,
         kind: 'ready',
         payload: { ready: true },
-    }));
+    });
+    if (typeof nativePostMessage !== 'function' && config.frameOrigin === 'null') {
+        const MessageChannel = realm.MessageChannel;
+        if (typeof MessageChannel !== 'function') {
+            fail('ui_host_bootstrap_unavailable', 'This browser cannot bind hosted plugin UI traffic to its document.');
+            return null;
+        }
+        const channel = new MessageChannel();
+        documentPort = channel.port1;
+        documentPort.onmessage = (portEvent) => handleHostData(readMessageData(portEvent));
+        documentPort.start();
+        removeListener();
+        parent?.postMessage(readyEnvelope, config.hostOrigin, [channel.port2]);
+    } else {
+        sendEnvelope(readyEnvelope);
+    }
     timeout = setTimeout(() => {
         fail('ui_host_bootstrap_timeout', 'The hosted plugin UI host did not bootstrap the ready frame in time.');
     }, BOOTSTRAP_TIMEOUT_MS);

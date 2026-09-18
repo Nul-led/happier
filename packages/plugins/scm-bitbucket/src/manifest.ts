@@ -14,6 +14,7 @@
  */
 
 import { definePlugin } from '@happier-dev/plugin-sdk';
+import { CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1 } from '@happier-dev/plugin-sdk/connected-accounts';
 import { withTriageSourceSettingsTranslationsV1 } from '@happier-dev/triage-sources/translations';
 import { BITBUCKET_RENDER_UI_TRANSLATIONS } from './ui/renderTranslations.js';
 import { BITBUCKET_ADDITIONAL_UI_TRANSLATIONS } from './ui/additionalTranslations.js';
@@ -603,6 +604,7 @@ export const BITBUCKET_PLUGIN = definePlugin({
           modes: [{
             id: 'manual',
             kind: 'manual',
+            directExport: { contractVersion: CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1 },
             outcomeReconciliation: 'none',
             fields: [
               {

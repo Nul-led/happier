@@ -38,6 +38,13 @@ function createContext(
   const abortController = new AbortController();
   const sessionStorage = new Map<string, unknown>();
   return {
+    exec: {
+      systemTools: {
+        resolve: vi.fn(async () => {
+          throw new Error('executable resolution is outside this controller test');
+        }),
+      },
+    },
     logger: {
       debug: vi.fn(),
       info: vi.fn(),
@@ -126,6 +133,7 @@ describe('OpenCode native interactions', () => {
     expect(askQuestions).toHaveBeenCalledTimes(1);
     expect(client.questionReply).toHaveBeenCalledTimes(1);
     expect(client.questionReply).toHaveBeenCalledWith({
+      sessionId: 'provider-session-1',
       requestId: 'question-1',
       answers: [['Production']],
     });
@@ -171,6 +179,22 @@ describe('OpenCode native interactions', () => {
 
     expect(client.questionReply).not.toHaveBeenCalled();
     expect(client.questionReject).not.toHaveBeenCalled();
+  });
+
+  it('preserves the active turn and publishes no cancellation when provider abort fails', async () => {
+    const client = createClient();
+    const runtime = await createRuntime({ client, askQuestions: vi.fn() });
+    const events: Array<{ kind: string }> = [];
+    runtime.subscribeRuntimeEvents((event) => events.push(event));
+    runtime.beginTurnLifecycle('turn-cancel-retry');
+    vi.mocked(client.sessionAbort).mockRejectedValueOnce(new Error('abort unavailable'));
+
+    await expect(runtime.cancelTurn()).rejects.toThrow('abort unavailable');
+    expect(events.filter((event) => event.kind === 'turn-cancelled')).toHaveLength(0);
+
+    await expect(runtime.cancelTurn()).resolves.toBeUndefined();
+    expect(client.sessionAbort).toHaveBeenCalledTimes(2);
+    expect(events.filter((event) => event.kind === 'turn-cancelled')).toHaveLength(1);
   });
 
   it('publishes strict manual compaction start and completion around provider summarize', async () => {

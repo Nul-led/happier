@@ -54,7 +54,7 @@ export const DEEPSEEK_PROVIDER_CONTRIBUTION = {
     source: 'static+probe',
     manualModelPolicy: 'allowed',
     staticModels: [
-      { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash' },
+      { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', aliases: ['deepseek-chat', 'deepseek-reasoner'] },
       { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro' },
     ],
     probes: [{ endpointTemplateId: 'deepseek-openai-chat', path: '/v1/models', parser: 'openai-models' }],

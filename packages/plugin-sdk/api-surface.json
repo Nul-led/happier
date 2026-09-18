@@ -586,6 +586,14 @@
     },
     {
       "specifier": ".",
+      "exportName": "ComposerAttachmentResolveRequestV2",
+      "kind": "type",
+      "sourceModule": "src/activation.ts",
+      "sourceExport": "ComposerAttachmentResolveRequestV2",
+      "realm": "daemon"
+    },
+    {
+      "specifier": ".",
       "exportName": "ComposerAttachmentResolveResultV1",
       "kind": "type",
       "sourceModule": "src/activation.ts",
@@ -1082,6 +1090,22 @@
     },
     {
       "specifier": ".",
+      "exportName": "PluginEphemeralSharedScope",
+      "kind": "type",
+      "sourceModule": "src/ephemeralSharedScope.ts",
+      "sourceExport": "PluginEphemeralSharedScope",
+      "realm": "any"
+    },
+    {
+      "specifier": ".",
+      "exportName": "PluginEphemeralSharedValueLease",
+      "kind": "type",
+      "sourceModule": "src/ephemeralSharedScope.ts",
+      "sourceExport": "PluginEphemeralSharedValueLease",
+      "realm": "any"
+    },
+    {
+      "specifier": ".",
       "exportName": "PluginError",
       "kind": "value",
       "sourceModule": "src/errors.ts",
@@ -1095,6 +1119,14 @@
       "sourceModule": "src/errors.ts",
       "sourceExport": "PluginErrorData",
       "realm": "any"
+    },
+    {
+      "specifier": ".",
+      "exportName": "PluginExecutionScopeV1",
+      "kind": "type",
+      "sourceModule": "src/invocation.ts",
+      "sourceExport": "PluginExecutionScopeV1",
+      "realm": "daemon"
     },
     {
       "specifier": ".",
@@ -1191,6 +1223,14 @@
       "sourceModule": "src/definePlugin.ts",
       "sourceExport": "PluginRequestInterceptorDefinition",
       "realm": "any"
+    },
+    {
+      "specifier": ".",
+      "exportName": "PluginScopedInvocationContextV1",
+      "kind": "type",
+      "sourceModule": "src/invocation.ts",
+      "sourceExport": "PluginScopedInvocationContextV1",
+      "realm": "daemon"
     },
     {
       "specifier": ".",
@@ -1438,6 +1478,14 @@
       "kind": "type",
       "sourceModule": "src/ui/surface.ts",
       "sourceExport": "UiSurfaceDetailedDefinitionFor",
+      "realm": "any"
+    },
+    {
+      "specifier": ".",
+      "exportName": "UiSurfaceHostedHtmlRendererDefinition",
+      "kind": "type",
+      "sourceModule": "src/ui/surface.ts",
+      "sourceExport": "UiSurfaceHostedHtmlRendererDefinition",
       "realm": "any"
     },
     {
@@ -1694,6 +1742,14 @@
       "kind": "value",
       "sourceModule": "src/diagnostics.ts",
       "sourceExport": "trimBugReportTextToMaxBytes",
+      "realm": "any"
+    },
+    {
+      "specifier": "./actions",
+      "exportName": "ActionApprovalRequestCreatedResult",
+      "kind": "type",
+      "sourceModule": "src/actions/service.ts",
+      "sourceExport": "ActionApprovalRequestCreatedResult",
       "realm": "any"
     },
     {
@@ -1970,6 +2026,86 @@
     },
     {
       "specifier": "./actions",
+      "exportName": "PluginActionWorkflowAuthoredResultReferenceV1",
+      "kind": "type",
+      "sourceModule": "src/actions/actionTypeMap.generated.ts",
+      "sourceExport": "PluginActionWorkflowAuthoredResultReferenceV1",
+      "realm": "any"
+    },
+    {
+      "specifier": "./actions",
+      "exportName": "PluginActionWorkflowBlockV1",
+      "kind": "type",
+      "sourceModule": "src/actions/actionTypeMap.generated.ts",
+      "sourceExport": "PluginActionWorkflowBlockV1",
+      "realm": "any"
+    },
+    {
+      "specifier": "./actions",
+      "exportName": "PluginActionWorkflowConditionV1",
+      "kind": "type",
+      "sourceModule": "src/actions/actionTypeMap.generated.ts",
+      "sourceExport": "PluginActionWorkflowConditionV1",
+      "realm": "any"
+    },
+    {
+      "specifier": "./actions",
+      "exportName": "PluginActionWorkflowEvaluatorHistoryModeV1",
+      "kind": "type",
+      "sourceModule": "src/actions/actionTypeMap.generated.ts",
+      "sourceExport": "PluginActionWorkflowEvaluatorHistoryModeV1",
+      "realm": "any"
+    },
+    {
+      "specifier": "./actions",
+      "exportName": "PluginActionWorkflowFailurePolicyV1",
+      "kind": "type",
+      "sourceModule": "src/actions/actionTypeMap.generated.ts",
+      "sourceExport": "PluginActionWorkflowFailurePolicyV1",
+      "realm": "any"
+    },
+    {
+      "specifier": "./actions",
+      "exportName": "PluginActionWorkflowItemExecutionModeV1",
+      "kind": "type",
+      "sourceModule": "src/actions/actionTypeMap.generated.ts",
+      "sourceExport": "PluginActionWorkflowItemExecutionModeV1",
+      "realm": "any"
+    },
+    {
+      "specifier": "./actions",
+      "exportName": "PluginActionWorkflowParallelBranchV1",
+      "kind": "type",
+      "sourceModule": "src/actions/actionTypeMap.generated.ts",
+      "sourceExport": "PluginActionWorkflowParallelBranchV1",
+      "realm": "any"
+    },
+    {
+      "specifier": "./actions",
+      "exportName": "PluginActionWorkflowRepetitionV1",
+      "kind": "type",
+      "sourceModule": "src/actions/actionTypeMap.generated.ts",
+      "sourceExport": "PluginActionWorkflowRepetitionV1",
+      "realm": "any"
+    },
+    {
+      "specifier": "./actions",
+      "exportName": "PluginActionWorkflowStepV1",
+      "kind": "type",
+      "sourceModule": "src/actions/actionTypeMap.generated.ts",
+      "sourceExport": "PluginActionWorkflowStepV1",
+      "realm": "any"
+    },
+    {
+      "specifier": "./actions",
+      "exportName": "PluginActionWorkflowValueReferenceV1",
+      "kind": "type",
+      "sourceModule": "src/actions/actionTypeMap.generated.ts",
+      "sourceExport": "PluginActionWorkflowValueReferenceV1",
+      "realm": "any"
+    },
+    {
+      "specifier": "./actions",
       "exportName": "PluginAgentExternalSessionLinkDataArray",
       "kind": "type",
       "sourceModule": "src/actions/actionTypeMap.generated.ts",
@@ -2118,6 +2254,14 @@
       "kind": "value",
       "sourceModule": "src/actions/externalActionLimits.ts",
       "sourceExport": "isExternalActionResultWithinResponseEnvelopeLimitV1",
+      "realm": "any"
+    },
+    {
+      "specifier": "./actions",
+      "exportName": "isPluginActionApprovalRequestCreated",
+      "kind": "value",
+      "sourceModule": "src/actions/service.ts",
+      "sourceExport": "isPluginActionApprovalRequestCreated",
       "realm": "any"
     },
     {
@@ -2730,6 +2874,14 @@
     },
     {
       "specifier": "./agents/runtime",
+      "exportName": "AgentAcpModelState",
+      "kind": "type",
+      "sourceModule": "src/agentRuntime/projections.ts",
+      "sourceExport": "AgentAcpModelState",
+      "realm": "daemon"
+    },
+    {
+      "specifier": "./agents/runtime",
       "exportName": "AgentAcpNotificationExtension",
       "kind": "type",
       "sourceModule": "src/agentRuntime/projections.ts",
@@ -3330,6 +3482,38 @@
     },
     {
       "specifier": "./agents/runtime",
+      "exportName": "AgentExecutionRunConversationAdapterOptionsV1",
+      "kind": "type",
+      "sourceModule": "src/agentRuntime/projections.ts",
+      "sourceExport": "AgentExecutionRunConversationAdapterOptionsV1",
+      "realm": "daemon"
+    },
+    {
+      "specifier": "./agents/runtime",
+      "exportName": "AgentExecutionRunConversationEventV1",
+      "kind": "type",
+      "sourceModule": "src/agentRuntime/projections.ts",
+      "sourceExport": "AgentExecutionRunConversationEventV1",
+      "realm": "daemon"
+    },
+    {
+      "specifier": "./agents/runtime",
+      "exportName": "AgentExecutionRunConversationRuntimeV1",
+      "kind": "type",
+      "sourceModule": "src/agentRuntime/projections.ts",
+      "sourceExport": "AgentExecutionRunConversationRuntimeV1",
+      "realm": "daemon"
+    },
+    {
+      "specifier": "./agents/runtime",
+      "exportName": "AgentExecutionRunConversationSendOptionsV1",
+      "kind": "type",
+      "sourceModule": "src/agentRuntime/projections.ts",
+      "sourceExport": "AgentExecutionRunConversationSendOptionsV1",
+      "realm": "daemon"
+    },
+    {
+      "specifier": "./agents/runtime",
       "exportName": "AgentExecutionRunEvent",
       "kind": "type",
       "sourceModule": "src/agentRuntime/projections.ts",
@@ -3346,6 +3530,22 @@
     },
     {
       "specifier": "./agents/runtime",
+      "exportName": "AgentExecutionRunHooksServiceV1",
+      "kind": "type",
+      "sourceModule": "src/agentRuntime/projections.ts",
+      "sourceExport": "AgentExecutionRunHooksServiceV1",
+      "realm": "daemon"
+    },
+    {
+      "specifier": "./agents/runtime",
+      "exportName": "AgentExecutionRunHostServicesV1",
+      "kind": "type",
+      "sourceModule": "src/agentRuntime/projections.ts",
+      "sourceExport": "AgentExecutionRunHostServicesV1",
+      "realm": "daemon"
+    },
+    {
+      "specifier": "./agents/runtime",
       "exportName": "AgentExecutionRunOpenRequest",
       "kind": "type",
       "sourceModule": "src/agentRuntime/projections.ts",
@@ -3354,10 +3554,26 @@
     },
     {
       "specifier": "./agents/runtime",
+      "exportName": "AgentExecutionRunResultContractV1",
+      "kind": "type",
+      "sourceModule": "src/agentRuntime/projections.ts",
+      "sourceExport": "AgentExecutionRunResultContractV1",
+      "realm": "daemon"
+    },
+    {
+      "specifier": "./agents/runtime",
       "exportName": "AgentExecutionRunRuntime",
       "kind": "type",
       "sourceModule": "src/agentRuntime/projections.ts",
       "sourceExport": "AgentExecutionRunRuntime",
+      "realm": "daemon"
+    },
+    {
+      "specifier": "./agents/runtime",
+      "exportName": "AgentExecutionRunRuntimeContextV1",
+      "kind": "type",
+      "sourceModule": "src/agentRuntime/projections.ts",
+      "sourceExport": "AgentExecutionRunRuntimeContextV1",
       "realm": "daemon"
     },
     {
@@ -3594,10 +3810,26 @@
     },
     {
       "specifier": "./agents/runtime",
+      "exportName": "AgentProviderBindingSourceKey",
+      "kind": "type",
+      "sourceModule": "src/agentRuntime/projections.ts",
+      "sourceExport": "AgentProviderBindingSourceKey",
+      "realm": "daemon"
+    },
+    {
+      "specifier": "./agents/runtime",
       "exportName": "AgentProviderCliAttachDeclarationV1",
       "kind": "type",
       "sourceModule": "src/agentRuntime/projections.ts",
       "sourceExport": "AgentProviderCliAttachDeclarationV1",
+      "realm": "daemon"
+    },
+    {
+      "specifier": "./agents/runtime",
+      "exportName": "AgentProviderCliAttachReachabilityV1",
+      "kind": "type",
+      "sourceModule": "src/agentRuntime/projections.ts",
+      "sourceExport": "AgentProviderCliAttachReachabilityV1",
       "realm": "daemon"
     },
     {
@@ -3934,6 +4166,14 @@
       "kind": "type",
       "sourceModule": "src/agentRuntime/projections.ts",
       "sourceExport": "AgentSessionDisposeReason",
+      "realm": "daemon"
+    },
+    {
+      "specifier": "./agents/runtime",
+      "exportName": "AgentSessionExecutionRunRuntimeFactoryV1",
+      "kind": "type",
+      "sourceModule": "src/agentRuntime/projections.ts",
+      "sourceExport": "AgentSessionExecutionRunRuntimeFactoryV1",
       "realm": "daemon"
     },
     {
@@ -5098,6 +5338,14 @@
     },
     {
       "specifier": "./agents/runtime",
+      "exportName": "PluginAgentAcpNativeSessionMcpConfigV2",
+      "kind": "type",
+      "sourceModule": "src/agentRuntime/projections.ts",
+      "sourceExport": "PluginAgentAcpNativeSessionMcpConfigV2",
+      "realm": "daemon"
+    },
+    {
+      "specifier": "./agents/runtime",
       "exportName": "ProviderBindingCanonicalJsonValue",
       "kind": "type",
       "sourceModule": "src/agentRuntime/projections.ts",
@@ -5598,6 +5846,14 @@
       "kind": "value",
       "sourceModule": "src/agentRuntime/projections.ts",
       "sourceExport": "createAgentSessionPreAdmissionBuffer",
+      "realm": "daemon"
+    },
+    {
+      "specifier": "./agents/runtime",
+      "exportName": "createExecutionRunHostBackendFromConversationRuntime",
+      "kind": "value",
+      "sourceModule": "src/agentRuntime/projections.ts",
+      "sourceExport": "createExecutionRunHostBackendFromConversationRuntime",
       "realm": "daemon"
     },
     {
@@ -6414,6 +6670,14 @@
       "kind": "type",
       "sourceModule": "src/connected-accounts/projections.ts",
       "sourceExport": "AuthPromptTextResult",
+      "realm": "any"
+    },
+    {
+      "specifier": "./connected-accounts",
+      "exportName": "CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1",
+      "kind": "value",
+      "sourceModule": "src/connectedAccounts.ts",
+      "sourceExport": "CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1",
       "realm": "any"
     },
     {
@@ -7930,6 +8194,22 @@
     },
     {
       "specifier": "./fs",
+      "exportName": "SecureTempDirectory",
+      "kind": "type",
+      "sourceModule": "src/fs.ts",
+      "sourceExport": "SecureTempDirectory",
+      "realm": "daemon"
+    },
+    {
+      "specifier": "./fs",
+      "exportName": "SecureTempDirectoryInput",
+      "kind": "type",
+      "sourceModule": "src/fs.ts",
+      "sourceExport": "SecureTempDirectoryInput",
+      "realm": "daemon"
+    },
+    {
+      "specifier": "./fs",
       "exportName": "SecureTempTextFileInput",
       "kind": "type",
       "sourceModule": "src/fs.ts",
@@ -7950,6 +8230,22 @@
       "kind": "value",
       "sourceModule": "src/sessions/fileStores/paths.ts",
       "sourceExport": "canonicalizePathSync",
+      "realm": "daemon"
+    },
+    {
+      "specifier": "./fs",
+      "exportName": "createAbsolutePathSymlink",
+      "kind": "value",
+      "sourceModule": "src/runtime/createAbsolutePathSymlink.ts",
+      "sourceExport": "createAbsolutePathSymlink",
+      "realm": "daemon"
+    },
+    {
+      "specifier": "./fs",
+      "exportName": "createSecureTempDirectorySync",
+      "kind": "value",
+      "sourceModule": "src/runtime/tempTextFile.ts",
+      "sourceExport": "createSecureTempDirectorySync",
       "realm": "daemon"
     },
     {
@@ -8582,6 +8878,14 @@
       "kind": "type",
       "sourceModule": "src/interactions.ts",
       "sourceExport": "ApprovalRequestStatus",
+      "realm": "any"
+    },
+    {
+      "specifier": "./interactions",
+      "exportName": "CurrentSessionPresentationIntentV1",
+      "kind": "type",
+      "sourceModule": "src/interactions.ts",
+      "sourceExport": "CurrentSessionPresentationIntentV1",
       "realm": "any"
     },
     {
@@ -9366,6 +9670,22 @@
       "kind": "type",
       "sourceModule": "src/manifest.ts",
       "sourceExport": "PluginRequestInterceptorContribution",
+      "realm": "any"
+    },
+    {
+      "specifier": "./manifest",
+      "exportName": "PluginSystemToolAcpFingerprintV1",
+      "kind": "type",
+      "sourceModule": "src/manifest.ts",
+      "sourceExport": "PluginSystemToolAcpFingerprintV1",
+      "realm": "any"
+    },
+    {
+      "specifier": "./manifest",
+      "exportName": "PluginSystemToolReadinessV1",
+      "kind": "type",
+      "sourceModule": "src/manifest.ts",
+      "sourceExport": "PluginSystemToolReadinessV1",
       "realm": "any"
     },
     {
@@ -11802,14 +12122,6 @@
     },
     {
       "specifier": "./scm",
-      "exportName": "ParsedScmRemoteUrl",
-      "kind": "type",
-      "sourceModule": "src/scm/projections.ts",
-      "sourceExport": "ParsedScmRemoteUrl",
-      "realm": "any"
-    },
-    {
-      "specifier": "./scm",
       "exportName": "PluginScmRegistrationApi",
       "kind": "type",
       "sourceModule": "src/scm/projections.ts",
@@ -12778,6 +13090,14 @@
     },
     {
       "specifier": "./scm",
+      "exportName": "ScmTransportIdentityV1",
+      "kind": "type",
+      "sourceModule": "src/scm/projections.ts",
+      "sourceExport": "ScmTransportIdentityV1",
+      "realm": "any"
+    },
+    {
+      "specifier": "./scm",
       "exportName": "ScmWorkingEntry",
       "kind": "type",
       "sourceModule": "src/scm/projections.ts",
@@ -12882,6 +13202,14 @@
     },
     {
       "specifier": "./scm",
+      "exportName": "buildWorktreeRelativePath",
+      "kind": "value",
+      "sourceModule": "src/scm/projections.ts",
+      "sourceExport": "buildWorktreeRelativePath",
+      "realm": "any"
+    },
+    {
+      "specifier": "./scm",
       "exportName": "createScmCapabilities",
       "kind": "value",
       "sourceModule": "src/scm/projections.ts",
@@ -12911,6 +13239,14 @@
       "sourceModule": "src/scm/projections.ts",
       "sourceExport": "evaluateScmRemoteMutationPreconditions",
       "realm": "daemon"
+    },
+    {
+      "specifier": "./scm",
+      "exportName": "hasForbiddenGitRefName",
+      "kind": "value",
+      "sourceModule": "src/scm/projections.ts",
+      "sourceExport": "hasForbiddenGitRefName",
+      "realm": "any"
     },
     {
       "specifier": "./scm",
@@ -12958,6 +13294,14 @@
       "kind": "value",
       "sourceModule": "src/scm/projections.ts",
       "sourceExport": "normalizeScmRemoteUrl",
+      "realm": "any"
+    },
+    {
+      "specifier": "./scm",
+      "exportName": "normalizeWorktreeDisplayName",
+      "kind": "value",
+      "sourceModule": "src/scm/projections.ts",
+      "sourceExport": "normalizeWorktreeDisplayName",
       "realm": "any"
     },
     {
@@ -13330,11 +13674,27 @@
     },
     {
       "specifier": "./scm/backend",
+      "exportName": "readUntrackedFileStats",
+      "kind": "value",
+      "sourceModule": "src/scm/readUntrackedFileStats.ts",
+      "sourceExport": "readUntrackedFileStats",
+      "realm": "daemon"
+    },
+    {
+      "specifier": "./scm/backend",
       "exportName": "resolveBackendCommandMaxOutputBytes",
       "kind": "value",
       "sourceModule": "src/scm/backend.ts",
       "sourceExport": "resolveBackendCommandMaxOutputBytes",
       "realm": "daemon"
+    },
+    {
+      "specifier": "./scm/backend",
+      "exportName": "resolveScmBackendCapabilities",
+      "kind": "value",
+      "sourceModule": "src/scm/backend.ts",
+      "sourceExport": "resolveScmBackendCapabilities",
+      "realm": "any"
     },
     {
       "specifier": "./scm/backend",

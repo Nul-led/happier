@@ -8,6 +8,7 @@ import {
   throwIfCodexExternalSessionInvocationStopped,
   type CodexExternalSessionInvocationBounds,
 } from '../../surfaces/sessions/external/invocationBounds.js';
+import { readExactCodexProviderSessionId } from '../../../protocol/runtimeDescriptorV1.js';
 
 export type CodexRolloutFile = Readonly<{
   filePath: string;
@@ -52,9 +53,8 @@ function formatPhysicalGeneration(metadata: CodexPhysicalFileMetadata): string {
 }
 
 function readNonEmptySessionId(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim().length > 0
-    ? value.trim()
-    : undefined;
+  // Codex recorded this id in session_meta; keep its exact bytes.
+  return readExactCodexProviderSessionId(value) ?? undefined;
 }
 
 async function readPathGenerationAsync(path: string): Promise<string> {
@@ -192,9 +192,9 @@ async function collectRolloutMatchesFromFlatDir(params: Readonly<{
         ? [sessionMeta?.session_id]
         : []),
     ]) {
-      const normalized = typeof candidate === 'string' ? candidate.trim() : '';
-      if (normalized && params.remoteSessionIds.has(normalized)) {
-        matchingSessionIds.add(normalized);
+      const recordedSessionId = readExactCodexProviderSessionId(candidate);
+      if (recordedSessionId && params.remoteSessionIds.has(recordedSessionId)) {
+        matchingSessionIds.add(recordedSessionId);
       }
     }
     if (matchingSessionIds.size === 0) continue;

@@ -142,12 +142,8 @@ async function mountShell(): Promise<PluginUiTestkit> {
     let fixture!: PluginUiTestkit;
     await act(async () => {
         fixture = await createPluginUiTestkit({
-            identity: {
-                pluginId: 'happier.triage',
-                pluginVersion: '0.0.0',
-                viewId: 'triage',
-                generation: 'target-generation-a',
-            },
+            identity: { instanceId: 'fixture-instance-174', mountNonce: 'fixture-mount-174' },
+            authorPlugin: { id: 'happier.triage', version: '0.0.0' },
             surface: renderShellSurface,
             surfaceContext: createSurfaceContextFixture({
                 mount: {

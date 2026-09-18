@@ -10,9 +10,13 @@
             "configuration": true,
             "delivery": [
               "newTurn",
-              "steer",
               "followUp"
             ],
+            "executionRunContext": {
+              "versions": [
+                1
+              ]
+            },
             "open": [
               "create",
               "resume"

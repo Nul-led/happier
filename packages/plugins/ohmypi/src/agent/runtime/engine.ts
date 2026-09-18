@@ -1,5 +1,8 @@
 import type {
   AgentAcpRuntimeDefinition,
+  AgentExecutionRunOpenRequest,
+  AgentExecutionRunRuntime,
+  AgentExecutionRunRuntimeContextV1,
   AgentRuntimeContext,
   AgentRuntimeFactory,
   AgentSessionDisposeReason,
@@ -26,10 +29,13 @@ const OH_MY_PI_ACP_RUNTIME_DEFINITION = Object.freeze({
   mcp: { policy: 'pass_through' as const },
 }) satisfies AgentAcpRuntimeDefinition;
 
-type PreparedOhMyPiConnectedAccounts = Readonly<{
-  request: AgentSessionOpenRequest;
+type OhMyPiOpenRequest = AgentSessionOpenRequest | AgentExecutionRunOpenRequest;
+
+type PreparedOhMyPiConnectedAccounts<Request extends OhMyPiOpenRequest> = Readonly<{
+  request: Request;
   isInvalidated(): boolean;
   bind(session: AgentSessionRuntime): AgentSessionRuntime;
+  bindExecutionRun(run: AgentExecutionRunRuntime): AgentExecutionRunRuntime;
   cleanup(): void;
 }>;
 
@@ -63,10 +69,10 @@ function isExpectedService(
   return actual.pluginId === expected.pluginId && actual.localId === expected.localId;
 }
 
-async function prepareOhMyPiQualifiedAccounts(
-  request: AgentSessionOpenRequest,
+async function prepareOhMyPiQualifiedAccounts<Request extends OhMyPiOpenRequest>(
+  request: Request,
   context: AgentRuntimeContext,
-): Promise<PreparedOhMyPiConnectedAccounts> {
+): Promise<PreparedOhMyPiConnectedAccounts<Request>> {
   const subscriptions: Array<Readonly<{ dispose(): void }>> = [];
   const initialObservations: Promise<void>[] = [];
   let invalidated = false;
@@ -173,13 +179,12 @@ async function prepareOhMyPiQualifiedAccounts(
         values[entry.key] = entry.value;
         unset.delete(entry.key);
       }
-      preparedRequest = {
-        ...request,
+      preparedRequest = Object.assign({}, request, {
         launchEnvironment: {
           values,
           unset: [...unset],
         },
-      } satisfies AgentSessionOpenRequest;
+      });
     }
 
     return {
@@ -205,10 +210,52 @@ async function prepareOhMyPiQualifiedAccounts(
           dispose,
         };
       },
+      bindExecutionRun(run) {
+        let disposed = false;
+        const dispose = async (): Promise<void> => {
+          if (disposed) return;
+          disposed = true;
+          cleanup();
+          await run.dispose();
+        };
+        invalidationHandler = dispose;
+        if (invalidated) void invalidationHandler();
+        return { ...run, dispose };
+      },
       cleanup,
     };
   } catch (error) {
     cleanup();
+    throw error;
+  }
+}
+
+async function openOhMyPiExecutionRun(
+  request: AgentExecutionRunOpenRequest,
+  context: AgentExecutionRunRuntimeContextV1,
+): Promise<AgentExecutionRunRuntime> {
+  const prepared = await prepareOhMyPiQualifiedAccounts(request, context);
+  try {
+    if (prepared.isInvalidated()) {
+      throw new Error('Oh My Pi qualified Connected Account launch was invalidated before opening the runtime.');
+    }
+    const run = await context.protocols.acp.openExecutionRunV1(
+      prepared.request,
+      {
+        transport: {
+          kind: 'stdio',
+          executable: {
+            kind: 'systemTool',
+            id: OH_MY_PI_SYSTEM_TOOL_ID,
+          },
+          args: ['--mode', 'acp'],
+        },
+        definition: OH_MY_PI_ACP_RUNTIME_DEFINITION,
+      },
+    );
+    return prepared.bindExecutionRun(run);
+  } catch (error) {
+    prepared.cleanup();
     throw error;
   }
 }
@@ -241,5 +288,8 @@ async function openOhMyPiSession(
 }
 
 export const createOhMyPiAgentRuntime: AgentRuntimeFactory = () => ({
-  sessions: { open: openOhMyPiSession },
+  sessions: {
+    open: openOhMyPiSession,
+    executionRunContextV1: { open: openOhMyPiExecutionRun },
+  },
 });

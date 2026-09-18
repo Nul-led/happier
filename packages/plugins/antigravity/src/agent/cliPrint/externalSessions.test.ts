@@ -211,9 +211,10 @@ describe('Antigravity external-session pure leaf', () => {
       if (entry.isDirectory()) traversal.push(entry.name);
     }
     expect(traversal).toHaveLength(3);
-    // Recency ascends along the traversal, so the newest match lives in the
-    // last chunk and a draining first call would answer with a different page.
-    const modifiedAt = (index: number) => new Date(Date.parse('2026-07-20T10:00:00.000Z') + index * 86_400_000);
+    // Recency descends along the traversal, so every later chunk remains after
+    // the cursor anchor in canonical Browse order. The neighboring test owns
+    // the stale-cursor case where an unserved candidate overtakes that anchor.
+    const modifiedAt = (index: number) => new Date(Date.parse('2026-07-22T10:00:00.000Z') - index * 86_400_000);
     await Promise.all(traversal.map((entry, index) => {
       const path = paths[entry.replace('conversation-chunked-', '')]!;
       return utimes(path, modifiedAt(index), modifiedAt(index));

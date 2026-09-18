@@ -15,6 +15,7 @@ import { defineReactNativeWebViteBuildPreset } from '../reactNativeWebBuild.js';
 import { containsUnsafeGuardedRequireAssignment } from '../reactNativeRepackStrictSafety.js';
 import {
     buildUiArtifacts,
+    resolvePluginUiArtifactsStagingParent,
     type PluginUiBundlerRunnerV1,
     type PluginUiBuildSurfaceV1,
 } from './buildUiArtifacts.js';
@@ -57,6 +58,12 @@ afterEach(async () => {
 });
 
 describe('buildUiArtifacts', () => {
+    it('stages atomic publication in the stable ignored root on the plugin filesystem', () => {
+        expect(resolvePluginUiArtifactsStagingParent(projectRoot)).toBe(
+            join(projectRoot, '.happier-plugin-ui-staging'),
+        );
+    });
+
     it('writes the dist tree + ui-artifacts.json with a digest computed from emitted bytes', async () => {
         const indexHtml = encode('<!doctype html><html><body>hi</body></html>');
         const appJs = encode('console.log("plugin ui");');

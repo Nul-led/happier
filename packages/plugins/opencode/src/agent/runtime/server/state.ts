@@ -1,4 +1,4 @@
-import { asRecord, normalizeString } from './openCodeParsing.js';
+import { asRecord, normalizeString, readNonBlankOpaqueIdentifier } from './openCodeParsing.js';
 import type { OpenCodeToolPart } from './foregroundToolTracker.js';
 
 export type OpenCodeServerRuntimeState = {
@@ -77,23 +77,31 @@ export function readProviderEvent(event: unknown): Readonly<{
   return { type, properties };
 }
 
+/**
+ * The provider session an event is addressed to. OpenCode minted this id and
+ * the runtime compares it against the id it holds for its own session, so the
+ * reader decides presence and returns the exact bytes.
+ */
 export function readEventSessionId(properties: Readonly<Record<string, unknown>>): string {
-  return normalizeString(properties.sessionID)
-    || normalizeString(asRecord(properties.session)?.id)
-    || normalizeString(asRecord(properties.part)?.sessionID)
-    || normalizeString(asRecord(properties.info)?.sessionID);
+  return readNonBlankOpaqueIdentifier(properties.sessionID)
+    ?? readNonBlankOpaqueIdentifier(asRecord(properties.session)?.id)
+    ?? readNonBlankOpaqueIdentifier(asRecord(properties.part)?.sessionID)
+    ?? readNonBlankOpaqueIdentifier(asRecord(properties.info)?.sessionID)
+    ?? '';
 }
 
 export function readOpenCodeToolPart(value: unknown): OpenCodeToolPart | null {
   const record = asRecord(value);
   if (!record || normalizeString(record.type) !== 'tool') return null;
-  const sessionID = normalizeString(record.sessionID);
-  const callID = normalizeString(record.callID);
+  // `sessionID`, `callID` and `messageID` are ids OpenCode minted and keys the
+  // runtime correlates tool lifecycle on; `tool` and `status` are vocabulary.
+  const sessionID = readNonBlankOpaqueIdentifier(record.sessionID) ?? '';
+  const callID = readNonBlankOpaqueIdentifier(record.callID) ?? '';
   const tool = normalizeString(record.tool);
   const state = asRecord(record.state);
   const status = normalizeString(state?.status);
   if (!sessionID || !callID || !tool || !status) return null;
-  const messageID = normalizeString(record.messageID);
+  const messageID = readNonBlankOpaqueIdentifier(record.messageID) ?? '';
   return {
     sessionID,
     callID,

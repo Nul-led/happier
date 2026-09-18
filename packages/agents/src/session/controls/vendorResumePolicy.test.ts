@@ -49,15 +49,17 @@ describe('vendorResumePolicy', () => {
     expect(AGENTS_CORE.claude.resume.vendorResumeContinuityProofField).toBe('claudeTranscriptPath');
   });
 
-  it('resolves vendor resume ids from metadata (trimmed)', () => {
-    expect(resolveVendorResumeIdFromSessionMetadata('claude', { claudeSessionId: ' c1 ' })).toBe('c1');
+  it('resolves vendor resume ids from metadata as opaque Agent bytes', () => {
+    // Presence is the only judgement: a blank-only field is no identity, and an
+    // id the Agent padded is still that Agent's id.
+    expect(resolveVendorResumeIdFromSessionMetadata('claude', { claudeSessionId: ' c1 ' })).toBe(' c1 ');
     expect(resolveVendorResumeIdFromSessionMetadata('claude', { claudeSessionId: '   ' })).toBeNull();
   });
 
   it('resolves the generated Grok vendor resume field from session metadata', () => {
     expect(AGENTS_CORE.grok.resume.vendorResumeIdField).toBe('grokSessionId');
     expect(resolveVendorResumeIdFromSessionMetadata('grok', { grokSessionId: ' grok-session-1 ' }))
-      .toBe('grok-session-1');
+      .toBe(' grok-session-1 ');
   });
 
   it('resumes Claude from its recorded id with no continuity proof of any kind', () => {
@@ -540,9 +542,13 @@ describe('resolveVendorResumeIdFromSessionMetadata — external Agent runtime de
   });
 
   it('reads an external Agent’s native session id from the canonical Session identity carrier', () => {
+    // Opaque Agent identity: resolved byte for byte, blank-only still absent.
     expect(
       resolveVendorResumeIdFromSessionMetadata('acme', externalDescriptorMetadata(' acme-native-1 ')),
-    ).toBe('acme-native-1');
+    ).toBe(' acme-native-1 ');
+    expect(
+      resolveVendorResumeIdFromSessionMetadata('acme', externalDescriptorMetadata('   ')),
+    ).toBeNull();
   });
 
   it('never hands one Agent another Agent’s descriptor session id', () => {

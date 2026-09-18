@@ -31,7 +31,7 @@ function collectRegistrations(): Readonly<{
 }
 
 describe('Triage activation', () => {
-  it('registers exactly the Actions the manifest declares', () => {
+  it('registers exactly the daemon Actions the manifest declares', () => {
     const registered = [...collectRegistrations().actions];
 
     // An activation that registers nothing leaves the declared Action
@@ -42,7 +42,9 @@ describe('Triage activation', () => {
       TRIAGE_SET_ENTRY_PINNED_ACTION_LOCAL_ID_V1,
       TRIAGE_LIST_PINNED_ENTRIES_ACTION_LOCAL_ID_V1,
     ]));
-    expect(PLUGIN_MANIFEST.contributes.actions.map((action) => action.id)).toEqual(registered);
+    expect(PLUGIN_MANIFEST.contributes.actions
+      .filter((action) => action.execution.target === 'daemon')
+      .map((action) => action.id)).toEqual(registered);
   });
 
   it('registers a runtime for every attachment lifecycle role the manifest declares', () => {
@@ -61,7 +63,7 @@ describe('Triage activation', () => {
       })));
     expect(registered).toContainEqual({
       id: TRIAGE_ENTRY_ATTACHMENT_LOCAL_ID_V1,
-      roles: ['resolveForDispatch'],
+      roles: ['resolveForDispatch', 'resolveForDispatchV2'],
     });
   });
 });

@@ -339,14 +339,21 @@ export function createGitRepositoryCloneOperation(
             const reservedDestination = await reserveCloneDestination(finalDestination);
             if (!reservedDestination.ok) return reservedDestination.response;
 
-            const clone = await runCommand({
-                bin: 'git',
-                cwd: reservedDestination.parentPath,
-                args: ['clone', '--', cloneTarget.target.url, reservedDestination.cloneDestinationPath],
-                timeoutMs: GIT_REPOSITORY_CLONE_TIMEOUT_MS,
-                env: buildScmNonInteractiveEnv(),
-            });
+            let clone;
+            try {
+                clone = await runCommand({
+                    bin: 'git',
+                    cwd: reservedDestination.parentPath,
+                    args: ['clone', '--', cloneTarget.target.url, reservedDestination.cloneDestinationPath],
+                    timeoutMs: GIT_REPOSITORY_CLONE_TIMEOUT_MS,
+                    env: buildScmNonInteractiveEnv(),
+                });
+            } catch (error) {
+                await reservedDestination.privateTempHandle.close();
+                throw error;
+            }
             if (!clone.success) {
+                await reservedDestination.privateTempHandle.close();
                 await cleanupPrivateCloneDestination({
                     path: reservedDestination.privateTempPath,
                     identity: reservedDestination.privateTempIdentity,

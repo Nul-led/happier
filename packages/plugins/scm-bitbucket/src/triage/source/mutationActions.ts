@@ -20,7 +20,7 @@ import {
 
 import {
   createBitbucketFailure,
-  type BitbucketTriageFailure,
+  isBitbucketPossiblyAppliedFailure,
 } from '../failures.js';
 import {
   preflightBitbucketMutationCapabilityV1,
@@ -208,21 +208,6 @@ function shapeUnsettledWrite(
       failure: toTriageSourceFailure(outcome.failure),
     })
     : unavailable(toTriageSourceFailure(outcome.failure));
-}
-
-/**
- * A transient transport/server answer cannot prove that Bitbucket did not apply a dispatched
- * command. Caller cancellation has the same epistemic boundary: the source must stop its work,
- * but it cannot tell the caller that a request which raced that cancellation never reached the
- * forge. Both take the one exact confirming read under the invocation's existing signal; an
- * already-aborted signal fails closed as `uncertain` and never emits a retry.
- *
- * In contrast, authentication, permission, rate-limit, contract and ordinary HTTP failures are a
- * response from Bitbucket that proves this command was refused, so confirming them could turn a
- * later unrelated state change into this Action's success.
- */
-function isBitbucketAmbiguousWriteFailure(failure: BitbucketTriageFailure): boolean {
-  return failure.class === 'transient' || failure.class === 'cancelled';
 }
 
 /* ---------------------------------------------------------- review publication */
@@ -511,7 +496,7 @@ export async function mergeBitbucketPullRequestAction(
     },
     mayHaveChanged: (result) => result.kind === 'succeeded'
       || result.kind === 'queued'
-      || (result.kind === 'failed' && isBitbucketAmbiguousWriteFailure(result.failure)),
+      || (result.kind === 'failed' && isBitbucketPossiblyAppliedFailure(result.failure)),
     confirm: async () => {
       const queued = dispatched?.kind === 'queued' ? dispatched : null;
       if (queued !== null) {
@@ -563,7 +548,7 @@ export async function mergeBitbucketPullRequestAction(
     const dispatchedOutcome = dispatched as BitbucketWriteOutcomeV1 | null;
     if (
       dispatchedOutcome?.kind === 'failed'
-      && isBitbucketAmbiguousWriteFailure(dispatchedOutcome.failure)
+      && isBitbucketPossiblyAppliedFailure(dispatchedOutcome.failure)
     ) {
       return Object.freeze({
         kind: 'uncertain' as const,
@@ -651,7 +636,7 @@ export async function declineBitbucketPullRequestAction(
       return dispatched;
     },
     mayHaveChanged: (result) => result.kind === 'succeeded'
-      || (result.kind === 'failed' && isBitbucketAmbiguousWriteFailure(result.failure)),
+      || (result.kind === 'failed' && isBitbucketPossiblyAppliedFailure(result.failure)),
     confirm: async () => {
       const confirmed = await observeBitbucketEntryWithFacts(mutation);
       if (confirmed.state === 'DECLINED') {
@@ -673,7 +658,7 @@ export async function declineBitbucketPullRequestAction(
     const dispatchedOutcome = dispatched as BitbucketWriteOutcomeV1 | null;
     if (
       dispatchedOutcome?.kind === 'failed'
-      && isBitbucketAmbiguousWriteFailure(dispatchedOutcome.failure)
+      && isBitbucketPossiblyAppliedFailure(dispatchedOutcome.failure)
     ) {
       return Object.freeze({
         kind: 'uncertain' as const,
@@ -787,7 +772,7 @@ async function runBitbucketCommentResolution(
       return dispatched;
     },
     mayHaveChanged: (result) => result.kind === 'succeeded'
-      || (result.kind === 'failed' && isBitbucketAmbiguousWriteFailure(result.failure)),
+      || (result.kind === 'failed' && isBitbucketPossiblyAppliedFailure(result.failure)),
     confirm: async () => {
       const confirmed = await readBitbucketCommentResolutionState({
         client: mutation.client,
@@ -823,7 +808,7 @@ async function runBitbucketCommentResolution(
     }
     if (
       dispatchedOutcome?.kind === 'failed'
-      && isBitbucketAmbiguousWriteFailure(dispatchedOutcome.failure)
+      && isBitbucketPossiblyAppliedFailure(dispatchedOutcome.failure)
     ) {
       return Object.freeze({
         kind: 'uncertain' as const,

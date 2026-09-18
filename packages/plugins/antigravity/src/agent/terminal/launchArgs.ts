@@ -1,5 +1,5 @@
 import type { AgentTerminalSurface } from '@happier-dev/plugin-sdk/agents/runtime';
-import { readCanonicalAntigravityRuntimeDescriptorV1 } from '../runtime/runtimeDescriptor.js';
+import { readAntigravityTerminalConversationId } from './runtimeDescriptor.js';
 
 export type AntigravityTerminalLaunchArgsInput = Readonly<{
   conversationId?: string | null;
@@ -16,11 +16,8 @@ export function resolveAntigravityTerminalLaunchArgsInput(
   metadata: Readonly<Record<string, unknown>>,
   modelSelection: Parameters<AgentTerminalSurface['resolveLaunch']>[0]['modelSelection'],
 ): AntigravityTerminalLaunchArgsInput {
-  const runtimeDescriptor = metadata.runtimeDescriptorV1
-    ? readCanonicalAntigravityRuntimeDescriptorV1(metadata.runtimeDescriptorV1)
-    : null;
   return {
-    conversationId: runtimeDescriptor?.providerSessionId ?? null,
+    conversationId: readAntigravityTerminalConversationId(metadata.runtimeDescriptorV1),
     modelId: readModelIdCandidate(modelSelection?.modelId),
   };
 }

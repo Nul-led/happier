@@ -92,6 +92,7 @@ export type AgentAccountUsageMeter = Readonly<{
     | 'manual'
     | 'unknown';
   providerLimitId?: string;
+  windowDurationMs?: number;
   modelId?: string | null;
   isExhausted?: boolean;
   isSoftLimited?: boolean;

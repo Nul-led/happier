@@ -67,7 +67,7 @@ describe('runtimeDescriptorReaderRegistry', () => {
       agentId: 'codex',
       runtimeKind: 'appServer',
       backendMode: 'appServer',
-      providerSessionId: 'thread-1',
+      providerSessionId: ' thread-1 ',
     });
     expect(getRuntimeDescriptorReader('opencode')?.({
       opencodeBackendMode: 'server',

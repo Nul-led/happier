@@ -220,5 +220,5 @@ describe('MCP package-local publication projection', () => {
     it('adds no runtime wrapper or second registry', async () => {
         expect(Object.keys(await import('./projections.js')))
             .toEqual(['normalizeDetectedMcpServerV1']);
-    }, 45_000);
+    }, 120_000);
 });

@@ -1,4 +1,5 @@
 import { resolveClaudeConfigDir } from '../../../environment.js';
+import { readClaudeProviderIdentityValue } from '../../../../protocol/providerIdentity.js';
 import type { ClaudeExternalSessionSource } from '../external/source.js';
 import { resolveClaudeProjectId } from './path.js';
 
@@ -45,9 +46,9 @@ export function buildClaudeRuntimeLocalHandoffMetadata(params: Readonly<{
 }>): ClaudeRuntimeLocalHandoffMetadata {
     const runtimeLocalMetadata: MutableClaudeRuntimeLocalHandoffMetadata = {};
     const vendorResumeId =
-        normalizeOptionalString(params.vendorResumeId)
-        ?? normalizeOptionalString(params.session.vendorResumeId)
-        ?? normalizeOptionalString(params.session.spawnOptions?.resume)
+        readClaudeProviderIdentityValue(params.vendorResumeId)
+        ?? readClaudeProviderIdentityValue(params.session.vendorResumeId)
+        ?? readClaudeProviderIdentityValue(params.session.spawnOptions?.resume)
         ?? '';
     if (!vendorResumeId) {
         return runtimeLocalMetadata;

@@ -15,6 +15,41 @@ if (false) {
 }
 
 describe('defineUiSurfaceDefinition', () => {
+    it('projects inline HTML as source data without an Artifact build target', () => {
+        const surface = defineUiSurfaceDefinition({
+            id: 'inline', placement: 'appPage',
+            renderer: { kind: 'hostedHtml', source: { kind: 'html', html: '<p>Hello</p>' } },
+        });
+        expect(buildUiSurfaceTargets(surface)).toEqual([]);
+        const plugin = definePlugin({ id: 'com.acme.inline', version: '1.0.0', ui: { surfaces: [surface] } });
+        expect(plugin.manifest.contributes.ui?.renderers).toEqual([{
+            id: 'inline-renderer', kind: 'hostedHtml', source: { kind: 'html', html: '<p>Hello</p>' },
+        }]);
+    });
+    it('projects built-in and external-style inline HTML through the same public ABI', () => {
+        const defineSurface = (id: string) => defineUiSurfaceDefinition({
+            id,
+            placement: 'servicesPanel',
+            target: { kind: 'services' },
+            renderer: { kind: 'hostedHtml', source: { kind: 'html', html: '<p>Status</p>' } },
+        } as const);
+        const external = defineSurface('external-status');
+        const builtIn = defineSurface('builtin-status');
+        for (const surface of [external, builtIn]) {
+            expect(buildUiSurfaceTargets(surface)).toEqual([]);
+        }
+        const project = (pluginId: string, surface: typeof external) => definePlugin({
+            id: pluginId,
+            version: '1.0.0',
+            ui: { surfaces: [surface] },
+        }).manifest.contributes.ui;
+        expect(project('com.acme.external', external)?.views?.[0]).toMatchObject({
+            container: 'servicesPanel', target: { kind: 'services' }, renderer: 'external-status-renderer',
+        });
+        expect(project('built-in.review', builtIn)?.renderers?.[0]).toMatchObject({
+            kind: 'hostedHtml', source: { kind: 'html', html: '<p>Status</p>' },
+        });
+    });
     it('publishes the unambiguous declaration helper', () => {
         const surface = defineUiSurfaceDefinition({
             id: 'declaration-name',

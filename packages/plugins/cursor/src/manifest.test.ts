@@ -8,7 +8,13 @@ describe('Cursor plugin manifest', () => {
     expect(ingestPluginManifestV2(PLUGIN_MANIFEST)).toMatchObject({ ok: true });
     expect(PLUGIN_MANIFEST.contributes.agents[0]).toMatchObject({
       id: 'cursor', runtime: { kind: 'custom' }, primary: 'sessions',
-      capabilities: { sessions: { open: ['create', 'resume'], cancel: true } },
+      capabilities: {
+        sessions: {
+          open: ['create', 'resume'],
+          delivery: ['newTurn', 'followUp'],
+          cancel: true,
+        },
+      },
     });
     expect(PLUGIN_MANIFEST.contributes.agents[0]?.cli.auth.nonInteractiveStatusProbe).toBe(true);
     expect(PLUGIN_MANIFEST.hostAccess.required).toEqual(expect.arrayContaining([

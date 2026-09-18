@@ -39,7 +39,7 @@ describe('Kiro plugin manifest', () => {
               mcp: { policy: 'pass_through' },
             },
           },
-          capabilities: { sessions: { open: ['create', 'resume'], delivery: ['newTurn', 'steer', 'followUp'], cancel: true } },
+          capabilities: { sessions: { open: ['create', 'resume'], delivery: ['newTurn', 'followUp'], cancel: true } },
         }],
         systemTools: [{ id: 'kiro-cli', executableNames: ['kiro-cli'] }],
         settings: [KIRO_AGENT_SETTINGS_CONTRIBUTION],

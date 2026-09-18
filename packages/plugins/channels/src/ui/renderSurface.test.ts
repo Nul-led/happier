@@ -1055,13 +1055,8 @@ describe('Channels mounted provider setup recovery', () => {
     // reaches this state. Rendering nothing left the person with no way to
     // learn why the page is empty or what to do about it.
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-provider-setup-none',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-72', mountNonce: 'fixture-mount-72' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContextWithoutProviders(),
       adapter: createChannelsSemanticAdapter(),
@@ -1150,13 +1145,8 @@ describe('Channels mounted provider setup recovery', () => {
       throw new Error(`Unexpected mounted Action: ${String(request.action)}`);
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-provider-remediation',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-73', mountNonce: 'fixture-mount-73' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(undefined, true),
       adapter: createChannelsSemanticAdapter(),
@@ -1218,13 +1208,8 @@ describe('Channels mounted provider setup recovery', () => {
       throw new Error('A cancelled remediation selection must not execute the provider Action.');
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-provider-remediation-cancel',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-74', mountNonce: 'fixture-mount-74' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(undefined, true),
       adapter: createChannelsSemanticAdapter(),
@@ -1295,13 +1280,8 @@ describe('Channels mounted provider setup recovery', () => {
       throw new Error(`Unexpected mounted Action: ${String(action)}`);
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-provider-remediation-unknown',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-75', mountNonce: 'fixture-mount-75' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(undefined, true),
       adapter: createChannelsSemanticAdapter(),
@@ -1358,13 +1338,8 @@ describe('Channels mounted provider setup recovery', () => {
       return { kind: 'unsupported-provider-prepare-result' };
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-provider-setup-draft-recovery',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-76', mountNonce: 'fixture-mount-76' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -1463,13 +1438,8 @@ describe('Channels mounted provider setup recovery', () => {
       throw new Error(`Unexpected mounted Action: ${String(request.action)}`);
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-provider-setup-selected-relay',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-77', mountNonce: 'fixture-mount-77' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -1649,13 +1619,8 @@ describe('Channels mounted provider setup recovery', () => {
       throw new Error(`Unexpected mounted Action: ${String(request.action)}`);
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-provider-setup-durable-push',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-78', mountNonce: 'fixture-mount-78' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -1906,13 +1871,8 @@ describe('Channels mounted provider setup recovery', () => {
       throw new Error(`Unexpected mounted Action: ${String(action)}`);
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-provider-setup-currentness',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-79', mountNonce: 'fixture-mount-79' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -1982,13 +1942,8 @@ describe('Channels mounted provider setup recovery', () => {
     });
     const surfaceContext = createChannelsSurfaceContext();
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-provider-setup-recovery',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-80', mountNonce: 'fixture-mount-80' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext,
       adapter: createChannelsSemanticAdapter(),
@@ -2097,13 +2052,8 @@ describe('Channels mounted ingress attention recovery', () => {
       throw new Error('An occurrence conflict must not expose a recovery Action.');
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-ingress-occurrence-conflict',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-81', mountNonce: 'fixture-mount-81' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(attentionDataClient),
@@ -2249,13 +2199,8 @@ describe('Channels mounted ingress attention recovery', () => {
       };
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-ingress-attention-reread',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-82', mountNonce: 'fixture-mount-82' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(attentionDataClient),
@@ -2331,13 +2276,8 @@ describe('Channels mounted binding creation', () => {
       throw new Error(`Unexpected mounted Action: ${String(action)}`);
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: `channels-binding-create-${accountEncryptionMode}-privacy-disclosure`,
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-83', mountNonce: 'fixture-mount-83' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(accountEncryptionMode),
       adapter: createChannelsSemanticAdapter(),
@@ -2390,13 +2330,8 @@ describe('Channels mounted binding creation', () => {
       throw new Error(`Unexpected mounted Action: ${String(action)}`);
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-binding-create-input-mode-capability',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-84', mountNonce: 'fixture-mount-84' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -2447,13 +2382,8 @@ describe('Channels mounted binding creation', () => {
       throw new Error(`Unexpected mounted Action: ${String(action)}`);
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-binding-create-step-navigation',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-85', mountNonce: 'fixture-mount-85' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -2544,13 +2474,8 @@ describe('Channels mounted binding creation', () => {
       renderIcon: () => null,
     } satisfies PluginUiPresentationHost;
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-binding-create-logical-focus',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-86', mountNonce: 'fixture-mount-86' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(emptyDataClient, presentationHost),
@@ -2677,13 +2602,8 @@ describe('Channels mounted binding creation', () => {
       throw new Error(`Unexpected mounted Action: ${String(action)}`);
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-binding-create-existing-session',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-87', mountNonce: 'fixture-mount-87' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -2899,13 +2819,8 @@ describe('Channels mounted binding creation', () => {
       throw new Error(`Unexpected mounted Action: ${String(action)}`);
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-binding-pairing-expiry',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-88', mountNonce: 'fixture-mount-88' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -3100,13 +3015,8 @@ describe('Channels mounted binding creation', () => {
       },
     } satisfies PluginUiPresentationHost;
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-binding-pairing-fallback',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-89', mountNonce: 'fixture-mount-89' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       // The countdown's unit abbreviations must come from the catalog. A
       // locale that spells them differently is what discriminates a
@@ -3311,13 +3221,8 @@ describe('Channels mounted binding creation', () => {
       throw new Error(`Unexpected mounted Action: ${String(action)}`);
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-pairing-create-unknown',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-90', mountNonce: 'fixture-mount-90' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -3416,13 +3321,8 @@ describe('Channels mounted binding creation', () => {
       throw new Error(`Unexpected mounted Action: ${String(action)}`);
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-pairing-create-unknown-exact',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-91', mountNonce: 'fixture-mount-91' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -3534,13 +3434,8 @@ describe('Channels mounted binding creation', () => {
         throw new Error(`Unexpected mounted Action: ${String(action)}`);
       });
       const fixture = await createPluginUiTestkit({
-        identity: {
-          pluginId: 'happier.channels',
-          pluginVersion: '0.0.0',
-          viewId: 'channels-account',
-          generation: `channels-pairing-cancel-${fixtureCase.name}`,
-          sessionId: 'session-1',
-        },
+        identity: { instanceId: 'fixture-instance-92', mountNonce: 'fixture-mount-92' },
+        authorPlugin: { id: 'happier.channels', version: '0.0.0' },
         surface: renderSurface,
         surfaceContext: createChannelsSurfaceContext(),
         adapter: createChannelsSemanticAdapter(),
@@ -3600,13 +3495,8 @@ describe('Channels mounted binding creation', () => {
           : settlement.result;
       });
       const fixture = await createPluginUiTestkit({
-        identity: {
-          pluginId: 'happier.channels',
-          pluginVersion: '0.0.0',
-          viewId: 'channels-account',
-          generation: `channels-binding-not-pairing-${settlement.result.kind}`,
-          sessionId: 'session-1',
-        },
+        identity: { instanceId: 'fixture-instance-93', mountNonce: 'fixture-mount-93' },
+        authorPlugin: { id: 'happier.channels', version: '0.0.0' },
         surface: renderSurface,
         surfaceContext: createChannelsSurfaceContext(),
         adapter: createChannelsSemanticAdapter(),
@@ -3646,13 +3536,8 @@ describe('Channels mounted binding creation', () => {
       throw new Error(`Unexpected mounted Action: ${String(action)}`);
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-binding-new-session-cancelled',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-94', mountNonce: 'fixture-mount-94' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -3736,13 +3621,8 @@ describe('Channels mounted binding creation', () => {
       throw new Error(`Unexpected mounted Action: ${String(action)}`);
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-binding-automation-target',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-95', mountNonce: 'fixture-mount-95' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -3879,13 +3759,8 @@ describe('Channels mounted binding creation', () => {
       throw new Error(`Unexpected mounted Action: ${String(action)}`);
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-binding-target-pages',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-96', mountNonce: 'fixture-mount-96' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -4012,13 +3887,8 @@ describe('Channels mounted binding creation', () => {
       throw new Error(`Unexpected mounted Action: ${String(action)}`);
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-binding-editor-automation-retarget-delivery',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-97', mountNonce: 'fixture-mount-97' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -4143,13 +4013,8 @@ describe('Channels mounted binding creation', () => {
       throw new Error(`Unexpected mounted Action: ${String(action)}`);
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-binding-editor-direct-session-retarget',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-98', mountNonce: 'fixture-mount-98' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -4212,13 +4077,8 @@ describe('Channels mounted binding creation', () => {
       throw new Error(`Unexpected mounted Action: ${String(action)}`);
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-binding-create-outcome-unknown',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-99', mountNonce: 'fixture-mount-99' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -4338,13 +4198,8 @@ describe('Channels mounted binding editor', () => {
       throw new Error(`Unexpected mounted Action: ${String(action)}`);
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-binding-editor-private-read-and-reread',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-100', mountNonce: 'fixture-mount-100' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -4505,13 +4360,8 @@ describe('Channels mounted binding editor', () => {
       throw new Error(`Unexpected mounted Action: ${String(action)}`);
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-binding-editor-foreign-provider-reselection',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-101', mountNonce: 'fixture-mount-101' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContextWithForeignProvider(),
       adapter: createChannelsSemanticAdapter(),
@@ -4699,13 +4549,8 @@ describe('Channels mounted binding editor', () => {
       throw new Error(`Unexpected mounted Action: ${String(action)}`);
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-binding-editor-complete-guarded-save',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-102', mountNonce: 'fixture-mount-102' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -4874,13 +4719,8 @@ describe('Channels mounted binding editor', () => {
       throw new Error(`Unexpected mounted Action: ${String(action)}`);
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-binding-editor-approvals',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-103', mountNonce: 'fixture-mount-103' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -5000,13 +4840,8 @@ describe('Channels mounted binding editor', () => {
       throw new Error(`Unexpected mounted Action: ${String(action)}`);
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-binding-editor-authoritative-clamp',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-104', mountNonce: 'fixture-mount-104' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -5093,13 +4928,8 @@ describe('Channels mounted binding editor', () => {
       throw new Error(`Unexpected mounted Action: ${String(action)}`);
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-binding-editor-collection-quota-incompatible',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-105', mountNonce: 'fixture-mount-105' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -5190,13 +5020,8 @@ describe('Channels mounted binding editor', () => {
       };
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-binding-editor-summary-currentness',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-106', mountNonce: 'fixture-mount-106' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -5288,13 +5113,8 @@ describe('Channels mounted binding editor', () => {
       throw new Error(`Unexpected mounted Action: ${String(action)}`);
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-binding-editor-unknown-outcome',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-107', mountNonce: 'fixture-mount-107' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -5394,13 +5214,8 @@ describe('Channels mounted binding editor', () => {
       renderIcon: () => null,
     } satisfies PluginUiPresentationHost;
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-binding-editor-cancel-focus',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-108', mountNonce: 'fixture-mount-108' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(emptyDataClient, presentationHost),
@@ -5450,13 +5265,8 @@ describe('Channels binding enablement presentation', () => {
       throw new Error('Unexpected mounted Action: ' + String(action));
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-binding-enable-quota-incompatible',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-109', mountNonce: 'fixture-mount-109' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -5510,13 +5320,8 @@ describe('Channels binding enablement presentation', () => {
       throw new Error('Unexpected mounted Action: ' + String(action));
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-binding-enable-localized-failure',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-110', mountNonce: 'fixture-mount-110' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: {
         ...createChannelsSurfaceContext(),
@@ -5558,13 +5363,8 @@ describe('Channels binding deletion presentation', () => {
       throw new Error(`Unexpected mounted Action: ${String(action)}`);
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-binding-delete',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-111', mountNonce: 'fixture-mount-111' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -5609,13 +5409,8 @@ describe('Channels binding deletion presentation', () => {
       throw new Error(`Unexpected mounted Action: ${String(action)}`);
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-binding-delete-outcome-unknown',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-112', mountNonce: 'fixture-mount-112' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -5671,13 +5466,8 @@ describe('Channels binding deletion presentation', () => {
       throw new Error('A finalizing binding must not execute an enablement Action.');
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-binding-delete-finalizing',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-113', mountNonce: 'fixture-mount-113' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -5763,13 +5553,8 @@ describe('Channels connection policy editing across a source change', () => {
       throw new Error('A source-changed policy editor must not submit.');
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-connection-source-changed',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-114', mountNonce: 'fixture-mount-114' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -5850,13 +5635,8 @@ describe('Channels connection policy editing across a source change', () => {
       return { kind: 'ready' as const, connectionId: 'connection-1', revision: 2, authorityEpoch: 1 };
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-connection-own-save',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-115', mountNonce: 'fixture-mount-115' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -5904,13 +5684,8 @@ describe('Channels connection policy editing across a source change', () => {
       digestDigit: 'b',
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-connection-clean-rebase',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-116', mountNonce: 'fixture-mount-116' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -5958,13 +5733,8 @@ describe('Channels connection lifecycle actions', () => {
       throw new Error('A terminal occurrence conflict must not offer a polling recovery Action.');
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-ingress-conflict-terminal-status',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-117', mountNonce: 'fixture-mount-117' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -5998,13 +5768,8 @@ describe('Channels connection lifecycle actions', () => {
       diagnostic: 'Enable the required permission in the provider configuration.',
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-provider-readiness',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-118', mountNonce: 'fixture-mount-118' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -6046,13 +5811,8 @@ describe('Channels connection lifecycle actions', () => {
       authorityEpoch: 1,
     }));
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-connection-retest',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-119', mountNonce: 'fixture-mount-119' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -6129,13 +5889,8 @@ describe('Channels connection lifecycle actions', () => {
     }, '5');
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-connection-sibling-identity',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-120', mountNonce: 'fixture-mount-120' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -6236,13 +5991,8 @@ describe('Channels connection lifecycle actions', () => {
       };
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-connection-transfer',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-121', mountNonce: 'fixture-mount-121' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -6356,13 +6106,8 @@ describe('Channels connection lifecycle actions', () => {
       renderIcon: () => null,
     } satisfies PluginUiPresentationHost;
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-connection-transfer-phase-focus',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-122', mountNonce: 'fixture-mount-122' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(emptyDataClient, presentationHost),
@@ -6483,13 +6228,8 @@ describe('Channels connection lifecycle actions', () => {
       };
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-transfer-pull-to-push',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-123', mountNonce: 'fixture-mount-123' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -6632,13 +6372,8 @@ describe('Channels connection lifecycle actions', () => {
       };
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-transfer-ensure-ambiguity-rejoin',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-124', mountNonce: 'fixture-mount-124' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -6722,13 +6457,8 @@ describe('Channels connection lifecycle actions', () => {
       throw new Error('A cancelled provider selection must not execute a transfer Action.');
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-connection-transfer-provider-identity',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-125', mountNonce: 'fixture-mount-125' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContextWithForeignProvider(),
       adapter: createChannelsSemanticAdapter(),
@@ -6774,13 +6504,8 @@ describe('Channels connection lifecycle actions', () => {
       presentation: { connectedAccountLabel: null, machineDisplayName: null },
     };
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-connection-transfer-durable-push',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-126', mountNonce: 'fixture-mount-126' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -6836,13 +6561,8 @@ describe('Channels connection lifecycle actions', () => {
       throw new Error(`Unexpected mounted Action: ${String(action)}`);
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-connection-delete',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-127', mountNonce: 'fixture-mount-127' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -6915,13 +6635,8 @@ describe('Channels connection lifecycle actions', () => {
       };
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-history-gap-baseline-confirm',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-128', mountNonce: 'fixture-mount-128' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(emptyDataClient, presentationHost),
@@ -6983,13 +6698,8 @@ describe('Channels connection lifecycle actions', () => {
       { kind: 'updated', connectionId: 'connection-1', revision: 6, authorityEpoch: 3 }
     ));
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-history-gap-baseline-currentness',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-129', mountNonce: 'fixture-mount-129' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -7048,13 +6758,8 @@ describe('Channels connection lifecycle actions', () => {
       throw new PluginError({ code: 'timeout', message: 'The baseline acceptance may have reached the provider.' });
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-history-gap-baseline-unknown',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-130', mountNonce: 'fixture-mount-130' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -7119,13 +6824,8 @@ describe('Channels connection lifecycle actions', () => {
       throw new Error(`Unexpected mounted Action: ${String(action)}`);
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-connection-abandon',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-131', mountNonce: 'fixture-mount-131' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -7179,13 +6879,8 @@ describe('Channels connection lifecycle actions', () => {
       throw new Error(`Unexpected mounted Action: ${String(action)}`);
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-connection-endpoint-repair',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-132', mountNonce: 'fixture-mount-132' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -7244,13 +6939,8 @@ describe('Channels connection lifecycle actions', () => {
       throw new Error(`Unexpected mounted Action: ${String(action)}`);
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-connection-accepted-loss',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-133', mountNonce: 'fixture-mount-133' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -7298,13 +6988,8 @@ describe('Channels destructive confirmation focus', () => {
       throw new Error(`Unexpected mounted Action: ${String(action)}`);
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-binding-delete-confirmation-focus',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-134', mountNonce: 'fixture-mount-134' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(emptyDataClient, focusTransferPresentationHost()),
@@ -7336,13 +7021,8 @@ describe('Channels destructive confirmation focus', () => {
       throw new Error(`Unexpected mounted Action: ${String(action)}`);
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-connection-delete-confirmation-focus',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-135', mountNonce: 'fixture-mount-135' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(emptyDataClient, focusTransferPresentationHost()),
@@ -7375,13 +7055,8 @@ describe('Channels offline Account-local binding policy', () => {
   it('edits the Account-decidable binding policy through the shared transition and CAS owner without a daemon', async () => {
     const account = createOfflineChannelStateFixture();
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-offline-binding-policy',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-136', mountNonce: 'fixture-mount-136' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(account.dataClient),
@@ -7446,13 +7121,8 @@ describe('Channels offline Account-local binding policy', () => {
     const ambiguous = offlineAmbiguousDeliveryRow();
     account.deliveries.rows.set(ambiguous.rowId, ambiguous);
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-offline-delivery-resolution',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-137', mountNonce: 'fixture-mount-137' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(account.dataClient),
@@ -7483,13 +7153,8 @@ describe('Channels offline Account-local binding policy', () => {
     const recoverable = offlineArchiveRecoverableDeliveryRow();
     account.deliveries.rows.set(recoverable.rowId, recoverable);
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-offline-archive-recovery',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-138', mountNonce: 'fixture-mount-138' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(account.dataClient),
@@ -7524,13 +7189,8 @@ describe('Channels offline Account-local binding policy', () => {
   it('does not offer provider resolution, target changes, or deletion from the offline binding editor', async () => {
     const account = createOfflineChannelStateFixture();
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-offline-binding-policy-boundary',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-139', mountNonce: 'fixture-mount-139' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(account.dataClient),
@@ -7561,13 +7221,8 @@ describe('Channels offline Account-local binding policy', () => {
   it('offers and saves the Account-decidable Session target policy from the offline binding editor', async () => {
     const account = createOfflineChannelStateFixture();
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-offline-binding-target-policy',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-140', mountNonce: 'fixture-mount-140' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(account.dataClient),
@@ -7638,13 +7293,8 @@ describe('Channels offline Account-local binding policy', () => {
       },
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-offline-binding-approval-principals',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-141', mountNonce: 'fixture-mount-141' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(account.dataClient),
@@ -7692,13 +7342,8 @@ describe('Channels offline Account-local binding policy', () => {
   it('keeps an ambiguous offline binding write locked until an explicit reread reconciles it', async () => {
     const account = createOfflineChannelStateFixture();
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-offline-binding-policy-outcome-unknown',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-142', mountNonce: 'fixture-mount-142' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(account.dataClient),
@@ -7755,13 +7400,8 @@ describe('Channels offline Account-local binding policy', () => {
   it('keeps the ambiguous write locked when the reconciling reread itself fails', async () => {
     const account = createOfflineChannelStateFixture();
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-offline-binding-policy-unknown-reread-unavailable',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-143', mountNonce: 'fixture-mount-143' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(account.dataClient),
@@ -7865,13 +7505,8 @@ describe('Channels offline Account-local sender revocation', () => {
     const account = createOfflineChannelStateFixture();
     account.collection.rows.set('binding-1', offlineSharedBindingRowWithTwoSenders());
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-offline-binding-revocation',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-144', mountNonce: 'fixture-mount-144' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(account.dataClient),
@@ -7921,6 +7556,17 @@ describe('Channels Session destination', () => {
         kind: 'destination',
         destination: { pluginId: 'happier.channels', localId: 'session-conversations' },
         container: 'rightSidebarTab',
+      },
+      target: { kind: 'session', sessionId },
+    });
+  }
+
+  function createSessionConversationsWidgetContext(sessionId: string) {
+    return createSurfaceContextFixture({
+      mount: {
+        kind: 'embedded',
+        role: 'sessionWidget',
+        presentation: 'content',
       },
       target: { kind: 'session', sessionId },
     });
@@ -7990,6 +7636,35 @@ describe('Channels Session destination', () => {
       // Mounting it here would offer Account-wide binding mutation on a Session.
       expect(mount.container.textContent).not.toContain('Conversation connections');
       expect(mount.container.querySelector('[data-testid="channels-session-conversations"]')).not.toBeNull();
+    } finally {
+      mount.unmount();
+    }
+  });
+
+  it('renders the same read-only Session conversations through the public sessionWidget role', async () => {
+    const surface = createSessionConversationsWidgetContext('session-under-test');
+    const baseHostApi = createHostApiStub(surface);
+    const hostApi = createHostApiStub(surface, {
+      version: () => ({ ...baseHostApi.version(), methods: ['readResource'] }),
+      readResource: async (resource) => {
+        const localId = typeof resource === 'string' ? resource : resource.localId;
+        if (localId === 'session-conversations-v1') return sessionConversationsResource;
+        if (localId === CONNECTIONS_RESOURCE.localId) return connectionsResource;
+        throw new Error(`Unexpected Resource: ${localId}`);
+      },
+    });
+    const context = Object.freeze({
+      plugin: Object.freeze({ id: 'happier.channels', version: '0.0.0' }),
+      surface,
+      hostApi,
+      signal: new AbortController().signal,
+    } satisfies RenderContext);
+    const entry = renderSurface(context) as ReactElement<{ dataClient?: PluginUiDataClient }>;
+    const mount = await mountThroughReactNativeWebAsync(cloneElement(entry, { dataClient: emptyDataClient }));
+    try {
+      await vi.waitFor(() => expect(mount.container.textContent).toContain('Example conversation'));
+      expect(mount.container.querySelector('[data-testid="channels-session-conversations"]')).not.toBeNull();
+      expect(mount.container.textContent).not.toContain('Conversation connections');
     } finally {
       mount.unmount();
     }
@@ -8194,13 +7869,8 @@ describe('Channels Session destination', () => {
 describe('Channels connection row placement presentation', () => {
   async function mountConnectionRows(connections: ResourceContent): Promise<PluginUiTestkit> {
     return await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-connection-placement',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-145', mountNonce: 'fixture-mount-145' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -8374,13 +8044,8 @@ describe('Channels collapsed row identity', () => {
 
   it('mount the labeled binding rows with account, provider, and endpoint facts', async () => {
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-collapsed-row-identity',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-146', mountNonce: 'fixture-mount-146' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -8421,13 +8086,8 @@ describe('Channels collapsed row identity', () => {
 
   it('names an unlabeled connection by its short identity instead of repeating the provider', async () => {
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-collapsed-row-identity-connection',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-147', mountNonce: 'fixture-mount-147' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -8469,13 +8129,8 @@ describe('Channels collapsed row identity', () => {
     account.deliveries.rows.set(first.rowId, first);
     account.deliveries.rows.set(second.rowId, second);
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-offline-delivery-identity',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-148', mountNonce: 'fixture-mount-148' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(account.dataClient),
@@ -8512,13 +8167,8 @@ describe('Channels Connected Services handoff', () => {
       throw new Error(`Unexpected mounted Action: ${String(action)}`);
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-connected-services-handoff',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-149', mountNonce: 'fixture-mount-149' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
@@ -8634,13 +8284,8 @@ describe('Channels first connection continuation', () => {
       throw new Error(`Unexpected mounted Action: ${String(request.action)}`);
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.channels',
-        pluginVersion: '0.0.0',
-        viewId: 'channels-account',
-        generation: 'channels-first-connection-continuation',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-150', mountNonce: 'fixture-mount-150' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),

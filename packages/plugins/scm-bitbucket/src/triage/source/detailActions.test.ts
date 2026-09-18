@@ -41,6 +41,24 @@ const WORKSPACE_UUID = '{4b2f0e6c-8a71-4f2e-9d51-6c3b70a19d44}';
 const REPOSITORY_UUID = '{1a2b3c4d-5e6f-4071-8293-a4b5c6d7e8f9}';
 const COLLISION_SCOPE = `bitbucket:${REPOSITORY_UUID}`;
 const ENTRY_ID = '42';
+const PULL_REQUEST_URL = 'https://api.bitbucket.org/2.0/repositories'
+  + `/${encodeURIComponent(WORKSPACE_UUID)}/repository/pullrequests/${ENTRY_ID}`;
+
+/**
+ * The exact pull-request body a given repository owns, addressed through the locator's slug.
+ *
+ * Every subresource route below is addressed by that MUTABLE slug, so the entity read is the only
+ * thing that can say which immutable repository the panel is actually looking at.
+ */
+function provenPullRequest(repositoryUuid: string = REPOSITORY_UUID) {
+  const body = structuredClone(pullRequestSelf);
+  for (const side of [body.source, body.destination]) {
+    side.repository.uuid = repositoryUuid;
+    side.repository.name = 'repository';
+    side.repository.full_name = 'example/repository';
+  }
+  return body;
+}
 
 function configurationToken(workspaceUuid: string): string {
   const encoded = encodeBitbucketConfiguration({ v: 1, workspaceUuid });
@@ -75,7 +93,11 @@ function planeInput(overrides: Readonly<Record<string, unknown>> = {}) {
 }
 
 function harness(route: (url: string) => StubReply | undefined) {
-  const { http, requests } = createHttpStub(route);
+  // The case's own routes win; the selected repository answers the entity proof every plane owes
+  // before it addresses a slug-scoped subresource.
+  const { http, requests } = createHttpStub((url) => (
+    route(url) ?? (url === PULL_REQUEST_URL ? { body: provenPullRequest() } : undefined)
+  ));
   const { connectedAccounts } = createConnectedAccountsStub({
     accounts: [{ accountId: 'account-1' }],
   });
@@ -254,7 +276,8 @@ describe('Bitbucket comments plane', () => {
       await listBitbucketComments(planeInput(), seam.context),
     );
     if (first.kind !== 'comments') throw new Error('the comments page must settle');
-    expect(seam.requests[0]?.url).toContain('pagelen=30');
+    expect(seam.requests.find((request) => request.url.includes('/comments'))?.url)
+      .toContain('pagelen=30');
     expect(first.continuation).toBeTypeOf('string');
 
     const second = BitbucketCommentsResultV1Schema.parse(
@@ -403,9 +426,11 @@ describe('Bitbucket activity plane', () => {
     expect(settled.rows.map((row) => row.kind)).toEqual(['approval', 'update', 'comment']);
     expect(settled.rows[0]?.actor).toBe('Ada');
     expect(settled.rows[2]?.summary).toBe('Looks good');
-    // Exactly one request: Bitbucket has no separate approval or update route,
-    // and inventing one would be a call the provider does not answer.
-    expect(seam.requests).toHaveLength(1);
+    // The entity proof, then exactly one activity request: Bitbucket has no separate approval or
+    // update route, and inventing one would be a call the provider does not answer.
+    expect(seam.requests[0]?.url).toBe(PULL_REQUEST_URL);
+    expect(seam.requests.filter((request) => request.url.includes('/activity'))).toHaveLength(1);
+    expect(seam.requests).toHaveLength(2);
   });
 
   it('keeps an activity arm it does not model instead of dropping the row', async () => {
@@ -445,7 +470,8 @@ describe('Bitbucket activity plane', () => {
     if (settled.kind !== 'activity') throw new Error('the activity page must settle');
     expect(settled.rows[0]).toMatchObject({ actor, summary: summary.trim() });
     expect(settled.rows[0]).not.toHaveProperty('truncated');
-    expect(seam.requests[0]?.url).toContain('pagelen=100');
+    expect(seam.requests.find((request) => request.url.includes('/activity'))?.url)
+      .toContain('pagelen=100');
   });
 
   it('fits a large activity page through the canonical Action envelope with exact omissions', async () => {
@@ -541,7 +567,102 @@ describe('Bitbucket detail admission', () => {
   });
 });
 
+/* -------------------------------------------------------------- entity proof */
+
+describe('Bitbucket detail entity proof', () => {
+  const REPLACEMENT_REPOSITORY_UUID = '{9f8e7d6c-5b4a-4938-8271-6059f8e7d6c5}';
+
+  it('refuses a subresource read once the locator slug answers for another repository', async () => {
+    // Repository A moved; repository B took its slug. The comments route is addressed by that
+    // slug and its body says nothing about which repository owns it.
+    const seam = harness((url) => {
+      if (url === PULL_REQUEST_URL) {
+        return { body: provenPullRequest(REPLACEMENT_REPOSITORY_UUID) };
+      }
+      if (url.includes('/pullrequests/42/comments')) {
+        return envelope([{ id: 1, content: { raw: 'Comment from replacement repository B' } }]);
+      }
+      return undefined;
+    });
+
+    const settled = BitbucketCommentsResultV1Schema.parse(
+      await listBitbucketComments(planeInput(), seam.context),
+    );
+
+    expect(settled.kind).toBe('unavailable');
+    if (settled.kind !== 'unavailable') throw new Error('unreachable');
+    expect(settled.failure.code).toBe('route-body-mismatch');
+    // The credential never reaches the successor repository's comments at all.
+    expect(seam.requests.map((request) => request.url)).toEqual([PULL_REQUEST_URL]);
+  });
+
+  it('proves the entity again before a continued page, not only before the first', async () => {
+    const nextUrl = 'https://api.bitbucket.org/2.0/repositories'
+      + `/${encodeURIComponent(WORKSPACE_UUID)}/repository`
+      + '/pullrequests/42/activity?page=2&pagelen=100';
+    const issuer = harness((url) => (
+      url.includes('/pullrequests/42/activity')
+        ? envelope([{ approval: { date: '2026-08-01T00:00:00Z' } }], nextUrl)
+        : undefined
+    ));
+    const first = BitbucketActivityResultV1Schema.parse(
+      await listBitbucketActivity(planeInput(), issuer.context),
+    );
+    if (first.kind !== 'activity' || first.continuation === undefined) {
+      throw new Error('the activity continuation must be minted');
+    }
+
+    // The continuation is bound to the route, and the route is exactly what changed hands.
+    const replaced = harness((url) => {
+      if (url === PULL_REQUEST_URL) {
+        return { body: provenPullRequest(REPLACEMENT_REPOSITORY_UUID) };
+      }
+      return url === nextUrl ? envelope([{ approval: { date: '2026-08-02T00:00:00Z' } }]) : undefined;
+    });
+    const second = BitbucketActivityResultV1Schema.parse(
+      await listBitbucketActivity(planeInput({ continuation: first.continuation }), replaced.context),
+    );
+
+    expect(second.kind).toBe('unavailable');
+    if (second.kind !== 'unavailable') throw new Error('unreachable');
+    expect(second.failure.code).toBe('route-body-mismatch');
+    expect(replaced.requests.map((request) => request.url)).toEqual([PULL_REQUEST_URL]);
+  });
+
+  it('spends no provider request proving an entity for a continuation it did not mint', async () => {
+    const seam = harness(() => undefined);
+    const settled = BitbucketCommentsResultV1Schema.parse(
+      await listBitbucketComments(planeInput({ continuation: 'not-a-token' }), seam.context),
+    );
+    expect(settled.kind).toBe('unavailable');
+    expect(seam.requests).toHaveLength(0);
+  });
+});
+
 describe('Bitbucket authoritative Overview and Diff planes', () => {
+  it.each([
+    { description: `## Fresh description\n\n${'Useful markdown paragraph.\n\n'.repeat(200)}**Final detail**`, truncated: false },
+    { description: `## Large description\n${'"\\\n🚀'.repeat(Math.ceil(EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES / 10))}`, truncated: true },
+    { description: '', truncated: false },
+  ])('keeps native Overview markdown independently of list-summary bounds ($truncated)', async ({ description, truncated }) => {
+    const fresh = provenPullRequest();
+    fresh.summary.raw = description;
+    const seam = harness((url) => {
+      if (url.endsWith('/2.0/user')) return { body: currentUser };
+      if (url === PULL_REQUEST_URL) return { body: fresh };
+      return undefined;
+    });
+    const settled = BitbucketOverviewResultV1Schema.parse(await readBitbucketOverview(planeInput(), seam.context));
+    expect(settled).toMatchObject({ kind: 'overview', descriptionTruncated: truncated });
+    if (settled.kind !== 'overview' || settled.observation.kind !== 'present') throw new Error('expected overview');
+    expect(settled.description).toBe(truncated ? description.slice(0, settled.description?.length) : description || null);
+    expect(isExternalActionResultWithinResponseEnvelopeLimitV1(settled)).toBe(true);
+    if (description.length > 0) {
+      expect(settled.description!.length).toBeGreaterThan(settled.observation.snapshot.summary!.length);
+      expect(settled.observation.snapshot.projectionTruncated).toBe(true);
+    }
+  });
+
   it('re-reads Overview from Bitbucket instead of replaying only the launch observation', async () => {
     const fresh = structuredClone(pullRequestSelf);
     fresh.title = 'Fresh provider title';

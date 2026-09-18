@@ -708,12 +708,8 @@ async function mountShell(
     let fixture!: PluginUiTestkit;
     await act(async () => {
         fixture = await createPluginUiTestkit({
-            identity: {
-                pluginId: TRIAGE_SOURCES_TARGET_PLUGIN_ID_V1,
-                pluginVersion: '0.0.0',
-                viewId: 'triage',
-                generation: TARGET_GENERATION,
-            },
+            identity: { instanceId: 'fixture-instance-186', mountNonce: 'fixture-mount-186' },
+            authorPlugin: { id: TRIAGE_SOURCES_TARGET_PLUGIN_ID_V1, version: '0.0.0' },
             ...(options.subPath === undefined ? {} : { subPath: options.subPath }),
             ...(options.launchInput === undefined ? {} : { launchInput: options.launchInput }),
             surface: renderShellSurface,

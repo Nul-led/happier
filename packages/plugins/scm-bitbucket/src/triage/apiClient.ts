@@ -12,6 +12,7 @@ import {
   type BitbucketRateLimitTelemetry,
 } from './bitbucketRateLimit.js';
 import {
+  BITBUCKET_MALFORMED_SUCCESS_RESPONSE_CODE,
   classifyBitbucketHttpFailure,
   classifyBitbucketAbortSignal,
   classifyBitbucketTransportFailure,
@@ -177,10 +178,16 @@ export function createBitbucketTriageApiClient(
 
       if (response.status >= 200 && response.status < 300) {
         if (!parsed) {
+          // The status already said this request succeeded. A reader has nothing to project, but a
+          // write must not read "no effect" out of a body it merely could not parse, so the code
+          // keeps that provenance rather than folding into a generic contract failure.
           return {
             ok: false,
             status: response.status,
-            failure: createBitbucketFailure('unsupportedContract', 'malformed-json'),
+            failure: createBitbucketFailure(
+              'unsupportedContract',
+              BITBUCKET_MALFORMED_SUCCESS_RESPONSE_CODE,
+            ),
             telemetry,
           };
         }

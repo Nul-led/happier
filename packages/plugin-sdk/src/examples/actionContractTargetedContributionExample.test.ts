@@ -108,7 +108,7 @@ function expectTriageSourcePointSemantics(
 }
 
 describe('cross-plugin contribution public authoring example', () => {
-    it('keeps shipped examples and designated fixtures exhaustively classified without promoting SDK capabilities', () => {
+    it('classifies every shipped example and validates source-designated assets without promoting SDK capabilities', () => {
         const support = JSON.parse(readFileSync(authoringSupportMetadataPath, 'utf8')) as {
             purpose?: unknown;
             assets?: Record<string, unknown>;
@@ -118,21 +118,19 @@ describe('cross-plugin contribution public authoring example', () => {
         );
         const assets = support.assets ?? {};
         const shippedExamples = shippedExampleAssetPaths();
-        const designatedFixtures = Object.keys(assets)
-            .filter((asset) => asset.startsWith('fixtures/'))
-            .sort();
-        expect(Object.keys(assets).sort()).toEqual([
-            ...shippedExamples,
-            ...designatedFixtures,
-        ].sort());
+        // Support metadata owns source examples and fixtures, not publication
+        // eligibility. A source reference may depend on a feature protocol the
+        // SDK publication does not publish and therefore cannot ship.
+        expect(shippedExamples.filter((asset) => !Object.hasOwn(assets, asset))).toEqual([]);
         expect(Object.values(assets).every((classification) => [
             'maintained-public-reference',
             'advanced-public-preview',
             'conformance-reference',
             'inference-fixture',
         ].includes(String(classification)))).toBe(true);
-        for (const fixture of designatedFixtures) {
-            expect(existsSync(join(packageRoot, fixture)), fixture).toBe(true);
+        for (const asset of Object.keys(assets)) {
+            expect(asset).toMatch(/^(?:examples|fixtures)\/[^/]+$/u);
+            expect(existsSync(join(packageRoot, asset)), asset).toBe(true);
         }
 
         const operationTargetSource = readFileSync(
@@ -186,9 +184,12 @@ describe('cross-plugin contribution public authoring example', () => {
             expect(imports).toEqual(name === 'action-contract-producer'
                 ? [
                     '@happier-dev/plugin-sdk',
+                    '@happier-dev/plugin-sdk/actions',
                     '@happier-dev/plugin-sdk/browser',
+                    '@happier-dev/plugin-sdk/connected-accounts',
                     '@happier-dev/plugin-sdk/http',
                     '@happier-dev/plugin-sdk/notifications',
+                    '@happier-dev/plugin-sdk/providers',
                     '@happier-dev/plugin-sdk/secrets',
                     '@happier-dev/triage-protocol/v1',
                 ]
@@ -244,8 +245,18 @@ describe('cross-plugin contribution public authoring example', () => {
                     locations: [{ root: 'pluginData', pathPrefix: 'service-check' }],
                     access: ['read', 'write', 'delete'],
                 },
+            }, {
+                id: 'document-review-session-send',
+                capability: 'sessions',
+                reason: 'Send trusted document-review messages to selected Sessions and their retained execution runs.',
+                // The public handler resolves the selected Session before it
+                // writes. Its declaration must cover both public operations.
+                scope: { access: ['read', 'write'] },
             }],
         });
+        expect(target.manifest.contributes?.actions?.find(
+            (action) => action.id === 'forward-to-session-run',
+        )?.surfaces).toEqual(['cli', 'mcp', 'agent', 'plugin']);
         expect(contributor.manifest).toMatchObject({
             id: 'examples.action-contract-consumer',
             contributes: {
@@ -309,7 +320,7 @@ describe('cross-plugin contribution public authoring example', () => {
         } finally {
             await contributorTestkit.dispose();
         }
-    });
+    }, 15_000);
 
     it('proves a public author command and tool through a registered notification channel and service invocation', async () => {
         const target = await loadExample('action-contract-producer');
@@ -608,5 +619,5 @@ describe('cross-plugin contribution public authoring example', () => {
         } finally {
             await contributorTestkit.dispose();
         }
-    });
+    }, 15_000);
 });

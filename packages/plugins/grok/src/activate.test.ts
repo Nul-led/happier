@@ -10,13 +10,13 @@ describe('Grok native activation', () => {
   it('registers a native runtime and opens exact Grok ACP stdio launch facts', async () => {
     const register = vi.fn();
     activate({ agents: { register } } as unknown as PluginApi);
-    expect(register).toHaveBeenCalledWith('grok', createGrokAgentRuntime, {
+    expect(register).toHaveBeenCalledWith('grok', createGrokAgentRuntime, expect.objectContaining({
       sessionRunnerFactory: {
         module: './agent/runtime/factory',
         export: 'createGrokAgentRuntime',
         runtimeApiVersion: 1,
       },
-    });
+    }));
 
     const opened = Object.freeze({ dispose() {}, watch: () => ({ dispose() {} }), send: async () => ({ status: 'admitted' as const }) });
     const open = vi.fn(async () => opened);
@@ -29,7 +29,8 @@ describe('Grok native activation', () => {
     const runtime = createGrokAgentRuntime({} as never);
     const result = await runtime.sessions.open(request, {
       protocols: { acp: { open } },
-      services: { interactions: { askQuestions: vi.fn() } },
+      services: { interactions: { askQuestions: vi.fn() }, sessions: { current: null } },
+      workState: { publisher: () => ({ publish: vi.fn() }) },
     } as unknown as AgentSessionRuntimeContext);
 
     expect(result).toBe(opened);
@@ -89,7 +90,8 @@ describe('Grok native activation', () => {
       launchEnvironment: { values: {}, unset: [] },
     }, {
       protocols: { acp: { open } },
-      services: { interactions: { askQuestions } },
+      services: { interactions: { askQuestions }, sessions: { current: null } },
+      workState: { publisher: () => ({ publish: vi.fn() }) },
     } as unknown as AgentSessionRuntimeContext);
 
     expect(askQuestions).not.toHaveBeenCalled();
@@ -134,7 +136,8 @@ describe('Grok native activation', () => {
       launchEnvironment: { values: {}, unset: [] },
     }, {
       protocols: { acp: { open } },
-      services: { interactions: { askQuestions } },
+      services: { interactions: { askQuestions }, sessions: { current: null } },
+      workState: { publisher: () => ({ publish: vi.fn() }) },
     } as unknown as AgentSessionRuntimeContext);
 
     expect(askQuestions).toHaveBeenCalledOnce();

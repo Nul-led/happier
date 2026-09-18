@@ -1,7 +1,10 @@
 type CodexAppServerTimeoutEnv = Readonly<Record<string, string | undefined>>;
 
-const STARTUP_RPC_METHODS = new Set(['initialize', 'thread/start']);
+const STARTUP_RPC_METHODS = new Set(['initialize']);
 const LONG_RUNNING_RPC_METHODS = new Set([
+    // Starting a thread is side-effecting admission. A timeout cannot establish whether Codex
+    // accepted it, and loaded starts can legitimately exceed the ordinary startup RPC budget.
+    'thread/start',
     'thread/resume',
     'thread/fork',
     'conversation/fork',
@@ -18,6 +21,8 @@ const DEFAULT_REALTIME_START_TIMEOUT_MS = 45_000;
 // Codex can spend over 30 seconds replaying state during initialization.
 // Keep ordinary startup bounded while leaving enough room for cold starts.
 const DEFAULT_STARTUP_RPC_TIMEOUT_MS = 60_000;
+const DEFAULT_RPC_TIMEOUT_MS = 60_000;
+const MAX_RPC_TIMEOUT_MS = 10 * 60_000;
 
 function clampRpcTimeoutMs(rawValue: unknown, fallbackMs: number, maxMs: number): number {
     const raw = Number.parseInt(String(rawValue ?? ''), 10);
@@ -26,7 +31,11 @@ function clampRpcTimeoutMs(rawValue: unknown, fallbackMs: number, maxMs: number)
 }
 
 export function readCodexAppServerRpcTimeoutMs(env?: CodexAppServerTimeoutEnv): number {
-    return clampRpcTimeoutMs(env?.HAPPIER_CODEX_APP_SERVER_RPC_TIMEOUT_MS, 15_000, 60_000);
+    return clampRpcTimeoutMs(
+        env?.HAPPIER_CODEX_APP_SERVER_RPC_TIMEOUT_MS,
+        DEFAULT_RPC_TIMEOUT_MS,
+        MAX_RPC_TIMEOUT_MS,
+    );
 }
 
 export function readCodexAppServerStartupRpcTimeoutMs(

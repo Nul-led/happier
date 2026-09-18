@@ -391,4 +391,16 @@ export type AgentExternalSessionsContribution = Readonly<{
 export type AgentExternalSessionsManagedEndpointServiceRequest = Readonly<{
     source: AgentExternalSessionSource;
     signal: AbortSignal;
+    /**
+     * Host-stamped execution authority for this declaration, carrying the same
+     * manifest-declared process/tool grants as every other Agent invocation.
+     *
+     * A declaration that spawns a process may need to know which executable the
+     * host will actually resolve for it — an Agent CLI whose generations serve
+     * different routes cannot otherwise state a health check the child will
+     * answer. Resolving it here keeps that one fact behind both the declared
+     * readiness check and the requests the contribution later makes against the
+     * running server, instead of each guessing separately.
+     */
+    exec: ExecService;
 }>;

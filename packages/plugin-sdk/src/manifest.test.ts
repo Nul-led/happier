@@ -14,6 +14,7 @@ import type {
     PluginManifestDiagnostic,
     PluginManifestParseResult,
     PluginJsonSchemaValidator,
+    PluginSystemToolReadinessV1,
     PluginTestkitManifest,
     PromptAssetCapabilities,
     PromptAssetTypeDescriptor,
@@ -202,6 +203,8 @@ describe('manifest authoring contract', () => {
             'PluginManifestDiagnostic',
             'PluginManifestParseResult',
             'PluginRequestInterceptorContribution',
+            'PluginSystemToolAcpFingerprintV1',
+            'PluginSystemToolReadinessV1',
             'PluginTestkitManifest',
             'PromptAssetCapabilities',
             'PromptAssetTypeDescriptor',
@@ -349,6 +352,27 @@ describe('manifest authoring contract', () => {
                         id: 'acme-tool',
                         title: 'Acme Tool',
                         executableNames: ['acme-tool'],
+                        readiness: {
+                            acpProbeArgs: ['acp'],
+                            currentFingerprint: {
+                                loadSession: true,
+                                sessionCapabilities: ['prompt'],
+                                absentSessionCapabilities: ['unstable'],
+                                mcpHttp: true,
+                                mcpSse: false,
+                            },
+                            legacyFingerprint: {
+                                loadSession: false,
+                                sessionCapabilities: ['prompt'],
+                                absentSessionCapabilities: ['unstable'],
+                                mcpHttp: false,
+                                mcpSse: false,
+                            },
+                            commandSurfaceArgs: ['--help'],
+                            legacyExecutableNames: ['acme-tool-legacy'],
+                            legacyGuidance: 'Upgrade Acme Tool.',
+                            unidentifiedGuidance: 'Verify the Acme Tool installation.',
+                        },
                     },
                 ],
                 managedDependencies: [
@@ -708,6 +732,10 @@ describe('manifest authoring contract', () => {
             .toEqualTypeOf<protocol.PluginManifestIngestionDiagnostic>();
         expectTypeOf<PluginManifestParseResult>()
             .not.toMatchTypeOf<protocol.PluginManifestIngestionResult>();
+        expectTypeOf<protocol.PluginSystemToolReadinessV1>()
+            .toMatchTypeOf<PluginSystemToolReadinessV1>();
+        expectTypeOf<PluginSystemToolReadinessV1>()
+            .not.toEqualTypeOf<protocol.PluginSystemToolReadinessV1>();
         expectTypeOf<PluginJsonSchemaValidator>()
             .toEqualTypeOf<protocol.PluginJsonSchemaValidator>();
         // Manifest authoring projects the Protocol shapes as readonly values,

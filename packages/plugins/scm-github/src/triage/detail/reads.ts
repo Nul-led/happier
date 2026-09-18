@@ -146,8 +146,14 @@ async function readPagedCollection<TRow>(
     url: string;
     page: number;
     project: (body: unknown) => GithubPageProjectionV1<TRow>;
-    /** Stated only by the changed-file walk, which has a documented ceiling. */
-    ceilingReached?: boolean;
+    /**
+     * Stated only by the changed-file walk, which has a documented provider
+     * maximum. The walk's fixed page geometry and this response's own RAW row
+     * cardinality say where the collection actually reached: GitHub promises no
+     * `Link` header past the maximum, so a walk that reaches it looks exactly
+     * like an exhausted one and the boundary can never be read off a next page.
+     */
+    ceiling?: Readonly<{ limit: number; perPage: number }>;
   }>,
 ): Promise<GithubDetailReadResultV1<GithubDetailPageV1<TRow>>> {
   let response: GithubApiResponseV1;
@@ -164,16 +170,25 @@ async function readPagedCollection<TRow>(
   const projected = input.project(decoded.body);
   const next = verifyNextPage(response, input.url, input.page);
   const hasNext = next.kind === 'next';
-  const ceilingReached = input.ceilingReached === true;
+  // The walk stops here when another page would begin past the documented
+  // maximum, and it SAYS the collection is capped when either the rows this
+  // response actually delivered reached that maximum or GitHub is still
+  // offering a page this walk will never request. A short final page below the
+  // maximum is a finished collection, not a capped one.
+  const ceiling = input.ceiling;
+  const ceilingStopsWalk = ceiling !== undefined && input.page * ceiling.perPage >= ceiling.limit;
+  const ceilingReached = ceiling !== undefined
+    && ceilingStopsWalk
+    && (hasNext || (input.page - 1) * ceiling.perPage + decoded.body.length >= ceiling.limit);
 
   return succeeded(Object.freeze({
     rows: projected.rows,
     omittedRowCount: projected.omittedRowCount,
     projectionTruncated: projected.projectionTruncated,
-    nextPage: hasNext && !ceilingReached ? next.page : null,
+    nextPage: hasNext && !ceilingStopsWalk ? next.page : null,
     incomplete: next.kind === 'unusable'
       ? ('pagination' as const)
-      : hasNext && ceilingReached ? ('ceiling' as const) : null,
+      : ceilingReached ? ('ceiling' as const) : null,
   }));
 }
 
@@ -205,7 +220,9 @@ export async function readGithubTimelinePage(
  * is where the walk honours it. Once the pages read cover 3,000 files, the walk
  * stops even if GitHub still advertises a next page — and it SAYS so, because a
  * count that stops at a round number with no explanation reads as a defect in
- * this product rather than a limit of theirs.
+ * this product rather than a limit of theirs. GitHub documents no `Link` past
+ * that maximum, so the capped page usually arrives looking exhausted: the
+ * reached position, not the next link, is what decides.
  */
 export async function readGithubChangedFilesPage(
   input: PagedReadInput,
@@ -220,7 +237,7 @@ export async function readGithubChangedFilesPage(
   return readPagedCollection(dependencies, {
     url,
     page: input.page,
-    ceilingReached: input.page * input.perPage >= GITHUB_CHANGED_FILES_CEILING_V1,
+    ceiling: { limit: GITHUB_CHANGED_FILES_CEILING_V1, perPage: input.perPage },
     project: (body) => projectGithubChangedFileRows(body, GITHUB_DETAIL_BOUNDS_V1),
   });
 }

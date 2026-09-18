@@ -11,12 +11,6 @@ import { renderExternalAuthoringSemanticSurface } from '@external-authoring/sema
 import { renderPhysicalCopyTargetSurface } from '@external-authoring/targeted-surface';
 import { manifest as externalContributorManifest } from '@external-authoring/targeted-contributor';
 
-const identity = {
-  pluginId: 'example.external-semantic',
-  pluginVersion: '1.0.0',
-  viewId: 'semantic-proof',
-  generation: 'external-semantic-proof-generation',
-} as const;
 const exactComposerRef = {
   kind: 'session',
   sessionId: 'external-composer-session',
@@ -109,11 +103,8 @@ describe('external author semantic proof', () => {
     const initialSurface = initialContext.targetedContributions.points[0]!
       .protocols[0]!.contributions[0]!.surfaces[0]!;
     const fixture = await createPluginUiTestkit({
-      identity: {
-        ...identity,
-        pluginId: targetPluginId,
-        generation: 'target-generation-a',
-      },
+      identity: { instanceId: 'fixture-instance-36', mountNonce: 'fixture-mount-36' },
+      authorPlugin: { id: targetPluginId, version: '1.0.0' },
       surface: renderPhysicalCopyTargetSurface,
       surfaceContext: initialContext,
       adapter: createPluginUiRnwSemanticSurfaceAdapter({
@@ -189,7 +180,8 @@ describe('external author semantic proof', () => {
     const saveStarted = new Promise<void>((resolve) => { signalSaveStarted = resolve; });
     const pendingSave = new Promise<void>((resolve) => { resolveSave = resolve; });
     const fixture = await createPluginUiTestkit({
-      identity,
+      identity: { instanceId: 'fixture-instance-37', mountNonce: 'fixture-mount-37' },
+      authorPlugin: { id: 'example.external-semantic', version: '1.0.0' },
       surface: renderExternalAuthoringSemanticSurface,
       surfaceContext: initialSurface,
       adapter: createPluginUiRnwSemanticSurfaceAdapter(),
@@ -272,7 +264,8 @@ describe('external author semantic proof', () => {
 
   it('lets an external author inspect List choices and control selected option state through the public Testkit', async () => {
     const fixture = await createPluginUiTestkit({
-      identity: { ...identity, generation: 'external-list-selection' },
+      identity: { instanceId: 'fixture-instance-38', mountNonce: 'fixture-mount-38' },
+      authorPlugin: { id: 'example.external-semantic', version: '1.0.0' },
       surface: renderExternalAuthoringSemanticSurface,
       surfaceContext: createSurfaceContextFixture({ locale: 'en-GB' }),
       adapter: createPluginUiRnwSemanticSurfaceAdapter(),
@@ -311,7 +304,8 @@ describe('external author semantic proof', () => {
 
   it('exposes the public structural semantics an external author composes into the same mounted surface', async () => {
     const fixture = await createPluginUiTestkit({
-      identity: { ...identity, generation: 'external-structural-semantics' },
+      identity: { instanceId: 'fixture-instance-39', mountNonce: 'fixture-mount-39' },
+      authorPlugin: { id: 'example.external-semantic', version: '1.0.0' },
       surface: renderExternalAuthoringSemanticSurface,
       surfaceContext: createSurfaceContextFixture({ locale: 'en-GB' }),
       adapter: createPluginUiRnwSemanticSurfaceAdapter(),
@@ -368,7 +362,8 @@ describe('external author semantic proof', () => {
     const composerWatchSignals: AbortSignal[] = [];
     const composerReleases: number[] = [];
     const fixture = await createPluginUiTestkit({
-      identity: { ...identity, generation: 'external-composer-facade' },
+      identity: { instanceId: 'fixture-instance-40', mountNonce: 'fixture-mount-40' },
+      authorPlugin: { id: 'example.external-semantic', version: '1.0.0' },
       surface: renderExternalAuthoringSemanticSurface,
       surfaceContext: createSurfaceContextFixture({ locale: 'en-GB' }),
       adapter: createPluginUiRnwSemanticSurfaceAdapter(),
@@ -480,7 +475,8 @@ describe('external author semantic proof', () => {
     const releaseObserved = new Promise<void>((resolve) => { signalRelease = resolve; });
     let watchSignal: AbortSignal | undefined;
     const fixture = await createPluginUiTestkit({
-      identity: { ...identity, generation: 'external-composer-cancellation' },
+      identity: { instanceId: 'fixture-instance-41', mountNonce: 'fixture-mount-41' },
+      authorPlugin: { id: 'example.external-semantic', version: '1.0.0' },
       surface: renderExternalAuthoringSemanticSurface,
       surfaceContext: createSurfaceContextFixture({ locale: 'en-GB' }),
       adapter: createPluginUiRnwSemanticSurfaceAdapter(),
@@ -515,7 +511,8 @@ describe('external author semantic proof', () => {
       decorations: unknown;
     }>> = [];
     const fixture = await createPluginUiTestkit({
-      identity: { ...identity, generation: 'external-composer-decoration-clear' },
+      identity: { instanceId: 'fixture-instance-42', mountNonce: 'fixture-mount-42' },
+      authorPlugin: { id: 'example.external-semantic', version: '1.0.0' },
       surface: renderExternalAuthoringSemanticSurface,
       surfaceContext: createSurfaceContextFixture({ locale: 'en-GB' }),
       adapter: createPluginUiRnwSemanticSurfaceAdapter(),
@@ -550,7 +547,8 @@ describe('external author semantic proof', () => {
   it('reports a host-provided hosted-web mount refusal without mounting the author surface', async () => {
     const bodyChildCount = document.body.children.length;
     const result = await createPluginUiTestkit({
-      identity: { ...identity, generation: 'external-hosted-web-refusal' },
+      identity: { instanceId: 'fixture-instance-43', mountNonce: 'fixture-mount-43' },
+      authorPlugin: { id: 'example.external-semantic', version: '1.0.0' },
       surface: renderExternalAuthoringSemanticSurface,
       surfaceContext: createSurfaceContextFixture({ locale: 'en-GB' }),
       adapter: createPluginUiRnwSemanticSurfaceAdapter(),

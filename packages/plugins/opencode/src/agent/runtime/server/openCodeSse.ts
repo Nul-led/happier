@@ -37,18 +37,18 @@ function concatDataLines(lines: readonly string[]): string {
   return lines.join('\n');
 }
 
-function parseSseFrame(frame: string): Readonly<{ id?: string; data: string }> | null {
-  const lines = frame.split('\n');
-  let id: string | undefined;
+/**
+ * Only `data:` lines carry payload. Comment lines (`: heartbeat`) and every
+ * other field — `id:`, `event:`, `retry:` — are skipped rather than surfaced:
+ * neither OpenCode event route supports resuming from an id, so a reader that
+ * handed one to a caller would only invite a replay claim it cannot support.
+ */
+function parseSseFrame(frame: string): Readonly<{ data: string }> | null {
   const dataLines: string[] = [];
 
-  for (const rawLine of lines) {
+  for (const rawLine of frame.split('\n')) {
     const line = rawLine.replace(/\r$/, '');
     if (!line || line.startsWith(':')) continue;
-    if (line.startsWith('id:')) {
-      id = line.slice(3).trim();
-      continue;
-    }
     if (line.startsWith('data:')) {
       dataLines.push(line.slice(5).trimStart());
     }
@@ -56,12 +56,28 @@ function parseSseFrame(frame: string): Readonly<{ id?: string; data: string }> |
 
   const data = concatDataLines(dataLines);
   if (!data) return null;
-  return { ...(id ? { id } : {}), data };
+  return { data };
 }
 
+/**
+ * No read-idle deadline unless a caller names one.
+ *
+ * Both OpenCode event routes do write keepalives, on different cadences and in
+ * different shapes (`comparators/opencode` at
+ * `10765ff2a9da8c3b88e4de873aa383a49c318912`): the V1 instance route merges a
+ * `server.heartbeat` *event* every 10 seconds after dropping its first tick
+ * (`packages/opencode/src/server/routes/instance/httpapi/handlers/event.ts`),
+ * while the V2 route merges a `": heartbeat"` *comment* frame every 15 seconds
+ * (`packages/server/src/handlers/event.ts`). Neither interval is a published
+ * contract, so a default deadline derived from them would still be a cadence
+ * Happier chose on the provider's behalf, and server death is already observed
+ * by the managed service health check, which owns that question.
+ *
+ * Residual risk: a half-open socket that neither errors nor delivers is not
+ * detected by this reader; only its caller's own deadline would catch it.
+ */
 function normalizeReadIdleTimeoutMs(value: number | null | undefined): number | null {
-  if (value === null) return null;
-  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return 30_000;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null;
   return Math.trunc(value);
 }
 
@@ -71,7 +87,7 @@ export async function subscribeSseJson<T>(params: Readonly<{
   fetch: OpenCodeNativeFetch;
   signal: AbortSignal;
   readIdleTimeoutMs?: number | null;
-  onMessage: (msg: T, meta: { id?: string }) => void;
+  onMessage: (msg: T) => void;
 }>): Promise<SseJsonSubscription<T>> {
   const controller = new AbortController();
   const onAbort = () => controller.abort(params.signal.reason ?? 'abort');
@@ -125,7 +141,7 @@ export async function subscribeSseJson<T>(params: Readonly<{
           if (!parsed) continue;
           try {
             const msg = JSON.parse(parsed.data) as T;
-            params.onMessage(msg, { ...(parsed.id ? { id: parsed.id } : {}) });
+            params.onMessage(msg);
           } catch {
             // Ignore malformed provider frames; the next valid frame can still recover the stream.
           }

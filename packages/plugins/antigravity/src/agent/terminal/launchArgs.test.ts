@@ -4,7 +4,6 @@ import {
   buildAntigravityTerminalLaunchArgs,
   resolveAntigravityTerminalLaunchArgsInput,
 } from './launchArgs.js';
-import { buildAntigravityRuntimeDescriptorV1 } from '../runtime/runtimeDescriptor.js';
 
 describe('Antigravity terminal launch arguments', () => {
   it('builds descriptor-derived continuation and host-selected model flags', () => {
@@ -30,10 +29,18 @@ describe('Antigravity terminal launch arguments', () => {
 
   it('uses its bounded runtime descriptor for terminal continuation and ignores raw terminal metadata', () => {
     expect(resolveAntigravityTerminalLaunchArgsInput({
-      runtimeDescriptorV1: buildAntigravityRuntimeDescriptorV1({
-        runtimeMode: 'cliPrint',
-        providerSessionId: 'conversation-current',
-      }),
+      runtimeDescriptorV1: {
+        v: 1,
+        agentId: 'antigravity',
+        agent: {
+          agentExtra: {
+            owner: 'antigravity',
+            schemaId: 'antigravity.agentRuntimeDescriptorExtra',
+            v: 1,
+            runtimeHandle: { agyConversationId: 'conversation-current' },
+          },
+        },
+      },
       providerSessionId: 'legacy-host-identity',
       terminalRuntime: { conversationId: 'conversation-stale' },
       antigravity: { conversationId: 'conversation-older' },

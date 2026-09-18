@@ -34,9 +34,10 @@ export function buildGitWorktreeAddArgs(params: Readonly<{
     worktreePath: string;
     branchMode: GitWorktreeBranchModeV1;
     baseRef?: string | null;
+    force?: boolean;
 }>): string[] {
     if (params.branchMode === 'existing') {
-        return ['worktree', 'add', '--', params.worktreePath, params.branchName];
+        return ['worktree', 'add', ...(params.force ? ['--force'] : []), '--', params.worktreePath, params.branchName];
     }
 
     const args = ['worktree', 'add', '-b', params.branchName, '--', params.worktreePath];
@@ -54,6 +55,7 @@ export async function runGitWorktreeAdd(input: Readonly<{
     branchName: string;
     branchMode: GitWorktreeBranchModeV1;
     baseRef?: string | null;
+    force?: boolean;
 }>): Promise<ScmExecResult> {
     return await runScmCommand({
         bin: 'git',
@@ -63,6 +65,7 @@ export async function runGitWorktreeAdd(input: Readonly<{
             worktreePath: input.worktreePath,
             branchMode: input.branchMode,
             baseRef: input.baseRef ?? null,
+            force: input.force,
         }),
         timeoutMs: GIT_WORKTREE_ADD_TIMEOUT_MS,
         env: buildScmNonInteractiveEnv(),

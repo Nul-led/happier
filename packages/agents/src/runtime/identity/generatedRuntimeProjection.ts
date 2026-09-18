@@ -1,3 +1,5 @@
+import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
+
 import type { AgentRuntimeKind } from '../../runtimeKinds.js';
 import {
   asRecord,
@@ -19,9 +21,16 @@ type RuntimeKindNormalizerConfig = Readonly<{
   caseInsensitive?: boolean;
 }>;
 
+/**
+ * `trimmedString` is Happier-owned canonicalization (homes, paths, labels).
+ * `opaqueIdentifier` is for a value the Agent minted -- a provider session id --
+ * where surrounding whitespace, newlines and base64 punctuation are identity.
+ * Protocol's `readNonBlankOpaqueIdentifier` is the one rule owner for that.
+ */
 type GeneratedRuntimeDescriptorFieldKind =
   | 'runtimeKind'
   | 'trimmedString'
+  | 'opaqueIdentifier'
   | 'loopbackHttpOrigin'
   | 'booleanTrue';
 
@@ -102,6 +111,9 @@ function normalizeFieldValue(
   }
   if (field.kind === 'trimmedString') {
     return normalizeTrimmedString(value);
+  }
+  if (field.kind === 'opaqueIdentifier') {
+    return readNonBlankOpaqueIdentifier(value);
   }
   if (field.kind === 'loopbackHttpOrigin') {
     return normalizeLoopbackHttpOrigin(value);

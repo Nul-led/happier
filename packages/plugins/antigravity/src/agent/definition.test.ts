@@ -25,25 +25,15 @@ describe('Antigravity agent definition', () => {
           topology: 'exclusive',
           attachStrategy: 'terminal_host',
         },
-        tools: { delivery: 'unsupported', support: 'unsupported' },
+        tools: { delivery: 'native_mcp', support: 'experimental' },
       },
       settingsBackendId: 'antigravity',
       ownedBackendIds: ['antigravity'],
-      modelConfig: {
-        supportsSelection: true,
-        supportsFreeform: false,
-        nonAcpApplyScope: 'next_prompt',
-        acpApplyBehavior: 'restart_session',
-        acpModelConfigOptionId: null,
-        dynamicProbe: 'auto',
-        defaultMode: 'Gemini 3.5 Flash (Medium)',
-        allowedModes: ['Gemini 3.5 Flash (Medium)'],
-        staticModels: [{
-          id: 'Gemini 3.5 Flash (Medium)',
-          name: 'Gemini 3.5 Flash (Medium)',
-          description: expect.any(String),
-        }],
-      },
+      // Released settings persisted the Agents toggle under the concrete
+      // backend ids Antigravity used to own. The declarative ACP runtime
+      // replaced those runtimes, but the persisted disabled/enabled state must
+      // still project through the one compatibility reader.
+      enablementCompatibilityBackendIds: ['antigravity-localharness', 'antigravity-terminal'],
     });
     expect(AGENT_DEFINITION).not.toHaveProperty('runtimeContributions');
     expect(PLUGIN_MANIFEST.contributes.agents[0]?.connectedAccounts).toEqual([
@@ -58,5 +48,25 @@ describe('Antigravity agent definition', () => {
       install: { manual: { kind: 'vendor_recipe' } },
       auth: { support: 'login_terminal', machineLoginKey: 'antigravity-cli' },
     });
+  });
+
+  it('keeps model authority with the negotiated ACP session, carrying no CLI-derived fallback', () => {
+    // Happier ACP sessions run the managed `agy_acp_server`; the interactive `agy`
+    // CLI is a separate identity. `agy models` output is not a model source for
+    // ACP sessions, so the ACP agent declaration carries no static model
+    // fallback: models come from the ACP handshake of the live session.
+    expect(AGENT_DEFINITION).not.toHaveProperty('modelConfig');
+    expect(JSON.stringify(PLUGIN_MANIFEST)).not.toContain('Gemini 3.5');
+
+    const agent = PLUGIN_MANIFEST.contributes.agents[0];
+    expect(agent?.runtime).toMatchObject({
+      kind: 'acp',
+      transport: {
+        kind: 'stdio',
+        executable: { kind: 'managedDependency', id: 'agy-acp-server' },
+      },
+    });
+    expect(agent?.runtime).not.toHaveProperty('definition.models');
+    expect(agent?.runtime).not.toHaveProperty('definition.defaultModel');
   });
 });

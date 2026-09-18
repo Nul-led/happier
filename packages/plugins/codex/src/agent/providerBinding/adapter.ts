@@ -69,17 +69,22 @@ function resolveReservedCodexProvider(input: Readonly<{
 
 function createCustomCodexProviderKey(input: Readonly<{
   agentTargetKey: string;
-  connectionId: string;
+  bindingKey: string;
 }>): string {
   const digest = createHash('sha256')
     .update('happier.codex.provider-binding.v1\0', 'utf8')
     .update(input.agentTargetKey, 'utf8')
     .update('\0', 'utf8')
-    .update(input.connectionId, 'utf8')
+    .update(input.bindingKey, 'utf8')
     .update(`\0adapter-version:${CODEX_PROVIDER_BINDING_ADAPTER_VERSION_V1}`, 'utf8')
     .digest('hex')
     .slice(0, 32);
   return `happier_${digest}`;
+}
+
+function sourceBindingKey(input: Readonly<{ bindingKey?: string; connectionId?: string }>): string {
+  return input.bindingKey ?? input.connectionId
+    ?? (() => { throw new Error('Codex provider binding requires a source binding key'); })();
 }
 
 function resolvePreparedBindingKey(input: AgentProviderBindingPrepareInput): string {
@@ -93,7 +98,7 @@ function resolvePreparedBindingKey(input: AgentProviderBindingPrepareInput): str
     : null;
   return reserved?.adapterBindingKey ?? createCustomCodexProviderKey({
     agentTargetKey: input.agentTargetKey,
-    connectionId: input.connectionId,
+    bindingKey: sourceBindingKey(input),
   });
 }
 
@@ -125,7 +130,7 @@ function assertPreparedBindingMatches(input: AgentProviderBindingMaterializeInpu
   });
   const expected = reserved?.adapterBindingKey ?? createCustomCodexProviderKey({
     agentTargetKey: input.binding.agentTargetKey,
-    connectionId: input.binding.selection.connectionId,
+    bindingKey: sourceBindingKey(input.binding.selection),
   });
   if (expected !== input.prepared.adapterBindingKey) {
     throw new Error('Codex provider binding preparation does not match the resolved connection');

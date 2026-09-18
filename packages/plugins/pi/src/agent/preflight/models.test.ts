@@ -17,6 +17,17 @@ describe('Pi preflight model parsing', () => {
     ]);
   });
 
+  it('keeps nested OpenRouter model ids under their actual Pi provider', () => {
+    expect(buildPiPreflightModelsFromListModelsOutput(
+      'openrouter  meta/muse-spark-1.3-contributor  128K  8K  yes  no\n',
+    )).toEqual([
+      expect.objectContaining({
+        id: 'openrouter/meta/muse-spark-1.3-contributor',
+        description: 'openrouter',
+      }),
+    ]);
+  });
+
   it('declares the exact Pi environment allowlist and delegates command execution', () => {
     const models = PI_PREFLIGHT_SESSION_CONTROLS.models;
     expect(models?.command).toMatchObject({

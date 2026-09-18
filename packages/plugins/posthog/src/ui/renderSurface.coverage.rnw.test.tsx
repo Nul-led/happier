@@ -90,10 +90,16 @@ const SAMPLED_STOPPED_SHORT: JsonValue = {
     incomplete: POSTHOG_SAMPLE_WALK_STOPPED_SHORT_V1,
 };
 
+const SAMPLED_UNAVAILABLE: JsonValue = {
+    kind: 'unavailable',
+    failure: { class: 'permission', code: 'posthog/permission-denied' },
+};
+
 const SAMPLED_EVIDENCE: JsonValue = {
     kind: 'sampled',
     events: [{
         uuid: '00000000-0000-4000-8000-0000000000f1',
+        providerOffset: 0,
         exceptions: [],
     }],
     omittedRowCount: 0,
@@ -151,19 +157,29 @@ function activityResult(overrides: Readonly<Record<string, JsonValue>>): JsonVal
 
 function createHarness(
     activity: JsonValue,
-    sampled: JsonValue = SAMPLED_EVENTS,
+    /** One result for every page, or a sequence whose last entry repeats. */
+    sampled: JsonValue | readonly JsonValue[] = SAMPLED_EVENTS,
     options: Readonly<{
         onExecute?: (localId: string) => void;
         readCodeVariables?: (signal: AbortSignal) => Promise<JsonValue>;
+        overview?: JsonValue;
     }> = {},
 ) {
+    let sampledReads = 0;
+    const nextSampled = (): JsonValue => {
+        if (!Array.isArray(sampled)) return sampled as JsonValue;
+        const page = sampled[Math.min(sampledReads, sampled.length - 1)];
+        sampledReads += 1;
+        if (page === undefined) throw new Error('sampled sequence must not be empty');
+        return page;
+    };
     async function executeAction(
         { action, signal }: Readonly<{ action: unknown; input: unknown; signal: AbortSignal }>,
     ): Promise<JsonValue> {
         const { localId } = action as Readonly<{ localId: string }>;
         options.onExecute?.(localId);
         if (localId === POSTHOG_ACTION_IDS.issueActivity) return activity;
-        if (localId === POSTHOG_ACTION_IDS.issueEvents) return sampled;
+        if (localId === POSTHOG_ACTION_IDS.issueEvents) return nextSampled();
         if (localId === POSTHOG_ACTION_IDS.codeVariables) {
             if (options.readCodeVariables !== undefined) {
                 return await options.readCodeVariables(signal);
@@ -172,7 +188,7 @@ function createHarness(
         }
         // The live entry read is not what these cases are about; the body falls back to
         // the observation it was mounted with when it does not settle.
-        if (localId === POSTHOG_ACTION_IDS.get) return { kind: 'unreadable-by-design' };
+        if (localId === POSTHOG_ACTION_IDS.nativeOverview) return options.overview ?? { kind: 'unreadable-by-design' };
         throw new Error(`unexpected action ${localId}`);
     }
     return { executeAction };
@@ -182,19 +198,15 @@ const mounted: PluginUiTestkit[] = [];
 
 async function mountDetail(
     activity: JsonValue,
-    sampled: JsonValue = SAMPLED_EVENTS,
+    sampled: JsonValue | readonly JsonValue[] = SAMPLED_EVENTS,
     options: Parameters<typeof createHarness>[2] = {},
 ): Promise<PluginUiTestkit> {
     const harness = createHarness(activity, sampled, options);
     let fixture!: PluginUiTestkit;
     await act(async () => {
         fixture = await createPluginUiTestkit({
-            identity: {
-                pluginId: POSTHOG_PLUGIN_ID,
-                pluginVersion: '0.0.0',
-                viewId: 'posthog-detail',
-                generation: 'posthog-detail-mount',
-            },
+            identity: { instanceId: 'posthog-detail', mountNonce: 'posthog-detail-mount' },
+            authorPlugin: { id: POSTHOG_PLUGIN_ID, version: '0.0.0' },
             surface: renderSurface,
             surfaceContext: createSurfaceContextFixture(),
             adapter: createPluginUiRnwSemanticSurfaceAdapter(),
@@ -209,7 +221,9 @@ async function mountDetail(
     return fixture;
 }
 
-async function mountDetailWithEvidenceDisclosure(): Promise<Readonly<{
+async function mountDetailWithEvidenceDisclosure(
+    sampled: JsonValue = SAMPLED_EVIDENCE,
+): Promise<Readonly<{
     page: PluginUiTestkit;
     disclosed: () => TriageEvidenceCandidateV1 | null;
 }>> {
@@ -218,11 +232,10 @@ async function mountDetailWithEvidenceDisclosure(): Promise<Readonly<{
     await act(async () => {
         fixture = await createPluginUiTestkit({
             identity: {
-                pluginId: POSTHOG_PLUGIN_ID,
-                pluginVersion: '0.0.0',
-                viewId: 'posthog-detail',
-                generation: 'posthog-detail-evidence-disclosure',
+                instanceId: 'posthog-detail',
+                mountNonce: 'posthog-detail-evidence-disclosure',
             },
+            authorPlugin: { id: POSTHOG_PLUGIN_ID, version: '0.0.0' },
             surface: (context) => (
                 <TriageEvidenceDisclosureProvider disclosure={{
                     available: true,
@@ -240,8 +253,8 @@ async function mountDetailWithEvidenceDisclosure(): Promise<Readonly<{
             handlers: {
                 executeAction: async ({ action }) => {
                     const { localId } = action as Readonly<{ localId: string }>;
-                    if (localId === POSTHOG_ACTION_IDS.issueEvents) return SAMPLED_EVIDENCE;
-                    if (localId === POSTHOG_ACTION_IDS.get) return { kind: 'unreadable-by-design' };
+                    if (localId === POSTHOG_ACTION_IDS.issueEvents) return sampled;
+                    if (localId === POSTHOG_ACTION_IDS.nativeOverview) return { kind: 'unreadable-by-design' };
                     if (localId === POSTHOG_ACTION_IDS.issueActivity) return activityResult({});
                     throw new Error(`unexpected action ${localId}`);
                 },
@@ -266,6 +279,34 @@ async function mountActivity(activity: JsonValue): Promise<PluginUiTestkit> {
 
 afterEach(async () => {
     for (const fixture of mounted.splice(0)) await fixture.dispose();
+});
+
+describe('the mounted PostHog Overview', () => {
+    it.each([true, false])('shows CRUD severity and distinguishes failed enrichment from missing optional facts (%s)', async (failed) => {
+        const page = await mountDetail(activityResult({}), SAMPLED_EVENTS, {
+            overview: {
+                observation: {
+                    kind: 'present',
+                    localRef: { kindId: 'error-issue', collisionScope: COLLISION_SCOPE, entryId: ENTRY_ID },
+                    locator: { v: 1 },
+                    snapshot: { ...DETAIL_INPUT.observation.snapshot, facts: [{
+                        id: 'posthog/severity', label: 'Severity', importance: 'secondary', value: { kind: 'detailOnly' },
+                    }] },
+                    viewer: { involvement: [] },
+                },
+                severity: 'high',
+                ...(failed ? { enrichmentFailure: { class: 'permission', code: 'posthog/permission-denied' } } : {}),
+            },
+        });
+        await expect(page.getByText('high')).resolves.toBeDefined();
+        if (failed) {
+            await expect(page.getByText('Query enrichment is unavailable')).resolves.toBeDefined();
+            await expect(page.getByText('posthog/permission-denied')).resolves.toBeDefined();
+        } else {
+            await expect(page.getByText('Query enrichment is unavailable')).rejects.toBeDefined();
+        }
+        await expect(page.getByText('Showing the last observation')).rejects.toBeDefined();
+    });
 });
 
 describe('the mounted PostHog Activity panel', () => {
@@ -334,7 +375,111 @@ describe('the mounted PostHog Occurrences panel', () => {
     });
 });
 
+describe('the mounted PostHog sampled panels when the read fails', () => {
+    it('clears affected-session rows on leave while retaining the list and rebuilding from the shared sample', async () => {
+        const sentinel = 'https://example.invalid/private-session-url';
+        let sampledReads = 0;
+        const page = await mountDetail(activityResult({}), {
+            kind: 'sampled',
+            events: [{ uuid: 'aaaaaaaa-0000-4000-8000-000000000001',
+                sessionId: 'private-session-id', url: sentinel, exceptions: [] }],
+            omittedRowCount: 0,
+        }, { onExecute: (id) => { if (id === POSTHOG_ACTION_IDS.issueEvents) sampledReads += 1; } });
+        await selectTab(page, 'Affected sessions');
+        await expect(page.getByText(sentinel)).resolves.toBeDefined();
+        const panel = [...document.querySelectorAll('[role="tabpanel"]')]
+            .find((node) => node.textContent?.includes(sentinel));
+        expect(panel).toBeDefined();
+        const list = panel?.querySelector('[aria-label="PostHog sessions this sample named"]');
+        expect(list).toBeTruthy();
+        await selectTab(page, 'Overview');
+        expect(panel?.isConnected).toBe(true);
+        expect(panel?.getAttribute('aria-hidden')).toBe('true');
+        expect(panel?.textContent).not.toContain(sentinel);
+        expect(panel?.innerHTML).not.toContain('private-session-id');
+        expect(panel?.querySelector('[aria-label="PostHog sessions this sample named"]')).toBe(list);
+        await selectTab(page, 'Affected sessions');
+        await expect(page.getByText(sentinel)).resolves.toBeDefined();
+        expect(panel?.querySelector('[aria-label="PostHog sessions this sample named"]')).toBe(list);
+        expect(sampledReads).toBe(1);
+    });
+
+    it('names the failure in Occurrences instead of leaving the retained rows unexplained', async () => {
+        const page = await mountDetail(activityResult({}), [
+            {
+                kind: 'sampled',
+                events: [{ uuid: 'aaaaaaaa-0000-4000-8000-000000000001', exceptions: [] }],
+                omittedRowCount: 0,
+                continuation: 'sample-page-2',
+            },
+            SAMPLED_UNAVAILABLE,
+        ]);
+        await selectTab(page, 'Occurrences');
+        await act(async () => {
+            await page.press(await page.getByRole('button', {
+                name: 'Load more sampled occurrences',
+            }));
+        });
+
+        // The reader pressed Load more and got nothing. Without the failure beside the
+        // rows, the list simply stops looking like it has more — which is the sentence
+        // an exhausted sample makes, and this read never established it.
+        await expect(page.getByText('Showing the sample read so far')).resolves.toBeDefined();
+        await expect(page.getByText('posthog/permission-denied')).resolves.toBeDefined();
+    });
+
+    it('says the Stack trace could not be read rather than that the occurrence had no frames', async () => {
+        const page = await mountDetail(activityResult({}), SAMPLED_UNAVAILABLE);
+        await selectTab(page, 'Stack trace');
+
+        await expect(page.getByText('Sampled occurrences are unavailable')).resolves.toBeDefined();
+        await expect(page.getByText('posthog/permission-denied')).resolves.toBeDefined();
+        // "No frames in this sample" is a statement about the occurrence. A permission
+        // failure is a statement about the read, and only one of them happened.
+        await expect(page.getByText('No frames in this sample')).rejects.toBeDefined();
+    });
+
+    it('says Affected sessions could not be read rather than that the sample named none', async () => {
+        const page = await mountDetail(activityResult({}), SAMPLED_UNAVAILABLE);
+        await selectTab(page, 'Affected sessions');
+
+        await expect(page.getByText('Sampled occurrences are unavailable')).resolves.toBeDefined();
+        await expect(page.getByText('No sessions in this sample')).rejects.toBeDefined();
+    });
+
+    it('says the Overview facts are the last observation when the live read did not answer', async () => {
+        // The harness's `get` returns a body this build cannot read, so the live
+        // materialization failed. Painting the applied observation with no notice tells
+        // the reader these facts are current when the source never confirmed them.
+        const page = await mountDetail(activityResult({}));
+
+        await expect(page.getByText('Showing the last observation')).resolves.toBeDefined();
+    });
+});
+
 describe('the mounted PostHog Affected Sessions panel', () => {
+    it('states that a sampled session cannot be opened as a replay from here', async () => {
+        const page = await mountDetail(activityResult({}), {
+            kind: 'sampled',
+            events: [{
+                uuid: 'aaaaaaaa-0000-4000-8000-000000000001',
+                sessionId: '01J6A9H4R2YQ4Y8B9F7P2Q6N3M',
+                exceptions: [],
+            }],
+            omittedRowCount: 0,
+        });
+        await selectTab(page, 'Affected sessions');
+
+        // This build has no characterized PostHog replay permalink producer, so every
+        // candidate is explicitly unavailable rather than silently actionless. No URL is
+        // constructed and no recording-existence probe is made to reach this state.
+        await expect(page.getByText('Replay unavailable')).resolves.toBeDefined();
+        await expect(page.getByText(
+            'This build cannot open a PostHog session replay, and a sampled session is not a recording.',
+        )).resolves.toBeDefined();
+        await expect(page.getByRole('button', { name: 'Open replay' })).rejects.toBeDefined();
+    });
+
     it('uses a localized row label without exposing the opaque provider session id', async () => {
         const opaqueSessionId = '01J6A9H4R2YQ4Y8B9F7P2Q6N3M';
         const page = await mountDetail(activityResult({}), {
@@ -371,6 +516,22 @@ describe('the mounted PostHog selected-evidence control', () => {
                 label: 'PostHog occurrence 00000000-0000-4000-8000-0000000000f1',
             },
         });
+    });
+
+    it('offers no control for a sampled row whose provider position the source did not state', async () => {
+        const withoutPosition = {
+            ...(SAMPLED_EVIDENCE as Readonly<Record<string, JsonValue>>),
+            events: [{ uuid: '00000000-0000-4000-8000-0000000000f1', exceptions: [] }],
+        } as JsonValue;
+        const mountedEvidence = await mountDetailWithEvidenceDisclosure(withoutPosition);
+        await selectTab(mountedEvidence.page, 'Stack trace');
+
+        // Reading the row's position off its list index is exactly the defect this
+        // field replaced. With no stated position the source discloses nothing rather
+        // than addressing whichever occurrence that index now names.
+        await expect(mountedEvidence.page.getByRole('button', {
+            name: 'Add selected occurrence to message',
+        })).rejects.toBeDefined();
     });
 });
 

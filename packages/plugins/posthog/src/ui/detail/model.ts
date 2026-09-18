@@ -32,6 +32,7 @@ import type {
 
 import { POSTHOG_PLUGIN_ID, POSTHOG_SOURCE_CONTRIBUTION_ID } from '../../posthogContracts.js';
 import { POSTHOG_ENTRY_KIND } from '../../source/map/entrySnapshot.js';
+import type { PosthogNativeOverviewResultV1 } from '../../source/detail/nativeOverviewContract.js';
 
 /**
  * One provider-native detail row.
@@ -107,9 +108,23 @@ export type PosthogDetailBodyV1 = Readonly<{
 /** The settled relationship between the applied observation and the live read. */
 export type PosthogDetailReadV1 =
     | Readonly<{ kind: 'applied' }>
-    | Readonly<{ kind: 'materialized' }>
+    | Readonly<{ kind: 'materialized'; enrichmentFailure?: TriageSourceFailureV1 }>
     | Readonly<{ kind: 'unavailable'; failure: TriageSourceFailureV1 }>
     | Readonly<{ kind: 'refused'; reason: 'localRefMismatch' | 'unsupportedObservation' }>;
+
+/**
+ * What the surface's own live `get` has done so far.
+ *
+ * `pending` and `failed` are deliberately separate arms. Collapsing them — passing the
+ * same absent observation for both — makes a read that failed indistinguishable from one
+ * that has not answered yet, and the body then paints the applied observation with no
+ * notice at all: the reader is shown facts as if the source had just confirmed them.
+ */
+export type PosthogDetailLiveReadV1 =
+    | Readonly<{ kind: 'pending' }>
+    | Readonly<{ kind: 'settled'; observation: TriageSourceObservationV1;
+        severity?: PosthogNativeOverviewResultV1['severity']; enrichmentFailure?: TriageSourceFailureV1 }>
+    | Readonly<{ kind: 'failed'; failure: TriageSourceFailureV1 }>;
 
 export type PosthogDetailNativeStateV1 = Readonly<{
     presentation: TriageSourceEntrySnapshotV1['state']['presentation'];
@@ -244,16 +259,17 @@ export function buildPosthogDetailGetRequest(
 }
 
 /**
- * Projects the mounted detail input, and the live read when one has settled, into the
+ * Projects the mounted detail input, and the live read once it has an outcome, into the
  * body this source renders.
  *
- * `live` is `null` until the surface's own materialization settles. Every non-`present`
- * outcome keeps the applied body: a reader who could see the provider's facts a moment ago
- * must not lose them because a refresh failed.
+ * Every non-`present` outcome keeps the applied body: a reader who could see the
+ * provider's facts a moment ago must not lose them because a refresh failed. What the
+ * outcome changes is what the body *says* about those facts — a failed read is reported
+ * as one, not silently rendered as the pre-live state.
  */
 export function projectPosthogDetailSurface(
     input: TriageDetailSurfaceInputV1,
-    live: TriageSourceObservationV1 | null,
+    liveRead: PosthogDetailLiveReadV1,
 ): PosthogDetailSurfaceModelV1 {
     const appliedBody = projectBody(
         'applied',
@@ -262,9 +278,17 @@ export function projectPosthogDetailSurface(
         input.observation.sourceUpdatedAtMs,
     );
 
-    if (live === null) {
+    if (liveRead.kind === 'pending') {
         return { read: { kind: 'applied' }, body: appliedBody, nativeStateNow: null };
     }
+    if (liveRead.kind === 'failed') {
+        return {
+            read: { kind: 'unavailable', failure: liveRead.failure },
+            body: appliedBody,
+            nativeStateNow: null,
+        };
+    }
+    const live = liveRead.observation;
 
     // V1 retains no fingerprint, so this source concludes neither absence nor a merge.
     // Such an arm did not come from this vertical and is not rendered as provider truth.
@@ -297,14 +321,24 @@ export function projectPosthogDetailSurface(
     const stateChanged = liveState.presentation !== appliedState.presentation
         || (liveState.nativeLabel ?? null) !== (appliedState.nativeLabel ?? null);
 
+    const body = projectBody(
+        'live',
+        live.snapshot,
+        input.observation.observedAtMs,
+        live.sourceUpdatedAtMs,
+    );
+    const severity = liveRead.severity;
     return {
-        read: { kind: 'materialized' },
-        body: projectBody(
-            'live',
-            live.snapshot,
-            input.observation.observedAtMs,
-            live.sourceUpdatedAtMs,
-        ),
+        read: { kind: 'materialized', ...(liveRead.enrichmentFailure === undefined ? {} : {
+            enrichmentFailure: liveRead.enrichmentFailure,
+        }) },
+        body: severity === undefined ? body : {
+            ...body,
+            fields: body.fields.map((field) => field.id === 'posthog/severity'
+                ? { kind: 'text', id: field.id, label: field.label, importance: field.importance,
+                    value: severity }
+                : field),
+        },
         nativeStateNow: stateChanged
             ? { presentation: liveState.presentation, nativeLabel: liveState.nativeLabel ?? null }
             : null,

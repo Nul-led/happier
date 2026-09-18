@@ -38,7 +38,7 @@ describe('runtimeControlSurface', () => {
         sessionFork: { conversation: 'supported' },
         sessionRollback: { conversation: 'supported' },
       },
-      localControl: { supported: true, topology: 'exclusive', attachStrategy: 'terminal_host' },
+      localControl: { supported: true, topology: 'shared', attachStrategy: 'provider_attach' },
     });
   });
 

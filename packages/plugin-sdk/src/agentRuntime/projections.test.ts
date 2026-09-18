@@ -22,6 +22,7 @@ import type {
 import type {
   AgentSessionProviderBinding as CanonicalAgentSessionProviderBinding,
   ConnectedServicesProviderStateSharingPolicyV1 as CanonicalConnectedServicesProviderStateSharingPolicyV1,
+  ExecutionRunResultContractV1 as CanonicalExecutionRunResultContractV1,
   RuntimeDescriptorV1,
   ConnectedServiceLimitCategoryV1 as CanonicalConnectedServiceLimitCategoryV1,
 } from '@happier-dev/protocol';
@@ -33,6 +34,7 @@ import type {
 import * as agentRuntimeProjection from './projections.js';
 import type {
   AgentExecutionRunEvent,
+  AgentExecutionRunResultContractV1,
   AgentSessionRuntimeEvent,
   AgentConnectedAccountRuntimeLimitCategoryV1,
   AgentSessionProviderBinding,
@@ -94,6 +96,7 @@ const APPROVED_VALUE_ONLY_EXPORTS = [
   'ACP_HAPPIER_MCP_BRIDGE_STATIC_APPROVAL_TOOL_NAMES',
   'ACP_WRITE_LIKE_PERMISSION_KINDS',
   'createFiniteExecutionRunHostRuntime',
+  'createExecutionRunHostBackendFromConversationRuntime',
   'AgentExecutionRunEventSchema',
 ] as const;
 
@@ -372,6 +375,19 @@ async function approvedExportNames(): Promise<readonly string[]> {
 }
 
 describe('Agent runtime package-local publication projection', () => {
+  it('owns the exact execution Run result contract at the public SDK boundary', () => {
+    // `expectTypeOf(...).toEqualTypeOf(...)` distributes object-union members
+    // into a synthetic shape with impossible `never` properties. Prove exact
+    // structural correspondence in both directions instead.
+    const sdkToProtocol = (
+      value: AgentExecutionRunResultContractV1,
+    ): CanonicalExecutionRunResultContractV1 => value;
+    const protocolToSdk = (
+      value: CanonicalExecutionRunResultContractV1,
+    ): AgentExecutionRunResultContractV1 => value;
+    void sdkToProtocol;
+    void protocolToSdk;
+  });
   it('contains exactly the approved shared-realm projection and its genuine declaration closure', async () => {
     const program = createSdkProgram();
     expect(moduleExports(program, 'src/agentRuntime/projections.ts')

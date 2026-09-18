@@ -11,9 +11,12 @@ import {
 import {
   asRecord,
   normalizeString,
+  readNonBlankOpaqueIdentifier,
 } from '../../../runtime/server/openCodeParsing.js';
+import type { OpenCodeServerDialect } from '../../../runtime/server/dialect.js';
 import {
   createOpenCodeExternalSessionClient,
+  type OpenCodeExternalSessionClient,
   type OpenCodeExternalSessionSource,
 } from './client.js';
 
@@ -41,7 +44,9 @@ function getNestedNumber(value: unknown, parentKey: string, key: string): number
 export function parseOpenCodeSessionCandidate(raw: unknown): AgentExternalSessionCandidate | null {
   const record = asRecord(raw);
   if (!record) return null;
-  const remoteSessionId = getString(record, 'id');
+  // OpenCode minted this session id and the host resumes it verbatim; only the
+  // human-facing title is Happier-canonicalized.
+  const remoteSessionId = readNonBlankOpaqueIdentifier(record.id);
   if (!remoteSessionId) return null;
 
   const title = getString(record, 'title');
@@ -65,7 +70,13 @@ export type OpenCodeExternalSessionCandidate = AgentExternalSessionCandidate & R
 const OPENCODE_CANDIDATE_CURSOR_PREFIX = 'happier_opencode_candidate_scan_v1:';
 const OPENCODE_CANDIDATE_CURSOR_MAX_LENGTH = 4_096;
 
-type OpenCodeCandidateCursor = Readonly<{
+/**
+ * A continuation of the timestamp-anchored walk over V1's
+ * `/experimental/session`: the anchor is re-read on the next page, which is what
+ * lets a moved source be detected and a full-search page resume inside a group
+ * of sessions sharing one update time.
+ */
+type OpenCodeCandidateAnchorCursor = Readonly<{
   v: 1;
   kind: 'opencodeCandidateScan';
   searchMode: 'fast' | 'full';
@@ -77,6 +88,25 @@ type OpenCodeCandidateCursor = Readonly<{
     offsetWithinTimestamp: number;
   }>;
 }>;
+
+/**
+ * A continuation of V2's `/api/session`, which offers only an opaque
+ * server-minted token. The token carries its own query and the server resumes
+ * strictly after the page it was minted from, so there is no anchor to re-read
+ * and no offset to carry.
+ */
+type OpenCodeCandidateSourceTokenCursor = Readonly<{
+  v: 2;
+  kind: 'opencodeCandidateScan';
+  searchMode: 'fast' | 'full';
+  searchTerm: string;
+  scanned: number;
+  sourceCursor: string;
+}>;
+
+type OpenCodeCandidateCursor =
+  | OpenCodeCandidateAnchorCursor
+  | OpenCodeCandidateSourceTokenCursor;
 
 type OpenCodeCandidateQuery = Readonly<{
   searchMode: 'fast' | 'full';
@@ -104,16 +134,37 @@ function readOpenCodeCandidateCursor(value: string): OpenCodeCandidateCursor | n
     const parsed = JSON.parse(
       Buffer.from(value.slice(OPENCODE_CANDIDATE_CURSOR_PREFIX.length), 'base64url').toString('utf8'),
     ) as unknown;
-    if (!isRecord(parsed) || !hasExactKeys(parsed, ['anchor', 'kind', 'scanned', 'searchMode', 'searchTerm', 'v'])) {
-      return null;
-    }
+    if (!isRecord(parsed)) return null;
     if (
-      parsed.v !== 1
-      || parsed.kind !== 'opencodeCandidateScan'
+      parsed.kind !== 'opencodeCandidateScan'
       || (parsed.searchMode !== 'fast' && parsed.searchMode !== 'full')
       || typeof parsed.searchTerm !== 'string'
       || parsed.searchTerm.length > OPENCODE_CANDIDATE_CURSOR_MAX_LENGTH
       || !Number.isSafeInteger(parsed.scanned)
+      || (parsed.scanned as number) < 0
+    ) return null;
+    if (parsed.v === 2) {
+      if (
+        !hasExactKeys(parsed, ['kind', 'scanned', 'searchMode', 'searchTerm', 'sourceCursor', 'v'])
+        || typeof parsed.sourceCursor !== 'string'
+        || parsed.sourceCursor.trim().length < 1
+        || parsed.sourceCursor.length > OPENCODE_CANDIDATE_CURSOR_MAX_LENGTH
+      ) return null;
+      return {
+        v: 2,
+        kind: 'opencodeCandidateScan',
+        searchMode: parsed.searchMode,
+        searchTerm: parsed.searchTerm,
+        scanned: parsed.scanned as number,
+        sourceCursor: parsed.sourceCursor,
+      };
+    }
+    if (!hasExactKeys(parsed, ['anchor', 'kind', 'scanned', 'searchMode', 'searchTerm', 'v'])) {
+      return null;
+    }
+    if (
+      parsed.v !== 1
+      // The anchored walk has always scanned at least the anchor itself.
       || (parsed.scanned as number) < 1
       || !isRecord(parsed.anchor)
       || !hasExactKeys(parsed.anchor, ['offsetWithinTimestamp', 'remoteSessionId', 'updatedAtMs'])
@@ -154,7 +205,7 @@ function buildOpenCodeCandidate(
 ): OpenCodeExternalSessionCandidate | null {
   const parsed = parseOpenCodeSessionCandidate(raw);
   if (!parsed) {
-    const remoteSessionId = getString(raw, 'id');
+    const remoteSessionId = readNonBlankOpaqueIdentifier(asRecord(raw)?.id);
     if (remoteSessionId) {
       throw new Error(
         `OpenCode session ${remoteSessionId} does not provide a stable updated timestamp for candidate paging.`,
@@ -190,7 +241,7 @@ function createCursorAfterCandidate(params: Readonly<{
   candidates: readonly OpenCodeExternalSessionCandidate[];
   candidateIndex: number;
   scanned: number;
-}>): OpenCodeCandidateCursor {
+}>): OpenCodeCandidateAnchorCursor {
   const candidate = params.candidates[params.candidateIndex];
   if (!candidate) throw new Error('OpenCode candidate paging lost its continuation anchor.');
   let offsetWithinTimestamp = 0;
@@ -220,6 +271,86 @@ function sortCandidates(
 }
 
 /**
+ * The same one-chunk-per-call walk over a source whose only continuation is the
+ * opaque token V2's `/api/session` mints.
+ *
+ * Two vendor facts shape it, both from the pinned comparator
+ * (`packages/protocol/src/groups/session.ts`, `packages/core/src/session.ts`):
+ *
+ * - the token resumes strictly *after* the page it came from, so this walk never
+ *   stops mid-page. It requests exactly `limit` sessions, scans all of them, and
+ *   continues from the page boundary — which is also why no anchor needs
+ *   re-reading and no `offsetWithinTimestamp` exists here;
+ * - V2 enumerates by `time.created`, not `time.updated`. The descending-update
+ *   order V1 guarantees therefore does not hold and is not asserted; candidates
+ *   are still sorted for the host by the shared precedence comparator, and the
+ *   page boundary stays deterministic because the token, not a timestamp, decides
+ *   it.
+ *
+ * A short page is the end of the corpus. A full page continues, so a full-text
+ * search that found fewer matches than the page is reported as an incomplete
+ * search with a continuation rather than as the end of the list.
+ */
+async function listOpenCodeSessionCandidatesFromSourceCursor(params: Readonly<{
+  client: OpenCodeExternalSessionClient;
+  query: OpenCodeCandidateQuery;
+  limit: number;
+  serverBaseUrl: string | null;
+  serverSearch?: string;
+  fullSearch: boolean;
+  normalizedSearchTerm: string;
+  cursor: OpenCodeCandidateSourceTokenCursor | null;
+  signal?: AbortSignal;
+}>): Promise<Readonly<{
+  candidates: OpenCodeExternalSessionCandidate[];
+  nextCursor: string | null;
+  scanned: number;
+  searchIncomplete?: boolean;
+}>> {
+  const page = await params.client.sessionList({
+    limit: params.limit,
+    ...(params.serverSearch ? { search: params.serverSearch } : {}),
+    ...(params.cursor
+      ? { cursor: { kind: 'sourceToken' as const, token: params.cursor.sourceCursor } }
+      : {}),
+    ...(params.signal ? { signal: params.signal } : {}),
+  });
+
+  const sourceCandidates: OpenCodeExternalSessionCandidate[] = [];
+  for (const raw of page.items) {
+    const candidate = buildOpenCodeCandidate(raw, params.serverBaseUrl);
+    if (candidate) sourceCandidates.push(candidate);
+  }
+
+  const selected = params.fullSearch
+    ? sourceCandidates.filter((candidate) => (
+      candidate.remoteSessionId.toLowerCase().includes(params.normalizedSearchTerm)
+      || candidate.title?.toLowerCase().includes(params.normalizedSearchTerm)
+    ))
+    : sourceCandidates;
+  const scanned = (params.cursor?.scanned ?? 0) + sourceCandidates.length;
+  const exhausted = page.items.length < params.limit || page.nextCursor === null;
+  const nextCursor = exhausted || page.nextCursor === null
+    ? null
+    : encodeOpenCodeCandidateCursor({
+      v: 2,
+      kind: 'opencodeCandidateScan',
+      searchMode: params.query.searchMode,
+      searchTerm: params.query.searchTerm,
+      scanned,
+      sourceCursor: page.nextCursor,
+    });
+  const searchIncomplete = params.serverSearch !== undefined
+    || (params.fullSearch && nextCursor !== null);
+  return {
+    candidates: sortCandidates(selected),
+    nextCursor,
+    scanned,
+    ...(searchIncomplete ? { searchIncomplete: true } : {}),
+  };
+}
+
+/**
  * One bounded source chunk per public call: each invocation reads at most one
  * `sessionList` page. A full search whose chunk holds fewer matches than the
  * page while the source continues returns a deterministic partial page marked
@@ -228,6 +359,7 @@ function sortCandidates(
  */
 export async function listOpenCodeSessionCandidates(params: Readonly<{
   source: OpenCodeExternalSessionSource;
+  dialect: OpenCodeServerDialect;
   cursor?: string;
   limit: number;
   maxBytes: number;
@@ -250,10 +382,17 @@ export async function listOpenCodeSessionCandidates(params: Readonly<{
   const searchMode = params.searchMode === 'full' ? 'full' : 'fast';
   const query: OpenCodeCandidateQuery = { searchMode, searchTerm };
   const initialCursor = params.cursor ? readOpenCodeCandidateCursor(params.cursor) : null;
+  // A continuation is only meaningful against the generation that minted it: a
+  // timestamp anchor cannot be replayed to a V2 server and an opaque V2 token
+  // means nothing to a V1 one. Refusing here keeps a source that changed
+  // generation between calls from silently restarting at the newest session.
+  const continuationMatchesDialect = initialCursor === null
+    || (params.dialect === 'v2' ? initialCursor.v === 2 : initialCursor.v === 1);
   if (
     params.cursor
     && (
       !initialCursor
+      || !continuationMatchesDialect
       || initialCursor.searchMode !== query.searchMode
       || initialCursor.searchTerm !== query.searchTerm
     )
@@ -262,6 +401,7 @@ export async function listOpenCodeSessionCandidates(params: Readonly<{
   }
   const client = await createOpenCodeExternalSessionClient({
     source: params.source,
+    dialect: params.dialect,
     env: params.env,
     maxResponseBytes: params.maxBytes,
     ...(params.managedEndpointRead ? { managedEndpointRead: params.managedEndpointRead } : {}),
@@ -276,7 +416,20 @@ export async function listOpenCodeSessionCandidates(params: Readonly<{
     const serverSearch = searchTerm && searchMode === 'fast' ? searchTerm : undefined;
     const fullSearch = searchTerm.length > 0 && searchMode === 'full';
     const normalizedSearchTerm = searchTerm.toLowerCase();
-    const cursor = initialCursor;
+    if (params.dialect === 'v2') {
+      return await listOpenCodeSessionCandidatesFromSourceCursor({
+        client,
+        query,
+        limit,
+        serverBaseUrl,
+        ...(serverSearch ? { serverSearch } : {}),
+        fullSearch,
+        normalizedSearchTerm,
+        cursor: initialCursor?.v === 2 ? initialCursor : null,
+        ...(params.signal ? { signal: params.signal } : {}),
+      });
+    }
+    const cursor = initialCursor?.v === 1 ? initialCursor : null;
     let scanned = cursor?.scanned ?? 0;
     const selected: OpenCodeExternalSessionCandidate[] = [];
 
@@ -284,14 +437,16 @@ export async function listOpenCodeSessionCandidates(params: Readonly<{
     if (!Number.isSafeInteger(requestedLimit)) {
       throw new Error('OpenCode candidate continuation exceeds the supported source page range.');
     }
-    const rawSessions = await client.sessionList({
+    const page = await client.sessionList({
       limit: requestedLimit,
       ...(serverSearch ? { search: serverSearch } : {}),
-      ...(cursor ? { cursor: cursor.anchor.updatedAtMs + 1 } : {}),
+      ...(cursor
+        ? { cursor: { kind: 'updatedAtMs' as const, updatedAtMs: cursor.anchor.updatedAtMs + 1 } }
+        : {}),
       ...(params.signal ? { signal: params.signal } : {}),
     });
     const sourceCandidates: OpenCodeExternalSessionCandidate[] = [];
-    for (const raw of rawSessions) {
+    for (const raw of page.items) {
       const candidate = buildOpenCodeCandidate(raw, serverBaseUrl);
       if (candidate) sourceCandidates.push(candidate);
     }
@@ -377,6 +532,7 @@ export async function listOpenCodeSessionCandidates(params: Readonly<{
 
 export async function getOpenCodeExternalSessionVerifiedWorkingDirectory(params: Readonly<{
   source: OpenCodeExternalSessionSource;
+  dialect: OpenCodeServerDialect;
   providerSessionId: string;
   maxBytes: number;
   signal?: AbortSignal;
@@ -386,6 +542,7 @@ export async function getOpenCodeExternalSessionVerifiedWorkingDirectory(params:
 }>): Promise<string | null> {
   const client = await createOpenCodeExternalSessionClient({
     source: params.source,
+    dialect: params.dialect,
     env: params.env,
     maxResponseBytes: params.maxBytes,
     ...(params.managedEndpointRead ? { managedEndpointRead: params.managedEndpointRead } : {}),
@@ -413,6 +570,7 @@ export async function getOpenCodeExternalSessionVerifiedWorkingDirectory(params:
 
 export async function getOpenCodeExternalSessionWorkingDirectory(params: Readonly<{
   source: OpenCodeExternalSessionSource;
+  dialect: OpenCodeServerDialect;
   providerSessionId: string;
   maxBytes: number;
   managedEndpointRead?: AgentExternalSessionsManagedEndpointRead;

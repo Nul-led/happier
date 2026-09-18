@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import {
   SCM_OPERATION_ERROR_CODES,
@@ -139,6 +143,7 @@ describe('git worktree operations', () => {
     });
 
     it('rejoins the already materialized worktree for an existing branch on retry', async () => {
+        const existingWorktreePath = mkdtempSync(join(tmpdir(), 'happier-existing-worktree-'));
         runScmCommandMock
             .mockResolvedValueOnce({ success: true, stdout: '.git\n', stderr: '' })
             .mockResolvedValueOnce({ success: true, stdout: '/repo\n', stderr: '' })
@@ -146,7 +151,7 @@ describe('git worktree operations', () => {
             .mockResolvedValueOnce({
                 success: true,
                 stdout: [
-                    'worktree /repo/.dev/worktree/feature/auth',
+                    `worktree ${existingWorktreePath}`,
                     'HEAD abc123',
                     'branch refs/heads/feature/auth',
                     '',
@@ -166,10 +171,11 @@ describe('git worktree operations', () => {
                 branchMode: 'existing',
             },
         }));
+        rmSync(existingWorktreePath, { recursive: true, force: true });
 
         expect(response).toEqual({
             success: true,
-            worktreePath: '/repo/.dev/worktree/feature/auth',
+            worktreePath: existingWorktreePath,
             branchName: 'feature/auth',
             sourceRootPath: '/repo',
             repositoryRootPath: '/repo',

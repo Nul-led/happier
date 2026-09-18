@@ -45,6 +45,26 @@ export const CANONICAL_AGENT_LOCAL_CLI_CONFIG: Readonly<Record<CanonicalAgentId,
 
 export const AGENT_LOCAL_CLI_CONFIG: Readonly<Record<CanonicalAgentId, AgentLocalCliConfig>> = CANONICAL_AGENT_LOCAL_CLI_CONFIG;
 
+/**
+ * Whether each bundled Agent declares an unattended managed CLI install recipe.
+ *
+ * Unattended installation is the difference between an Agent a person can set up
+ * by following a vendor guide and one a freshly started computer can install by
+ * itself. Consumers that must decide the latter — such as Temporary computer
+ * authoring — read this fact instead of branching on Agent ids.
+ */
+export const CANONICAL_AGENT_MANAGED_CLI_INSTALL_DECLARED: Readonly<Record<CanonicalAgentId, boolean>> =
+  mergeAuthoredWithGeneratedAgentFacts({
+    authored: {},
+    label: 'managed CLI install declaration',
+    readGenerated: (definition) => definition.cli.install.managed != null,
+  });
+
+/** Typed unavailable (`false`) for an externally installed Agent with no bundled facts. */
+export function agentDeclaresManagedCliInstall(agentId: AgentId): boolean {
+  return readBundledAgentFact(CANONICAL_AGENT_MANAGED_CLI_INSTALL_DECLARED, agentId) ?? false;
+}
+
 export function getAgentLocalCliConfig(agentId: BundledAgentId): AgentLocalCliConfig;
 export function getAgentLocalCliConfig(agentId: AgentId): AgentLocalCliConfig | null;
 export function getAgentLocalCliConfig(agentId: AgentId): AgentLocalCliConfig | null {

@@ -86,6 +86,11 @@ export type AgentTerminalControlPresentation = Readonly<{
 }>;
 
 export type AgentTerminalLaunchPlan = Readonly<{
+  /**
+   * Arguments only. The host resolves the Agent CLI executable and its own
+   * arguments, then appends these; an Agent that repeats its executable name
+   * here launches it twice.
+   */
   argv: readonly string[];
   environment?: AgentLaunchEnvironment;
   process?: Readonly<{

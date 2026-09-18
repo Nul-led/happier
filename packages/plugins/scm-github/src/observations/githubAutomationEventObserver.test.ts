@@ -362,6 +362,7 @@ function sourceAttemptContext(
                   id: GITHUB_AUTOMATION_REPOSITORY_EVENT_BACKGROUND_SERVICE_ID,
                   qualifiedId: `${GITHUB_PLUGIN_ID}/backgroundServices/${GITHUB_AUTOMATION_REPOSITORY_EVENT_BACKGROUND_SERVICE_ID}`,
                 },
+                immutableGenerationId: 'github-automation-observer-fixture-generation',
                 materialization: watcherMaterializationRef,
                 originSurface: 'background' as const,
               },
@@ -533,6 +534,7 @@ describe('GitHub Automation Event checkpointed-pull observer', () => {
             id: 'background-worker',
             qualifiedId: 'acme.unrelated/backgroundServices/background-worker',
           },
+          immutableGenerationId: 'github-automation-observer-unrelated-fixture-generation',
           materialization: {
             pluginId: 'acme.unrelated',
             machineId: watcherMaterializationRef.machineId,

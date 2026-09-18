@@ -110,6 +110,7 @@ import {
   type TriageSurfaceActionV1,
   type TriageSurfaceStateV1,
 } from '../state/surface.js';
+import { useTriageRefreshEligibilityNowV1 } from '../window/refreshEligibilityClock.js';
 import { useTriageListWindow } from '../window/useTriageListWindow.js';
 import { useTriageListWindowViewDemand } from '../window/useTriageListWindowViewDemand.js';
 import {
@@ -429,8 +430,13 @@ export function TriageListShell(props: TriageListShellProps = {}): React.ReactEl
    * surfaced. It is read at render rather than memoized because the answer ages
    * on its own clock, and the deadline is the coordinator's — never re-derived
    * here from lane health.
+   *
+   * Ageing on its own clock is only half of it: the page also has to notice the
+   * moment it printed arrive, or a reader who waits out the stated deadline is
+   * left with a control this render disabled and nothing to re-enable it.
    */
-  const refreshState = resolveTriageListRefreshV1(window.snapshot, Date.now());
+  const eligibilityNowMs = useTriageRefreshEligibilityNowV1(window.snapshot.refreshBlocked);
+  const refreshState = resolveTriageListRefreshV1(window.snapshot, eligibilityNowMs);
 
   // The named page-view producers (`core/CORPUS.md` §4.1): mount, then every
   // host-owned active regain. The window hook itself only reads, so the
@@ -502,6 +508,10 @@ export function TriageListShell(props: TriageListShellProps = {}): React.ReactEl
             ? state.window.coverage
             : state.kind === 'configureSources' ? 'complete' : 'partial',
           morePins: marks.more,
+          // One freshness owner, stated per row. `text` is the reader's own
+          // catalog for the words this plugin authors; the window's `stale`
+          // claim is the same one the page's freshness line reads.
+          display: { text, stale: state.kind === 'window' && state.stale },
         }).map((section) => ({
           ...section,
           title: section.key === 'pinned'
@@ -859,32 +869,33 @@ export function TriageListShell(props: TriageListShellProps = {}): React.ReactEl
     })();
   }, [readProjectedSelectionAction, rollbackSettledLensEdit, savedViews, settleLensEditBeforeDurable]);
 
-  const createView = React.useCallback((label: string) => {
+  const createView = React.useCallback(async (label: string): Promise<boolean> => {
     const expectedRevision = savedViews.revision;
-    if (expectedRevision === null) return;
-    void (async () => {
-      const created = await savedViews.administer(triageCreateSavedViewInputV1(label, {
-        query: surface.search.query,
-        filters: surface.filters,
-        order: surface.order,
-        smartPolicy: surface.smartPolicy,
-      }, expectedRevision));
-      if (created === null || created.viewId === null) return;
-      const action = readProjectedSelectionAction(created.projection, created.viewId);
-      if (action === null) return;
-      const route = await settleLensEditBeforeDurable(action);
-      if (route === null) return;
-      const selected = await savedViews.administer(
-        triageSelectSavedViewInputV1(created.viewId, created.revision),
-      );
-      if (selected === null) await rollbackSettledLensEdit(route);
-    })();
+    if (expectedRevision === null) return false;
+    const created = await savedViews.administer(triageCreateSavedViewInputV1(label, {
+      query: surface.search.query,
+      filters: surface.filters,
+      order: surface.order,
+      smartPolicy: surface.smartPolicy,
+    }, expectedRevision));
+    if (created === null || created.viewId === null) return false;
+    const action = readProjectedSelectionAction(created.projection, created.viewId);
+    // The name is durable even if choosing the new view cannot settle.
+    // Retrying Create after that point would duplicate an already saved view.
+    if (action === null) return true;
+    const route = await settleLensEditBeforeDurable(action);
+    if (route === null) return true;
+    const selected = await savedViews.administer(
+      triageSelectSavedViewInputV1(created.viewId, created.revision),
+    );
+    if (selected === null) await rollbackSettledLensEdit(route);
+    return true;
   }, [readProjectedSelectionAction, rollbackSettledLensEdit, savedViews, settleLensEditBeforeDurable, surface.filters, surface.order, surface.search.query, surface.smartPolicy]);
 
-  const renameView = React.useCallback((view: CorpusSavedViewV1, label: string) => {
-    if (savedViews.revision === null) return;
+  const renameView = React.useCallback(async (view: CorpusSavedViewV1, label: string): Promise<boolean> => {
+    if (savedViews.revision === null) return false;
     // A rename keeps the stored lens, so nothing on screen changes.
-    void savedViews.administer(triageRenameSavedViewInputV1(view, label, savedViews.revision));
+    return await savedViews.administer(triageRenameSavedViewInputV1(view, label, savedViews.revision)) !== null;
   }, [savedViews]);
 
   const updateView = React.useCallback((view: CorpusSavedViewV1) => {
@@ -1014,7 +1025,7 @@ export function TriageListShell(props: TriageListShellProps = {}): React.ReactEl
   const lastKnownPinRow = React.useMemo(() => (
     selectedRow !== null || lastKnown === null
       ? null
-      : projectTriageWindowRow(lastKnown.row, pinsByEntry)
+      : projectTriageWindowRow(lastKnown.row, pinsByEntry, { text })
   ), [lastKnown, pinsByEntry, selectedRow]);
   /**
    * §2.2's header for a selection the window has stopped listing.
@@ -1373,6 +1384,38 @@ export function TriageListShell(props: TriageListShellProps = {}): React.ReactEl
     }
   }, [hostApi]);
 
+  /**
+   * The source-owned configuration destinations, wherever this page offers them.
+   *
+   * `core/SURFACE.md` §1.4 gives this surface two source-administration entry
+   * points — the compact **Configure sources** action of the screen with nothing
+   * usable configured, and **Manage sources** in the ordinary chrome — and routes
+   * BOTH through the same generic Plugin Settings destination. They were not the
+   * same offer: the first configured connection removed the only control that
+   * could reach a source's own page, so a reader who wanted a second connection,
+   * or who had to repair the one they had, could only get the offer back by
+   * removing it. One builder, so the two places cannot drift into two answers
+   * about which destinations exist or how they are opened.
+   */
+  const renderConfigureSourceOffers = (justify?: 'center'): React.ReactElement | null => (
+    configureOffers.length === 0 ? null : (
+      <Row gap="small" wrap {...(justify === undefined ? {} : { justify })}>
+        {configureOffers.map((offer) => (
+          <Button
+            key={`${offer.destination.pluginId}/${offer.destination.localId}`}
+            title={text(
+              'plugins.triage.surface.noSources.configure',
+              'Configure {name}',
+              { name: offer.displayName },
+            )}
+            variant="secondary"
+            onPress={() => openConfigureSource(offer)}
+          />
+        ))}
+      </Row>
+    )
+  );
+
   const removeConfiguredSource = React.useCallback(async (
     sourceInstanceId: string,
     displayLabel: string,
@@ -1459,7 +1502,10 @@ export function TriageListShell(props: TriageListShellProps = {}): React.ReactEl
         target={actionTarget}
         actions={configuredActions}
         originComposer={detailOriginComposer}
-        pin={{ row: projectTriageWindowRow(selectedRow, pinsByEntry), handlers: pinHandlers }}
+        pin={{
+          row: projectTriageWindowRow(selectedRow, pinsByEntry, { text }),
+          handlers: pinHandlers,
+        }}
         onClose={dismissDetail}
       />
     ) : lastKnownHeader !== null ? (
@@ -1612,36 +1658,29 @@ export function TriageListShell(props: TriageListShellProps = {}): React.ReactEl
               title="No sources are configured"
               descriptionKey="plugins.triage.surface.noSources.description"
               description="Connect a source in Settings to see its pull requests, issues and error groups here."
-              {...(configureOffers.length === 0 ? {} : {
-                action: (
-                  <Row gap="small" wrap justify="center">
-                    {configureOffers.map((offer) => (
-                      <Button
-                        key={`${offer.destination.pluginId}/${offer.destination.localId}`}
-                        title={text(
-                          'plugins.triage.surface.noSources.configure',
-                          'Configure {name}',
-                          { name: offer.displayName },
-                        )}
-                        variant="secondary"
-                        onPress={() => openConfigureSource(offer)}
-                      />
-                    ))}
-                  </Row>
-                ),
-              })}
+              {...(configureOffers.length === 0
+                ? {}
+                : { action: renderConfigureSourceOffers('center') })}
             />
-            {configureRefused === null ? null : (
-              <Banner
-                tone="warning"
-                title={text(
-                  'plugins.triage.surface.noSources.openFailed',
-                  '{name} settings could not be opened',
-                  { name: configureRefused },
-                )}
-              />
-            )}
           </Stack>
+        )}
+
+        {/*
+          One refusal notice for the one destination owner, said wherever the
+          press was made. It sits here rather than inside the unconfigured block
+          because that block disappears the moment a connection exists, while
+          **Manage sources** keeps offering the same destinations — and a press
+          that silently does nothing is the failure this notice exists to end.
+        */}
+        {configureRefused === null ? null : (
+          <Banner
+            tone="warning"
+            title={text(
+              'plugins.triage.surface.noSources.openFailed',
+              '{name} settings could not be opened',
+              { name: configureRefused },
+            )}
+          />
         )}
 
         {/*
@@ -1799,6 +1838,14 @@ export function TriageListShell(props: TriageListShellProps = {}): React.ReactEl
                 ))}
               </ItemGroup>
             )}
+            {/*
+              Adding a connection, and repairing one, are the same source-owned
+              form this page never hosts (`core/SURFACE.md` §1.4). They stay
+              reachable while sources exist rather than only before the first
+              one, and they are the SAME destinations the unconfigured screen
+              offers — one builder above, so the two cannot drift.
+            */}
+            {renderConfigureSourceOffers()}
           </Stack>
         ) : (
           <Row gap="small" align="center">
@@ -1978,7 +2025,24 @@ export function TriageListShell(props: TriageListShellProps = {}): React.ReactEl
                 <ErrorState
                   title={empty.title}
                   description={empty.description}
-                  action={<Button titleKey="plugins.triage.surface.refresh" title="Refresh" variant="secondary" onPress={refresh} />}
+                  /*
+                    The same one control, in the state that has no rows to put
+                    it beside. It reads the same eligibility answer as the
+                    header's: two Refresh controls offering different answers to
+                    "may this read now" is two decision-makers, and the one that
+                    stayed enabled was a press the coordinator silently refused
+                    — the exact failure `core/CORPUS.md` §4.2 names.
+                  */
+                  action={(
+                    <Button
+                      titleKey="plugins.triage.surface.refresh"
+                      title="Refresh"
+                      variant="secondary"
+                      busy={refreshState.kind === 'running'}
+                      disabled={refreshState.kind === 'blocked'}
+                      onPress={refresh}
+                    />
+                  )}
                 />
               ) : (
                 <EmptyState

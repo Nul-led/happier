@@ -15,6 +15,8 @@ import {
   createStubGitlabTransport,
   gitlabTestConfiguredInstance,
   GITLAB_TEST_COLLISION_SCOPE,
+  type RecordedGitlabRequest,
+  type StubGitlabResponse,
 } from './testkit/gitlabTriage.test-support.js';
 
 const OBSERVED_BASE = '1'.repeat(40);
@@ -23,6 +25,70 @@ const ADVANCED_HEAD = '3'.repeat(40);
 const NATIVE_REVISION = '4'.repeat(40);
 const REVIEW_ITEM_URL_SUFFIX = '/api/v4/projects/maintainer%2Frepository/merge_requests/7';
 const REVIEW_ITEM_URL = `https://gitlab.com${REVIEW_ITEM_URL_SUFFIX}`;
+/** GitLab names the editable project by id; it never embeds the project object. */
+const SOURCE_PROJECT_ID = 17;
+const SOURCE_PROJECT_URL_SUFFIX = `/api/v4/projects/${String(SOURCE_PROJECT_ID)}`;
+const SOURCE_PROJECT_URL = `https://gitlab.com${SOURCE_PROJECT_URL_SUFFIX}`;
+
+type RawBody = Readonly<Record<string, unknown>>;
+
+/**
+ * A documented merge-request response.
+ *
+ * `GET /projects/{id}/merge_requests/{iid}` publishes `source_project_id`, a
+ * source branch and its revisions — never a nested `source_project` object. A
+ * fixture that embeds one proves a shape GitLab does not serve.
+ */
+function mergeRequestBody(overrides: RawBody = {}): RawBody {
+  return {
+    project_id: 3,
+    iid: 7,
+    references: { full: 'maintainer/repository!7' },
+    sha: OBSERVED_HEAD,
+    diff_refs: { base_sha: OBSERVED_BASE, head_sha: OBSERVED_HEAD },
+    source_branch: 'feature/from-fork',
+    source_project_id: SOURCE_PROJECT_ID,
+    target_project_id: 3,
+    ...overrides,
+  };
+}
+
+function sourceProjectBody(overrides: RawBody = {}): RawBody {
+  return {
+    id: SOURCE_PROJECT_ID,
+    path_with_namespace: 'contributor/repository',
+    http_url_to_repo: 'https://gitlab.com/contributor/repository.git',
+    ...overrides,
+  };
+}
+
+function respondWith(input: Readonly<{
+  itemSuffix?: string;
+  mergeRequest: RawBody;
+  project?: RawBody | StubGitlabResponse | null;
+}>): (request: RecordedGitlabRequest) => StubGitlabResponse | undefined {
+  const itemSuffix = input.itemSuffix ?? REVIEW_ITEM_URL_SUFFIX;
+  const project = input.project === undefined ? sourceProjectBody() : input.project;
+  return (request) => {
+    if (request.url.endsWith(itemSuffix)) return { status: 200, body: input.mergeRequest };
+    if (project !== null && request.url.endsWith(SOURCE_PROJECT_URL_SUFFIX)) {
+      return typeof project.status === 'number'
+        ? project as StubGitlabResponse
+        : { status: 200, body: project };
+    }
+    return undefined;
+  };
+}
+
+function preparedMaterialization(branch = 'feature/from-fork') {
+  return vi.fn(async () => ({
+    success: true as const,
+    targetPath: '/workspaces/selected-repository/.happier/review',
+    branchName: branch,
+    created: true,
+    currentness: { kind: 'currentAtObservedHead' as const },
+  }));
+}
 
 function collisionScopeFor(origin: string): string {
   return `gitlab:${Buffer.from(origin, 'utf8').toString('base64url')}:3`;
@@ -99,32 +165,12 @@ describe('GitLab prepared review workspace', () => {
     const origin = 'https://git.example.test/A';
     const transport = createStubGitlabTransport({
       origin,
-      respond: (request) => request.url.endsWith(REVIEW_ITEM_URL_SUFFIX)
-        ? {
-          status: 200,
-          body: {
-            project_id: 3,
-            iid: 7,
-            references: { full: 'maintainer/repository!7' },
-            sha: OBSERVED_HEAD,
-            diff_refs: { base_sha: OBSERVED_BASE, head_sha: OBSERVED_HEAD },
-            source_branch: 'feature/from-fork',
-            source_project: {
-              id: 17,
-              path_with_namespace: 'contributor/repository',
-              http_url_to_repo: cloneUrl,
-            },
-          },
-        }
-        : undefined,
+      respond: respondWith({
+        mergeRequest: mergeRequestBody(),
+        project: sourceProjectBody({ http_url_to_repo: cloneUrl }),
+      }),
     });
-    const execute = vi.fn(async () => ({
-      success: true as const,
-      targetPath: '/workspaces/selected-repository/.happier/review',
-      branchName: 'feature/from-fork',
-      created: true,
-      currentness: { kind: 'currentAtObservedHead' as const },
-    }));
+    const execute = preparedMaterialization();
 
     await expect(prepareGitlabReviewWorkspaceAction(
       prepareInput({
@@ -140,7 +186,7 @@ describe('GitLab prepared review workspace', () => {
     )).resolves.toEqual({ kind: 'refused', reason: 'pullRequestMoved' });
 
     expect(transport.requests.map((request) => request.url))
-      .toEqual([`${origin}${REVIEW_ITEM_URL_SUFFIX}`]);
+      .toEqual([`${origin}${REVIEW_ITEM_URL_SUFFIX}`, `${origin}${SOURCE_PROJECT_URL_SUFFIX}`]);
     expect(execute).not.toHaveBeenCalled();
   });
 
@@ -149,32 +195,12 @@ describe('GitLab prepared review workspace', () => {
     const cloneUrl = `${origin}/group/repository.git`;
     const transport = createStubGitlabTransport({
       origin,
-      respond: (request) => request.url.endsWith(REVIEW_ITEM_URL_SUFFIX)
-        ? {
-          status: 200,
-          body: {
-            project_id: 3,
-            iid: 7,
-            references: { full: 'maintainer/repository!7' },
-            sha: OBSERVED_HEAD,
-            diff_refs: { base_sha: OBSERVED_BASE, head_sha: OBSERVED_HEAD },
-            source_branch: 'feature/from-fork',
-            source_project: {
-              id: 17,
-              path_with_namespace: 'contributor/repository',
-              http_url_to_repo: cloneUrl,
-            },
-          },
-        }
-        : undefined,
+      respond: respondWith({
+        mergeRequest: mergeRequestBody(),
+        project: sourceProjectBody({ http_url_to_repo: cloneUrl }),
+      }),
     });
-    const execute = vi.fn(async () => ({
-      success: true as const,
-      targetPath: '/workspaces/selected-repository/.happier/review',
-      branchName: 'feature/from-fork',
-      created: true,
-      currentness: { kind: 'currentAtObservedHead' as const },
-    }));
+    const execute = preparedMaterialization();
 
     await expect(prepareGitlabReviewWorkspaceAction(
       prepareInput({
@@ -198,34 +224,16 @@ describe('GitLab prepared review workspace', () => {
     );
   });
 
-  it('refuses a moved source head before local materialization', async () => {
+  it('refuses a moved source head before it reads the source project', async () => {
     const transport = createStubGitlabTransport({
-      respond: (request) => request.url.endsWith(REVIEW_ITEM_URL_SUFFIX)
-        ? {
-          status: 200,
-          body: {
-            project_id: 3,
-            iid: 7,
-            references: { full: 'maintainer/repository!7' },
-            sha: ADVANCED_HEAD,
-            diff_refs: { base_sha: OBSERVED_BASE, head_sha: ADVANCED_HEAD },
-            source_branch: 'feature/from-fork',
-            source_project: {
-              id: 17,
-              path_with_namespace: 'contributor/repository',
-              http_url_to_repo: 'https://gitlab.com/contributor/repository.git',
-            },
-          },
-        }
-        : undefined,
+      respond: respondWith({
+        mergeRequest: mergeRequestBody({
+          sha: ADVANCED_HEAD,
+          diff_refs: { base_sha: OBSERVED_BASE, head_sha: ADVANCED_HEAD },
+        }),
+      }),
     });
-    const execute = vi.fn(async () => ({
-      success: true as const,
-      targetPath: '/workspaces/selected-repository/.happier/review',
-      branchName: 'feature/from-fork',
-      created: true,
-      currentness: { kind: 'currentAtObservedHead' as const },
-    }));
+    const execute = preparedMaterialization();
 
     await expect(prepareGitlabReviewWorkspaceAction(
       prepareInput(),
@@ -233,46 +241,19 @@ describe('GitLab prepared review workspace', () => {
     )).resolves.toEqual({ kind: 'refused', reason: 'observedHeadMoved' });
 
     // The provider reread and exact-account authorization occur before the SCM
-    // Action. A stale source revision may never reach a local materializer.
+    // Action. A stale source revision may never reach a local materializer, and
+    // it does not spend a second provider read either.
     expect(transport.materializeCount()).toBe(1);
     expect(transport.requests.map((request) => request.url))
       .toEqual([REVIEW_ITEM_URL]);
     expect(execute).not.toHaveBeenCalled();
   });
 
-  it('materializes only the reread source project at the exact selected root', async () => {
+  it('materializes the source project GitLab named by id at the exact selected root', async () => {
     const transport = createStubGitlabTransport({
-      respond: (request) => request.url.endsWith(REVIEW_ITEM_URL_SUFFIX)
-        ? {
-          status: 200,
-          body: {
-            project_id: 3,
-            iid: 7,
-            references: { full: 'maintainer/repository!7' },
-            sha: OBSERVED_HEAD,
-            diff_refs: { base_sha: OBSERVED_BASE, head_sha: OBSERVED_HEAD },
-            source_branch: 'feature/from-fork',
-            source_project: {
-              id: 17,
-              path_with_namespace: 'contributor/repository',
-              http_url_to_repo: 'https://gitlab.com/contributor/repository.git',
-            },
-            target_project: {
-              id: 3,
-              path_with_namespace: 'maintainer/repository',
-              http_url_to_repo: 'https://gitlab.com/maintainer/repository.git',
-            },
-          },
-        }
-        : undefined,
+      respond: respondWith({ mergeRequest: mergeRequestBody() }),
     });
-    const execute = vi.fn(async () => ({
-      success: true as const,
-      targetPath: '/workspaces/selected-repository/.happier/review',
-      branchName: 'feature/from-fork',
-      created: true,
-      currentness: { kind: 'currentAtObservedHead' as const },
-    }));
+    const execute = preparedMaterialization();
     const context = withMaterializer(transport.context, execute);
 
     await expect(prepareGitlabReviewWorkspaceAction(prepareInput(), context)).resolves.toEqual({
@@ -284,6 +265,8 @@ describe('GitLab prepared review workspace', () => {
       pullRequest: { number: 7 },
     });
 
+    expect(transport.requests.map((request) => request.url))
+      .toEqual([REVIEW_ITEM_URL, SOURCE_PROJECT_URL]);
     expect(execute).toHaveBeenCalledWith(
       'scm.reviewWorkspace.materializePrepared',
       {
@@ -307,34 +290,55 @@ describe('GitLab prepared review workspace', () => {
     expect(JSON.stringify(execute.mock.calls)).not.toContain('merge-requests/7/head');
   });
 
-  it('uses GitLab’s source head, not its separate native revision, for the local fetch', async () => {
+  it('prepares a same-project merge request from the project it names', async () => {
     const transport = createStubGitlabTransport({
       respond: (request) => request.url.endsWith(REVIEW_ITEM_URL_SUFFIX)
         ? {
           status: 200,
-          body: {
-            project_id: 3,
-            iid: 7,
-            references: { full: 'maintainer/repository!7' },
-            sha: NATIVE_REVISION,
-            diff_refs: { base_sha: OBSERVED_BASE, head_sha: OBSERVED_HEAD },
-            source_branch: 'feature/from-fork',
-            source_project: {
-              id: 17,
-              path_with_namespace: 'contributor/repository',
-              http_url_to_repo: 'https://gitlab.com/contributor/repository.git',
-            },
-          },
+          body: mergeRequestBody({ source_project_id: 3, source_branch: 'feature' }),
         }
-        : undefined,
+        : request.url.endsWith('/api/v4/projects/3')
+          ? {
+            status: 200,
+            body: {
+              id: 3,
+              path_with_namespace: 'maintainer/repository',
+              http_url_to_repo: 'https://gitlab.com/maintainer/repository.git',
+            },
+          }
+          : undefined,
     });
-    const execute = vi.fn(async () => ({
-      success: true as const,
-      targetPath: '/workspaces/selected-repository/.happier/review',
-      branchName: 'feature/from-fork',
-      created: true,
-      currentness: { kind: 'currentAtObservedHead' as const },
-    }));
+    const execute = preparedMaterialization('feature');
+
+    await expect(prepareGitlabReviewWorkspaceAction(
+      prepareInput(),
+      withMaterializer(transport.context, execute),
+    )).resolves.toMatchObject({ kind: 'prepared', branch: 'feature' });
+
+    expect(execute).toHaveBeenCalledWith(
+      'scm.reviewWorkspace.materializePrepared',
+      expect.objectContaining({
+        sourceTip: {
+          repository: {
+            kind: 'gitlab',
+            deployment: 'https://gitlab.com',
+            repository: 'maintainer/repository',
+          },
+          cloneUrl: 'https://gitlab.com/maintainer/repository.git',
+          branch: 'feature',
+          sourceHeadSha: OBSERVED_HEAD,
+          fetchRef: 'refs/heads/feature',
+        },
+      }),
+      { signal: transport.context.signal },
+    );
+  });
+
+  it('uses GitLab’s source head, not its separate native revision, for the local fetch', async () => {
+    const transport = createStubGitlabTransport({
+      respond: respondWith({ mergeRequest: mergeRequestBody({ sha: NATIVE_REVISION }) }),
+    });
+    const execute = preparedMaterialization();
 
     await expect(prepareGitlabReviewWorkspaceAction(
       prepareInput({
@@ -374,24 +378,11 @@ describe('GitLab prepared review workspace', () => {
 
   it('refuses a changed base before local materialization', async () => {
     const transport = createStubGitlabTransport({
-      respond: (request) => request.url.endsWith(REVIEW_ITEM_URL_SUFFIX)
-        ? {
-          status: 200,
-          body: {
-            project_id: 3,
-            iid: 7,
-            references: { full: 'maintainer/repository!7' },
-            sha: OBSERVED_HEAD,
-            diff_refs: { base_sha: ADVANCED_HEAD, head_sha: OBSERVED_HEAD },
-            source_branch: 'feature/from-fork',
-            source_project: {
-              id: 17,
-              path_with_namespace: 'contributor/repository',
-              http_url_to_repo: 'https://gitlab.com/contributor/repository.git',
-            },
-          },
-        }
-        : undefined,
+      respond: respondWith({
+        mergeRequest: mergeRequestBody({
+          diff_refs: { base_sha: ADVANCED_HEAD, head_sha: OBSERVED_HEAD },
+        }),
+      }),
     });
     const execute = vi.fn();
 
@@ -403,27 +394,66 @@ describe('GitLab prepared review workspace', () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
-  it('refuses an unavailable source project rather than substituting the target project', async () => {
+  it('refuses a merge request that names no source project', async () => {
     const transport = createStubGitlabTransport({
-      respond: (request) => request.url.endsWith(REVIEW_ITEM_URL_SUFFIX)
-        ? {
-          status: 200,
-          body: {
-            project_id: 3,
-            iid: 7,
-            references: { full: 'maintainer/repository!7' },
-            sha: OBSERVED_HEAD,
-            diff_refs: { base_sha: OBSERVED_BASE, head_sha: OBSERVED_HEAD },
-            source_branch: 'feature/from-fork',
-            source_project: null,
-            target_project: {
-              id: 3,
-              path_with_namespace: 'maintainer/repository',
-              http_url_to_repo: 'https://gitlab.com/maintainer/repository.git',
-            },
-          },
-        }
-        : undefined,
+      respond: respondWith({
+        mergeRequest: mergeRequestBody({ source_project_id: undefined }),
+        project: null,
+      }),
+    });
+    const execute = vi.fn();
+
+    await expect(prepareGitlabReviewWorkspaceAction(
+      prepareInput(),
+      withMaterializer(transport.context, execute),
+    )).resolves.toEqual({ kind: 'refused', reason: 'pullRequestMoved' });
+
+    expect(transport.requests.map((request) => request.url)).toEqual([REVIEW_ITEM_URL]);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('refuses a deleted source project rather than substituting the target project', async () => {
+    const transport = createStubGitlabTransport({
+      respond: respondWith({
+        mergeRequest: mergeRequestBody(),
+        project: { status: 404, body: { message: '404 Project Not Found' } },
+      }),
+    });
+    const execute = vi.fn();
+
+    await expect(prepareGitlabReviewWorkspaceAction(
+      prepareInput(),
+      withMaterializer(transport.context, execute),
+    )).resolves.toEqual({ kind: 'refused', reason: 'pullRequestMoved' });
+
+    expect(transport.requests.map((request) => request.url))
+      .toEqual([REVIEW_ITEM_URL, SOURCE_PROJECT_URL]);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('reports an unreadable source project as configured-account unavailability', async () => {
+    const transport = createStubGitlabTransport({
+      respond: respondWith({
+        mergeRequest: mergeRequestBody(),
+        project: { status: 403, body: { message: '403 Forbidden' } },
+      }),
+    });
+    const execute = vi.fn();
+
+    await expect(prepareGitlabReviewWorkspaceAction(
+      prepareInput(),
+      withMaterializer(transport.context, execute),
+    )).resolves.toEqual({ kind: 'unavailable', reason: 'account' });
+
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('refuses a source project whose identity is not the one the merge request named', async () => {
+    const transport = createStubGitlabTransport({
+      respond: respondWith({
+        mergeRequest: mergeRequestBody(),
+        project: sourceProjectBody({ id: SOURCE_PROJECT_ID + 1 }),
+      }),
     });
     const execute = vi.fn();
 
@@ -437,34 +467,12 @@ describe('GitLab prepared review workspace', () => {
 
   it('refuses a stale observed locator before local materialization', async () => {
     const transport = createStubGitlabTransport({
-      respond: (request) => request.url.endsWith(
-        '/api/v4/projects/different%2Frepository/merge_requests/7',
-      )
-        ? {
-          status: 200,
-          body: {
-            project_id: 3,
-            iid: 7,
-            references: { full: 'maintainer/repository!7' },
-            sha: OBSERVED_HEAD,
-            diff_refs: { base_sha: OBSERVED_BASE, head_sha: OBSERVED_HEAD },
-            source_branch: 'feature/from-fork',
-            source_project: {
-              id: 17,
-              path_with_namespace: 'contributor/repository',
-              http_url_to_repo: 'https://gitlab.com/contributor/repository.git',
-            },
-          },
-        }
-        : undefined,
+      respond: respondWith({
+        itemSuffix: '/api/v4/projects/different%2Frepository/merge_requests/7',
+        mergeRequest: mergeRequestBody(),
+      }),
     });
-    const execute = vi.fn(async () => ({
-      success: true as const,
-      targetPath: '/workspaces/selected-repository/.happier/review',
-      branchName: 'feature/from-fork',
-      created: true,
-      currentness: { kind: 'currentAtObservedHead' as const },
-    }));
+    const execute = preparedMaterialization();
 
     await expect(prepareGitlabReviewWorkspaceAction(
       prepareInput({ lastKnownLocator: { v: 1, routingToken: 'different/repository' } }),
@@ -482,24 +490,7 @@ describe('GitLab prepared review workspace', () => {
     ['COMMAND_FAILED', { kind: 'unavailable', reason: 'scmResolver' }],
   ] as const)('projects generic SCM failure %s through the source result', async (errorCode, expected) => {
     const transport = createStubGitlabTransport({
-      respond: (request) => request.url.endsWith(REVIEW_ITEM_URL_SUFFIX)
-        ? {
-          status: 200,
-          body: {
-            project_id: 3,
-            iid: 7,
-            references: { full: 'maintainer/repository!7' },
-            sha: OBSERVED_HEAD,
-            diff_refs: { base_sha: OBSERVED_BASE, head_sha: OBSERVED_HEAD },
-            source_branch: 'feature/from-fork',
-            source_project: {
-              id: 17,
-              path_with_namespace: 'contributor/repository',
-              http_url_to_repo: 'https://gitlab.com/contributor/repository.git',
-            },
-          },
-        }
-        : undefined,
+      respond: respondWith({ mergeRequest: mergeRequestBody() }),
     });
     const execute = vi.fn(async () => ({
       success: false as const,
@@ -515,24 +506,7 @@ describe('GitLab prepared review workspace', () => {
 
   it('rejects a verification-shaped SCM success during initial preparation', async () => {
     const transport = createStubGitlabTransport({
-      respond: (request) => request.url.endsWith(REVIEW_ITEM_URL_SUFFIX)
-        ? {
-          status: 200,
-          body: {
-            project_id: 3,
-            iid: 7,
-            references: { full: 'maintainer/repository!7' },
-            sha: OBSERVED_HEAD,
-            diff_refs: { base_sha: OBSERVED_BASE, head_sha: OBSERVED_HEAD },
-            source_branch: 'feature/from-fork',
-            source_project: {
-              id: 17,
-              path_with_namespace: 'contributor/repository',
-              http_url_to_repo: 'https://gitlab.com/contributor/repository.git',
-            },
-          },
-        }
-        : undefined,
+      respond: respondWith({ mergeRequest: mergeRequestBody() }),
     });
     const execute = vi.fn(async () => ({
       success: true as const,
@@ -551,24 +525,7 @@ describe('GitLab prepared review workspace', () => {
   it('preserves generic SCM Action cancellation', async () => {
     const cancellation = Object.assign(new Error('cancelled'), { name: 'AbortError' });
     const transport = createStubGitlabTransport({
-      respond: (request) => request.url.endsWith(REVIEW_ITEM_URL_SUFFIX)
-        ? {
-          status: 200,
-          body: {
-            project_id: 3,
-            iid: 7,
-            references: { full: 'maintainer/repository!7' },
-            sha: OBSERVED_HEAD,
-            diff_refs: { base_sha: OBSERVED_BASE, head_sha: OBSERVED_HEAD },
-            source_branch: 'feature/from-fork',
-            source_project: {
-              id: 17,
-              path_with_namespace: 'contributor/repository',
-              http_url_to_repo: 'https://gitlab.com/contributor/repository.git',
-            },
-          },
-        }
-        : undefined,
+      respond: respondWith({ mergeRequest: mergeRequestBody() }),
     });
     const execute = vi.fn(async () => { throw cancellation; });
 
@@ -580,24 +537,7 @@ describe('GitLab prepared review workspace', () => {
 
   it('projects a rejected generic SCM Action as SCM unavailability', async () => {
     const transport = createStubGitlabTransport({
-      respond: (request) => request.url.endsWith(REVIEW_ITEM_URL_SUFFIX)
-        ? {
-          status: 200,
-          body: {
-            project_id: 3,
-            iid: 7,
-            references: { full: 'maintainer/repository!7' },
-            sha: OBSERVED_HEAD,
-            diff_refs: { base_sha: OBSERVED_BASE, head_sha: OBSERVED_HEAD },
-            source_branch: 'feature/from-fork',
-            source_project: {
-              id: 17,
-              path_with_namespace: 'contributor/repository',
-              http_url_to_repo: 'https://gitlab.com/contributor/repository.git',
-            },
-          },
-        }
-        : undefined,
+      respond: respondWith({ mergeRequest: mergeRequestBody() }),
     });
     const execute = vi.fn(async () => { throw new Error('SCM action transport unavailable'); });
 
@@ -611,24 +551,7 @@ describe('GitLab prepared review workspace', () => {
 describe('GitLab final review-workspace verification', () => {
   it('verifies only after the provider reread and canonical local HEAD agree', async () => {
     const transport = createStubGitlabTransport({
-      respond: (request) => request.url.endsWith(REVIEW_ITEM_URL_SUFFIX)
-        ? {
-          status: 200,
-          body: {
-            project_id: 3,
-            iid: 7,
-            references: { full: 'maintainer/repository!7' },
-            sha: OBSERVED_HEAD,
-            diff_refs: { base_sha: OBSERVED_BASE, head_sha: OBSERVED_HEAD },
-            source_branch: 'feature/from-fork',
-            source_project: {
-              id: 17,
-              path_with_namespace: 'contributor/repository',
-              http_url_to_repo: 'https://gitlab.com/contributor/repository.git',
-            },
-          },
-        }
-        : undefined,
+      respond: respondWith({ mergeRequest: mergeRequestBody() }),
     });
     const execute = vi.fn(async () => ({
       success: true as const,
@@ -669,24 +592,7 @@ describe('GitLab final review-workspace verification', () => {
 
   it('refuses when the prepared pull-request reference does not match the reread item', async () => {
     const transport = createStubGitlabTransport({
-      respond: (request) => request.url.endsWith(REVIEW_ITEM_URL_SUFFIX)
-        ? {
-          status: 200,
-          body: {
-            project_id: 3,
-            iid: 7,
-            references: { full: 'maintainer/repository!7' },
-            sha: OBSERVED_HEAD,
-            diff_refs: { base_sha: OBSERVED_BASE, head_sha: OBSERVED_HEAD },
-            source_branch: 'feature/from-fork',
-            source_project: {
-              id: 17,
-              path_with_namespace: 'contributor/repository',
-              http_url_to_repo: 'https://gitlab.com/contributor/repository.git',
-            },
-          },
-        }
-        : undefined,
+      respond: respondWith({ mergeRequest: mergeRequestBody() }),
     });
     const execute = vi.fn();
 
@@ -704,24 +610,7 @@ describe('GitLab final review-workspace verification', () => {
 
   it('refuses a local checkout whose canonical HEAD no longer matches the reread head', async () => {
     const transport = createStubGitlabTransport({
-      respond: (request) => request.url.endsWith(REVIEW_ITEM_URL_SUFFIX)
-        ? {
-          status: 200,
-          body: {
-            project_id: 3,
-            iid: 7,
-            references: { full: 'maintainer/repository!7' },
-            sha: OBSERVED_HEAD,
-            diff_refs: { base_sha: OBSERVED_BASE, head_sha: OBSERVED_HEAD },
-            source_branch: 'feature/from-fork',
-            source_project: {
-              id: 17,
-              path_with_namespace: 'contributor/repository',
-              http_url_to_repo: 'https://gitlab.com/contributor/repository.git',
-            },
-          },
-        }
-        : undefined,
+      respond: respondWith({ mergeRequest: mergeRequestBody() }),
     });
     const execute = vi.fn(async () => ({
       success: true as const,
@@ -739,24 +628,12 @@ describe('GitLab final review-workspace verification', () => {
 
   it('authoritatively rereads GitLab and refuses a moved source head before local verification', async () => {
     const transport = createStubGitlabTransport({
-      respond: (request) => request.url.endsWith(REVIEW_ITEM_URL_SUFFIX)
-        ? {
-          status: 200,
-          body: {
-            project_id: 3,
-            iid: 7,
-            references: { full: 'maintainer/repository!7' },
-            sha: ADVANCED_HEAD,
-            diff_refs: { base_sha: OBSERVED_BASE, head_sha: ADVANCED_HEAD },
-            source_branch: 'feature/from-fork',
-            source_project: {
-              id: 17,
-              path_with_namespace: 'contributor/repository',
-              http_url_to_repo: 'https://gitlab.com/contributor/repository.git',
-            },
-          },
-        }
-        : undefined,
+      respond: respondWith({
+        mergeRequest: mergeRequestBody({
+          sha: ADVANCED_HEAD,
+          diff_refs: { base_sha: OBSERVED_BASE, head_sha: ADVANCED_HEAD },
+        }),
+      }),
     });
     const execute = vi.fn();
 
@@ -774,24 +651,7 @@ describe('GitLab final review-workspace verification', () => {
   it('preserves cancellation from canonical local-HEAD verification', async () => {
     const cancellation = Object.assign(new Error('cancelled'), { name: 'AbortError' });
     const transport = createStubGitlabTransport({
-      respond: (request) => request.url.endsWith(REVIEW_ITEM_URL_SUFFIX)
-        ? {
-          status: 200,
-          body: {
-            project_id: 3,
-            iid: 7,
-            references: { full: 'maintainer/repository!7' },
-            sha: OBSERVED_HEAD,
-            diff_refs: { base_sha: OBSERVED_BASE, head_sha: OBSERVED_HEAD },
-            source_branch: 'feature/from-fork',
-            source_project: {
-              id: 17,
-              path_with_namespace: 'contributor/repository',
-              http_url_to_repo: 'https://gitlab.com/contributor/repository.git',
-            },
-          },
-        }
-        : undefined,
+      respond: respondWith({ mergeRequest: mergeRequestBody() }),
     });
     const context = withMaterializer(
       transport.context,

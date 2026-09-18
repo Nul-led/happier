@@ -1,6 +1,9 @@
 import {
   type AgentRuntimeContext,
   type AgentRuntimeFactory,
+  type AgentExecutionRunOpenRequest,
+  type AgentExecutionRunRuntime,
+  type AgentExecutionRunRuntimeContextV1,
   type AgentSessionOpenRequest,
   type AgentSessionRuntime,
 } from '@happier-dev/plugin-sdk/agents/runtime';
@@ -35,6 +38,28 @@ async function openGeminiSession(
   request: AgentSessionOpenRequest,
   context: AgentRuntimeContext,
 ): Promise<AgentSessionRuntime> {
+  return await openGeminiAcpRuntime(request, context, (preparedRequest, options) => (
+    context.protocols.acp.open(preparedRequest as AgentSessionOpenRequest, options)
+  ));
+}
+
+async function openGeminiExecutionRun(
+  request: AgentExecutionRunOpenRequest,
+  context: AgentExecutionRunRuntimeContextV1,
+): Promise<AgentExecutionRunRuntime> {
+  return await openGeminiAcpRuntime(request, context, (preparedRequest, options) => (
+    context.protocols.acp.openExecutionRunV1(preparedRequest as AgentExecutionRunOpenRequest, options)
+  ));
+}
+
+async function openGeminiAcpRuntime<Runtime extends Readonly<{ dispose(): void | Promise<void> }>>(
+  request: AgentSessionOpenRequest | AgentExecutionRunOpenRequest,
+  context: Pick<AgentRuntimeContext, 'services' | 'signal'>,
+  open: (
+    request: AgentSessionOpenRequest | AgentExecutionRunOpenRequest,
+    options: Parameters<AgentRuntimeContext['protocols']['acp']['open']>[1],
+  ) => Promise<Runtime>,
+): Promise<Runtime> {
   const requestedLaunchEnvironment = request.launchEnvironment ?? { values: {}, unset: [] };
   const sourceEnv = buildGeminiLaunchEnvironment(
     requestedLaunchEnvironment.values,
@@ -44,30 +69,28 @@ async function openGeminiSession(
   const authControlEnv = ignoredGeminiAcpAuthControlEnv(sourceEnv);
   const shaping = await prepareGeminiNativeMcpShaping(sourceEnv);
   try {
+    const launchEnvironmentOverrides = {
+      ...shaping.env,
+      ...authControlEnv,
+      ...(auth.launchEnv ?? {}),
+    };
     const flag = await resolveGeminiAcpFlag(context.services.exec, {
       env: {
         ...sourceEnv,
-        ...shaping.env,
-        ...authControlEnv,
-        ...(auth.launchEnv ?? {}),
+        ...launchEnvironmentOverrides,
       },
       signal: context.signal,
     });
     const launchEnvironment = {
       values: {
         ...requestedLaunchEnvironment.values,
-        ...authControlEnv,
-        ...(auth.launchEnv ?? {}),
+        ...launchEnvironmentOverrides,
       },
       unset: requestedLaunchEnvironment.unset.filter(
-        (key) => !Object.prototype.hasOwnProperty.call(authControlEnv, key)
-          && !Object.prototype.hasOwnProperty.call(auth.launchEnv ?? {}, key),
+        (key) => !Object.prototype.hasOwnProperty.call(launchEnvironmentOverrides, key),
       ),
     };
-    const session = await context.protocols.acp.open({
-      ...request,
-      launchEnvironment,
-    }, {
+    const session = await open({ ...request, launchEnvironment }, {
       transport: {
         kind: 'stdio',
         executable: { kind: 'systemTool', id: 'gemini-cli' },
@@ -103,5 +126,6 @@ async function openGeminiSession(
 export const createGeminiAgentRuntime: AgentRuntimeFactory = () => ({
   sessions: {
     open: openGeminiSession,
+    executionRunContextV1: { open: openGeminiExecutionRun },
   },
 });

@@ -5,7 +5,6 @@ import {
   validateReviewCommentPublicationResultAgainstPlanV1,
   type ReviewCommentClaimPublicationDispatchResponseV1,
   type ReviewCommentPublicationPlanV1,
-  type ReviewCommentPublicationResultV1,
 } from '@happier-dev/plugin-sdk/reviews';
 
 import type {
@@ -31,6 +30,10 @@ import type { GithubTriageEntryLocalRefV1 } from '../types.js';
 
 import type { GithubIssueCloseReasonV1 } from './contracts.js';
 import { preflightGithubPublicationCapability } from './publicationCapability.js';
+import {
+  recordGithubPublicationSettlement,
+  type GithubPublicationSettlementV1,
+} from './publicationSettlement.js';
 import {
   type GithubMutationDependenciesV1,
   type GithubPullRequestReviewPublicationOutcomeV1,
@@ -215,10 +218,7 @@ export async function publishGithubIssueComment(
     route: GithubRepositoryRouteV1;
     publicationPlan: ReviewCommentPublicationPlanV1;
     claimPublicationDispatch: () => Promise<ReviewCommentClaimPublicationDispatchResponseV1>;
-    settlePublicationDispatch?: (
-      claim: ReviewCommentClaimPublicationDispatchResponseV1,
-      result: ReviewCommentPublicationResultV1,
-    ) => Promise<void>;
+    settlePublicationDispatch?: GithubPublicationSettlementV1;
   }>,
   dependencies: GithubMutationDependenciesV1,
 ): Promise<GithubPullRequestReviewPublicationOutcomeV1> {
@@ -304,7 +304,11 @@ export async function publishGithubIssueComment(
         verdict: { kind: 'notRequested' },
       },
     );
-    await input.settlePublicationDispatch?.(claim, publication);
+    const settlementFailure = await recordGithubPublicationSettlement(
+      input.settlePublicationDispatch,
+      claim,
+      publication,
+    );
     const confirmed = await confirm(input.localRef, input.route, repositories, dependencies);
     return Object.freeze({
       kind: 'settled' as const,
@@ -314,9 +318,11 @@ export async function publishGithubIssueComment(
         ? { failure: dispatchFailure }
         : comments.failure !== null
           ? { failure: toTriageFailure(comments.failure) }
-          : !confirmed.ok
-            ? { failure: confirmed.failure }
-            : {}),
+          : settlementFailure !== undefined
+            ? { failure: settlementFailure }
+            : !confirmed.ok
+              ? { failure: confirmed.failure }
+              : {}),
     });
   };
   const rejectedPublication = async (
@@ -335,7 +341,9 @@ export async function publishGithubIssueComment(
         verdict: { kind: 'notRequested' },
       },
     );
-    await input.settlePublicationDispatch?.(claim, publication);
+    // A definite provider rejection is the reported failure even when the internal
+    // settlement also fails: nothing was published, so the rejection is the outcome.
+    await recordGithubPublicationSettlement(input.settlePublicationDispatch, claim, publication);
     const confirmed = await confirm(input.localRef, input.route, repositories, dependencies);
     return Object.freeze({
       kind: 'settled' as const,

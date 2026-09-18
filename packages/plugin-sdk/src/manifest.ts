@@ -20,6 +20,29 @@ import type {
   PluginUiIconTokenV1,
   PluginUiViewV2Input,
 } from './ui/publicContract.js';
+
+/** Observed ACP capability fingerprint used by a system-tool readiness declaration. */
+export type PluginSystemToolAcpFingerprintV1 = Readonly<{
+  loadSession: boolean;
+  sessionCapabilities: readonly string[];
+  absentSessionCapabilities: readonly string[];
+  mcpHttp: boolean;
+  mcpSse: boolean;
+}>;
+
+/**
+ * Public readonly authoring projection of Protocol's system-tool readiness
+ * contract. Protocol remains the runtime validation and ingestion owner.
+ */
+export type PluginSystemToolReadinessV1 = Readonly<{
+  acpProbeArgs: readonly string[];
+  currentFingerprint: PluginSystemToolAcpFingerprintV1;
+  legacyFingerprint: PluginSystemToolAcpFingerprintV1;
+  commandSurfaceArgs: readonly string[];
+  legacyExecutableNames: readonly string[];
+  legacyGuidance: string;
+  unidentifiedGuidance: string;
+}>;
 /**
  * Protocol owns the Agent UI grammar and its strict parser. The SDK publishes
  * the same setting-reference structure and keeps the surrounding declaration
@@ -516,6 +539,7 @@ export interface PluginManifest {
       executableNames: string[];
       allowedArguments?: string[];
       platforms?: ('macos' | 'linux' | 'windows')[];
+      readiness?: PluginSystemToolReadinessV1;
       metadata?: Record<string, PluginJsonValueV2>;
     }>[];
     providers?: readonly (Readonly<{
@@ -903,6 +927,8 @@ export type PluginDeclarativeControlV2 =
 export type PluginDeclarativeActionNodeV2 = {
   kind: 'action';
   action?: PluginContributionReference;
+  /** A request only: the mounted source adapter supplies current caller and Action policy. */
+  hostAction?: import('./actions/actionTypeMap.generated.js').PluginInvocableActionId;
   effect?: PluginDeclarativeComposerApplyEffectV1;
   label: PluginLocalizedStringV2;
   variant?: PluginDeclarativeActionVariantV2;

@@ -490,7 +490,12 @@ describe('GitHub pull-request review publication', () => {
     });
   });
 
-  it('does not report settled when the canonical publication settlement fails', async () => {
+  it('keeps the confirmed publication and still rereads when the canonical settlement fails', async () => {
+    // The review is on the pull request and the marker reread proved it. Happier's
+    // own server being unreachable afterwards cannot unpublish it, so throwing here
+    // would discard a confirmed external effect AND skip the post-mutation exact read
+    // that every possibly-effective outcome requires. The failure is reported, not
+    // swallowed, and nothing is republished.
     const stub = transportFor({
       reads: [pullRequestBody(), pullRequestBody()],
       reviewPublicationReads: [[reviewRecord(
@@ -502,8 +507,23 @@ describe('GitHub pull-request review publication', () => {
       settlementError: new Error('canonical settlement unavailable'),
     });
 
-    await expect(publishGithubPullRequestReviewAction(publicationInput(), stub.context))
-      .rejects.toThrow('canonical settlement unavailable');
+    const result = GithubPullRequestReviewPublicationResultV1Schema.parse(
+      await publishGithubPullRequestReviewAction(publicationInput(), stub.context),
+    );
+
+    if (result.kind !== 'settled') throw new Error(`expected settled, got ${result.kind}`);
+    expect(result.publication.entries[0]?.outcome).toEqual({ kind: 'published', externalRef: '992' });
+    expect(result.publication.verdict).toMatchObject({
+      outcome: { kind: 'published', externalRef: '991' },
+    });
+    expect(result.failure).toEqual({
+      class: 'transient',
+      code: 'github_publication_settlement_unrecorded',
+    });
+    // The final observation still ran: the preflight read plus the confirming read.
+    expect(result.observation?.kind).toBe('present');
+    expect(entryReads(stub)).toHaveLength(2);
+    // Exactly one outward write, and no replay of it.
     expect(writes(stub)).toHaveLength(1);
   });
 
@@ -2280,6 +2300,7 @@ function issueTransportFor(input: Readonly<{
   repository?: Readonly<Record<string, unknown>>;
   write?: StubHttpResponse | Error;
   commentReads?: readonly unknown[][];
+  settlementError?: Error;
 }>) {
   let read = 0;
   let commentRead = 0;
@@ -2288,6 +2309,13 @@ function issueTransportFor(input: Readonly<{
     executeAction: async (actionId, actionInput) => {
       expect(actionId).toBe('reviews.comments.claimPublicationDispatch');
       claimedPlans.push(actionInput);
+      if (input.settlementError !== undefined
+        && typeof actionInput === 'object'
+        && actionInput !== null
+        && 'settlement' in actionInput
+        && actionInput.settlement !== undefined) {
+        throw input.settlementError;
+      }
       const plan = actionInput as Readonly<Record<string, unknown>>;
       const entry = (plan.entries as readonly Readonly<Record<string, unknown>>[])[0]!;
       return {
@@ -2383,6 +2411,32 @@ describe('GitHub issue comment publication', () => {
     expect(readRecordedJsonBody(posted!)).toEqual({
       body: `Please clarify this issue.\n\n<!-- happier-review-comment:v1:${COMMENT_CORRELATION_ID} -->`,
     });
+  });
+
+  it('keeps a confirmed issue comment and still rereads when the canonical settlement fails', async () => {
+    // The same ordering defect lives in every publication adapter, so the issue
+    // conversation is fixed at the same boundary rather than at a second one.
+    const stub = issueTransportFor({
+      reads: [issueBody(), issueBody()],
+      commentReads: [[{
+        id: 701,
+        body: `Landed\n\n<!-- happier-review-comment:v1:${COMMENT_CORRELATION_ID} -->`,
+      }]],
+      settlementError: new Error('canonical settlement unavailable'),
+    });
+
+    const result = GithubIssueCommentResultV1Schema.parse(
+      await createGithubIssueCommentAction(issuePublicationInput(), stub.context),
+    );
+
+    if (result.kind !== 'settled') throw new Error(`expected settled, got ${result.kind}`);
+    expect(result.publication.entries[0]?.outcome).toEqual({ kind: 'published', externalRef: '701' });
+    expect(result.failure).toEqual({
+      class: 'transient',
+      code: 'github_publication_settlement_unrecorded',
+    });
+    expect(result.observation?.kind).toBe('present');
+    expect(writes(stub)).toHaveLength(1);
   });
 
   it('rechecks archive status before claiming an issue comment', async () => {

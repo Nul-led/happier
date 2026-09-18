@@ -5,6 +5,9 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createPluginTestkit } from '@happier-dev/plugin-sdk/testing';
 import type {
+  AgentExecutionRunOpenRequest,
+  AgentExecutionRunRuntime,
+  AgentExecutionRunRuntimeContextV1,
   AgentSessionOpenRequest,
   AgentSessionRuntime,
   AgentSessionRuntimeContext,
@@ -269,7 +272,7 @@ describe('activate', () => {
     await activation.dispose();
   });
 
-  it('opens the native ACP Session owner and admits input for host-derived finite Runs', async () => {
+  it('opens detached ACP execution through the run facet without inventing a Session', async () => {
     const activation = await createPluginTestkit({ manifest: PLUGIN_MANIFEST, module: { activate } });
     const factory = activation.registration('agents', 'opencode')?.factory;
     if (!factory) throw new Error('Expected OpenCode Agent factory');
@@ -278,48 +281,51 @@ describe('activate', () => {
       agent: { id: 'opencode' },
       signal: new AbortController().signal,
     });
-    const send = vi.fn(async () => ({ status: 'admitted' as const }));
-    const session = {
-      send,
-      cancel: vi.fn(async ({ turnId }: { turnId: string }) => ({
-        status: 'requested' as const,
-        turnId,
-      })),
+    const execution = {
+      send: vi.fn(async () => ({ status: 'admitted' as const })),
+      stop: vi.fn(async () => ({ status: 'requested' as const })),
       watch: () => ({ dispose: () => undefined }),
       dispose: vi.fn(),
-    } satisfies AgentSessionRuntime;
-    const open = vi.fn(async () => session);
-    const openedSession = await runtime.sessions.open({
+    } satisfies AgentExecutionRunRuntime;
+    const openExecutionRunV1 = vi.fn(async () => execution);
+    const request = {
       kind: 'create',
-      sessionId: 'opencode-run-1',
+      runId: 'opencode-run-1',
       cwd: '/workspace',
+      input: { text: 'Implement the change' },
+      profile: { pluginId: 'happier.agent.opencode', localId: 'opencode' },
       launchEnvironment: {
         values: { HAPPIER_OPENCODE_BACKEND_MODE: 'acp' },
         unset: [],
       },
-    }, {
-      protocols: { acp: { open } },
+    } satisfies AgentExecutionRunOpenRequest;
+    const context = {
+      scope: { kind: 'execution_run', executionRunId: request.runId },
+      executionRun: { id: request.runId, services: {} },
+      protocols: { acp: { openExecutionRunV1 } },
       services: { connectedAccounts: createUnboundConnectedAccounts() },
-    } as never);
+    } as unknown as AgentExecutionRunRuntimeContextV1;
 
-    expect(openedSession).toMatchObject({ send });
-    expect(open).toHaveBeenCalledWith(expect.objectContaining({
+    expect(context).not.toHaveProperty('session');
+    const opened = await runtime.sessions.executionRunContextV1?.open(request, context);
+
+    expect(opened).toMatchObject({
+      send: execution.send,
+      stop: execution.stop,
+      watch: execution.watch,
+    });
+    expect(openExecutionRunV1).toHaveBeenCalledWith(expect.objectContaining({
       kind: 'create',
-      sessionId: 'opencode-run-1',
+      runId: 'opencode-run-1',
       cwd: '/workspace',
+      input: { text: 'Implement the change' },
     }), expect.objectContaining({
       transport: expect.objectContaining({
         kind: 'stdio',
         args: ['acp'],
       }),
     }));
-    await expect(openedSession.send({
-      inputIds: ['opencode-input-1'],
-      input: { text: 'Implement the change' },
-      delivery: { kind: 'newTurn', turnId: 'opencode-turn-1' },
-    })).resolves.toEqual({ status: 'admitted' });
-    expect(send).toHaveBeenCalledOnce();
-    await openedSession.dispose();
+    await opened?.dispose();
     await activation.dispose();
   });
 });

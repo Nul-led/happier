@@ -14,6 +14,7 @@ import {
   readUsageMetrics,
   type ClaudeWorkflowUsageMetrics,
 } from './metrics.js';
+import { readClaudeProviderIdentityValue } from '../../protocol/providerIdentity.js';
 import { parseClaudeTaskNotification } from '../transcripts/taskNotification.js';
 
 /**
@@ -36,7 +37,9 @@ function readString(value: unknown): string | null {
 }
 
 function readSourceSessionId(message: Record<string, unknown>): string | undefined {
-  return readString(message.session_id) ?? readString(message.sessionId) ?? undefined;
+  return readClaudeProviderIdentityValue(message.session_id)
+    ?? readClaudeProviderIdentityValue(message.sessionId)
+    ?? undefined;
 }
 
 function readNumber(value: unknown): number | undefined {
@@ -640,7 +643,7 @@ function parseWorkflowRunRecordFact(
   if (!workflowToolUseId) return null;
   const workflowProgress = parseWorkflowProgress(message.workflowProgress, report);
   if (!workflowProgress?.length) return null;
-  const sourceSessionId = readString(message.sourceSessionId) ?? undefined;
+  const sourceSessionId = readClaudeProviderIdentityValue(message.sourceSessionId) ?? undefined;
   return {
     kind: 'workflow-run-record',
     workflowToolUseId,
@@ -702,7 +705,7 @@ function parseWorkflowJournalFact(message: Record<string, unknown>): WorkflowJou
   const summary = normalizeSummary(resultRecord?.summary ?? resultRecord?.message ?? result);
   const phaseTitle = readString(resultRecord?.stage) ?? readString(resultRecord?.phase) ?? undefined;
   const title = entryType === 'result' ? readJournalResultTitle(resultRecord, agentId) : agentId;
-  const sourceSessionId = readString(message.sourceSessionId) ?? undefined;
+  const sourceSessionId = readClaudeProviderIdentityValue(message.sourceSessionId) ?? undefined;
 
   return {
     kind: 'workflow-journal',

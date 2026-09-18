@@ -23,6 +23,7 @@ import {
   parseSpecialCommand,
 } from '@happier-dev/plugin-sdk/sessions';
 import { isRuntimeConfigUpdateOutcomeApplied } from '@happier-dev/plugin-sdk/agents/runtime';
+import { readClaudeProviderIdentityValue } from '../../../../protocol/providerIdentity.js';
 import type { ClaudeUnifiedTerminalWorkspaceTrustPolicy } from '../../../../agentSettings/definition.js';
 import { createClaudeRuntimeActivityPublisher } from '../../shared/runtimeActivityPublisher.js';
 import { resolveClaudeLaunchSettingsOverlayArgs } from '../../launchSettings.js';
@@ -62,7 +63,11 @@ import {
 } from '../lifecycle.js';
 import { CLAUDE_TERMINAL_YOLO_ALLOW_FLAG } from '../argv.js';
 import { buildClaudeEffortCliArgs, isClaudeUltracodeSupportedModelId } from '../../reasoningEffort.js';
-import { mapToClaudePermissionMode, resolveClaudePermissionModeFromRuntimeMode } from '../../permissionMode.js';
+import {
+  buildClaudePermissionModeArgs,
+  mapToClaudePermissionMode,
+  resolveClaudePermissionModeFromRuntimeMode,
+} from '../../permissionMode.js';
 import { isSidechainSessionHook } from '../../../hooks/sidechain.js';
 import { CLAUDE_UNIFIED_TERMINAL_PROVIDER_ID } from './constants.js';
 import {
@@ -99,7 +104,10 @@ import {
   resolveClaudeScreenInFlightSteerVeto,
 } from './screenState.js';
 import { createClaudeUnifiedProviderTranscriptPublisher } from './providerTranscript.js';
-import { createClaudeUnifiedGoalRuntime } from './goalRuntime.js';
+import {
+  createClaudeUnifiedGoalRuntime,
+  type ClaudeGoalCommandDelivery,
+} from './goalRuntime.js';
 import {
   createClaudeUnifiedWorkflowRuntime,
   type ClaudeWorkflowHeadlinePublisher,
@@ -163,6 +171,7 @@ import {
 } from './runtimeEvents.js';
 import {
   createClaudeUnifiedPromptInput,
+  createClaudeUnifiedTurnNeutralControlInput,
   CLAUDE_UNIFIED_TERMINAL_INPUT_QUIET_PERIOD_MS,
   createClaudeUnifiedTerminalSessionName,
   createClaudeUnifiedTurnId,
@@ -500,8 +509,8 @@ export type ClaudeUnifiedTerminalNativeRuntime = ClaudeRuntimeTurnOperations & R
   ): Promise<ClaudeRuntimePromptSubmissionOutcome>;
   /**
    * ACTIVE-session native `/goal` controls (read off the native runtime by
-   * runHostSessionRuntime's SessionRuntimeControls forwarder). Inject a literal
-   * `/goal …` user turn; the resulting `goal_status` attachment is the source of
+   * runHostSessionRuntime's SessionRuntimeControls forwarder). Inject a terminal-local
+   * `/goal …` control; the resulting `goal_status` attachment is the source of
    * truth. Return a typed `{ ok:false, errorCode }` on failure (never throw).
    */
   setGoal(
@@ -661,7 +670,8 @@ function readTaskNotificationTranscriptIdentity(row: unknown): Readonly<{
   if (readNonEmptyString(origin?.kind) !== 'task-notification' && !isClaudeTaskNotificationPromptText(content)) {
     return null;
   }
-  const sessionId = readNonEmptyString(row.session_id) ?? readNonEmptyString(row.sessionId);
+  const sessionId = readClaudeProviderIdentityValue(row.session_id)
+    ?? readClaudeProviderIdentityValue(row.sessionId);
   const uuid = readNonEmptyString(row.uuid);
   if (!sessionId || !uuid) return null;
   return {
@@ -677,7 +687,8 @@ function isMatchingTaskNotificationAssistantReaction(
 ): boolean {
   if (!isRecord(row) || row.type !== 'assistant') return false;
   if (row.isSidechain === true || row.isReplay === true || row.is_replay === true) return false;
-  const sessionId = readNonEmptyString(row.session_id) ?? readNonEmptyString(row.sessionId);
+  const sessionId = readClaudeProviderIdentityValue(row.session_id)
+    ?? readClaudeProviderIdentityValue(row.sessionId);
   const parentUuid = readNonEmptyString(row.parentUuid) ?? readNonEmptyString(row.parent_uuid);
   return sessionId === pending.sessionId && parentUuid === pending.transcriptUuid;
 }
@@ -765,8 +776,8 @@ export function createClaudeUnifiedTerminalTurnOperations(
   // Centralized native `/goal` runtime (SOURCE + EFFECTOR). The source observes
   // every raw transcript row (incl. `goal_status` attachments + system-init
   // `slash_commands`) via the publisher's `onObserveRow`; the effector injects a
-  // literal `/goal …` user turn via `sendProviderTurnPrompt` (late-bound below, since the
-  // native runtime that owns `sendProviderTurnPrompt` is created further down).
+  // terminal-local `/goal …` control through the same arbiter as prompts, but without provider-turn
+  // custody (late-bound below, since the arbiter is created further down).
   const goalRuntime = createClaudeUnifiedGoalRuntime({
     backendId: 'claude',
     agentId: 'claude',
@@ -774,7 +785,7 @@ export function createClaudeUnifiedTerminalTurnOperations(
     ...(params.publishGoalWorkState
       ? { publishWorkStateSnapshot: params.publishGoalWorkState }
       : {}),
-    injectGoalCommand: async (message) => { await nativeRuntime.sendProviderTurnPrompt(message); },
+    injectGoalCommand: async (message) => await injectGoalCommand(message),
     logError: (message, error) => { params.ctx.logger.debug(`[ClaudeUnifiedTerminal] ${message}`, { error }); },
   });
   // Centralized Claude Dynamic Workflow ACTIVITY runtime (CWF2/CWF3/CWF4). Observes the SAME raw
@@ -885,21 +896,27 @@ export function createClaudeUnifiedTerminalTurnOperations(
     ((info?: ClaudeUnifiedPromptDeliveryBlockerClear) => void) | null = null;
   let onUndeliverablePromptsHandler:
     ((prompts: ReadonlyArray<ClaudeUnifiedUndeliverablePrompt>) => void) | null = null;
-  const promptDeliveryTerminalWaiters = new Map<TerminalPromptInput, () => void>();
+  const promptDeliveryTerminalWaiters = new Map<TerminalPromptInput, Readonly<{
+    resolve: () => void;
+    reject: (error: Error) => void;
+  }>>();
 
   function waitForPromptDeliveryTerminal(input: TerminalPromptInput): Readonly<{
     promise: Promise<void>;
     cancel: () => void;
   }> {
     let resolveTerminal: () => void = () => {};
-    const promise = new Promise<void>((resolve) => {
+    let rejectTerminal: (error: Error) => void = () => {};
+    const promise = new Promise<void>((resolve, reject) => {
       resolveTerminal = resolve;
+      rejectTerminal = reject;
     });
-    promptDeliveryTerminalWaiters.set(input, resolveTerminal);
+    const waiter = Object.freeze({ resolve: resolveTerminal, reject: rejectTerminal });
+    promptDeliveryTerminalWaiters.set(input, waiter);
     return {
       promise,
       cancel: () => {
-        if (promptDeliveryTerminalWaiters.get(input) === resolveTerminal) {
+        if (promptDeliveryTerminalWaiters.get(input) === waiter) {
           promptDeliveryTerminalWaiters.delete(input);
         }
       },
@@ -907,16 +924,19 @@ export function createClaudeUnifiedTerminalTurnOperations(
   }
 
   function settlePromptDeliveryTerminal(input: TerminalPromptInput): void {
-    const resolveTerminal = promptDeliveryTerminalWaiters.get(input);
-    if (!resolveTerminal) return;
+    const waiter = promptDeliveryTerminalWaiters.get(input);
+    if (!waiter) return;
     promptDeliveryTerminalWaiters.delete(input);
-    resolveTerminal();
+    waiter.resolve();
   }
 
-  function settleAllPromptDeliveryTerminalWaiters(): void {
-    const resolveTerminals = [...promptDeliveryTerminalWaiters.values()];
+  function settleAllPromptDeliveryTerminalWaiters(error?: Error): void {
+    const waiters = [...promptDeliveryTerminalWaiters.values()];
     promptDeliveryTerminalWaiters.clear();
-    for (const resolveTerminal of resolveTerminals) resolveTerminal();
+    for (const waiter of waiters) {
+      if (error) waiter.reject(error);
+      else waiter.resolve();
+    }
   }
   let recentPrimaryProviderUnavailableForPromptDelivery:
     ClaudeUnifiedProviderUnavailablePromptDeliveryWindow | null = null;
@@ -1053,9 +1073,9 @@ export function createClaudeUnifiedTerminalTurnOperations(
     providerSessionId: string,
     payload: Readonly<Record<string, unknown>>,
   ): string | null {
-    return readNonEmptyString(providerSessionId)
-      ?? readNonEmptyString(payload.session_id)
-      ?? readNonEmptyString(payload.sessionId);
+    return readClaudeProviderIdentityValue(providerSessionId)
+      ?? readClaudeProviderIdentityValue(payload.session_id)
+      ?? readClaudeProviderIdentityValue(payload.sessionId);
   }
 
   async function bindKnownProviderSessionTranscript(): Promise<void> {
@@ -1592,14 +1612,15 @@ export function createClaudeUnifiedTerminalTurnOperations(
         agentTurnId: acceptance.agentTurnId ?? null,
         retainUntilObserved: hasCanonicalPendingOwner(input),
       });
-      ensureAcceptedTurnStarted(input);
-      state.turnInFlight = true;
       // HF-1: provider acceptance is the watermark-confirmation point for this prompt's row seq.
       try {
         onPromptAcceptedByProviderHandler?.(buildPromptDeliveryIdentity(input));
       } catch (error) {
         params.ctx.logger.warn('[ClaudeUnifiedTerminal] onPromptAcceptedByProvider handler failed', { error });
       }
+      ensureAcceptedTurnStarted(input);
+      state.turnInFlight = true;
+      settlePromptDeliveryTerminal(input);
     },
     onPromptTerminallyRejectedBeforeProvider: async (input, _result, rejection) => {
       try {
@@ -1609,6 +1630,8 @@ export function createClaudeUnifiedTerminalTurnOperations(
         notePromptDeliveryBlockerEmitted(rejection?.deliveryBlockedReason);
       } catch (error) {
         params.ctx.logger.warn('[ClaudeUnifiedTerminal] onPromptTerminallyRejectedBeforeProvider handler failed', { error });
+      } finally {
+        settlePromptDeliveryTerminal(input);
       }
     },
     onUndeliverableInputs: (inputs) => {
@@ -1635,6 +1658,7 @@ export function createClaudeUnifiedTerminalTurnOperations(
         failureState: failure.failureState,
       });
       publishAmbiguousProviderInputOutcome(failure);
+      settlePromptDeliveryTerminal(failure.input);
       if (failure.failureState === 'failed_ambiguous') {
         publishAmbiguousInjectionFailure(failure);
         return;
@@ -1644,6 +1668,21 @@ export function createClaudeUnifiedTerminalTurnOperations(
       settleTurnCompletionWaiters();
     },
   });
+
+  async function injectGoalCommand(message: string): Promise<ClaudeGoalCommandDelivery> {
+    assertExplicitResumeIdentityDidNotFail();
+    await observeCurrentReadiness();
+    state.promptNonce += 1;
+    const input = createClaudeUnifiedTurnNeutralControlInput({
+      text: message,
+      sessionId: params.happierSessionId,
+      nonce: state.promptNonce,
+    });
+    const delivery = arbiter.enqueueTurnNeutralControl(input);
+    ensureReadinessWake();
+    await delivery;
+    return { kind: 'sent-to-terminal' };
+  }
 
   function scheduleQueuedBannerCustodyCheck(input: TerminalPromptInput, acceptedAs: 'new_turn' | 'in_flight_steer'): void {
     if (acceptedAs !== 'in_flight_steer' || state.disposed) return;
@@ -1746,7 +1785,7 @@ export function createClaudeUnifiedTerminalTurnOperations(
                 ...(currentProviderModel ? { providerModel: currentProviderModel } : {}),
               }),
               CLAUDE_TERMINAL_YOLO_ALLOW_FLAG,
-              ...(launchPermissionMode ? ['--permission-mode', mapToClaudePermissionMode(launchPermissionMode)] : []),
+              ...buildClaudePermissionModeArgs(launchPermissionMode),
             ],
             interactionKind: 'interactive_terminal',
             permissionMode: mapToClaudePermissionMode(launchPermissionMode),
@@ -1878,7 +1917,7 @@ export function createClaudeUnifiedTerminalTurnOperations(
         onStatuslineUpdate: async (payload) => {
           const parsed = parseClaudeStatuslinePayload(payload);
           if (!parsed) return;
-          const statuslineProviderSessionId = readNonEmptyString(parsed.session_id);
+          const statuslineProviderSessionId = readClaudeProviderIdentityValue(parsed.session_id);
           const statuslineProviderTranscriptPath = readNonEmptyString(parsed.transcript_path);
           if (
             !state.providerSessionId
@@ -2004,7 +2043,7 @@ export function createClaudeUnifiedTerminalTurnOperations(
     publishActiveTurnProgress(nowMs);
   }
 
-  function publishActiveTurnStarted(nowMs: number): void {
+  function publishActiveTurnStarted(nowMs: number, startedBy: 'host' | 'provider'): void {
     const turnId = state.activeTurnId;
     if (!turnId || publishedLifecycleStartTurnIds.has(turnId)) return;
     publishedLifecycleStartTurnIds.add(turnId);
@@ -2016,6 +2055,7 @@ export function createClaudeUnifiedTerminalTurnOperations(
       sessionId: params.happierSessionId,
       turnId,
       emittedAtMs: nowMs,
+      startedBy,
     });
   }
 
@@ -2061,7 +2101,7 @@ export function createClaudeUnifiedTerminalTurnOperations(
     state.lastTurnFailure = null;
     const nowMs = Date.now();
     lastTurnProgressPublishedAtMs = nowMs;
-    publishActiveTurnStarted(nowMs);
+    publishActiveTurnStarted(nowMs, 'provider');
   }
 
   function beginTaskNotificationReactionTurn(): void {
@@ -2134,7 +2174,7 @@ export function createClaudeUnifiedTerminalTurnOperations(
     state.turnCompleted = false;
     const nowMs = Date.now();
     lastTurnProgressPublishedAtMs = nowMs;
-    publishActiveTurnStarted(nowMs);
+    publishActiveTurnStarted(nowMs, 'provider');
   }
 
   function readPromptNonce(input: TerminalPromptInput): number | null {
@@ -2158,19 +2198,22 @@ export function createClaudeUnifiedTerminalTurnOperations(
     state.turnCompleted = false;
     const nowMs = Date.now();
     lastTurnProgressPublishedAtMs = nowMs;
-    publishActiveTurnStarted(nowMs);
+    publishActiveTurnStarted(nowMs, 'host');
   }
 
   nativeResumeTurnBarrier = createClaudeUnifiedResumeTurnBarrier({
     intent: params.launchIntent ?? { kind: 'new_session' },
     quietMs: CLAUDE_UNIFIED_TERMINAL_INPUT_QUIET_PERIOD_MS,
     begin: beginProviderContinuationTurn,
-    cancel: () => {
-      publishActiveTurnCancelled(Date.now(), 'idle_native_resume');
-      // The screen is authoritatively idle, but Claude's first resume-native prompt hook can be
-      // forwarded after that observation. Reset the provisional turn without discarding the exact
-      // SessionStart provenance needed to classify that one delayed prompt.
-      resetCompletedTurnState({ preserveResumePromptProvenance: true });
+    cancel: (reason) => {
+      publishActiveTurnCancelled(
+        Date.now(),
+        reason === 'startup_blocked' ? 'startup_blocked_native_resume' : 'idle_native_resume',
+      );
+      // An idle release can precede Claude's delayed native prompt hook, so preserve the exact
+      // SessionStart provenance only for that path. A pre-SessionStart human prompt has no provider
+      // prompt provenance to retain and must return the session to an honestly idle state.
+      resetCompletedTurnState({ preserveResumePromptProvenance: reason === 'idle' });
     },
   });
 
@@ -2284,6 +2327,7 @@ export function createClaudeUnifiedTerminalTurnOperations(
     publishActiveTurnComplete(Date.now());
     state.turnCompleted = true;
     settleTurnCompletionWaiters();
+    if (state.turnCompleted) resetCompletedTurnState();
     scheduleTurnEndDialogProbes();
   }
 
@@ -2584,18 +2628,6 @@ export function createClaudeUnifiedTerminalTurnOperations(
       });
       return;
     }
-    if (!explicitResumeIdentityEstablished) {
-      lastReadinessKind = 'deferred';
-      arbiter.observeReadiness({
-        status: 'defer_provider_starting',
-        observedAt: Date.now(),
-        reason: 'resume_identity_unverified',
-        hostKind: handle.kind,
-        hostSessionName: handle.sessionName,
-        ...(handle.paneId ? { paneId: handle.paneId } : {}),
-      });
-      return;
-    }
     const liveness = await params.ctx.agentRuntime.terminalHost.evaluateLiveness(handle).catch((error: unknown) => {
       params.ctx.logger.warn('[ClaudeUnifiedTerminal] terminal liveness check failed', { error });
       return null;
@@ -2674,6 +2706,9 @@ export function createClaudeUnifiedTerminalTurnOperations(
       // and projects a durable block instead of deferring forever.
       const dialogBlockedReason = resolveClaudeUnifiedDialogBlockedReason(screen);
       const resumeChoiceResult = await maybeHandleStartupResumeChoiceDialog(handle, screen);
+      if (resumeChoiceResult === 'waiting_for_user') {
+        nativeResumeTurnBarrier?.observeStartupBlocked();
+      }
       if (dialogBlockedReason !== null) {
         noteDialogInjectionBlock(dialogBlockedReason);
       } else {
@@ -2691,6 +2726,18 @@ export function createClaudeUnifiedTerminalTurnOperations(
           hostSessionName: handle.sessionName,
           ...(handle.paneId ? { paneId: handle.paneId } : {}),
           liveness,
+        });
+        return;
+      }
+      if (!explicitResumeIdentityEstablished) {
+        lastReadinessKind = 'deferred';
+        arbiter.observeReadiness({
+          status: 'defer_provider_starting',
+          observedAt: inputState.observedAt,
+          reason: 'resume_identity_unverified',
+          hostKind: handle.kind,
+          hostSessionName: handle.sessionName,
+          ...(handle.paneId ? { paneId: handle.paneId } : {}),
         });
         return;
       }
@@ -3312,9 +3359,11 @@ export function createClaudeUnifiedTerminalTurnOperations(
       usageObservationListeners.add(listener);
       return () => usageObservationListeners.delete(listener);
     },
-    beginProviderTurn() {
+    beginProviderTurn(turnId) {
       publishProviderTaskInventory('new-turn');
       state.promptNonce += 1;
+      state.activeTurnId = readPromptText(turnId);
+      state.activePromptText = null;
       state.dispatchAttemptInFlight = true;
       state.lastTurnFailure = null;
       state.providerAccepted = false;
@@ -3615,6 +3664,7 @@ export function createClaudeUnifiedTerminalTurnOperations(
       state.terminalOriginTurnInFlight = false;
       lastTurnProgressPublishedAtMs = null;
       rejectTurnCompletionWaiters(new Error('Claude unified terminal turn was cancelled'));
+      settleAllPromptDeliveryTerminalWaiters(new Error('Claude unified terminal turn was cancelled'));
       return true;
     },
     readProviderIdentity() {
@@ -3624,6 +3674,7 @@ export function createClaudeUnifiedTerminalTurnOperations(
       const nextProviderModel = update.providerBinding === undefined
         ? undefined
         : update.providerBinding.model;
+      const effectiveProviderModel = nextProviderModel ?? currentProviderModel;
       const commitProviderModelIfApplied = <Outcome extends ClaudeProviderConfigurationOutcome | void>(
         outcome: Outcome,
       ): Outcome => {
@@ -3653,7 +3704,7 @@ export function createClaudeUnifiedTerminalTurnOperations(
           const resolution = mapRuntimeConfigUpdateToDesired(update, {
             launchPermissionMode,
             effectiveModelId: verifiedModelId ?? launchModelId,
-            ...(currentProviderModel ? { providerModel: currentProviderModel } : {}),
+            ...(effectiveProviderModel ? { providerModel: effectiveProviderModel } : {}),
             supportsEffort: params.supportsEffort !== false,
           });
           if (resolution.kind === 'desired') {

@@ -1,3 +1,4 @@
+import { readClaudeProviderIdentityValue } from '../../protocol/providerIdentity.js';
 import { readSessionHookSidechainAgentId } from '../hooks/sidechain.js';
 import {
   CLAUDE_NON_TRANSCRIPT_RECORD_TYPES,
@@ -436,11 +437,11 @@ export function readClaudeCompactBoundaryEventId(params: Readonly<{
   nestedPayload: Readonly<Record<string, unknown>>;
   fallbackSessionId: string;
 }>): string | null {
-  const providerSessionId = readString(params.payload.providerSessionId)
-    ?? readString(params.payload.provider_session_id)
-    ?? readString(params.nestedPayload.session_id)
-    ?? readString(params.nestedPayload.sessionId)
-    ?? readString(params.payload.sessionId)
+  const providerSessionId = readClaudeProviderIdentityValue(params.payload.providerSessionId)
+    ?? readClaudeProviderIdentityValue(params.payload.provider_session_id)
+    ?? readClaudeProviderIdentityValue(params.nestedPayload.session_id)
+    ?? readClaudeProviderIdentityValue(params.nestedPayload.sessionId)
+    ?? readClaudeProviderIdentityValue(params.payload.sessionId)
     ?? params.fallbackSessionId;
   const nativeBoundaryId = readString(params.nestedPayload.uuid)
     ?? readString(params.nestedPayload.id)

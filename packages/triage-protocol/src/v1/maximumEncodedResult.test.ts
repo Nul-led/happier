@@ -2,7 +2,14 @@ import { describe, expect, it } from 'vitest';
 
 import type { PluginJsonSchema } from '@happier-dev/plugin-sdk/protocol';
 
-import { defineProtocolString, defineProtocolUtf8String } from '@happier-dev/plugin-sdk/protocol';
+import {
+    defineProtocolJsonValue,
+    defineProtocolLiteral,
+    defineProtocolObject,
+    defineProtocolString,
+    defineProtocolUnion,
+    defineProtocolUtf8String,
+} from '@happier-dev/plugin-sdk/protocol';
 
 import {
     ASCII_FILL_ALPHABET,
@@ -168,6 +175,17 @@ describe('what the gate measures', () => {
 });
 
 describe('the derivation follows the schema', () => {
+    it('reaches serialized JSON bounds including a tighter enclosing command bound', () => {
+        const input = defineProtocolJsonValue({ maxSerializedUtf8Bytes: 64 });
+        const command = defineProtocolUnion([
+            defineProtocolObject({ kind: defineProtocolLiteral('open'), input }, { policy: 'closed' }),
+            defineProtocolLiteral('none'),
+        ], { maxSerializedUtf8Bytes: 48 });
+
+        const maxima = deriveMaximumEncodedBytesByLabel({ input, command });
+        expect(maxima).toEqual({ input: 64, command: 48 });
+    });
+
     /**
      * A byte bound and a code-point bound are not the same bound, and the fill
      * that maximizes one does not maximize the other.

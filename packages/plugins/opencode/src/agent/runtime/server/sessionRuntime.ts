@@ -1,5 +1,4 @@
 import type {
-  AgentSessionConfigurationUpdate,
   AgentSessionOpenRequest,
   AgentSessionRuntime,
   AgentSessionRuntimeContext,
@@ -21,9 +20,11 @@ import {
   buildOpenCodePromptParts,
   OpenCodePromptProjectionError,
 } from './promptParts.js';
+import { projectOpenCodeSessionConfiguration } from './promptConfig.js';
+import { projectOpenCodeTurnCancellationCause } from './openCodeRuntimeEvents.js';
 import type { OpenCodeActiveSkillsReaderRegistrar } from '../controls.js';
+import { OPEN_CODE_TURN_COMPLETION_FALLBACK_INTERVAL_MS } from './timeoutPolicy.js';
 
-const OPEN_CODE_COMPLETION_POLL_INTERVAL_MS = 250;
 
 type NativeEventInput = AgentSessionRuntimeEvent extends infer Event
   ? Event extends AgentSessionRuntimeEvent
@@ -78,15 +79,7 @@ function mapRuntimeEvent(event: OpenCodeRuntimeEvent): NativeEventInput | null {
     return {
       kind: 'turn-cancelled',
       turnId: event.turnId,
-      cause: event.reason === 'host_shutdown'
-        ? 'hostShutdown'
-        : event.reason === 'session_dispose'
-          ? 'sessionDispose'
-          : event.reason === 'runtime_recovery'
-            ? 'runtimeRecovery'
-            : event.reason === 'user'
-              ? 'user'
-              : 'providerCancelled',
+      cause: projectOpenCodeTurnCancellationCause(event.reason),
     };
   }
   if (event.kind === 'tool-call') {
@@ -168,39 +161,35 @@ function mapRuntimeEvent(event: OpenCodeRuntimeEvent): NativeEventInput | null {
   };
 }
 
-function toOperationsConfigurationUpdate(
-  request: AgentSessionConfigurationUpdate,
-): Readonly<Record<string, unknown>> {
-  return {
-    modelId: request.model.value,
-    permissionMode: request.permissionIntent.value,
-    ...Object.fromEntries(
-      Object.entries(request.options).map(([key, value]) => [key, value.value]),
-    ),
-  };
-}
-
-function waitForPollInterval(signal?: AbortSignal): Promise<void> {
+function waitForCompletionEventOrFallback(
+  terminalWaiters: Set<() => void>,
+  isActive: () => boolean,
+  signal?: AbortSignal,
+): Promise<void> {
   if (signal?.aborted === true) {
     throw signal.reason instanceof Error ? signal.reason : new Error('OpenCode send was aborted');
   }
   return new Promise((resolve, reject) => {
     let timer: ReturnType<typeof setTimeout> | null = null;
+    const wake = () => {
+      cleanup();
+      resolve();
+    };
     const cleanup = () => {
       if (timer) clearTimeout(timer);
       signal?.removeEventListener('abort', onAbort);
+      terminalWaiters.delete(wake);
       timer = null;
     };
     const onAbort = () => {
       cleanup();
       reject(signal?.reason instanceof Error ? signal.reason : new Error('OpenCode send was aborted'));
     };
-    timer = setTimeout(() => {
-      cleanup();
-      resolve();
-    }, OPEN_CODE_COMPLETION_POLL_INTERVAL_MS);
+    terminalWaiters.add(wake);
+    timer = setTimeout(wake, OPEN_CODE_TURN_COMPLETION_FALLBACK_INTERVAL_MS);
     timer.unref?.();
     signal?.addEventListener('abort', onAbort, { once: true });
+    if (!isActive()) wake();
   });
 }
 
@@ -211,7 +200,9 @@ export function createOpenCodeSessionRuntime(params: Readonly<{
   models?: AgentSessionRuntimeContext['session']['services']['models'];
   bindActiveSkillsReader?: OpenCodeActiveSkillsReaderRegistrar;
 }>): OpenCodeNativeSessionRuntime {
+  const launchPermissionIntent = params.request.configuration?.permissionIntent.value ?? null;
   const listeners = new Set<(event: AgentSessionRuntimeEvent) => void>();
+  const terminalWaiters = new Set<() => void>();
   let sequence = 0;
   let disposed = false;
   let active = false;
@@ -370,6 +361,7 @@ export function createOpenCodeSessionRuntime(params: Readonly<{
       if (activeTurnId === null || event.turnId === activeTurnId) {
         active = false;
         activeTurnId = null;
+        for (const wake of Array.from(terminalWaiters)) wake();
       }
     }
     const mapped = mapRuntimeEvent(event);
@@ -400,7 +392,9 @@ export function createOpenCodeSessionRuntime(params: Readonly<{
         throw signal.reason instanceof Error ? signal.reason : new Error('OpenCode send was aborted');
       }
       await params.operations.waitForTurnCompletion();
-      if (active) await waitForPollInterval(signal);
+      if (active) {
+        await waitForCompletionEventOrFallback(terminalWaiters, () => active, signal);
+      }
     }
   };
 
@@ -600,17 +594,37 @@ export function createOpenCodeSessionRuntime(params: Readonly<{
     send,
     async cancel(request) {
       if (!active || activeTurnId !== request.turnId) return { status: 'notRunning' };
-      await params.operations.cancelTurn();
-      return { status: 'requested', turnId: request.turnId };
+      try {
+        await params.operations.cancelTurn();
+        return { status: 'requested', turnId: request.turnId };
+      } catch (error) {
+        return {
+          status: 'unavailable',
+          diagnostic: diagnostic(
+            'opencode_cancellation_unavailable',
+            error instanceof Error ? error.message : String(error),
+          ),
+        };
+      }
     },
     async updateConfiguration(request) {
-      try {
-        await params.operations.updateSessionRuntimeConfig(
-          toOperationsConfigurationUpdate(request),
-        );
+      if (request.permissionIntent.value !== launchPermissionIntent) {
         return {
-          status: 'deferred',
-          changed: ['model', 'permissionIntent', ...Object.keys(request.options)],
+          status: 'unsupported',
+          diagnostic: diagnostic(
+            'opencode_permission_intent_update_requires_provider_restart',
+            'OpenCode server mode applies permission intent when its process is launched.',
+          ),
+        };
+      }
+      try {
+        const projection = projectOpenCodeSessionConfiguration(request);
+        for (const update of projection.updates) {
+          await params.operations.updateSessionRuntimeConfig(update);
+        }
+        return {
+          status: 'applied',
+          changed: projection.changed,
         };
       } catch (error) {
         return {
@@ -675,6 +689,8 @@ export function createOpenCodeSessionRuntime(params: Readonly<{
       activeSkillsReaderBinding?.dispose();
       unsubscribeOperations();
       listeners.clear();
+      for (const wake of Array.from(terminalWaiters)) wake();
+      terminalWaiters.clear();
       modelListeners.clear();
       modelsBinding?.dispose();
       active = false;

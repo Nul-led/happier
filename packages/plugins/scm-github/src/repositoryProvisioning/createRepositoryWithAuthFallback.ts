@@ -113,6 +113,9 @@ function isSafeSshCloneUrl(input: Readonly<{
   if (!providerOrigin) return false;
   const parsed = parseScmRemoteUrl(input.sshUrl);
   if (!parsed) return false;
+  // The provider origin this is checked against carries no port, so a ported SSH URL reaches a
+  // different endpoint than the one the caller authorized.
+  if (parsed.syntax === 'url' && parsed.port !== null) return false;
   return parsed.host === providerOrigin.hostname.toLowerCase()
     && parsed.path === input.repository.nameWithOwner;
 }

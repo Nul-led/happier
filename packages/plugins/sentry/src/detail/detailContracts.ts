@@ -71,6 +71,17 @@ export type SentryDetailFrontierV1 = Readonly<{
   cursor: string;
   limit: number;
   /**
+   * The ordering this walk started under (`SENTRY.md` §7.4).
+   *
+   * `[SCHEMA]` `sample=true` is a pseudo-random deterministic reordering of the
+   * same retained events, so a cursor minted under it addresses a position in
+   * THAT ordering. Carrying the mode beside the cursor is what lets the walk
+   * refuse a continuation from the other ordering instead of paging a collection
+   * its position was never established in. It is a within-panel fact, exactly
+   * like `cursor` and `limit`: no route, no credential, and nothing durable.
+   */
+  sample: boolean;
+  /**
    * The earlier position this walk is watching for, and the schedule that moves
    * it (the shared Triage source cursor-cycle owner).
    *
@@ -106,6 +117,7 @@ export function encodeSentryDetailContinuation(
     v: CONTINUATION_VERSION,
     cursor: frontier.cursor,
     limit: frontier.limit,
+    sample: frontier.sample,
     probe: { ...frontier.probe },
   });
 }
@@ -127,12 +139,13 @@ export function decodeSentryDetailContinuation(token: string): SentryDetailFront
   const raw = decoded as Readonly<Record<string, unknown>>;
   const keys = Object.keys(raw);
   if (
-    keys.length !== 4
-    || !['v', 'cursor', 'limit', 'probe']
+    keys.length !== 5
+    || !['v', 'cursor', 'limit', 'sample', 'probe']
       .every((key) => Object.prototype.hasOwnProperty.call(raw, key))
   ) return null;
   const cursor = raw['cursor'];
   const limit = raw['limit'];
+  const sample = raw['sample'];
   const probe = readCursorCycleProbeV1(raw['probe']);
   if (
     raw['v'] !== CONTINUATION_VERSION
@@ -142,6 +155,7 @@ export function decodeSentryDetailContinuation(token: string): SentryDetailFront
     || !Number.isSafeInteger(limit)
     || limit < 1
     || limit > SENTRY_DETAIL_PAGE_SIZE
+    || typeof sample !== 'boolean'
     || probe === null
   ) {
     return null;
@@ -150,6 +164,7 @@ export function decodeSentryDetailContinuation(token: string): SentryDetailFront
     v: 1 as const,
     cursor,
     limit,
+    sample,
     probe,
   });
 }
@@ -346,6 +361,14 @@ export const SentryIssueEventsInputV1Schema = defineProtocolObject({
   instance: TriageConfiguredSourceInstanceV1Schema,
   localRef: TriageSourceEntryLocalRefV1Schema,
   limit: PageLimitSchema,
+  /**
+   * The reader's explicit "show a spread" choice (`SENTRY.md` §7.4).
+   *
+   * Only `true` is representable: the ordinary walk is this field's absence, so
+   * there is no way to ask the provider for a spread it should not apply, and
+   * the mode a walk started under is frozen in its continuation.
+   */
+  sample: defineProtocolLiteral(true).optional(),
   /** Present only for a following page, and only as this source minted it. */
   continuation: ContinuationSchema.optional(),
 }, { policy: 'closed' });

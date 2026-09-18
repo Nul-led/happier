@@ -78,12 +78,8 @@ async function mountDetail(
   let fixture!: PluginUiTestkit;
   await act(async () => {
     fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: BITBUCKET_PLUGIN_ID,
-        pluginVersion: '0.0.0',
-        viewId: 'bitbucket-triage-detail',
-        generation: 'bitbucket-detail-mount',
-      },
+      identity: { instanceId: 'fixture-instance-163', mountNonce: 'fixture-mount-163' },
+      authorPlugin: { id: BITBUCKET_PLUGIN_ID, version: '0.0.0' },
       surface: (context) => (
         <TriagePostMutationCompletionProvider
           onComplete={async () => { completedMutations += 1; }}
@@ -318,6 +314,8 @@ describe('the mounted Bitbucket Cloud pull-request writes', () => {
         kind: 'overview',
         observedAtMs: 1_780_000_000_000,
         observation: { ...FIXTURE.getResult, nativeRevision: displayedHead },
+        description: null,
+        descriptionTruncated: false,
       } as unknown as JsonValue,
     };
     nextResult = {
@@ -344,6 +342,8 @@ describe('the mounted Bitbucket Cloud pull-request writes', () => {
         kind: 'overview',
         observedAtMs: 1_780_000_000_000,
         observation: freshWithoutHead,
+        description: null,
+        descriptionTruncated: false,
       } as unknown as JsonValue,
     };
     const detail = await mountDetail();

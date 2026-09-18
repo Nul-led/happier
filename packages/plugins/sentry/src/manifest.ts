@@ -1,4 +1,5 @@
 import { defineComposerReference, definePlugin } from '@happier-dev/plugin-sdk';
+import { CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1 } from '@happier-dev/plugin-sdk/connected-accounts';
 import { withTriageSourceSettingsTranslationsV1 } from '@happier-dev/triage-sources/translations';
 import {
   TRIAGE_SOURCES_CONTRIBUTION_POINT_ID_V1,
@@ -441,6 +442,7 @@ export const SENTRY_PLUGIN = definePlugin({
           modes: [{
             id: SENTRY_CLOUD_MODE_ID,
             kind: 'manual',
+            directExport: { contractVersion: CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1 },
             title: { key: 'plugins.sentry.auth.cloud.title', fallback: 'Sentry Cloud token' },
             outcomeReconciliation: 'none',
             fields: [TOKEN_FIELD],
@@ -455,6 +457,7 @@ export const SENTRY_PLUGIN = definePlugin({
           }, {
             id: SENTRY_SELF_HOSTED_MODE_ID,
             kind: 'manual',
+            directExport: { contractVersion: CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1 },
             title: {
               key: 'plugins.sentry.auth.selfHosted.title',
               fallback: 'Self-hosted Sentry token',

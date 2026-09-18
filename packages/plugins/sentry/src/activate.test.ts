@@ -39,7 +39,13 @@ describe('Sentry plugin activation', () => {
       SENTRY_CONNECTED_ACCOUNT_ID,
       expect.objectContaining({ authentication: expect.any(Object) }),
     );
+    // The spine registers the whole authored reference, so the declared
+    // presentation travels with the two required handlers rather than being
+    // split across a second registration. Asserting the exact shape keeps both
+    // a dropped handler and an undeclared extra field failing here.
     expect(registerComposerReference).toHaveBeenCalledWith('sentry-evidence', {
+      title: 'Sentry occurrence',
+      icon: 'error',
       search: expect.any(Function),
       resolve: expect.any(Function),
     });

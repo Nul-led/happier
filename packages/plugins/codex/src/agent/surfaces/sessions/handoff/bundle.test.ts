@@ -592,6 +592,66 @@ describe('codex session handoff bundle', () => {
     }
   });
 
+  it('matches the exact provider session id bytes and refuses the stripped sibling', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-codex-handoff-import-exact-id-'));
+    const exactSessionId = '  provider\nses/AB+cd==  ';
+    const strippedSessionId = exactSessionId.trim();
+    const relativePath = 'sessions/2026/09/13/rollout-exact.jsonl';
+    const exactContent = nativeRolloutContent({ sessionId: exactSessionId, body: { event: 'exact' } });
+    const strippedContent = nativeRolloutContent({ sessionId: strippedSessionId, body: { event: 'stripped' } });
+    const sidechainContent = nativeRolloutContent({
+      sessionId: 'thread-sidechain',
+      rootSessionId: exactSessionId,
+      body: { event: 'sidechain' },
+    });
+
+    const exactHome = join(root, 'exact');
+    await expect(importCodexSessionBundle({
+      bundle: {
+        agentId: 'codex',
+        remoteSessionId: exactSessionId,
+        files: [
+          { relativePath, contentBase64: exactContent.toString('base64') },
+          { relativePath: 'sessions/2026/09/13/rollout-sidechain.jsonl', contentBase64: sidechainContent.toString('base64') },
+        ],
+      },
+      targetPath: '/repo-target',
+      env: { CODEX_HOME: exactHome },
+    })).resolves.toMatchObject({ remoteSessionId: exactSessionId });
+    await expect(readFile(join(exactHome, relativePath))).resolves.toEqual(exactContent);
+
+    const cases: readonly Readonly<{
+      name: string;
+      remoteSessionId: string;
+      contents: readonly Buffer[];
+    }>[] = [
+      { name: 'stripped bundle id against exact rollout', remoteSessionId: strippedSessionId, contents: [exactContent] },
+      { name: 'exact bundle id against stripped rollout', remoteSessionId: exactSessionId, contents: [strippedContent] },
+      {
+        name: 'stripped bundle id against exact sidechain root',
+        remoteSessionId: strippedSessionId,
+        contents: [strippedContent, sidechainContent],
+      },
+      { name: 'blank-only bundle id', remoteSessionId: '  \n ', contents: [exactContent] },
+    ];
+    for (const testCase of cases) {
+      const codexHome = join(root, testCase.name.replaceAll(' ', '-'));
+      await expect(importCodexSessionBundle({
+        bundle: {
+          agentId: 'codex',
+          remoteSessionId: testCase.remoteSessionId,
+          files: testCase.contents.map((content, index) => ({
+            relativePath: `sessions/2026/09/13/rollout-${index}.jsonl`,
+            contentBase64: content.toString('base64'),
+          })),
+        },
+        targetPath: '/repo-target',
+        env: { CODEX_HOME: codexHome },
+      }), testCase.name).rejects.toThrow();
+      await expect(access(codexHome), testCase.name).rejects.toMatchObject({ code: 'ENOENT' });
+    }
+  });
+
   it('imports a root rollout with its native sidechain family', async () => {
     const codexHome = await mkdtemp(join(tmpdir(), 'happier-codex-handoff-import-root-family-'));
     const rootRelativePath = 'sessions/2026/08/25/rollout-root.jsonl';

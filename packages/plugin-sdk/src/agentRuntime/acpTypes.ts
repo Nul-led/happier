@@ -1,5 +1,16 @@
+import type { PluginAgentAcpNativeSessionMcpConfigV2 } from '@happier-dev/protocol';
+
+export type { PluginAgentAcpNativeSessionMcpConfigV2 } from '@happier-dev/protocol';
+
 export type AgentAcpMcpInputPolicy = Readonly<{
   policy: 'pass_through' | 'drop';
+  /**
+   * Declares that this Agent receives Happier's Session MCP servers through
+   * its own config file instead of `session/new`. The host materializes a
+   * session-private config root before launch; `policy` stays `drop` because
+   * the servers are already delivered natively.
+   */
+  nativeSessionConfig?: PluginAgentAcpNativeSessionMcpConfigV2;
 }>;
 
 export type AgentAcpTimeouts = Partial<Readonly<{
@@ -54,6 +65,7 @@ export type AgentAcpStderrStatusErrorRule = AgentAcpStderrMatchRule & Readonly<{
 }>;
 
 export type AgentAcpStderrRules = Readonly<{
+  authenticationErrorDetail?: string;
   suppress?: readonly AgentAcpStderrMatchRule[];
   statusErrors?: readonly AgentAcpStderrStatusErrorRule[];
 }>;

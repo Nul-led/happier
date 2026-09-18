@@ -14,6 +14,7 @@ export type { AuthOpenBrowserResult } from './projections.js';
 export type { AuthPkceChallenge } from '../connectedAccounts.js';
 export type { AuthPromptTextInput } from '../connectedAccounts.js';
 export type { AuthPromptTextResult } from './projections.js';
+export { CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1 } from '../connectedAccounts.js';
 export { CONNECTED_ACCOUNT_REQUEST_AUTH_CAPABILITY_PATH_ENV } from './requestAuth.js';
 export type { PluginConnectedAccountAuthCompletionResult as ConnectedAccountAuthCompletionResult } from '../services/connectedAccounts.js';
 export type { ConnectedAccountAuthDiagnostic } from './projections.js';

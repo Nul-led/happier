@@ -30,9 +30,12 @@ export async function initializeCodexAppServerClient(client: Readonly<{
 
 export function buildCodexAppServerBaseArgs(
   enableRealtimeConversation: boolean,
+  listenUrl = 'stdio://',
 ): readonly string[] {
   return Object.freeze([
-    ...CODEX_APP_SERVER_ARGS,
+    'app-server',
+    '--listen',
+    listenUrl,
     ...(enableRealtimeConversation
       ? ['--enable', CODEX_REALTIME_CONVERSATION_FEATURE]
       : []),

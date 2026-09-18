@@ -28,6 +28,7 @@ describe('Pi plugin manifest', () => {
             pluginId: 'happier.agent.claude',
             localId: 'claude-subscription',
           },
+          credentialKinds: ['oauth', 'token'],
           materializationKinds: ['httpHeaders', 'environment'],
         }, {
           purpose: PI_OPENAI_CODEX_REQUEST_AUTH_PURPOSE_ID,
@@ -35,6 +36,7 @@ describe('Pi plugin manifest', () => {
             pluginId: 'happier.agent.codex',
             localId: 'openai-codex',
           },
+          credentialKinds: ['oauth'],
           materializationKinds: ['httpHeaders'],
         }, {
           purpose: PI_OPENAI_API_KEY_PURPOSE_ID,
@@ -42,6 +44,7 @@ describe('Pi plugin manifest', () => {
             pluginId: 'happier.voice.openai',
             localId: 'openai',
           },
+          credentialKinds: ['token'],
           materializationKinds: ['environment'],
         }, {
           purpose: PI_ANTHROPIC_API_KEY_PURPOSE_ID,
@@ -49,6 +52,7 @@ describe('Pi plugin manifest', () => {
             pluginId: 'happier.agent.claude',
             localId: 'anthropic',
           },
+          credentialKinds: ['token'],
           materializationKinds: ['environment'],
         }],
         capabilities: expect.objectContaining({

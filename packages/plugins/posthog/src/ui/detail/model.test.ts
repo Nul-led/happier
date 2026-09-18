@@ -185,7 +185,7 @@ describe('buildPosthogDetailGetRequest', () => {
 
 describe('projectPosthogDetailSurface', () => {
     it('renders the applied observation before any live read and never the shared chrome', () => {
-        const model = projectPosthogDetailSurface(detailInput(), null);
+        const model = projectPosthogDetailSurface(detailInput(), { kind: 'pending' });
 
         expect(model.read).toEqual({ kind: 'applied' });
         expect(model.body.origin).toBe('applied');
@@ -198,7 +198,7 @@ describe('projectPosthogDetailSurface', () => {
     });
 
     it('names the bounded ingested window on the occurrence count and never calls it a total', () => {
-        const model = projectPosthogDetailSurface(detailInput(), null);
+        const model = projectPosthogDetailSurface(detailInput(), { kind: 'pending' });
         const occurrences = model.body.fields.find((field) => field.id === 'posthog/occurrences');
 
         if (occurrences?.kind !== 'number') throw new Error('occurrences must be a number field');
@@ -213,7 +213,7 @@ describe('projectPosthogDetailSurface', () => {
     });
 
     it('reports a deferred detail-plane fact as pending rather than as an empty value', () => {
-        const model = projectPosthogDetailSurface(detailInput(), null);
+        const model = projectPosthogDetailSurface(detailInput(), { kind: 'pending' });
         const severity = model.body.fields.find((field) => field.id === 'posthog/severity');
 
         expect(severity?.kind).toBe('pending');
@@ -229,7 +229,7 @@ describe('projectPosthogDetailSurface', () => {
             posthogObservation({ row: liveRow }),
         );
 
-        const model = projectPosthogDetailSurface(applied, live);
+        const model = projectPosthogDetailSurface(applied, { kind: 'settled', observation: live });
 
         expect(model.read).toEqual({ kind: 'materialized' });
         expect(model.body.origin).toBe('live');
@@ -248,10 +248,10 @@ describe('projectPosthogDetailSurface', () => {
         );
         const unchanged = TriageSourceObservationV1Schema.parse(posthogObservation());
 
-        expect(projectPosthogDetailSurface(applied, changed).nativeStateNow)
+        expect(projectPosthogDetailSurface(applied, { kind: 'settled', observation: changed }).nativeStateNow)
             .toEqual({ presentation: 'resolved', nativeLabel: 'resolved' });
-        expect(projectPosthogDetailSurface(applied, unchanged).nativeStateNow).toBeNull();
-        expect(projectPosthogDetailSurface(applied, null).nativeStateNow).toBeNull();
+        expect(projectPosthogDetailSurface(applied, { kind: 'settled', observation: unchanged }).nativeStateNow).toBeNull();
+        expect(projectPosthogDetailSurface(applied, { kind: 'pending' }).nativeStateNow).toBeNull();
     });
 
     it('refuses a live result that names a different entry instead of following it', () => {
@@ -262,7 +262,7 @@ describe('projectPosthogDetailSurface', () => {
         };
         const live = TriageSourceObservationV1Schema.parse(posthogObservation({ row: otherRow }));
 
-        const model = projectPosthogDetailSurface(applied, live);
+        const model = projectPosthogDetailSurface(applied, { kind: 'settled', observation: live });
 
         expect(model.read).toEqual({ kind: 'refused', reason: 'localRefMismatch' });
         // A refused live read never blanks the body the mount already had.
@@ -282,7 +282,7 @@ describe('projectPosthogDetailSurface', () => {
             failure: { class: 'permission', code: 'posthog/permission-denied' },
         });
 
-        const model = projectPosthogDetailSurface(applied, live);
+        const model = projectPosthogDetailSurface(applied, { kind: 'settled', observation: live });
 
         expect(model.read).toEqual({
             kind: 'unavailable',
@@ -290,6 +290,21 @@ describe('projectPosthogDetailSurface', () => {
         });
         expect(model.body.origin).toBe('applied');
         expect(model.body.fields.length).toBeGreaterThan(0);
+    });
+
+    it('keeps a live read that failed apart from one that has not answered yet', () => {
+        const applied = detailInput();
+        const failure = { class: 'transient', code: 'posthog/transport-failed' } as const;
+
+        const failed = projectPosthogDetailSurface(applied, { kind: 'failed', failure });
+
+        // Both keep the applied facts, and only one of them may be shown without saying
+        // anything: a read that failed leaves those facts unconfirmed.
+        expect(failed.read).toEqual({ kind: 'unavailable', failure });
+        expect(failed.body.origin).toBe('applied');
+        expect(failed.body.fields.length).toBeGreaterThan(0);
+        expect(projectPosthogDetailSurface(applied, { kind: 'pending' }).read)
+            .toEqual({ kind: 'applied' });
     });
 
     it('refuses an absence or merge arm this source never emits', () => {
@@ -301,7 +316,7 @@ describe('projectPosthogDetailSurface', () => {
         };
         const absent = TriageSourceObservationV1Schema.parse({ kind: 'absent', localRef });
 
-        expect(projectPosthogDetailSurface(applied, absent).read).toEqual({
+        expect(projectPosthogDetailSurface(applied, { kind: 'settled', observation: absent }).read).toEqual({
             kind: 'refused',
             reason: 'unsupportedObservation',
         });

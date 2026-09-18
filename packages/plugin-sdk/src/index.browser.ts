@@ -40,6 +40,10 @@ export type { PluginClientActivationModule } from './activation.js';
 export type { PluginClientApi } from './activation.js';
 export type { PluginRequestInterceptorDefinition } from './definePlugin.js';
 export type { PluginDiagnosticData } from './diagnostics.js';
+export type {
+    PluginEphemeralSharedScope,
+    PluginEphemeralSharedValueLease,
+} from './ephemeralSharedScope.js';
 export type { PluginErrorData } from './errors.js';
 export type { PluginOperationAvailability, PluginRemediationData } from './availability.js';
 export { isPluginError, PluginError } from './errors.js';
@@ -80,6 +84,7 @@ export type {
     UiSurfaceDefinition,
     UiSurfaceDetailedDefinition,
     UiSurfaceDetailedDefinitionFor,
+    UiSurfaceHostedHtmlRendererDefinition,
     UiSurfaceHostedWebBuild,
     UiSurfaceHostedWebDefinition,
     UiSurfaceHostedWebRendererDefinition,

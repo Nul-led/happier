@@ -105,6 +105,7 @@ export type PluginTestkitRegistrationByFamily = Readonly<{
         vendorResumeSupport?: NonNullable<NonNullable<
             Parameters<PluginApi['agents']['register']>[2]
         >['vendorResumeSupport']>;
+        terminal?: Parameters<PluginApi['agents']['registerTerminal']>[1];
         externalSessions?: Parameters<PluginApi['agents']['registerExternalSessions']>[1];
         externalSessionHooks?: Parameters<PluginApi['agents']['registerExternalSessionHooks']>[1];
         externalSessionObservation?: Parameters<

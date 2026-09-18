@@ -490,6 +490,57 @@ describe('GitHub changed-files plane', () => {
     expect(result.continuation).toBeUndefined();
   });
 
+  it('reports the ceiling on a terminal 3,000th-file page that advertises no next link', async () => {
+    // GitHub documents the 3,000-file maximum but promises no `Link` past it, so the
+    // exhausted-pagination shape is exactly what a capped walk looks like. Deriving the
+    // boundary from the next link alone renders a capped list as a complete one.
+    const stub = createStubGithubTransport({
+      respond: (request) => (request.url.includes('/pulls/1284/files')
+        ? jsonResponse(Array.from(
+          { length: 100 },
+          (_unused, index) => githubChangedFile({ filename: `src/file-${index}.ts` }),
+        ))
+        : undefined),
+    });
+
+    const result = GithubChangedFilesResultV1Schema.parse(await listGithubChangedFiles(
+      planeInput({
+        limit: 100,
+        continuation: encodeGithubDetailContinuation({ v: 1, page: 30, perPage: 100 }),
+      }),
+      stub.context,
+    ));
+    if (result.kind !== 'changedFiles') throw new Error('the ceiling page must keep its rows');
+    expect(result.rows).toHaveLength(100);
+    expect(result.incomplete).toBe('ceiling');
+    expect(result.continuation).toBeUndefined();
+  });
+
+  it('renders a final page that stops one file below the ceiling as complete', async () => {
+    // The neighbouring case: 2,999 files is a walk GitHub finished, not one it capped,
+    // and claiming a ceiling there would invent an incompleteness the user cannot resolve.
+    const stub = createStubGithubTransport({
+      respond: (request) => (request.url.includes('/pulls/1284/files')
+        ? jsonResponse(Array.from(
+          { length: 99 },
+          (_unused, index) => githubChangedFile({ filename: `src/file-${index}.ts` }),
+        ))
+        : undefined),
+    });
+
+    const result = GithubChangedFilesResultV1Schema.parse(await listGithubChangedFiles(
+      planeInput({
+        limit: 100,
+        continuation: encodeGithubDetailContinuation({ v: 1, page: 30, perPage: 100 }),
+      }),
+      stub.context,
+    ));
+    if (result.kind !== 'changedFiles') throw new Error('the short page must keep its rows');
+    expect(result.rows).toHaveLength(99);
+    expect(result.incomplete).toBeUndefined();
+    expect(result.continuation).toBeUndefined();
+  });
+
   it('refuses to answer for an issue rather than returning an empty file list', async () => {
     const stub = createStubGithubTransport({ respond: () => undefined });
     const result = GithubChangedFilesResultV1Schema.parse(await listGithubChangedFiles(

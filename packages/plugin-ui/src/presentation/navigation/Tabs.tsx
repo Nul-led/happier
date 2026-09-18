@@ -99,6 +99,16 @@ function HappierTabPanel(props: Readonly<{
   active: boolean;
   nativeID: string;
   labelledBy: string;
+  /**
+   * Whether focus is inside this panel's own subtree.
+   *
+   * The platform's focus events bubble, so the panel box is the one place that
+   * can answer this for every control a source renders inside it without the
+   * tablist knowing what those controls are. It is reported to the tablist
+   * rather than acted on here: recovery is a collection-level decision about
+   * where focus goes next, and the panel is the thing disappearing.
+   */
+  onFocusWithinChange?: (focused: boolean) => void;
   children?: ReactNode;
 }>): ReactElement {
   const [openInterval, setOpenInterval] = useState(() => new AbortController());
@@ -144,6 +154,8 @@ function HappierTabPanel(props: Readonly<{
         accessibilityElementsHidden={!props.active}
         importantForAccessibility={props.active ? 'auto' : 'no-hide-descendants'}
         style={props.active ? undefined : hiddenPanelStyle}
+        onFocus={() => { props.onFocusWithinChange?.(true); }}
+        onBlur={() => { props.onFocusWithinChange?.(false); }}
       >
         {props.children}
       </View>
@@ -214,9 +226,15 @@ export function HappierTabs(props: Readonly<{
   }
   const selected = tabs.find((tab) => tab.value === props.value) ?? tabs.find((tab) => !tab.disabled);
   const tabRefs = useRef(new Map<string, View>());
-  // Which trigger currently holds focus, published by the trigger itself while
-  // it still exists. A removed node cannot be identified afterwards.
+  // Which TAB currently holds focus — its trigger or anything inside its panel —
+  // published by the part that holds it while that part still exists. A removed
+  // node cannot be identified afterwards, which is why this is recorded as the
+  // reader moves rather than read back from the tree once the tab is gone.
   const focusedTabValue = useRef<string | null>(null);
+  const recordFocusWithin = (value: string, focused: boolean): void => {
+    if (focused) focusedTabValue.current = value;
+    else if (focusedTabValue.current === value) focusedTabValue.current = null;
+  };
   const visitedPanels = useRef(new Set<string>());
   const reportedReconciliation = useRef<Readonly<{ requested: string; resolved: string }> | null>(null);
   const selectedValue = selected?.value;
@@ -272,11 +290,14 @@ export function HappierTabs(props: Readonly<{
     selectedIndex: selected === undefined ? -1 : tabs.indexOf(selected),
   });
 
-  // A source withdraws a tab while a reader is standing on its trigger. The
+  // A source withdraws a tab while a reader is standing on its trigger, or on a
+  // control inside its panel — a panel whose very existence depends on
+  // asynchronous provider evidence is the ordinary case, not the edge one. The
   // browser drops focus to the document body, which loses the tablist entirely,
   // so the collection hands focus to the trigger a reader would return to: its
-  // single roving tab stop. Only a reader whose focus was still inside this
-  // tablist is moved — a reader who had already left keeps their place.
+  // single roving tab stop. Only a reader whose focus was still inside the
+  // removed trigger or panel is moved — a reader who had already left keeps
+  // their place.
   const fallbackTabValue = tabStopIndex === null ? undefined : tabs[tabStopIndex]?.value;
   useEffect(() => {
     const previouslyFocused = focusedTabValue.current;
@@ -336,10 +357,7 @@ export function HappierTabs(props: Readonly<{
                   return true;
                 }}
                 onPress={() => props.onValueChange(tab.value)}
-                onFocusChange={(isFocused) => {
-                  if (isFocused) focusedTabValue.current = tab.value;
-                  else if (focusedTabValue.current === tab.value) focusedTabValue.current = null;
-                }}
+                onFocusChange={(isFocused) => { recordFocusWithin(tab.value, isFocused); }}
                 testID={`${props.testID ?? 'tabs'}:${tab.value}`}
                 style={(state) => ({
                   ...(nativeMinimumTouchTarget === undefined ? {} : {
@@ -374,6 +392,7 @@ export function HappierTabs(props: Readonly<{
           active={tab.value === selectedValue}
           nativeID={`${instanceId}-panel-${tabIndex}`}
           labelledBy={`${instanceId}-tab-${tabIndex}`}
+          onFocusWithinChange={(focused) => { recordFocusWithin(tab.value, focused); }}
         >
           {tab.children}
         </HappierTabPanel>

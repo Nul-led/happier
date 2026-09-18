@@ -28,6 +28,10 @@ import type { PluginJsonSchema } from '@happier-dev/plugin-sdk/protocol';
  *   (`buildMaximalSchemaString`), not by solving the pattern. It is exact for
  *   every V1 grammar, and any string the search cannot fill throws instead of
  *   quietly measuring a narrower value.
+ * - Serialized-byte-bounded opaque JSON is filled exactly. A tighter enclosing
+ *   command bound is reached by reducing its opaque payload, preserving every
+ *   structural field. If that cannot reach the bound, derivation throws rather
+ *   than claiming that an undersized witness proves a maximum.
  */
 
 /**
@@ -278,7 +282,36 @@ function buildMaximalObject(fragment: PluginJsonSchema, path: string): Record<st
         value[key] = buildMaximalSchemaValue(child, `${path}.${key}`);
     }
     if (fragment.additionalProperties !== false) value[OPEN_OBJECT_PROBE_KEY] = 0;
+    const bound = fragment['x-happier-max-serialized-utf8-bytes'];
+    if (bound !== undefined && encodedJsonBytes(value) > bound) {
+        // A bounded opaque JSON member can spend exactly the enclosing
+        // command's remaining budget. Keep every structural member maximal;
+        // reduce only these unconstrained payloads, never truncate an identity.
+        for (const [key, child] of Object.entries(fragment.properties ?? {})) {
+            if (!isOpaqueBoundedJson(child)) continue;
+            const excess = encodedJsonBytes(value) - bound;
+            if (excess <= 0) break;
+            value[key] = buildOpaqueJsonBytes(Math.max(1, encodedJsonBytes(value[key]) - excess), path);
+        }
+        if (encodedJsonBytes(value) !== bound) {
+            throw new Error(`${path}: cannot derive an exact fill for the serialized object bound`);
+        }
+    }
     return value;
+}
+
+function isOpaqueBoundedJson(fragment: PluginJsonSchema): boolean {
+    return fragment['x-happier-max-serialized-utf8-bytes'] !== undefined
+        && Object.keys(fragment).every((key) => key === '$schema' || key === 'x-happier-max-serialized-utf8-bytes');
+}
+
+function buildOpaqueJsonBytes(bytes: number, path: string): string | number {
+    if (!Number.isSafeInteger(bytes) || bytes < 1) {
+        throw new Error(`${path}: no JSON value fits the serialized byte bound`);
+    }
+    // A number fills one byte; an ASCII string fills every larger size exactly,
+    // including its two quotes, without relying on JSON escaping expansion.
+    return bytes === 1 ? 0 : 'a'.repeat(bytes - 2);
 }
 
 function buildMaximalArray(fragment: PluginJsonSchema, path: string): unknown[] {
@@ -307,10 +340,20 @@ function buildMaximalArray(fragment: PluginJsonSchema, path: string): unknown[] 
 
 /** The largest value one JSON Schema projection admits, at every depth. */
 export function buildMaximalSchemaValue(fragment: PluginJsonSchema, path: string): unknown {
+    const serializedBound = fragment['x-happier-max-serialized-utf8-bytes'];
+    if (isOpaqueBoundedJson(fragment) && serializedBound !== undefined) {
+        return buildOpaqueJsonBytes(serializedBound, path);
+    }
     if ('const' in fragment) return fragment.const;
     if (fragment.anyOf !== undefined) {
         const widest = widestValue(fragment.anyOf.map((arm, index) => (
-            buildMaximalSchemaValue(arm, `${path}|${index}`)
+            buildMaximalSchemaValue(serializedBound === undefined ? arm : {
+                ...arm,
+                'x-happier-max-serialized-utf8-bytes': Math.min(
+                    serializedBound,
+                    arm['x-happier-max-serialized-utf8-bytes'] ?? Number.POSITIVE_INFINITY,
+                ),
+            }, `${path}|${index}`)
         )));
         if (widest === undefined) throw new Error(`${path}: an empty union has no maximum`);
         return widest;

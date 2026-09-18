@@ -146,6 +146,75 @@ describe('Codex public runtime usage snapshots', () => {
     }
   });
 
+  it('preserves app-server named provider limits as distinct selectable allowance families', () => {
+    const snapshot = mapCodexRateLimitSnapshotToUsageSnapshot({
+      profileId: 'work',
+      fetchedAt: 1_768_000_000_000,
+      rawSnapshot: {
+        rateLimits: {
+          planType: 'pro',
+          primary: { usedPercent: 20, resetsAt: 1_768_010_000 },
+        },
+        rateLimitsByLimitId: {
+          codex_spark: {
+            limitName: 'Spark',
+            modelId: 'gpt-5.3-codex-spark',
+            primary: { usedPercent: 91, resetsAt: 1_768_020_000 },
+            secondary: { usedPercent: 45, resetsAt: 1_768_030_000 },
+          },
+        },
+      },
+    });
+
+    expect(snapshot.meters).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        meterId: 'codex_spark:primary',
+        label: 'Spark · Primary',
+        providerLimitId: 'codex_spark',
+        modelId: 'gpt-5.3-codex-spark',
+        utilizationPct: 91,
+      }),
+      expect.objectContaining({
+        meterId: 'codex_spark:secondary',
+        label: 'Spark · Secondary',
+        providerLimitId: 'codex_spark',
+        modelId: 'gpt-5.3-codex-spark',
+        utilizationPct: 45,
+      }),
+    ]));
+    expect(snapshot.meters.some((meter) => meter.meterId === 'primary')).toBe(false);
+  });
+
+  it('uses the provider metered feature for an array-shaped additional allowance', () => {
+    const snapshot = mapCodexRateLimitSnapshotToUsageSnapshot({
+      profileId: 'work',
+      fetchedAt: 1_768_000_000_000,
+      rawSnapshot: {
+        rateLimits: {
+          primary: { usedPercent: 35, resetsAt: 1_768_010_000 },
+        },
+        additional_rate_limits: [{
+          limit_name: 'Spark',
+          metered_feature: 'codex_spark',
+          rate_limit: {
+            model_id: 'gpt-5.3-codex-spark',
+            primary: { used_percent: 91, resets_at: 1_768_020_000 },
+          },
+        }],
+      },
+    });
+
+    expect(snapshot.meters).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        meterId: 'codex_spark:primary',
+        label: 'Spark · Primary',
+        providerLimitId: 'codex_spark',
+        modelId: 'gpt-5.3-codex-spark',
+        utilizationPct: 91,
+      }),
+    ]));
+  });
+
   it('normalizes merged sparse app-server snapshots without erasing identity or reset windows', () => {
     const snapshot = mapCodexRateLimitSnapshotToUsageSnapshot({
       profileId: 'work',
@@ -181,12 +250,14 @@ describe('Codex public runtime usage snapshots', () => {
         {
           meterId: 'primary',
           utilizationPct: 88,
+          windowDurationMs: 300 * 60_000,
           resetAtMs: 1_779_098_400_000,
           resetsAt: 1_779_098_400_000,
         },
         {
           meterId: 'secondary',
           utilizationPct: 40,
+          windowDurationMs: 10_080 * 60_000,
           resetAtMs: 1_779_698_400_000,
           resetsAt: 1_779_698_400_000,
         },

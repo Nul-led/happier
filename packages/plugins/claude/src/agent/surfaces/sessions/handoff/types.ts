@@ -1,11 +1,14 @@
 import type { HandoffImportResultV1 } from '@happier-dev/plugin-sdk/agents/runtime';
 import { z } from 'zod';
 
+import { hasClaudeProviderIdentityValue } from '../../../../protocol/providerIdentity.js';
 import type { ClaudeExternalSessionSource } from '../external/source.js';
 
 export const ClaudeSessionBundleSchema = z.object({
     agentId: z.literal('claude'),
-    remoteSessionId: z.string().min(1),
+    remoteSessionId: z.string().refine(hasClaudeProviderIdentityValue, {
+        message: 'Claude handoff bundle requires a vendor session id',
+    }),
     transcriptBase64: z.string().optional(),
     transcriptFile: z.object({
         t: z.literal('happier.handoff.file.v1'),

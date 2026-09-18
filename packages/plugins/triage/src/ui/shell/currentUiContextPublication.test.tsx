@@ -122,12 +122,8 @@ describe('Triage current UI context publication', () => {
             },
         });
         const fixture = await createPluginUiTestkit({
-            identity: {
-                pluginId: 'happier.triage',
-                pluginVersion: '0.0.0',
-                viewId: 'triage-current-context-publication',
-                generation: 'triage-current-context-publication-test',
-            },
+            identity: { instanceId: 'fixture-instance-179', mountNonce: 'fixture-mount-179' },
+            authorPlugin: { id: 'happier.triage', version: '0.0.0' },
             surface: probe.surface,
             surfaceContext: createSurfaceContextFixture(),
             adapter: createPluginUiRnwSemanticSurfaceAdapter(),

@@ -405,13 +405,13 @@ describe('Codex app-server canonical interaction bridge', () => {
           tags: expect.objectContaining({ type: 'array' }),
         }),
       }),
-    }));
+    }), expect.objectContaining({ signal: expect.any(AbortSignal) }));
     expect(elicit).toHaveBeenNthCalledWith(2, expect.objectContaining({
       requestId: 'rpc-1',
       serverName: 'deployment',
       toolName: 'elicitation',
       prompt: 'Open deployment authorization',
-    }));
+    }), expect.objectContaining({ signal: expect.any(AbortSignal) }));
     expect(elicit.mock.calls[1]?.[0]).not.toHaveProperty('schema');
     expect(elicit.mock.calls[2]?.[0]).not.toHaveProperty('schema');
     expect(askQuestions).toHaveBeenCalledTimes(1);
@@ -510,7 +510,7 @@ describe('Codex app-server canonical interaction bridge', () => {
     await vi.waitFor(() => expect(fixture.request).toHaveBeenCalledWith(
       'thread/realtime/start',
       expect.any(Object),
-      undefined,
+      { timeoutMs: null },
     ));
     fixture.publish('thread/realtime/started', {
       threadId: 'thread-1',
@@ -682,6 +682,47 @@ describe('Codex app-server canonical interaction bridge', () => {
     })).resolves.toEqual({
       answers: { mcp_tool_call_approval_1: { answers: ['Approve Once'] } },
     });
+  });
+
+  it('dismisses the exact pending interaction when another Codex client resolves it', async () => {
+    const fixture = createFixture();
+    const requestApproval = vi.fn<PluginInteractions['requestApproval']>(async (_request, options) => {
+      return await new Promise((resolve) => {
+        options?.signal?.addEventListener('abort', () => {
+          resolve({
+            requestId: 'approval-aborted',
+            kind: 'approval',
+            status: 'requesterAborted',
+          });
+        }, { once: true });
+      });
+    });
+    registerCodexAppServerInteractionHandlers({
+      client: fixture.client,
+      ui: createUi({ requestApproval }),
+      getThreadId: () => 'thread-1',
+    });
+
+    const pending = fixture.invoke('item/commandExecution/requestApproval', {
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      itemId: 'command-external',
+      startedAtMs: 1,
+      environmentId: null,
+      command: 'git fetch origin',
+    }, 'rpc-external');
+    await vi.waitFor(() => expect(requestApproval).toHaveBeenCalledTimes(1));
+
+    fixture.publish('serverRequest/resolved', {
+      threadId: 'thread-1',
+      requestId: 'rpc-external',
+    });
+
+    await expect(Promise.race([
+      pending,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('interaction was not dismissed')), 100)),
+    ])).resolves.toEqual({ decision: 'cancel' });
+    expect(requestApproval.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
   });
 
   it('asks a genuine multi-question form instead of treating cross-question wording as one approval', async () => {

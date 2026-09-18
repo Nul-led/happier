@@ -9,12 +9,13 @@ import {
   CodexSessionHandoffBundleValidationError,
 } from './bundle.js';
 import { resolveCodexNativeTranscriptPathCandidate } from '../../../rollout/discovery/nativeSessionLog.js';
+import { readExactCodexProviderSessionId } from '../../../../protocol/runtimeDescriptorV1.js';
 import { exportCodexSessionBundle } from './export.js';
 import { importCodexSessionBundle } from './import.js';
 
 export const codexHandoffSurface = {
   evaluateAvailability: ({ sessionId, metadata }) => {
-    if (typeof sessionId !== 'string' || !sessionId.trim()) {
+    if (!readExactCodexProviderSessionId(sessionId)) {
       return { available: false as const, reasonCode: 'missing_metadata' as const };
     }
     const runtimeDescriptorV1 = metadata?.runtimeDescriptorV1;
@@ -27,7 +28,8 @@ export const codexHandoffSurface = {
       : { available: false as const, reasonCode: 'runtime_mode_unsupported' as const };
   },
   exportBundle: async (params, context) => {
-    const remoteSessionId = params.sessionId.trim() || null;
+    // Codex minted this id; the bundle must carry its exact bytes.
+    const remoteSessionId = readExactCodexProviderSessionId(params.sessionId);
     if (!remoteSessionId) {
       return { ok: false, code: 'bundle_invalid', message: 'Codex handoff export requires a vendor session id' };
     }

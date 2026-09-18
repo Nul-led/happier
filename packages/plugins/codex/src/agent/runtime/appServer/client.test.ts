@@ -1,4 +1,10 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { createServer } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { describe, expect, it, vi } from 'vitest';
+import { WebSocketServer } from 'ws';
 
 import type { JsonValue } from '@happier-dev/plugin-sdk';
 import type {
@@ -109,6 +115,58 @@ function createCapturingExec(
 }
 
 describe('createCodexAppServerClient', () => {
+    it('speaks JSON-RPC directly over the shared app-server Unix WebSocket', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-codex-websocket-test-'));
+        const socketPath = process.platform === 'win32'
+            ? `\\\\.\\pipe\\happier-codex-test-${process.pid}-${Date.now()}`
+            : join(root, 'app-server.sock');
+        const httpServer = createServer();
+        const webSocketServer = new WebSocketServer({
+            server: httpServer,
+            verifyClient: (info, done) => done(info.req.headers['sec-websocket-extensions'] === undefined),
+        });
+        webSocketServer.on('connection', (socket) => {
+            socket.on('message', (payload) => {
+                const message = JSON.parse(payload.toString()) as { id?: number; method?: string };
+                if (message.method === 'initialize') {
+                    socket.send(JSON.stringify({ id: message.id, result: {} }));
+                } else if (message.method === 'test/ping') {
+                    socket.send(JSON.stringify({ id: message.id, result: { pong: true } }));
+                }
+            });
+        });
+        await new Promise<void>((resolve, reject) => {
+            httpServer.once('error', reject);
+            httpServer.listen(socketPath, resolve);
+        });
+
+        const capture = createCapturingExec();
+        const spawn = vi.spyOn(capture.exec.clients, 'spawn');
+        try {
+            const client = await createCodexNativeAppServerClient({
+                exec: capture.exec,
+                processEnv: {},
+                transport: {
+                    kind: 'unixWebSocket',
+                    socketPath,
+                    realtimeConversationAdvertised: true,
+                },
+            });
+            try {
+                await expect(client.request('test/ping')).resolves.toEqual({ pong: true });
+                expect(spawn).not.toHaveBeenCalled();
+                expect(capture.exec.run).not.toHaveBeenCalled();
+                expect(client.launchFeatures).toEqual({ realtimeConversationAdvertised: true });
+            } finally {
+                await client.dispose();
+            }
+        } finally {
+            await new Promise<void>((resolve) => webSocketServer.close(resolve));
+            await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+            await rm(root, { recursive: true, force: true });
+        }
+    });
+
     it('resolves the declared Codex system tool before every native app-server launch path', async () => {
         const capture = createCapturingExec();
         const resolvedExecutable = Object.freeze({
@@ -229,7 +287,7 @@ describe('createCodexAppServerClient', () => {
             },
             framing: 'jsonLines',
             maxFrameBytes: 32 * 1024 * 1024,
-            requestTimeoutMs: 15_000,
+            requestTimeoutMs: 60_000,
         }]);
         expect(requests[0]).toEqual({
             method: 'initialize',
@@ -436,7 +494,7 @@ describe('createCodexAppServerClient', () => {
             args: ['features', 'list'],
             cwd: { root: 'workspace', relativePath: '' },
             env: {},
-            timeoutMs: 15_000,
+            timeoutMs: 60_000,
         });
         expect(capture.exec.run).toHaveBeenCalledTimes(1);
         expect(capture.specs[0]?.launch.args).toEqual([
@@ -656,7 +714,7 @@ describe('createCodexAppServerClient', () => {
         expect(capture.requests.at(-1)).toEqual({
             method: 'thread/start',
             params: {},
-            timeoutMs: 5000,
+            timeoutMs: null,
         });
         expect(capture.notifications.at(-1)).toEqual({
             method: 'client/trigger',
@@ -699,7 +757,7 @@ describe('createCodexAppServerClient', () => {
         expect(capture.requests.at(-1)).toEqual({
             method: 'thread/realtime/start',
             params: {},
-            timeoutMs: 45_000,
+            timeoutMs: 60_000,
         });
     });
 });

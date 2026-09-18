@@ -31,7 +31,16 @@ function candidate(input: Readonly<{
 }
 
 describe('bulk New Session placement seeding', () => {
-    it('does not call equal repository text shared when its provider identity differs', () => {
+    it('allows error entries without forge identity to share a user-selected project', () => {
+        expect(isTriageBulkSharedPlacementCompatibleV1({
+            workspaceMode: 'repository', entries: [{}, {}],
+        })).toBe(true);
+        expect(resolveTriageBulkSeedPlacementV1({
+            workspaceMode: 'repository', entries: [{}, {}], projects: [], registryComplete: true,
+        })).toEqual({ kind: 'none' });
+    });
+
+    it('allows an explicit shared project choice when repository identities differ', () => {
         expect(isTriageBulkSharedPlacementCompatibleV1({
             workspaceMode: 'repository',
             entries: [{ repository: REPOSITORY }, {
@@ -41,7 +50,7 @@ describe('bulk New Session placement seeding', () => {
                     repository: REPOSITORY.repository,
                 },
             }],
-        })).toBe(false);
+        })).toBe(true);
     });
 
     it('keeps common ambiguous candidates for the reader instead of dropping the placement question', () => {
@@ -98,6 +107,29 @@ describe('bulk New Session placement seeding', () => {
 });
 
 describe('bulk retry custody', () => {
+    it('keeps an unknown original start recoverable after an early retry refusal', () => {
+        const unit = { creationKey: 'creation-17', entries: [] } as const;
+        const previous = [{ unit, status: 'unknownOutcome' as const }];
+        const refused = mergeTriageBulkRetryResultsV1(previous, [{
+            unit,
+            status: 'settled',
+            outcome: { start: { v: 1, type: 'creationFailed' }, entries: [] },
+        }]);
+        expect(refused).toEqual(previous);
+        expect(isTriageBulkSessionOutcomeRetryableV1(refused[0]!)).toBe(true);
+        expect(mergeTriageBulkRetryResultsV1(refused, [{
+            unit,
+            status: 'settled',
+            outcome: {
+                start: { v: 1, type: 'opened', sessionId: 'session-17', disposition: 'rejoined' },
+                entries: [],
+            },
+        }])[0]).toMatchObject({
+            unit: { creationKey: 'creation-17' },
+            outcome: { start: { type: 'opened', sessionId: 'session-17' } },
+        });
+    });
+
     it('retries an uncertain creation under its retained key but not a terminal creation failure', () => {
         const entryOutcome = {
             entryRef: {

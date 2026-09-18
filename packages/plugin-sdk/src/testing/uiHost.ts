@@ -698,6 +698,7 @@ export type PluginUiTestkitMountResult =
 /** Mount the supplied surface without an external host admission fact. */
 export type PluginUiTestkitOptions<TSurface> = Readonly<{
     identity: PluginUiHostApiWireIdentityV1;
+    authorPlugin: Readonly<{ id: string; version: string }>;
     surface: TSurface;
     /** The host-owned context snapshot; its strict decoding is performed by the real public client. */
     surfaceContext: SurfaceContext;
@@ -1163,7 +1164,7 @@ async function createPluginUiTestkitInternal<TSurface>(
 
     function renderContext(surface: SurfaceContext, hostApi: RenderContext['hostApi']): RenderContext {
         const context: RenderContext = {
-            plugin: Object.freeze({ id: identity.pluginId, version: identity.pluginVersion }),
+            plugin: Object.freeze({ ...options.authorPlugin }),
             surface,
             hostApi,
             signal: lifetime.signal,
@@ -1730,6 +1731,7 @@ async function createPluginUiTestkitInternal<TSurface>(
 
     const hostApi = await createPluginUiHostApiClientFromTransport({
         identity,
+        authorPlugin: options.authorPlugin,
         ...(options.apiRange === undefined ? {} : { apiRange: options.apiRange }),
         transport: {
             send(message) { receive(message); },
@@ -1866,7 +1868,7 @@ async function createPluginUiTestkitInternal<TSurface>(
             const canonicalResource = readResourceReference(resource, 'resource');
             const canonicalDigest = PluginUiArtifactDigestV1Schema.parse(digest);
             for (const [subscriptionId, subscription] of resourceSubscriptions) {
-                if (!sameReference(subscription.resource, canonicalResource, identity.pluginId)) continue;
+                if (!sameReference(subscription.resource, canonicalResource, options.authorPlugin.id)) continue;
                 emit({
                     wireVersion: PLUGIN_UI_HOST_API_WIRE_VERSION_V1,
                     kind: 'subscription',

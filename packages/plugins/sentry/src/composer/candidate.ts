@@ -130,6 +130,69 @@ function candidateLabel(eventId: string): string {
   return `Sentry occurrence ${eventId}`;
 }
 
+/**
+ * What a reader is actually approving when they add this occurrence to a
+ * message, counted from the one projection they are looking at.
+ *
+ * The disclosure §8.4 owes the reader is enumerable rather than approximate
+ * precisely because `SentryEventProjectionV1` already names what it kept and
+ * what it withheld. Deriving the confirmation from the same projection the
+ * dispatch resolver re-reads is what keeps the two honest: a confirmation
+ * assembled from a boolean, or from a separate idea of what evidence is, is a
+ * guess about someone else's data.
+ */
+export type SentryEvidenceDisclosureSummaryV1 = Readonly<{
+  frames: number;
+  contextLines: number;
+  breadcrumbs: number;
+  tags: number;
+  /** Provider values this organization's own Sentry rules already scrubbed. */
+  providerScrubbed: number;
+  /** Paths this source withheld, including every frame's local variables. */
+  pluginWithheld: number;
+  /** Retained values classified sensitive, such as event user fields and tags. */
+  sensitivePaths: number;
+  /** Allow-listed event user fields present in the projection and never sent. */
+  userFields: number;
+  truncated: boolean;
+}>;
+
+export function summarizeSentryEvidenceDisclosure(
+  projection: SentryEventProjectionV1,
+): SentryEvidenceDisclosureSummaryV1 {
+  let frames = 0;
+  let contextLines = 0;
+  let breadcrumbs = 0;
+  for (const section of projection.sections) {
+    if (section.kind === 'exception' || section.kind === 'stacktrace') {
+      frames += section.frames.length;
+      for (const frame of section.frames) {
+        if (frame.contextLine !== null && frame.contextLine !== '') contextLines += 1;
+      }
+      continue;
+    }
+    if (section.kind === 'breadcrumbs') breadcrumbs += section.entries.length;
+  }
+  const providerScrubbed = projection.redactions.filter(
+    (redaction) => redaction.reason === 'providerScrubbed',
+  ).length;
+  const user = projection.user;
+  return Object.freeze({
+    frames,
+    contextLines,
+    breadcrumbs,
+    tags: projection.tags.length,
+    providerScrubbed,
+    pluginWithheld: projection.redactions.length - providerScrubbed,
+    sensitivePaths: projection.sensitivePaths.length,
+    userFields: user === null
+      ? 0
+      : [user.id, user.email, user.username, user.ipAddress, user.name]
+        .filter((value) => value !== null).length,
+    truncated: projection.projectionTruncated,
+  });
+}
+
 /** Mints the one identity-only candidate the mounted detail may disclose. */
 export function createSentryEvidenceCandidate(input: Readonly<{
   instance: TriageConfiguredSourceInstanceV1;

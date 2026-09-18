@@ -124,11 +124,8 @@ function snapshot(
 
 function identity(generation: string) {
   return Object.freeze({
-    pluginId: 'acme.composer.issue-dogfood',
-    pluginVersion: '0.0.0',
-    viewId: 'issue-surface',
-    generation,
-    sessionId: composer.sessionId,
+    instanceId: 'fixture-instance',
+    mountNonce: generation,
   });
 }
 
@@ -141,6 +138,7 @@ async function createCompactFixture(
   const watchComposer = vi.fn(async () => await watchOutcome());
   const fixture = await createPluginUiTestkit({
     identity: identity(generation),
+    authorPlugin: { id: 'acme.composer.issue-dogfood', version: '0.0.0' },
     surface: renderWithMountedComposer(composer),
     surfaceContext: createSurfaceContextFixture(),
     launchInput: {
@@ -284,6 +282,7 @@ describe('external Composer dogfood surface', () => {
     }));
     const fixture = await createPluginUiTestkit({
       identity: identity('picker-generation-1'),
+      authorPlugin: { id: 'acme.composer.issue-dogfood', version: '0.0.0' },
       surface: renderWithMountedComposer(composer),
       surfaceContext: createSurfaceContextFixture(),
       launchInput: {
@@ -348,6 +347,7 @@ describe('external Composer dogfood surface', () => {
     const releaseComposerContent = vi.fn(async () => undefined);
     const fixture = await createPluginUiTestkit({
       identity: identity('picker-media-generation-1'),
+      authorPlugin: { id: 'acme.composer.issue-dogfood', version: '0.0.0' },
       surface: renderWithMountedComposer(composer),
       surfaceContext: createSurfaceContextFixture(),
       launchInput: {
@@ -404,6 +404,7 @@ describe('external Composer dogfood surface', () => {
     }));
     const fixture = await createPluginUiTestkit({
       identity: identity('picker-daemon-media-generation-1'),
+      authorPlugin: { id: 'acme.composer.issue-dogfood', version: '0.0.0' },
       surface: renderWithMountedComposer(composer),
       surfaceContext: createSurfaceContextFixture(),
       launchInput: {
@@ -470,6 +471,7 @@ describe('external Composer dogfood surface', () => {
     const releaseComposerContent = vi.fn(async () => undefined);
     const fixture = await createPluginUiTestkit({
       identity: identity('picker-staged-attachment-generation-1'),
+      authorPlugin: { id: 'acme.composer.issue-dogfood', version: '0.0.0' },
       surface: renderWithMountedComposer(composer),
       surfaceContext: createSurfaceContextFixture(),
       launchInput: {
@@ -533,6 +535,7 @@ describe('external Composer dogfood surface', () => {
     const applyComposer = vi.fn(async () => ({ status: 'applied' as const, revision: 18 }));
     const fixture = await createPluginUiTestkit({
       identity: identity('picker-without-mounted-carrier'),
+      authorPlugin: { id: 'acme.composer.issue-dogfood', version: '0.0.0' },
       surface: renderWithMountedComposer(null),
       surfaceContext: createSurfaceContextFixture(),
       launchInput: {
@@ -577,6 +580,7 @@ describe('external Composer dogfood surface', () => {
     const watchComposer = vi.fn(async () => undefined);
     const fixture = await createPluginUiTestkit({
       identity: identity('compact-carrier-replacement'),
+      authorPlugin: { id: 'acme.composer.issue-dogfood', version: '0.0.0' },
       surface: (context) => renderWithMountedComposer(mountedComposer)(context),
       surfaceContext: createSurfaceContextFixture(),
       launchInput: {
@@ -624,6 +628,7 @@ describe('external Composer dogfood surface', () => {
   it('retires stale picker UI and remounts display and preview from unchanged persisted identity', async () => {
     const picker = await createPluginUiTestkit({
       identity: identity('picker-generation-before-update'),
+      authorPlugin: { id: 'acme.composer.issue-dogfood', version: '0.0.0' },
       surface: renderWithMountedComposer(composer),
       surfaceContext: createSurfaceContextFixture(),
       launchInput: {
@@ -644,6 +649,7 @@ describe('external Composer dogfood surface', () => {
 
     const display = await createPluginUiTestkit({
       identity: identity('display-generation-after-reinstall'),
+      authorPlugin: { id: 'acme.composer.issue-dogfood', version: '0.0.0' },
       surface: renderComposerIssueSurface,
       surfaceContext: createSurfaceContextFixture(),
       launchInput: {
@@ -657,6 +663,7 @@ describe('external Composer dogfood surface', () => {
     });
     const preview = await createPluginUiTestkit({
       identity: identity('preview-generation-after-reinstall'),
+      authorPlugin: { id: 'acme.composer.issue-dogfood', version: '0.0.0' },
       surface: renderComposerIssueSurface,
       surfaceContext: createSurfaceContextFixture(),
       launchInput: {

@@ -312,8 +312,18 @@ async function mountReviewPanel(): Promise<void> {
     if (context.hostApi.version().methods.includes('watchContext')) {
         await context.hostApi.watchContext((surface) => applyContext(root, surface), { signal: context.signal });
     }
-    const destinationLocalId = context.surface.mount.kind === 'destination'
-        ? context.surface.mount.destination.localId
+    // A Session widget is an EMBEDDED mount, not a destination: it carries a role
+    // and presentation instead of a destination identity, so it must be matched
+    // before the destination checks rather than falling through to the overview.
+    // This is the declared hosted-web fallback for the same `review-status-widget`
+    // surface the React Native renderer serves.
+    const mount = context.surface.mount;
+    if (mount.kind === 'embedded' && mount.role === 'sessionWidget') {
+        mountSessionStatus(root, context);
+        return;
+    }
+    const destinationLocalId = mount.kind === 'destination'
+        ? mount.destination.localId
         : null;
     if (destinationLocalId === REVIEW_SESSION_STATUS_VIEW_ID) {
         await mountSessionStatus(root, context);

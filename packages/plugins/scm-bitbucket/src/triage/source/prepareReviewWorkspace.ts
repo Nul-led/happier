@@ -20,7 +20,6 @@ import { BITBUCKET_TRIAGE_DEPLOYMENT_BASE_URL_V1 } from '../identity.js';
 import { getBitbucketPullRequest } from '../pullRequests.js';
 import type { BitbucketSourceRuntime } from './authorization.js';
 import { admitBitbucketEntryInvocation } from './invocationAdmission.js';
-import { matchesBitbucketEntryLocator } from './observations.js';
 
 export type BitbucketReviewWorkspaceRuntime = BitbucketSourceRuntime & Readonly<{
   actions: ActionsService;
@@ -168,7 +167,6 @@ export async function prepareBitbucketReviewWorkspace(
     workspaceUuid: admitted.route.workspaceUuid,
     repositorySlug: admitted.route.repositorySlug,
     expectedRepositoryUuid: admitted.route.expectedRepositoryUuid,
-    expectedRepositoryKey: admitted.route.repositoryKey,
     entryId: admitted.route.entryId,
     ...(runtime.signal === undefined ? {} : { signal: runtime.signal }),
   });
@@ -176,10 +174,6 @@ export async function prepareBitbucketReviewWorkspace(
     return pullRequestRouteMoved(reread.failure)
       ? { kind: 'refused', reason: 'pullRequestMoved' }
       : { kind: 'unavailable', reason: 'account' };
-  }
-
-  if (!matchesBitbucketEntryLocator(reread.entry, input.lastKnownLocator)) {
-    return { kind: 'refused', reason: 'pullRequestMoved' };
   }
 
   const prepared = readBitbucketPreparedReview(reread.entry);
@@ -201,11 +195,12 @@ export async function prepareBitbucketReviewWorkspace(
     return { kind: 'unavailable', reason: 'scmResolver' };
   }
   const materialized = execution.result;
-  if (!materialized.success) {
+  if (!('success' in materialized) || !materialized.success) {
     if (
-      materialized.errorCode === 'NOT_REPOSITORY'
-      || materialized.errorCode === 'INVALID_PATH'
-      || materialized.errorCode === 'REMOTE_NOT_FOUND'
+      'errorCode' in materialized
+      && (materialized.errorCode === 'NOT_REPOSITORY'
+        || materialized.errorCode === 'INVALID_PATH'
+        || materialized.errorCode === 'REMOTE_NOT_FOUND')
     ) {
       return { kind: 'workspaceMismatch' };
     }
@@ -254,7 +249,6 @@ export async function verifyBitbucketReviewWorkspace(
     workspaceUuid: admitted.route.workspaceUuid,
     repositorySlug: admitted.route.repositorySlug,
     expectedRepositoryUuid: admitted.route.expectedRepositoryUuid,
-    expectedRepositoryKey: admitted.route.repositoryKey,
     entryId: admitted.route.entryId,
     ...(runtime.signal === undefined ? {} : { signal: runtime.signal }),
   });
@@ -264,10 +258,6 @@ export async function verifyBitbucketReviewWorkspace(
       ? { kind: 'refused', reason: 'pullRequestMoved' }
       : { kind: 'unavailable', reason: 'account' };
   }
-  if (!matchesBitbucketEntryLocator(reread.entry, input.lastKnownLocator)) {
-    return { kind: 'refused', reason: 'pullRequestMoved' };
-  }
-
   const current = readBitbucketPreparedReview(reread.entry);
   if (current === null) return { kind: 'refused', reason: 'pullRequestMoved' };
   if (
@@ -291,11 +281,12 @@ export async function verifyBitbucketReviewWorkspace(
     return { kind: 'unavailable', reason: 'scmResolver' };
   }
   const verified = execution.result;
-  if (!verified.success) {
+  if (!('success' in verified) || !verified.success) {
     if (
-      verified.errorCode === 'NOT_REPOSITORY'
-      || verified.errorCode === 'INVALID_PATH'
-      || verified.errorCode === 'REMOTE_NOT_FOUND'
+      'errorCode' in verified
+      && (verified.errorCode === 'NOT_REPOSITORY'
+        || verified.errorCode === 'INVALID_PATH'
+        || verified.errorCode === 'REMOTE_NOT_FOUND')
     ) {
       return { kind: 'workspaceMismatch' };
     }

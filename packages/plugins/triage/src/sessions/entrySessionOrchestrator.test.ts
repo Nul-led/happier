@@ -623,6 +623,71 @@ describe('startEntrySession', () => {
         expect(invoker.callsFor('session.message.send')).toHaveLength(1);
     });
 
+    /**
+     * The recovery a lost OUTER response leaves available. Nothing came back
+     * from the first start, so there is no phase to resume: the caller repeats
+     * the whole request under its retained creation and delivery keys, with a
+     * freshly authorized carrier for the same materialization request.
+     *
+     * That is safe for exactly the reasons the phase resume is. The source's own
+     * materialization reuses the matching worktree
+     * (`packages/plugins/scm-git/src/operations/materializeGitWorkspaceCheckout.ts`),
+     * the canonical creator authenticates the creation tag and the immutable
+     * recipe before rejoining, and the retained idempotency key rejoins the one
+     * durable input instead of queueing a second Message.
+     */
+    it('rejoins one Session and one Message when the whole prepared start is repeated', async () => {
+        const fixture = createTestkitCorpusCollections();
+        const entryRef = testkitEntryRef();
+        const invoker = createTestkitActionInvoker({
+            spawn: [spawnSuccess(), spawnSuccess({ disposition: 'rejoined' })],
+            send: [
+                { status: 'accepted', localId: 'pending-local-id' },
+                { status: 'alreadyAccepted', localId: 'pending-local-id' },
+            ],
+        });
+        const source = createTestkitPrepareReviewWorkspace({
+            results: [PREPARED_RESULT, PREPARED_RESULT],
+        });
+        const request: TriageEntrySessionStartRequestV1 = {
+            entryRef,
+            display: TESTKIT_LINK_DISPLAY,
+            workspaceMode: 'pull_request',
+            destination: {
+                kind: 'new',
+                creationKey: 'creation-key-a',
+                spawn: TESTKIT_SPAWN_REQUEST,
+                materialization: REVIEW_WORKSPACE,
+            },
+            delivery: TESTKIT_DELIVERY_REQUEST,
+        };
+
+        const first = await startEntrySession(deps(fixture, invoker, source), request);
+        const repeated = await startEntrySession(deps(fixture, invoker, source), request);
+
+        expect(first).toMatchObject({ type: 'opened', disposition: 'created', delivery: 'accepted' });
+        expect(repeated).toMatchObject({
+            type: 'opened',
+            sessionId: 'session-a',
+            disposition: 'rejoined',
+            delivery: 'alreadyAccepted',
+            workspace: PREPARED_FACTS,
+        });
+        const spawns = invoker.callsFor('session.spawn_new');
+        expect(spawns).toHaveLength(2);
+        // The same key and the same recipe: the creator rejoins rather than
+        // creating a second Session, and no second identity was invented.
+        expect(spawns[1]?.input).toEqual(spawns[0]?.input);
+        const sends = invoker.callsFor('session.message.send');
+        expect(sends).toHaveLength(2);
+        expect(sends[1]?.input).toEqual(sends[0]?.input);
+        // One entry, one Session, one link address — however many times the
+        // whole start is repeated under the retained key.
+        const linkTag = await deriveSessionLinkTag(fixture.collections.sessionLinks, entryRef, 'session-a');
+        expect(await fixture.collections.sessionLinks.get(linkTag)).not.toBeNull();
+        expect(source.calls).toHaveLength(2);
+    });
+
     it('treats a creation conflict as terminal without fabricating a Session id', async () => {
         const fixture = createTestkitCorpusCollections();
         const entryRef = testkitEntryRef();

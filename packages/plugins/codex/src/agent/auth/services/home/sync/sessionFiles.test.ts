@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   createCodexSessionImportRoots,
-  normalizeCodexVendorResumeId,
+  readExactCodexVendorResumeId,
   resolveCodexMaterializedSessionsRoot,
   resolveCodexSessionFileMappingDestinationPaths,
   resolveCodexVendorResumeIdFromImportedSessionFile,
@@ -70,10 +70,12 @@ describe('Codex connected-service home sync session files', () => {
     })).toBeNull();
   });
 
-  it('normalizes Codex resume ids and resolves materialized session-file mapping paths', () => {
-    expect(normalizeCodexVendorResumeId(' vendor-session ')).toBe('vendor-session');
-    expect(normalizeCodexVendorResumeId('nested/session')).toBeNull();
-    expect(normalizeCodexVendorResumeId('nested\\session')).toBeNull();
+  it('reads Codex resume ids byte-for-byte and resolves materialized session-file mapping paths', () => {
+    expect(readExactCodexVendorResumeId(' vendor\nsession ')).toBe(' vendor\nsession ');
+    expect(readExactCodexVendorResumeId(' \n\t ')).toBeNull();
+    expect(readExactCodexVendorResumeId(undefined)).toBeNull();
+    expect(readExactCodexVendorResumeId('nested/session')).toBeNull();
+    expect(readExactCodexVendorResumeId('nested\\session')).toBeNull();
     expect(resolveCodexMaterializedSessionsRoot('/materialized/root/codex-home')).toBe(join('/materialized/root/codex-home', 'sessions'));
     expect(resolveCodexSessionFileMappingDestinationPaths({
       targetMaterializedRoot: '/materialized/root/codex-home',

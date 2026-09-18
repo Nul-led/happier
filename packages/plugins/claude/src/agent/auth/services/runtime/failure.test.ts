@@ -196,7 +196,7 @@ describe('Claude runtime auth service classification', () => {
           source: 'shared_group_auth_surface',
           reason: 'claude_shared_group_auth_surface_rewritten',
           generationApplication: {
-            serviceId: 'claude-subscription',
+            serviceId: 'happier.agent.claude/claude-subscription',
             groupId: 'coders',
             profileId: 'team',
             generation: 12,
@@ -311,7 +311,7 @@ describe('Claude runtime auth service classification', () => {
         source: 'shared_group_auth_surface',
         reason: 'claude_shared_group_auth_surface_rewritten',
         generationApplication: {
-          serviceId: 'claude-subscription',
+          serviceId: 'happier.agent.claude/claude-subscription',
           groupId: 'coders',
           profileId: 'team',
           generation: 12,
@@ -327,7 +327,7 @@ describe('Claude runtime auth service classification', () => {
     await expect(createClaudeConnectedServiceRuntimeAuthAdapter().hotApply({
       target: { agentId: 'claude' },
       selection: {
-        serviceId: 'claude-subscription',
+        serviceId: 'happier.agent.claude/claude-subscription',
         groupId: 'coders',
         activeProfileId: 'team',
         groupGeneration: 12,

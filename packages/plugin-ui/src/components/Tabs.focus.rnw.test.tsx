@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import { mountThroughReactNativeWeb } from '../rnwMount.testSupport.js';
 import { createHostApiStub, createSurfaceContext } from '../surfaceFixture.testSupport.js';
+import { Button } from './Button.js';
 import { PluginUiProvider } from './PluginUiProvider.js';
 import { Tabs } from './Tabs.js';
 
@@ -104,6 +105,104 @@ describe('Tabs focus recovery when a conditional tab disappears', () => {
     expect(triggerNamed(mount, 'Replays')).toBeDefined();
     expect(document.activeElement).toBe(triggerNamed(mount, 'Replays'));
     mount.unmount();
+  });
+
+  /**
+   * A reader does not stop at the trigger. `core/SURFACE.md` §5.3's conditional
+   * active-tab loss rule says focus moves to the fallback trigger when it was in
+   * the removed trigger **or panel**, and a panel is where the reader spends
+   * their time: a source's Release or Stack Trace tab appears on asynchronous
+   * evidence and disappears with it while the reader is standing on a control
+   * inside it. Tracking only triggers leaves that reader's focus on the document
+   * body, which loses the tablist entirely — the exact failure the trigger rule
+   * already exists to prevent.
+   */
+  function mountConditionalPanels(input: Readonly<{
+    tabs: readonly TabSpec[];
+    value: string;
+    onValueChange: (value: string) => void;
+  }>) {
+    const context = createSurfaceContext();
+    const hostApi = createHostApiStub(context);
+    const tree = (current: Readonly<{ tabs: readonly TabSpec[]; value: string }>) => (
+      <PluginUiProvider hostApi={hostApi} context={context}>
+        <Tabs value={current.value} onValueChange={input.onValueChange} ariaLabel="Issue detail" testID="detail-tabs">
+          {current.tabs.map((tab) => (
+            <Tabs.Item key={tab.value} value={tab.value} title={tab.title}>
+              <Button title={`Open ${tab.title}`} variant="secondary" onPress={() => {}} />
+            </Tabs.Item>
+          ))}
+        </Tabs>
+      </PluginUiProvider>
+    );
+    const mount = mountThroughReactNativeWeb(tree({ tabs: input.tabs, value: input.value }));
+    return { mount, tree };
+  }
+
+  const panelControlNamed = (
+    mount: Readonly<{ container: HTMLElement }>,
+    title: string,
+  ): HTMLElement | undefined => (
+    Array.from(mount.container.querySelectorAll<HTMLElement>('[role="button"]'))
+      .find((control) => control.textContent?.includes(title))
+  );
+
+  it('hands focus to the fallback trigger when the reader was inside the removed panel', async () => {
+    const changes: string[] = [];
+    const { mount, tree } = mountConditionalPanels({
+      tabs: allTabs,
+      value: 'replays',
+      onValueChange: (value) => changes.push(value),
+    });
+
+    // The reader tabbed off the trigger and into the panel's own control.
+    const control = panelControlNamed(mount, 'Open Replays');
+    expect(control).toBeDefined();
+    await act(async () => { control?.focus(); });
+    expect(document.activeElement).toBe(control);
+
+    await mount.render(tree({ tabs: allTabs.filter((tab) => tab.value !== 'replays'), value: 'replays' }));
+
+    expect(changes).toEqual(['occurrences']);
+    expect(document.activeElement).toBe(triggerNamed(mount, 'Occurrences'));
+    mount.unmount();
+  });
+
+  it('leaves focus inside a panel that is still mounted when another tab is removed', async () => {
+    const { mount, tree } = mountConditionalPanels({
+      tabs: allTabs,
+      value: 'occurrences',
+      onValueChange: () => {},
+    });
+
+    const control = panelControlNamed(mount, 'Open Occurrences');
+    await act(async () => { control?.focus(); });
+
+    await mount.render(tree({ tabs: allTabs.filter((tab) => tab.value !== 'activity'), value: 'occurrences' }));
+
+    // Recovering here would yank the reader out of the panel they are working in.
+    expect(document.activeElement).toBe(panelControlNamed(mount, 'Open Occurrences'));
+    mount.unmount();
+  });
+
+  it('does not pull focus into the tablist when the reader left the panel for somewhere else', async () => {
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+    const { mount, tree } = mountConditionalPanels({
+      tabs: allTabs,
+      value: 'replays',
+      onValueChange: () => {},
+    });
+
+    await act(async () => { panelControlNamed(mount, 'Open Replays')?.focus(); });
+    await act(async () => { outside.focus(); });
+    expect(document.activeElement).toBe(outside);
+
+    await mount.render(tree({ tabs: allTabs.filter((tab) => tab.value !== 'replays'), value: 'replays' }));
+
+    expect(document.activeElement).toBe(outside);
+    mount.unmount();
+    outside.remove();
   });
 
   it('does not pull focus back into the tablist when the reader has moved outside it', async () => {

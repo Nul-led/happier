@@ -1,7 +1,7 @@
 import { isPluginError, PluginError, type PluginInvocationContext } from '@happier-dev/plugin-sdk';
+import { isPluginActionApprovalRequestCreated } from '@happier-dev/plugin-sdk/actions';
 import type {
   PluginActionInputById,
-  PluginActionResultById,
 } from '@happier-dev/plugin-sdk/actions';
 import {
   isAutomationEventSourcesListPageProgressingV1,
@@ -28,8 +28,6 @@ import {
   type GithubRepositorySourceConfigV1,
   type GithubAutomationRepositoryEventSourceConfigV1,
 } from './observations/githubProviderContracts.js';
-
-type AutomationEventSourcesListResultV1 = PluginActionResultById['automation.event.sources.list'];
 
 type CurrentHistoryGapResetSourceV1 = Readonly<{
   definition: GithubAutomationEventSourceDefinitionV1;
@@ -83,12 +81,16 @@ async function readCurrentHistoryGapResetSource(input: Readonly<{
       transport: { kind: 'checkpointedPull' },
       ...(cursor === undefined ? {} : { cursor }),
     };
-    const result: AutomationEventSourcesListResultV1 = await input.context.services.actions.execute(
+    const result = await input.context.services.actions.execute(
       'automation.event.sources.list',
       request,
       { signal: input.context.signal },
     );
     input.context.signal.throwIfAborted();
+    // A policy deferral means the catalog read never ran, so this scan has no
+    // current revision to baseline against. It joins the existing typed
+    // currentness-loss result rather than becoming a provider call.
+    if (isPluginActionApprovalRequestCreated(result)) return null;
     if (result.kind !== 'page'
       || (revision !== null && result.revision !== revision)
       || !isAutomationEventSourcesListPageProgressingV1(result)) {
@@ -110,7 +112,7 @@ async function readCurrentHistoryGapResetSource(input: Readonly<{
           transport: { kind: 'checkpointedPull' },
           knownRevision: currentRevision,
         };
-        const current: AutomationEventSourcesListResultV1 = await input.context.services.actions.execute(
+        const current = await input.context.services.actions.execute(
           'automation.event.sources.list',
           request,
           { signal: input.context.signal },

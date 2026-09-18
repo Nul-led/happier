@@ -4,6 +4,7 @@ import {
   EmptyState,
   Heading,
   Row,
+  ScrollArea,
   Select,
   Stack,
   Status,
@@ -57,6 +58,28 @@ import { useTriagePromptInvocations } from './usePromptInvocations.js';
  * own: the draft a person is typing, which is not durable state and is
  * discarded on cancel.
  */
+
+/**
+ * The editor's own scrolling region, as automation identity.
+ *
+ * Exported because the fact a mounted test has to be able to reach is exactly
+ * this box: the form and its **Save** control are inside a scroll owner of the
+ * editor's own, rather than clipped by the shell's work region with no way to
+ * reach the end of what a person is filling in.
+ */
+export const TRIAGE_ACTIONS_EDITOR_SCROLL_TEST_ID_V1 = 'triage-actions-editor-scroll';
+
+/**
+ * How the editor takes its share of the shell's clipped work region.
+ *
+ * `flexShrink: 1` with `minHeight: 0` is the whole mechanism: without it a
+ * column child keeps its natural content height, so a long draft simply grows
+ * past the region the shell clips and takes **Save** with it. Shrinking instead
+ * gives the editor a bounded box, and the scroll owner below reaches the rest.
+ * It claims no fixed height and no share of its own — the list keeps its
+ * `flex: 1` — so an editor that fits still renders exactly as it did.
+ */
+const TRIAGE_ACTIONS_EDITOR_SCROLL_STYLE_V1 = Object.freeze({ flexShrink: 1, minHeight: 0 });
 
 export type TriageActionsEditorPropsV1 = Readonly<{
   actions: TriageMountedActionsV1;
@@ -243,6 +266,21 @@ export function TriageActionsEditor(props: TriageActionsEditorPropsV1): React.Re
     : isTriageActionDraftRevisionStaleV1(target.baseRevision, actions.revision);
 
   return (
+    /*
+     * One scroll owner, and it is the editor's own.
+     *
+     * The shell's work region is clipped (`ui/shell/root.tsx`), so everything
+     * below the fold of a long draft — including the control that commits it —
+     * was unreachable at short viewports, at large type sizes, and with a
+     * larger action catalog above the form. Wrapping the region the editor
+     * SHARES with the list would have been the other way to reach it, and it is
+     * the wrong one: the list is virtualized and owns the only scroller its
+     * reveal, measurement and keyboard paging can work through.
+     */
+    <ScrollArea
+      testID={TRIAGE_ACTIONS_EDITOR_SCROLL_TEST_ID_V1}
+      style={TRIAGE_ACTIONS_EDITOR_SCROLL_STYLE_V1}
+    >
     <Stack gap="small">
       <Row gap="small" align="center">
         <Heading
@@ -532,6 +570,7 @@ export function TriageActionsEditor(props: TriageActionsEditorPropsV1): React.Re
         </Stack>
       )}
     </Stack>
+    </ScrollArea>
   );
 }
 

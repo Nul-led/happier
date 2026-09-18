@@ -1,4 +1,5 @@
 import { definePlugin, type DefinedPlugin } from '@happier-dev/plugin-sdk';
+import { CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1 } from '@happier-dev/plugin-sdk/connected-accounts';
 import type { ActionContract } from '@happier-dev/plugin-sdk/actions';
 import { QualifiedConnectedAccountRefJsonSchema } from '@happier-dev/plugin-sdk/connected-accounts';
 import type { PluginJsonSchema } from '@happier-dev/plugin-sdk/protocol';
@@ -199,6 +200,7 @@ function createDiscordPlugin() {
             {
               id: 'bot-token',
               kind: 'manual',
+              directExport: { contractVersion: CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1 },
               title: 'Bot token',
               outcomeReconciliation: 'none',
               fields: [

@@ -31,9 +31,9 @@ describe('createPiConnectedServiceRuntimeAuthAdapter', () => {
         },
       },
       selection: new Map([
-        ['claude-subscription', {
+        ['happier.agent.claude/claude-subscription', {
           kind: 'group',
-          serviceId: 'claude-subscription',
+          serviceId: 'happier.agent.claude/claude-subscription',
           groupId: 'claude-main',
           activeProfileId: 'claude-primary',
           fallbackProfileId: 'claude-backup',
@@ -68,9 +68,9 @@ describe('createPiConnectedServiceRuntimeAuthAdapter', () => {
         },
       },
       selection: new Map([
-        ['openai-codex', {
+        ['happier.agent.codex/openai-codex', {
           kind: 'group',
-          serviceId: 'openai-codex',
+          serviceId: 'happier.agent.codex/openai-codex',
           groupId: 'happier',
           activeProfileId: 'leeroy',
           fallbackProfileId: 'backup',

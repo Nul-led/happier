@@ -3,6 +3,7 @@ import test from 'node:test';
 import { readFile } from 'node:fs/promises';
 
 import { createPluginTestkit } from '@happier-dev/plugin-sdk/testing';
+import { PluginError } from '@happier-dev/plugin-sdk';
 
 import * as module from '../dist/index.js';
 
@@ -286,11 +287,351 @@ test('invokes every retained service through declared Actions and keeps the visi
   assert.deepEqual(
     module.manifest.contributes.tools
       .filter((tool) => tool.action === 'inspect-document-review-services'
-        || tool.action === 'rotate-document-review-webhook-token')
+        || tool.action === 'rotate-document-review-webhook-token'
+        || tool.action === 'forward-to-session-run')
       .map((tool) => ({ id: tool.id, action: tool.action })),
     [
       { id: 'inspect-document-review-services-tool', action: 'inspect-document-review-services' },
       { id: 'rotate-document-review-webhook-token-tool', action: 'rotate-document-review-webhook-token' },
+      { id: 'forward-to-session-run-tool', action: 'forward-to-session-run' },
     ],
+  );
+});
+
+test('exercises Lane 10 parity through the same public Actions and contribution identities as built-ins', async (t) => {
+  const teamId = 'team_parity_01';
+  const credentialResources = [
+    {
+      id: 'res_connected_01',
+      teamId,
+      displayName: 'Example OAuth share',
+      source: {
+        v: 1,
+        kind: 'connected_account',
+        target: {
+          kind: 'account',
+          account: {
+            service: { pluginId: 'happier.connectedAccounts.example', localId: 'example-oauth' },
+            accountId: 'acc_123',
+          },
+        },
+        credentialIncarnation: 'incarnation-1',
+      },
+      readiness: { kind: 'available' },
+    },
+    {
+      id: 'res_provider_01',
+      teamId,
+      displayName: 'Example provider share',
+      source: {
+        v: 1,
+        kind: 'provider_connection',
+        connectionId: 'conn_01',
+        connectionSecurityFingerprint: 'fingerprint-1',
+        credentialSlotId: 'apiKey',
+        provider: {
+          identity: { pluginId: 'happier.provider.openai', localId: 'openai' },
+          definitionRevision: 1,
+        },
+      },
+      readiness: { kind: 'available' },
+    },
+  ];
+  const sharedResources = [{
+    ref: 'happier:shared-secret:v1:resource_01',
+    source: 'shared_resource',
+    relationship: 'recipient',
+    name: 'Example API key',
+    kind: 'apiKey',
+    ownerAccountId: 'acc_owner_01',
+    revision: 3,
+    materialStatus: 'ready',
+    capabilities: { use: true, rename: false, rotate: false, manageAccess: false, delete: false },
+  }];
+  const listedAccounts = [{
+    account: {
+      service: { pluginId: 'happier.connectedAccounts.example', localId: 'example-oauth' },
+      accountId: 'acc_123',
+    },
+    displayName: 'Example OAuth',
+    state: 'connected',
+    connectedAccountOrigins: [],
+    connectedAccountBases: [],
+  }];
+  const seenActions = [];
+  const sourceCandidates = {
+    candidates: [{
+      candidateId: 'candidate_provider_01',
+      label: 'Example provider',
+      memberCount: null,
+      offeredByResourceId: null,
+      source: credentialResources[1].source,
+    }],
+    supportedKinds: ['connected_account', 'connected_pool', 'provider_connection'],
+  };
+  const source = await readFile(new URL('../src/index.ts', import.meta.url), 'utf8');
+  // Public-SDK parity: only documented entrypoints, never host internals or another plugin artifact.
+  assert.match(source, /from '@happier-dev\/plugin-sdk\/providers'/u);
+  assert.match(source, /from '@happier-dev\/plugin-sdk\/connected-accounts'/u);
+  assert.match(source, /areProviderContributionKeysEqualV1/u);
+  assert.match(source, /QualifiedConnectedAccountRefSchema/u);
+  assert.doesNotMatch(source, /apps\/cli\/src\/plugins\/runtime/u);
+  assert.doesNotMatch(source, /apps\/server\/sources\/app\/teams/u);
+  assert.doesNotMatch(source, /packages\/protocol\/src\/teams/u);
+  const plugin = await createPluginTestkit({
+    manifest: module.manifest,
+    module,
+    services: {
+      actions: {
+        async execute(actionId, input, options) {
+          assert.equal(options?.signal instanceof AbortSignal, true);
+          seenActions.push(actionId);
+          if (actionId === 'teams.credentials.list') {
+            assert.deepEqual(input, { teamId });
+            return { resources: credentialResources, viewer: { manageCredentials: false, offerOwnCredential: true } };
+          }
+          if (actionId === 'teams.credentials.sources.list') {
+            assert.deepEqual(input, { teamId });
+            return sourceCandidates;
+          }
+          if (actionId === 'teams.credentials.test') {
+            assert.deepEqual(input, { teamId, resourceId: 'res_connected_01' });
+            return { result: 'needs_attention', readiness: { kind: 'source_unavailable' }, recovery: 'Repair the source.' };
+          }
+          if (actionId === 'secrets.shared.list') {
+            assert.deepEqual(input, {});
+            return { resources: sharedResources };
+          }
+          throw new Error(`unexpected Lane 10 Action ${String(actionId)}`);
+        },
+      },
+      providers: {
+        connections: {
+          async describe(request, options) {
+            assert.deepEqual(request, {});
+            assert.equal(options?.signal instanceof AbortSignal, true);
+            return { status: 'success', connections: [], available: [], availableTruncated: false, discoveryCandidates: [], discoveryCandidatesTruncated: false, localInstallations: [], diagnostics: [], diagnosticsTruncated: false };
+          },
+        },
+      },
+      connectedAccounts: {
+        async listAccounts(request, options) {
+          assert.deepEqual(request, { purpose: 'document-review-api', limit: 50 });
+          assert.equal(options?.signal instanceof AbortSignal, true);
+          return { status: 'complete', accounts: listedAccounts };
+        },
+      },
+    },
+  });
+  t.after(async () => plugin.dispose());
+  const result = await plugin.invokeAction('inspect-team-credential-parity', {
+    teamId,
+    resourceId: 'res_connected_01',
+  });
+  // Same Lane 10 Action IDs as built-in Team Settings/pickers, in canonical order.
+  assert.deepEqual(seenActions, [
+    'teams.credentials.list',
+    'teams.credentials.sources.list',
+    'teams.credentials.test',
+    'secrets.shared.list',
+  ]);
+  assert.equal(result.teamId, teamId);
+  // Same Provider/Connected Account contribution identity vocabulary as built-ins.
+  assert.deepEqual(result.credentialResources, [
+    {
+      id: 'res_connected_01',
+      displayName: 'Example OAuth share',
+      sourceKind: 'connected_account',
+      serviceIdentity: { pluginId: 'happier.connectedAccounts.example', localId: 'example-oauth' },
+      providerIdentity: null,
+      readinessKind: 'available',
+    },
+    {
+      id: 'res_provider_01',
+      displayName: 'Example provider share',
+      sourceKind: 'provider_connection',
+      serviceIdentity: null,
+      providerIdentity: { pluginId: 'happier.provider.openai', localId: 'openai' },
+      readinessKind: 'available',
+    },
+  ]);
+  // Shared list preserves materialStatus for the host-owned materializer; no bytes disclosed.
+  // Raw shared materialization remains host-owned (SavedSecretMaterializerV1 plus scoped
+  // plugin secret settings/raw credential materializer per Lane 10.08) with no public SDK
+  // getter by design, so this is the closest approved public seam.
+  assert.deepEqual(result.sharedSecrets, [{
+    ref: 'happier:shared-secret:v1:resource_01',
+    name: 'Example API key',
+    materialStatus: 'ready',
+    canUse: true,
+  }]);
+  assert.equal(result.providerStatus, 'success');
+  assert.deepEqual(result.connectedAccounts, {
+    status: 'complete',
+    accounts: [{ displayName: 'Example OAuth', state: 'connected' }],
+  });
+  assert.equal(result.providerIdentityMatch, true);
+  assert.deepEqual(result.sourceCatalog, {
+    supportedKinds: ['connected_account', 'connected_pool', 'provider_connection'],
+    candidates: [{ id: 'candidate_provider_01', label: 'Example provider', sourceKind: 'provider_connection' }],
+  });
+  assert.deepEqual(result.resourceTest, {
+    result: 'needs_attention',
+    readiness: { kind: 'source_unavailable' },
+    recovery: 'Repair the source.',
+  });
+  const serialized = JSON.stringify(result);
+  // Recipient-safe: no custodian, broker, audience, bearer, signed capability, or secret bytes.
+  for (const forbidden of ['custodianAccountId', 'brokerMachineId', 'groupGrants', 'memberGrants', 'hostBearer', 'token', 'acc_123']) {
+    assert.equal(serialized.includes(forbidden), false);
+  }
+});
+
+test('preserves pending approval and typed failures for a public Saved Secret mutation', async (t) => {
+  const request = {
+    resourceId: 'resource_01',
+    expectedRevision: 3,
+    displayName: 'Rotated API key',
+    kind: 'apiKey',
+    value: 'replacement-secret-never-returned',
+  };
+  const cases = [
+    { mode: 'result', expected: {
+      kind: 'approval_request_created', artifactId: 'approval_lane10_01', actionId: 'secrets.shared.update',
+    } },
+    { mode: 'error', expected: {
+      code: 'resource_changed', message: 'The Saved Secret changed before this update.', details: { expectedRevision: 3 },
+    } },
+  ];
+  for (const { mode, expected } of cases) {
+    let seenInput = null;
+    const plugin = await createPluginTestkit({
+      manifest: module.manifest,
+      module,
+      services: {
+        actions: {
+          async execute(actionId, input) {
+            assert.equal(actionId, 'secrets.shared.update');
+            seenInput = input;
+            if (mode === 'error') throw new PluginError(expected);
+            return expected;
+          },
+        },
+      },
+    });
+    t.after(async () => plugin.dispose());
+
+    const invocation = plugin.invokeAction('update-shared-secret', request);
+    assert.deepEqual(seenInput, {
+      resourceId: request.resourceId,
+      expectedRevision: request.expectedRevision,
+      displayName: request.displayName,
+      kind: request.kind,
+      storedContent: {
+        t: 'plain',
+        v: { v: 1, name: request.displayName, kind: request.kind, value: request.value },
+      },
+    });
+    if (mode === 'error') {
+      await assert.rejects(invocation, (error) => {
+        assert.equal(error instanceof PluginError, true);
+        assert.deepEqual({ code: error.code, message: error.message, details: error.details }, expected);
+        return true;
+      });
+    } else {
+      const result = await invocation;
+      assert.deepEqual({ ...result }, expected);
+      assert.equal(JSON.stringify(result).includes(request.value), false);
+    }
+  }
+});
+
+test('forwards to a Session-owned run through the canonical Session handle with built-in parity', async (t) => {
+  const sessionId = 'session_parity_01';
+  const runId = 'run_parity_01';
+  const text = 'Continue this run';
+  const idempotencyKey = 'message-targeted-42';
+  const attachmentEntryId = '42';
+  const source = await readFile(new URL('../src/index.ts', import.meta.url), 'utf8');
+  // Trusted external-plugin parity: public manifest/activate ABI only, same
+  // recipient and attachment capabilities as built-ins, no privileged path.
+  assert.match(source, /forward-to-session-run/u);
+  assert.match(source, /context\.services\.sessions\.get/u);
+  assert.match(source, /kind: 'execution_run'/u);
+  assert.match(source, /attachmentLocalId: 'entry'/u);
+  assert.doesNotMatch(source, /apps\/cli\/src\/plugins\/runtime/u);
+  assert.doesNotMatch(source, /apps\/cli\/src\/session\/services\/sendSessionMessage/u);
+  assert.doesNotMatch(source, /packages\/protocol\/src\/sessions\/pending/u);
+  assert.doesNotMatch(source, /encrypt.*field|per-field|compatibility.*epoch|version.*probe/u);
+  const sessionsAccess = module.manifest.hostAccess.required.find(
+    (entry) => entry.capability === 'sessions',
+  );
+  assert.deepEqual(sessionsAccess, {
+    id: 'document-review-session-send',
+    capability: 'sessions',
+    reason: 'Send trusted document-review messages to selected Sessions and their retained execution runs.',
+    scope: { access: ['write'] },
+  });
+  const targetedAction = module.manifest.contributes.actions.find(
+    (entry) => entry.id === 'forward-to-session-run',
+  );
+  assert.deepEqual(targetedAction.surfaces, ['cli', 'mcp', 'agent', 'plugin']);
+  let seenSessionId = null;
+  let seenRequest = null;
+  const plugin = await createPluginTestkit({
+    manifest: module.manifest,
+    module,
+    services: {
+      sessions: {
+        async get(requestedSessionId, options) {
+          assert.equal(requestedSessionId, sessionId);
+          assert.equal(options?.signal instanceof AbortSignal, true);
+          seenSessionId = requestedSessionId;
+          return {
+            async send(request, sendOptions) {
+              assert.equal(sendOptions?.signal instanceof AbortSignal, true);
+              seenRequest = request;
+              return { status: 'accepted', localId: 'plugin-input-v1:targeted' };
+            },
+          };
+        },
+      },
+    },
+  });
+  t.after(async () => plugin.dispose());
+  const result = await plugin.invokeAction('forward-to-session-run', {
+    sessionId,
+    runId,
+    text,
+    idempotencyKey,
+    attachmentEntryId,
+  });
+  assert.equal(seenSessionId, sessionId);
+  assert.deepEqual({ ...seenRequest, recipient: { ...seenRequest.recipient } }, {
+    kind: 'userText',
+    text,
+    idempotencyKey,
+    recipient: { kind: 'execution_run', runId },
+    attachments: [{
+      attachmentLocalId: 'entry',
+      value: {
+        key: 'github:pull:42',
+        value: { sourceId: 'github', entryId: '42' },
+        presentation: { label: 'PR #42' },
+      },
+    }],
+  });
+  // Observable result through existing host wiring: canonical admission result.
+  assert.deepEqual({ ...result }, { status: 'accepted', localId: 'plugin-input-v1:targeted' });
+  // Action/tools declaration parity through the public manifest ABI.
+  const command = module.manifest.contributes.commands.find((entry) => entry.action === 'forward-to-session-run');
+  assert.deepEqual(
+    { id: command.id, action: command.action },
+    { id: 'forward-to-session-run-command', action: 'forward-to-session-run' },
+  );
+  const tool = module.manifest.contributes.tools.find((entry) => entry.action === 'forward-to-session-run');
+  assert.deepEqual(
+    { id: tool.id, action: tool.action },
+    { id: 'forward-to-session-run-tool', action: 'forward-to-session-run' },
   );
 });

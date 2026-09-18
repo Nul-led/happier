@@ -7,6 +7,10 @@ import {
   type SessionModelSelectionIntentV1,
 } from '@happier-dev/protocol/providers/model-selection';
 import {
+  SessionModelSelectionV2Schema,
+  type SessionModelSelectionV2,
+} from '@happier-dev/protocol';
+import {
   readExactSessionActiveModelSelectionV1,
 } from '@happier-dev/protocol/providers/active-model-selection';
 import { readSessionProviderBindingMetadataStateV1 } from '@happier-dev/protocol';
@@ -19,6 +23,14 @@ import { MODEL_OVERRIDE_KEY, MODEL_SELECTION_INTENT_KEY } from './bindings/metad
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
+}
+
+/** Exact current V2 intent. Team refs deliberately remain Team refs. */
+export function readSessionModelSelectionV2FromMetadata(metadata: unknown): SessionModelSelectionV2 | null {
+  const obj = asRecord(metadata);
+  if (!obj) return null;
+  const parsed = SessionModelSelectionV2Schema.safeParse(obj.modelSelectionIntentV2);
+  return parsed.success ? parsed.data : null;
 }
 
 /**

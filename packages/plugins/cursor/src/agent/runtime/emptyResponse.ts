@@ -17,6 +17,24 @@ function isTurnTerminal(event: AgentSessionRuntimeEvent): boolean {
 
 export function withCursorEmptyResponseFailure(runtime: AgentSessionRuntime): AgentSessionRuntime {
   return {
+    ...(runtime.runtimeDescriptorV1 !== undefined
+      ? { runtimeDescriptorV1: runtime.runtimeDescriptorV1 }
+      : {}),
+    ...(runtime.runtimeCapabilities !== undefined
+      ? { runtimeCapabilities: runtime.runtimeCapabilities }
+      : {}),
+    ...(runtime.conversationRollback !== undefined
+      ? { conversationRollback: runtime.conversationRollback }
+      : {}),
+    ...(runtime.runtimeAuth !== undefined
+      ? { runtimeAuth: runtime.runtimeAuth }
+      : {}),
+    ...(runtime.connectedServiceApplicationSettled
+      ? {
+          connectedServiceApplicationSettled:
+            runtime.connectedServiceApplicationSettled.bind(runtime),
+        }
+      : {}),
     send: runtime.send.bind(runtime),
     ...(runtime.cancel ? { cancel: runtime.cancel.bind(runtime) } : {}),
     ...(runtime.updateConfiguration

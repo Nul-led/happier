@@ -4,10 +4,18 @@ import {
   List,
   useListMultiSelectionRow,
   usePluginTranslation,
+  useSurfaceContext,
   type ListItemProps,
 } from '@happier-dev/plugin-ui';
 
 import type { TriageListDisplayRowV1 } from '../marks/pinnedRows.js';
+import type { TriageSourceDescriptorV1 } from '@happier-dev/triage-protocol/v1';
+import { readTriageSourceDescriptorV1 } from '../detail/sourceSurface.js';
+import {
+  readTriageEntryRowAnnouncementV1,
+  readTriageEntryRowContextV1,
+  type TriageEntryDisplayTextV1,
+} from '../window/entryDisplay.js';
 import type { TriageListContinuationCopyV1 } from './continuation.js';
 import type { TriageListSectionItemV1 } from './sections.js';
 
@@ -122,21 +130,34 @@ export function triageListRowTestId(rowKey: string): string {
  * freshness state to be announced, and a name that grows a sentence is a name
  * no assistive technology can be pointed at.
  *
- * The description is the row's own already-projected words in the order it
- * shows them — the owning scope, then the quiet trailing line that says why the
- * entry needs the reader or why it cannot currently be shown
- * (`ui/window/entryDisplay.ts`). Nothing is composed here that the row does not
- * already display, and the title is never repeated: an entry that announced
- * itself twice is the failure the pinned name exists to prevent. Both are V1
- * protocol strings, which are bounded, single-line and non-empty, so there is
- * no empty part to guard against.
+ * The description is composed by the one shared announcement owner
+ * (`ui/window/entryDisplay.ts#readTriageEntryRowAnnouncementV1`) rather than
+ * here, because it says more than the row draws and every surface showing these
+ * rows must say the same things: the entry's kind and lifecycle, which a
+ * sighted reader takes from the section it is filed under and its state chip,
+ * and whether what is on screen is still current, which they take from the
+ * page's own freshness line. A reader moving row by row reaches none of those,
+ * and §7.1 requires each of them per row.
  *
- * `, ` is the separator the platforms this description reaches compose their
- * own multi-part announcements with; it is punctuation, not copy.
+ * The title is never repeated: an entry that announced itself twice is the
+ * failure the pinned name exists to prevent.
  */
 export function triageListRowItemProps(
   row: TriageListDisplayRowV1,
   busy: boolean,
+  /**
+   * The clock and locale the row's freshness is stated in. They are arguments
+   * rather than reads of their own so that the announcement is a pure function
+   * of the row and the moment it is rendered — and so this stays testable
+   * without a mounted surface.
+   */
+  announcement: Readonly<{
+    nowMs: number;
+    locale: string;
+    text?: TriageEntryDisplayTextV1;
+    descriptor?: TriageSourceDescriptorV1 | null;
+    source?: TriageListDisplayRowV1['entryRef']['source'];
+  }>,
 ): Pick<
   ListItemProps,
   | 'testID'
@@ -151,10 +172,11 @@ export function triageListRowItemProps(
   | 'accessibilityLabel'
   | 'accessibilityHint'
 > {
+  const context = readTriageEntryRowContextV1(row, announcement.descriptor, announcement.source);
   return {
     testID: triageListRowTestId(row.key),
     title: row.title,
-    subtitle: row.scopeLabel,
+    subtitle: context.label,
     ...(row.detail === null ? {} : { detail: row.detail }),
     // The virtualizer this row is mounted in has no fixed height and reveals an
     // unmounted row by `averageItemLength * index`. A provider title is a
@@ -170,9 +192,7 @@ export function triageListRowItemProps(
     tone: row.tone,
     busy,
     accessibilityLabel: row.title,
-    accessibilityHint: row.detail === null
-      ? row.scopeLabel
-      : `${row.scopeLabel}, ${row.detail}`,
+    accessibilityHint: readTriageEntryRowAnnouncementV1({ ...row, contextDescription: context.description }, announcement),
   };
 }
 
@@ -182,6 +202,11 @@ export function TriageListRow(props: Readonly<{
 }>): React.ReactElement {
   const { row, handlers } = props;
   const busy = handlers.busyKey === row.key;
+  // The reader's own locale, from the one host fact that carries it. Read here
+  // rather than threaded through the section plan because a row's freshness is
+  // stated against the moment it renders, and re-planning every section on a
+  // clock would rebuild the whole collection (`core/SURFACE.md` §4.3).
+  const surfaceContext = useSurfaceContext();
   const disabled = handlers.unavailableReason !== null;
   // `{title}` interpolation is why these cannot go through `secondaryActions[].labelKey`
   // or `accessibilityHintKey`: those resolve through `resolveAuthorText` WITHOUT a
@@ -208,7 +233,13 @@ export function TriageListRow(props: Readonly<{
     handlers.onSetPinned(row);
   }, [handlers, row, selection]);
 
-  const common = triageListRowItemProps(row, busy);
+  const common = triageListRowItemProps(row, busy, {
+    nowMs: Date.now(),
+    locale: surfaceContext.locale,
+    descriptor: readTriageSourceDescriptorV1(surfaceContext, row.entryRef.source),
+    source: row.entryRef.source,
+    text,
+  });
 
   if (!row.materialized) {
     return (

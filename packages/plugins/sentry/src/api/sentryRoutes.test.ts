@@ -35,6 +35,38 @@ describe('Sentry detail routes', () => {
     expect(url.searchParams.get('statsPeriod')).toBe('90d');
   });
 
+  /**
+   * `[SCHEMA]` `sample=true` reorders the retained events pseudo-randomly and
+   * deterministically. It is the reader's explicit "show a spread" choice
+   * (`SENTRY.md` §7.4), so it is sent only when they asked for it and is never
+   * sent as `false` — an unrequested spread is simply the ordinary walk.
+   */
+  it('asks for a spread of retained events only when the reader chose one', () => {
+    const ordinary = new URL(buildSentryIssueEventsUrl({
+      instance: INSTANCE,
+      entryId: '1234',
+      perPage: 100,
+    }));
+    expect(ordinary.searchParams.has('sample')).toBe(false);
+
+    const spread = new URL(buildSentryIssueEventsUrl({
+      instance: INSTANCE,
+      entryId: '1234',
+      perPage: 100,
+      sample: true,
+    }));
+    expect(spread.searchParams.get('sample')).toBe('true');
+    expect(spread.searchParams.get('statsPeriod')).toBe('90d');
+
+    const declined = new URL(buildSentryIssueEventsUrl({
+      instance: INSTANCE,
+      entryId: '1234',
+      perPage: 100,
+      sample: false,
+    }));
+    expect(declined.searchParams.has('sample')).toBe(false);
+  });
+
   it('carries an opaque provider cursor without reinterpreting it', () => {
     const url = new URL(buildSentryIssueEventsUrl({
       instance: INSTANCE,

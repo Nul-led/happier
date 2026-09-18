@@ -77,6 +77,9 @@ export function createGithubScmHostingProviderAdapter(
     detectRemote(input: ScmHostingProviderRemoteDetectionInput) {
       const parsed = parseScmRemoteUrl(input.remoteUrl);
       if (!parsed || !matchesHost(parsed.host)) return null;
+      // An exactly matched host is the binding's own origin, which carries no port. A ported
+      // remote names a different endpoint and must never be re-spelled as `https://<host>`.
+      if (parsed.syntax === 'url' && parsed.port !== null) return null;
       const nameWithOwner = readNameWithOwner(parsed.path);
       if (!nameWithOwner) return null;
       const baseUrl = `https://${parsed.host}`;

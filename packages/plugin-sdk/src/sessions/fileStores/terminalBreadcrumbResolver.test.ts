@@ -112,6 +112,23 @@ describe('terminal breadcrumb resolver', () => {
     expect(readPaths).toEqual([join(agentDir, 'terminal-sessions', 'pts-3')]);
   });
 
+  it('preserves the provider parser remote session identity bytes', async () => {
+    const fileStores = await loadFileStores();
+    const opaqueRemoteSessionId = '  provider\nses/AB+cd==  ';
+    const resolver = fileStores.createTerminalBreadcrumbResolver(createConfig({
+      parseSessionId: () => opaqueRemoteSessionId,
+    }));
+
+    expect(resolver({ cwd: resolve('/tmp/happier-terminal-breadcrumb-sdk-test/workspace'), terminalId: 'pts-3' }))
+      .toMatchObject({ remoteSessionId: opaqueRemoteSessionId });
+    expect(fileStores.createTerminalBreadcrumbResolver(createConfig({
+      parseSessionId: () => ' \n\t ',
+    }))({
+      cwd: resolve('/tmp/happier-terminal-breadcrumb-sdk-test/workspace'),
+      terminalId: 'pts-3',
+    })).toBeUndefined();
+  });
+
   it('rejects invalid breadcrumbs before provider projection', async () => {
     const fileStores = await loadFileStores();
     const root = resolve('/tmp/happier-terminal-breadcrumb-sdk-test');

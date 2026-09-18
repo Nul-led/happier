@@ -309,7 +309,9 @@ export async function buildUiArtifacts(
 
     const artifactsParent = dirname(artifactsRoot);
     await mkdir(artifactsParent, { recursive: true });
-    const stagedRoot = await mkdtemp(join(artifactsParent, '.happier-plugin-ui-stage-'));
+    const stagingParent = resolvePluginUiArtifactsStagingParent(input.projectRoot);
+    await mkdir(stagingParent, { recursive: true });
+    const stagedRoot = await mkdtemp(join(stagingParent, 'publication-'));
     const previousRoot = `${stagedRoot}.previous`;
     let previousMoved = false;
     try {
@@ -348,4 +350,8 @@ export async function buildUiArtifacts(
     }
 
     return Object.freeze({ artifactsRoot, manifest });
+}
+
+export function resolvePluginUiArtifactsStagingParent(projectRoot: string): string {
+    return join(resolve(projectRoot), '.happier-plugin-ui-staging');
 }

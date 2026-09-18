@@ -1,4 +1,5 @@
 import type { JsonValue } from '@happier-dev/plugin-sdk';
+import type { PluginUiActionExecutionOptions, PluginUiHostApi, PluginUiSessionPlacementCandidateV1 } from '@happier-dev/plugin-sdk/ui';
 
 import type {
     TriageStartEntrySessionInputV1,
@@ -7,6 +8,7 @@ import type {
 import { openLinkedSession } from '../../sessions/entrySessionOpen.js';
 import type { TriageActionV1 } from '../../settings/actions.js';
 import { projectTriageNewSessionDestinationV1 } from '../header/newSessionDestination.js';
+import { authorizeTriagePreparedReviewWorkspaceV1 } from '../header/useEntrySessionStart.js';
 import {
     submitTriageEntrySessionStart,
     type TriageSessionStartHostV1,
@@ -25,7 +27,8 @@ import {
 } from './bulkSessionPlan.js';
 
 /** The host boundary the completed bulk Session sequence consumes. */
-export type TriageBulkSessionExecutionHostV1 = TriageSessionStartHostV1;
+export type TriageBulkSessionExecutionHostV1 = TriageSessionStartHostV1
+    & Partial<Pick<PluginUiHostApi, 'selectActionInput'>>;
 
 type TriageBulkStartedSessionOutcomeV1 = Readonly<{
     start: TriageStartEntrySessionResultV1;
@@ -120,6 +123,8 @@ export async function runTriageBulkEntrySessionStartsV1(input: Readonly<{
     settlement: unknown;
     /** Per-unit settled host choice for the independent-placement destination. */
     settlementForUnit?: (unit: TriageBulkSessionUnitV1<TriageBulkSelectedEntryV1>) => unknown;
+    placementCandidatesForUnit?: (unit: TriageBulkSessionUnitV1<TriageBulkSelectedEntryV1>) => readonly PluginUiSessionPlacementCandidateV1[];
+    onPreparationCancelled?: () => void;
     signal: AbortSignal;
     onStarted?: () => void;
     /** Prior same-key answers; used only to project the canonical resume arm. */
@@ -151,12 +156,39 @@ export async function runTriageBulkEntrySessionStartsV1(input: Readonly<{
                 creationKey: unit.creationKey,
                 settlement,
                 ...(input.action.profileId === null ? {} : { profileId: input.action.profileId }),
+                ...(first.reviewWorkspace === undefined ? {} : { reviewWorkspace: first.reviewWorkspace.preparation }),
+                placementCandidates: input.placementCandidatesForUnit?.(unit) ?? [],
             });
             if (destination.status === 'refused') throw new Error('triage:bulk:destinationRefused');
             const previous = input.previousResults?.find(
                 (candidate) => candidate.unit.creationKey === unit.creationKey,
             );
             const resume = readTriageBulkStartResumeV1(previous);
+            let preparationSelection: TriageStartEntrySessionInputV1['prepareReviewWorkspaceSelection'];
+            let startOptions: PluginUiActionExecutionOptions = { signal: input.signal };
+            if (resume === undefined && destination.destination.kind === 'new'
+                && destination.destination.materialization.kind === 'reviewWorkspace') {
+                // A lost outer response needs a fresh single-use authorization,
+                // not a replay of the carrier consumed by the original dispatch.
+                const authorize = input.host.selectActionInput;
+                const authorization = first.reviewWorkspace === undefined || authorize === undefined
+                    ? { status: 'unavailable' as const }
+                    : await authorizeTriagePreparedReviewWorkspaceV1(
+                        { selectActionInput: authorize.bind(input.host) },
+                        first.reviewWorkspace.operation,
+                        destination.destination.materialization.request,
+                        { signal: input.signal },
+                    ).catch(() => ({ status: 'unavailable' as const }));
+                if (authorization.status !== 'authorized') {
+                    if (authorization.status === 'cancelled') input.onPreparationCancelled?.();
+                    const start = { v: 1, type: 'workspacePreparationFailed', reason: 'failed', retryable: true } as const;
+                    return { start, entries: projectTriageBulkEntryOutcomesV1({
+                        entries: unit.entries, start, secondaryLinks: [], compose: 'notRequested',
+                    }) };
+                }
+                preparationSelection = authorization.selection;
+                startOptions = { ...authorization.options, signal: input.signal };
+            }
             const result = await submitTriageEntrySessionStart(input.host, {
                 v: 1,
                 workspaceMode: input.action.workspaceMode,
@@ -164,6 +196,7 @@ export async function runTriageBulkEntrySessionStartsV1(input: Readonly<{
                 display: first.display,
                 destination: destination.destination,
                 finalOpen,
+                ...(preparationSelection === undefined ? {} : { prepareReviewWorkspaceSelection: preparationSelection }),
                 // The direct bulk destination is the reader's explicit choice.
                 // It overrides a single-entry compose default and therefore
                 // uses the one canonical structured Session-input delivery;
@@ -185,7 +218,7 @@ export async function runTriageBulkEntrySessionStartsV1(input: Readonly<{
                     }
                     : {}),
                 ...(resume === undefined ? {} : { resume }),
-            }, { signal: input.signal });
+            }, startOptions);
             input.onStarted?.();
             const secondaryLinks: readonly TriageBulkLinkOutcomeV1[] =
                 result.type === 'opened' || result.type === 'openPending' || result.type === 'linked'

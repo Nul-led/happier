@@ -151,6 +151,11 @@ export function mapRuntimeConfigUpdateToDesired(
       }
       continue;
     }
+    if (key === 'providerBinding') {
+      // The host has already authorized and materialized this descriptor. It is contextual model
+      // evidence for capability checks, not a second TUI directive to apply.
+      continue;
+    }
     // Unknown directive: never partially honor an update we do not fully understand.
     return { kind: 'not_controllable', reason: `unknown_directive:${key}` };
   }

@@ -212,6 +212,7 @@ describe('createOpenCodeExternalSessionClient', () => {
     }));
 
     const client = await createOpenCodeExternalSessionClient({
+      dialect: 'v1',
       source,
       env,
       managedEndpointRead,
@@ -223,6 +224,7 @@ describe('createOpenCodeExternalSessionClient', () => {
 
   it('keeps a successful empty status map distinct from a malformed successful response', async () => {
     const emptyClient = await createOpenCodeExternalSessionClient({
+      dialect: 'v1',
       source,
       env,
       managedEndpointRead: managedRead(() => new Response('{}', {
@@ -233,6 +235,7 @@ describe('createOpenCodeExternalSessionClient', () => {
     await expect(emptyClient.sessionStatusList()).resolves.toEqual({});
 
     const malformedClient = await createOpenCodeExternalSessionClient({
+      dialect: 'v1',
       source,
       env,
       managedEndpointRead: managedRead(() => new Response('[]', {
@@ -247,6 +250,7 @@ describe('createOpenCodeExternalSessionClient', () => {
 
   it('rejects successful non-array session and message payloads instead of treating them as empty', async () => {
     const sessionClient = await createOpenCodeExternalSessionClient({
+      dialect: 'v1',
       source,
       env,
       managedEndpointRead: managedRead(() => new Response('{}', {
@@ -255,6 +259,7 @@ describe('createOpenCodeExternalSessionClient', () => {
       })),
     });
     const messageClient = await createOpenCodeExternalSessionClient({
+      dialect: 'v1',
       source,
       env,
       managedEndpointRead: managedRead(() => new Response('{}', {
@@ -272,6 +277,7 @@ describe('createOpenCodeExternalSessionClient', () => {
 
   it('keeps status transport failure distinct from a successful empty status map', async () => {
     const client = await createOpenCodeExternalSessionClient({
+      dialect: 'v1',
       source,
       env,
       managedEndpointRead: managedRead(() => new Response('unavailable', {
@@ -304,6 +310,7 @@ describe('createOpenCodeExternalSessionClient', () => {
     });
     vi.stubGlobal('fetch', directFetch);
     const client = await createOpenCodeExternalSessionClient({
+      dialect: 'v1',
       source: {
         kind: 'opencodeServer',
         managedEndpoint: true,
@@ -331,6 +338,7 @@ describe('createOpenCodeExternalSessionClient', () => {
     const directFetch = vi.fn();
     vi.stubGlobal('fetch', directFetch);
     const client = await createOpenCodeExternalSessionClient({
+      dialect: 'v1',
       source: {
         kind: 'opencodeServer',
         managedEndpoint: true,
@@ -345,6 +353,7 @@ describe('createOpenCodeExternalSessionClient', () => {
 
   it('preserves status-specific fields after validating the common status shape', async () => {
     const client = await createOpenCodeExternalSessionClient({
+      dialect: 'v1',
       source,
       env,
       managedEndpointRead: managedRead(() => new Response(JSON.stringify({
@@ -373,6 +382,7 @@ describe('createOpenCodeExternalSessionClient', () => {
   it('uses the global bounded session and opaque message paging queries', async () => {
     const requests: string[] = [];
     const client = await createOpenCodeExternalSessionClient({
+      dialect: 'v1',
       source: {
         ...source,
         directory: '/tmp/project',
@@ -419,6 +429,7 @@ describe('createOpenCodeExternalSessionClient', () => {
   it('passes the global numeric session cursor through the invocation-bound reader', async () => {
     const requests: string[] = [];
     const client = await createOpenCodeExternalSessionClient({
+      dialect: 'v1',
       source: {
         ...source,
         directory: '/tmp/project',
@@ -434,7 +445,7 @@ describe('createOpenCodeExternalSessionClient', () => {
       }),
     });
 
-    await client.sessionList({ limit: 7, search: 'needle', cursor: 123 });
+    await client.sessionList({ limit: 7, search: 'needle', cursor: { kind: 'updatedAtMs', updatedAtMs: 123 } });
 
     expect(requests).toEqual([
       '/experimental/session?directory=%2Ftmp%2Fproject&limit=7&search=needle&cursor=123',
@@ -447,13 +458,14 @@ describe('createOpenCodeExternalSessionClient', () => {
       headers: { 'content-type': 'application/json' },
     }));
     const client = await createOpenCodeExternalSessionClient({
+      dialect: 'v1',
       source,
       env,
       maxResponseBytes: 1_024,
       managedEndpointRead,
     });
 
-    await expect(client.sessionList({ limit: 1, cursor: -1 })).rejects.toThrow(
+    await expect(client.sessionList({ limit: 1, cursor: { kind: 'updatedAtMs', updatedAtMs: -1 } })).rejects.toThrow(
       'OpenCode session cursor must be a non-negative safe integer.',
     );
     expect(managedEndpointRead).not.toHaveBeenCalled();
@@ -464,6 +476,7 @@ describe('createOpenCodeExternalSessionClient', () => {
       chunks: ['{"session":', '{"type":"busy"}', '}'],
     });
     const client = await createOpenCodeExternalSessionClient({
+      dialect: 'v1',
       source,
       env,
       maxResponseBytes: 20,
@@ -483,6 +496,7 @@ describe('createOpenCodeExternalSessionClient', () => {
       statusText: 'Service Unavailable',
     });
     const client = await createOpenCodeExternalSessionClient({
+      dialect: 'v1',
       source,
       env,
       maxResponseBytes: 12,
@@ -505,6 +519,7 @@ describe('createOpenCodeExternalSessionClient', () => {
       async () => await new Promise<never>(() => undefined),
     );
     const client = await createOpenCodeExternalSessionClient({
+      dialect: 'v1',
       source,
       env,
       managedEndpointRead,
@@ -536,6 +551,7 @@ describe('createOpenCodeExternalSessionClient', () => {
       async () => await new Promise<never>(() => undefined),
     );
     const client = await createOpenCodeExternalSessionClient({
+      dialect: 'v1',
       source,
       env,
       managedEndpointRead,
@@ -548,4 +564,151 @@ describe('createOpenCodeExternalSessionClient', () => {
     expect(managedEndpointRead).not.toHaveBeenCalled();
   });
 
+});
+
+describe('createOpenCodeExternalSessionClient on the V2 beta surface', () => {
+  const source = {
+    kind: 'opencodeServer' as const,
+    managedEndpoint: true as const,
+    directory: '/tmp/project',
+  };
+
+  function jsonRead(respond: (pathAndQuery: string) => unknown) {
+    const requests: string[] = [];
+    const read = vi.fn(async ({ pathAndQuery }: Readonly<{ pathAndQuery: string }>) => {
+      requests.push(pathAndQuery);
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: { 'content-type': 'application/json' },
+        body: new Response(JSON.stringify(respond(pathAndQuery))).body,
+      };
+    });
+    return { read, requests };
+  }
+
+  /**
+   * `/api/session/active` reports only running sessions, so a reported session
+   * is busy and an unreported one is simply absent from the map — which is how
+   * the reconciler already distinguishes "idle" from "could not read".
+   */
+  it('reads the V2 active-session route as the status map', async () => {
+    const { read, requests } = jsonRead(() => ({ data: { 'ses-running': { type: 'running' } } }));
+    const client = await createOpenCodeExternalSessionClient({
+      dialect: 'v2',
+      source,
+      managedEndpointRead: read,
+    });
+
+    await expect(client.sessionStatusList()).resolves.toEqual({
+      'ses-running': { type: 'busy' },
+    });
+    expect(requests).toEqual(['/api/session/active']);
+  });
+
+  it('rejects a malformed V2 status envelope instead of reporting every session idle', async () => {
+    const { read } = jsonRead(() => ({ data: [] }));
+    const client = await createOpenCodeExternalSessionClient({
+      dialect: 'v2',
+      source,
+      managedEndpointRead: read,
+    });
+
+    await expect(client.sessionStatusList()).rejects.toThrow(
+      'OpenCode /api/session/active returned an invalid status map',
+    );
+  });
+
+  it('hoists the V2 session location into the directory every reader expects', async () => {
+    const { read, requests } = jsonRead(() => ({
+      data: {
+        id: 'ses-1',
+        title: 'Beta',
+        time: { created: 5, updated: 6 },
+        location: { directory: '/tmp/project' },
+      },
+    }));
+    const client = await createOpenCodeExternalSessionClient({
+      dialect: 'v2',
+      source,
+      managedEndpointRead: read,
+    });
+
+    await expect(client.sessionGet({ sessionId: 'ses-1' })).resolves.toMatchObject({
+      id: 'ses-1',
+      directory: '/tmp/project',
+    });
+    // The session route is resolved from the stored row by the server's own
+    // session-location middleware, so it carries no location query.
+    expect(requests).toEqual(['/api/session/ses-1']);
+  });
+
+  it('returns a V2 message page oldest-first with its opaque continuation', async () => {
+    const { read, requests } = jsonRead(() => ({
+      // V2 answers newest-first by default.
+      data: [
+        { id: 'msg-2', type: 'assistant', content: [{ type: 'text', text: 'answer' }], time: { created: 20 } },
+        { id: 'msg-1', type: 'user', text: 'question', time: { created: 10 } },
+      ],
+      cursor: { next: 'older-token' },
+    }));
+    const client = await createOpenCodeExternalSessionClient({
+      dialect: 'v2',
+      source,
+      managedEndpointRead: read,
+    });
+
+    const page = await client.sessionMessagesList({
+      sessionId: 'ses-1',
+      limit: 2,
+      before: 'newer-token',
+    });
+
+    expect(requests).toEqual(['/api/session/ses-1/message?limit=2&cursor=newer-token']);
+    expect(page.nextCursor).toBe('older-token');
+    // Oldest first, with the assistant message anchored to the user message that
+    // started the turn — the shape the transcript window and projection read.
+    expect(page.items.map((item) => (item as { info: { id: string; role: string; parentID?: string } }).info))
+      .toEqual([
+        { id: 'msg-1', role: 'user', sessionID: 'ses-1', time: { created: 10 } },
+        { id: 'msg-2', role: 'assistant', sessionID: 'ses-1', time: { created: 20 }, parentID: 'msg-1' },
+      ]);
+  });
+
+  it('round-trips V2 session cursors without normalizing provider bytes', async () => {
+    const token = '  page/AB+cd==\n';
+    const { read, requests } = jsonRead(() => ({
+      data: [],
+      cursor: { next: token },
+    }));
+    const client = await createOpenCodeExternalSessionClient({
+      dialect: 'v2',
+      source,
+      managedEndpointRead: read,
+    });
+
+    const page = await client.sessionList({
+      limit: 3,
+      cursor: { kind: 'sourceToken', token },
+    });
+
+    expect(requests).toEqual(['/api/session?limit=3&cursor=++page%2FAB%2Bcd%3D%3D%0A']);
+    expect(page.nextCursor).toBe(token);
+  });
+
+  it('refuses a V1 timestamp cursor against a V2 server instead of restarting the walk', async () => {
+    const { read } = jsonRead(() => ({ data: [], cursor: {} }));
+    const client = await createOpenCodeExternalSessionClient({
+      dialect: 'v2',
+      source,
+      managedEndpointRead: read,
+    });
+
+    await expect(client.sessionList({
+      limit: 5,
+      cursor: { kind: 'updatedAtMs', updatedAtMs: 1_700_000_000_000 },
+    })).rejects.toThrow('cannot resume a updatedAtMs session cursor');
+    expect(read).not.toHaveBeenCalled();
+  });
 });

@@ -47,3 +47,11 @@ export const TRIAGE_SESSION_ENTRIES_REPACK_MODULE_IDENTITY = Object.freeze({
   modulePath: './sessionLinkedEntriesSurface',
   exportName: 'renderSurface',
 });
+
+export const TRIAGE_SEARCH_ACTION_ARTIFACT_ID = 'triage-search-action-native';
+export const TRIAGE_SEARCH_ACTION_SOURCE_ENTRY = 'src/actions/searchEntries.ts';
+export const TRIAGE_SEARCH_ACTION_REPACK_MODULE_IDENTITY = Object.freeze({
+  containerName: 'happier_triage_triage_search_action_native',
+  modulePath: './searchEntries',
+  exportName: 'createTriageSearchEntriesActionHandler',
+});

@@ -41,6 +41,18 @@ rotation loses instead of overwriting, reads the value back at the point of use
 with a user-readable reason, and returns only the state and revision. The value
 is never written to settings, plugin storage, an Action result, or a log line.
 
+`inspect-team-credential-parity` is the installed-external-style Lane 10
+consumer. It discovers Team credential resources and source candidates, reads
+the material-safe direct-preparation census, and lists shared Saved Secrets
+through the same canonical host Actions used by bundled callers. It also uses
+the public Provider and Connected Account services and contribution identities;
+there is no host import, private first-party route, or duplicate catalog.
+`update-shared-secret` demonstrates a content-bearing Saved Secret mutation:
+the host may return an `approval_request_created` result unchanged, and domain
+failures retain their typed `PluginError` code/details. The replacement value is never
+returned. Raw material resolution remains with the host-owned materializer and
+is intentionally not exposed as a generic public Action.
+
 The paired contributor is `../action-contract-consumer`.
 
 Build, test, and load this plugin through the normal managed source-author

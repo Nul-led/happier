@@ -23,11 +23,11 @@ describe('OhMyPi preflight model parsing', () => {
     )).toBeNull();
     const models = OH_MY_PI_PREFLIGHT_SESSION_CONTROLS.models;
     expect(models?.command).toEqual({ toolId: 'ohmypi-cli', args: ['--list-models'] });
-    await expect(models?.parseOutput?.({
+    expect(models?.parseOutput?.({
       ok: true,
       stdout: 'openai  gpt-5.4  272K  128K  yes  yes\n',
       stderr: '',
       exitCode: 0,
-    })).resolves.toEqual([expect.objectContaining({ id: 'openai/gpt-5.4' })]);
+    })).toEqual([expect.objectContaining({ id: 'openai/gpt-5.4' })]);
   });
 });

@@ -45,6 +45,16 @@ export function isPosthogIssueEventsInclude(
 export type PosthogRawIssueEvent = Readonly<{
     uuid: string;
     timestampMs?: number;
+    /**
+     * Where this row sat in the page the provider actually returned.
+     *
+     * A skipped sibling shortens the accepted array but not the provider's own
+     * numbering, and every exact reread — selected evidence and the code-variable
+     * reveal — re-requests one offset. Deriving that offset from the compacted array
+     * addresses the row the skipped one occupied, so the position is kept from the one
+     * place that still knows it.
+     */
+    pageRowIndex: number;
     rawProperties: Readonly<Record<string, unknown>>;
 }>;
 
@@ -57,7 +67,7 @@ export type PosthogIssueEventsEnvelope = Readonly<{
     nextOffset?: number;
 }>;
 
-function parseRawEvent(value: unknown): PosthogRawIssueEvent | null {
+function parseRawEvent(value: unknown, pageRowIndex: number): PosthogRawIssueEvent | null {
     const raw = readObject(value);
     if (raw === null) {
         return null;
@@ -71,6 +81,7 @@ function parseRawEvent(value: unknown): PosthogRawIssueEvent | null {
     return {
         uuid: uuid.trim(),
         ...(timestampMs === null ? {} : { timestampMs }),
+        pageRowIndex,
         rawProperties,
     };
 }
@@ -96,14 +107,14 @@ export function parsePosthogIssueEventsEnvelope(
     }
     const rawEvents: PosthogRawIssueEvent[] = [];
     let skippedRowCount = 0;
-    for (const rawRow of results) {
-        const event = parseRawEvent(rawRow);
+    results.forEach((rawRow, pageRowIndex) => {
+        const event = parseRawEvent(rawRow, pageRowIndex);
         if (event === null) {
             skippedRowCount += 1;
-            continue;
+            return;
         }
         rawEvents.push(event);
-    }
+    });
     const nextOffsetRaw = raw['nextOffset'];
     const nextOffset = typeof nextOffsetRaw === 'number' && Number.isSafeInteger(nextOffsetRaw)
         ? nextOffsetRaw

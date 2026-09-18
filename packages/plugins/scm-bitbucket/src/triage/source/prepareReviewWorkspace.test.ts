@@ -130,6 +130,13 @@ function pullRequestFromFork(): Record<string, unknown> {
   return result;
 }
 
+function pullRequestWithDestination(repository: Readonly<{ uuid?: string; full_name?: string }>) {
+  const result = pullRequestFromFork();
+  const destination = result.destination as Record<string, unknown>;
+  destination.repository = { ...(destination.repository as Record<string, unknown>), ...repository };
+  return result;
+}
+
 function workspaceRuntime(input: Readonly<{
   pullRequest?: unknown;
   providerReply?: Readonly<{ status?: number; body?: unknown }>;
@@ -159,6 +166,30 @@ function workspaceRuntime(input: Readonly<{
 }
 
 describe('Bitbucket selected-PR review workspace preparation', () => {
+  it.each(['prepare', 'verify'] as const)('can %s the same PR after its workspace display name changes', async (operation) => {
+    const execute = vi.fn(async () => operation === 'prepare' ? {
+      success: true as const,
+      targetPath: '/selected/repository/.happier/review/fork-tools',
+      branchName: 'fix/poller-deadline',
+      created: true,
+      currentness: { kind: 'currentAtObservedHead' as const },
+    } : {
+      success: true as const,
+      verification: {
+        targetPath: '/selected/repository/.happier/review/fork-tools',
+        sourceHeadSha: HEAD_SHA,
+      },
+    });
+    const seam = workspaceRuntime({
+      execute,
+      pullRequest: pullRequestWithDestination({ full_name: 'renamed-workspace/deploy-tools' }),
+    });
+    const result = operation === 'prepare'
+      ? await prepareBitbucketReviewWorkspace(preparationInput(), seam.runtime)
+      : await verifyBitbucketReviewWorkspace(verificationInput(), seam.runtime);
+    expect(result).toMatchObject({ kind: operation === 'prepare' ? 'prepared' : 'verified' });
+  });
+
   it('reauthorizes, rereads, and delegates only the fork source tip at the selected root', async () => {
     const execute = vi.fn(async () => ({
       success: true as const,
@@ -259,9 +290,11 @@ describe('Bitbucket selected-PR review workspace preparation', () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
-  it('refuses a stale opaque route rather than replacing the canonical immutable entry route', async () => {
+  it('refuses a route reassigned to a different immutable repository before preparation', async () => {
     const execute = vi.fn();
-    const seam = workspaceRuntime({ execute });
+    const seam = workspaceRuntime({ execute, pullRequest: pullRequestWithDestination({
+      uuid: '{11111111-1111-4111-8111-111111111111}',
+    }) });
 
     await expect(prepareBitbucketReviewWorkspace(
       preparationInput({ lastKnownLocator: { v: 1, routingToken: 'other/repository' } }),
@@ -467,9 +500,11 @@ describe('Bitbucket final review workspace verification', () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
-  it('refuses a stale source-owned routing token before local verification', async () => {
+  it('refuses a route reassigned to a different immutable repository before verification', async () => {
     const execute = vi.fn();
-    const seam = workspaceRuntime({ execute });
+    const seam = workspaceRuntime({ execute, pullRequest: pullRequestWithDestination({
+      uuid: '{11111111-1111-4111-8111-111111111111}',
+    }) });
 
     await expect(verifyBitbucketReviewWorkspace(verificationInput({
       lastKnownLocator: { v: 1, routingToken: 'other/repository' },

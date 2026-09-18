@@ -1,4 +1,8 @@
 import { COMPOSER_ATTACHMENT_RUNTIME_REGISTRATION_FIELDS_V1 } from '@happier-dev/protocol/plugins/contributions/composer-attachments';
+import {
+    declaresHostSynthesizedAgentResumeOnlyExternalSources,
+    findAgentResumeOnlyExternalSourceContractIssue,
+} from '@happier-dev/protocol/plugins/contributions/agent-resume-only-sources';
 import { normalizePluginJsonSchema } from '@happier-dev/protocol/plugins/actions/protocol-composable-schema';
 
 import type { ActionContract, ActionHandler } from './actions/contracts.js';
@@ -34,6 +38,7 @@ import type {
     AgentExperimentalVendorResumeSupportContributionV1,
     AgentPreflightSessionControlsContributionV1,
     AgentTerminalPromptSubmitVerificationPolicyV1,
+    AgentTerminalSurface,
     AgentProviderBindingAdapter,
     AgentDaemonSpawnHooks,
     AgentProviderCliAttachDeclarationV1,
@@ -331,6 +336,7 @@ export type PluginHostOwnedAgentDeclaration = DistributiveOmit<
 >;
 
 export type PluginAgentDefinition = Readonly<{
+    terminal?: AgentTerminalSurface;
     externalSessions?: AgentExternalSessionsContribution;
     externalSessionHooks?: AgentExternalSessionHooksContribution;
     externalSessionObservation?: AgentExternalSessionObservationContribution;
@@ -589,6 +595,7 @@ export interface PluginComposerControlDefinition {
         | 'pendingMessage'
         | 'participantMessage'
         | 'automationAuthoring'
+        | 'workflowAuthoring'
     )[];
     readonly order?: number;
     readonly labelPolicy?: 'always' | 'auto-hide';
@@ -614,6 +621,7 @@ export type PluginComposerRegionDefinition = Readonly<{
         | 'pendingMessage'
         | 'participantMessage'
         | 'automationAuthoring'
+        | 'workflowAuthoring'
     )[];
     order?: number;
 }>;
@@ -920,13 +928,13 @@ export type DefinePluginInput<
             >;
         }>;
         /**
-         * The External Sessions facet rule stays structural at this public
+         * Auxiliary Agent facet rules stay structural at this public
          * boundary: a private helper would become an unnameable dependency of
          * `DefinePluginInput`. The structured internal projection above reads
          * this exact property, keeping one type-level owner for the rule.
          *
          * A hand-authored literal keeps its tuple through `definePlugin`'s
-         * `const` type parameters, so `'externalSessions'` is visible here. A
+         * `const` type parameters, so each declared surface is visible here. A
          * bundled or JavaScript Agent widens the list, leaving both directions
          * to `assertAgentRunnerAuthoring` at runtime.
          */
@@ -941,24 +949,50 @@ export type DefinePluginInput<
                         ? TSurfaces extends readonly ('terminal' | 'externalSessions')[]
                             ? number extends TSurfaces['length']
                                 ? unknown
-                                : TSurfaces extends (
-                                    | readonly ['externalSessions']
-                                    | readonly ['externalSessions', 'terminal']
-                                    | readonly ['terminal', 'externalSessions']
-                                )
-                                    ? Readonly<{
-                                        externalSessions: AgentExternalSessionsContribution;
-                                        externalSessionHooks?: AgentExternalSessionHooksContribution;
-                                        externalSessionObservation?: AgentExternalSessionObservationContribution;
-                                        externalSessionTakeover?: AgentExternalSessionTakeoverContribution;
-                                    }>
-                                    : Readonly<{
+                                : (
+                                    'terminal' extends TSurfaces[number]
+                                        ? TAgents[TLocalId] extends Readonly<{
+                                            declaration: Readonly<{
+                                                runtime: Readonly<{ kind: 'custom' }>;
+                                            }>;
+                                        }>
+                                            // A custom runtime owns its terminal in the
+                                            // Agent runtime it returns, so it must not
+                                            // also register a contribution.
+                                            ? Readonly<{ terminal?: never }>
+                                            : Readonly<{ terminal: AgentTerminalSurface }>
+                                        : Readonly<{ terminal?: never }>
+                                ) & (
+                                    'externalSessions' extends TSurfaces[number]
+                                        ? TAgents[TLocalId] extends Readonly<{
+                                            declaration: Readonly<{
+                                                runtime: Readonly<{ kind: 'acp' }>;
+                                                surfaces: Readonly<{ externalSession: Readonly<{
+                                                    sources: readonly Readonly<{ resumeOnly: true }>[];
+                                                }> }>;
+                                            }>;
+                                        }>
+                                            ? Readonly<{
+                                                externalSessions?: never;
+                                                externalSessionHooks?: never;
+                                                externalSessionObservation?: never;
+                                                externalSessionTakeover?: never;
+                                            }>
+                                            : Readonly<{
+                                                externalSessions: AgentExternalSessionsContribution;
+                                                externalSessionHooks?: AgentExternalSessionHooksContribution;
+                                                externalSessionObservation?: AgentExternalSessionObservationContribution;
+                                                externalSessionTakeover?: AgentExternalSessionTakeoverContribution;
+                                            }>
+                                        : Readonly<{
                                         externalSessions?: never;
                                         externalSessionHooks?: never;
                                         externalSessionObservation?: never;
                                         externalSessionTakeover?: never;
-                                    }>
+                                        }>
+                                )
                             : Readonly<{
+                                terminal?: never;
                                 externalSessions?: never;
                                 externalSessionHooks?: never;
                                 externalSessionObservation?: never;
@@ -1283,7 +1317,9 @@ function projectPromptAsset(
     if (isPluginPromptAssetAdapterDefinition(definition)) {
         return Object.freeze({
             ...definition.declaration,
-            adapterDescriptor: definition.adapter.descriptor,
+            adapterDescriptor: captureDefinePluginAuthorValue(
+                definition.adapter.descriptor,
+            ) as PromptAssetAdapter['descriptor'],
             id: localId,
         });
     }
@@ -1351,7 +1387,10 @@ function runtimeDefinitionDeclarations<TDefinition extends Readonly<{ declaratio
 type ParsedAgentRuntimeFacts = Readonly<{
     customRuntime: boolean;
     sessionCapable: boolean;
+    terminalCapable: boolean;
     externalSessionsCapable: boolean;
+    hostAcpSessionListing: boolean;
+    resumeOnlyExternalSourceIssue: string | null;
 }>;
 
 function readParsedAgentRuntimeFacts(
@@ -1372,10 +1411,18 @@ function readParsedAgentRuntimeFacts(
         ? (runtime as Readonly<Record<string, unknown>>).kind
         : undefined;
     const surfaces = parsedCapabilities.surfaces;
+    const hostAcpSessionListing = declaresHostSynthesizedAgentResumeOnlyExternalSources(
+        parsedDeclaration,
+    );
     return {
         customRuntime: runtimeKind === 'custom',
         sessionCapable: parsedDeclaration.primary === 'sessions',
+        terminalCapable: Array.isArray(surfaces) && surfaces.includes('terminal'),
         externalSessionsCapable: Array.isArray(surfaces) && surfaces.includes('externalSessions'),
+        hostAcpSessionListing,
+        resumeOnlyExternalSourceIssue: findAgentResumeOnlyExternalSourceContractIssue(
+            parsedDeclaration,
+        ),
     };
 }
 
@@ -1390,6 +1437,9 @@ function assertAgentRunnerAuthoring(
     if (!facts.customRuntime && definition.factory !== undefined) {
         throw new TypeError(`Agent '${localId}' cannot declare a runtime factory without runtime kind 'custom'`);
     }
+    if (facts.resumeOnlyExternalSourceIssue !== null) {
+        throw new TypeError(`Agent '${localId}' declares an unusable source: ${facts.resumeOnlyExternalSourceIssue}`);
+    }
     const requiresSessionRunnerFactory = facts.customRuntime && facts.sessionCapable;
     if (requiresSessionRunnerFactory && definition.sessionRunnerFactory === undefined) {
         throw new TypeError(
@@ -1401,9 +1451,14 @@ function assertAgentRunnerAuthoring(
             `Agent '${localId}' cannot declare a custom Session runner leaf for this runtime contract`,
         );
     }
-    if (facts.externalSessionsCapable && definition.externalSessions === undefined) {
+    if (facts.externalSessionsCapable && !facts.hostAcpSessionListing && definition.externalSessions === undefined) {
         throw new TypeError(
             `Agent '${localId}' declares the External Sessions surface and requires an External Sessions contribution`,
+        );
+    }
+    if (facts.hostAcpSessionListing && definition.externalSessions !== undefined) {
+        throw new TypeError(
+            `Agent '${localId}' cannot replace the host-owned ACP session-list contribution`,
         );
     }
     const hasAnyExternalSessionsRuntime = definition.externalSessions !== undefined
@@ -1413,6 +1468,26 @@ function assertAgentRunnerAuthoring(
     if (!facts.externalSessionsCapable && hasAnyExternalSessionsRuntime) {
         throw new TypeError(
             `Agent '${localId}' cannot register External Sessions runtime facets without declaring the External Sessions surface`,
+        );
+    }
+    // A custom runtime owns its terminal inside the Agent runtime it returns
+    // (`AgentRuntime.surfaces.terminal`), and the host runtime lease rejects an
+    // Agent that carries both that surface and a registered contribution. Only
+    // a host-owned runtime contributes the declared terminal by registration.
+    // This author-time check mirrors the registration rights the protocol
+    // derives in `plugins/contributions/catalog.ts`; activation enforces those
+    // rights, so the two must state the same rule.
+    const requiresTerminalContribution = facts.terminalCapable && !facts.customRuntime;
+    if (requiresTerminalContribution && definition.terminal === undefined) {
+        throw new TypeError(
+            `Agent '${localId}' declares the terminal surface and requires a terminal contribution`,
+        );
+    }
+    if (!requiresTerminalContribution && definition.terminal !== undefined) {
+        throw new TypeError(
+            facts.customRuntime
+                ? `Custom Agent '${localId}' owns its terminal surface in the runtime it returns and cannot register a terminal contribution`
+                : `Agent '${localId}' cannot register a terminal contribution without declaring the terminal surface`,
         );
     }
 }
@@ -1726,6 +1801,8 @@ function projectDaemonDatabaseDeclarations(
 type DefinePluginFamilyProjection = Partial<PluginManifestContributes>;
 type DefinePluginFamilyAdapter = Readonly<{
     authorKey: string;
+    /** Author-key-relative executable receivers; `*` is one contribution id. */
+    runtimeReceiverPaths?: readonly (readonly string[])[];
     project(input: Readonly<Record<string, unknown>>): DefinePluginFamilyProjection;
     activate?(input: Readonly<Record<string, unknown>>, api: PluginApi): void;
 }>;
@@ -1767,6 +1844,13 @@ const ACTIONS_ADAPTER: DefinePluginFamilyAdapter = Object.freeze({
 
 const AGENTS_ADAPTER: DefinePluginFamilyAdapter = Object.freeze({
     authorKey: 'agents',
+    runtimeReceiverPaths: [
+        'providerBinding', 'sessionRunnerFactory', 'daemonSpawnHooks', 'providerCliAttach',
+        'cliSessionCommand', 'cliAuth', 'connectedAccountLaunch', 'preflightSessionControls',
+        'terminalPromptSubmitVerification', 'sessionStartup', 'vendorResumeSupport',
+        'terminal',
+        'externalSessions', 'externalSessionHooks', 'externalSessionObservation', 'externalSessionTakeover',
+    ].map((key) => ['*', key]),
     project(input) {
         const definitions = readAuthoredAgentDefinitions(input);
         return {
@@ -1836,6 +1920,9 @@ const AGENTS_ADAPTER: DefinePluginFamilyAdapter = Object.freeze({
             } else if (definition.cliAuth !== undefined) {
                 api.agents.registerCliAuth(localId, definition.cliAuth);
             }
+            if (definition.terminal !== undefined) {
+                api.agents.registerTerminal(localId, definition.terminal);
+            }
             if (definition.externalSessions !== undefined) {
                 api.agents.registerExternalSessions(localId, definition.externalSessions);
             }
@@ -1854,6 +1941,7 @@ const AGENTS_ADAPTER: DefinePluginFamilyAdapter = Object.freeze({
 
 const PROMPT_ASSETS_ADAPTER: DefinePluginFamilyAdapter = Object.freeze({
     authorKey: 'promptAssets',
+    runtimeReceiverPaths: [['*', 'adapter']],
     project(input) {
         const definitions = input.promptAssets as Readonly<
             Record<PluginContributionLocalId, PluginPromptAssetDefinition>
@@ -1917,6 +2005,7 @@ const HOOKS_ADAPTER: DefinePluginFamilyAdapter = Object.freeze({
  */
 const RESOURCES_ADAPTER: DefinePluginFamilyAdapter = Object.freeze({
     authorKey: 'resources',
+    runtimeReceiverPaths: [['*', 'runtime']],
     project(input) {
         return {
             resources: projectKeyedDeclarations('resources', input.resources).map((declaration) => {
@@ -1962,6 +2051,7 @@ const EVENTS_ADAPTER: DefinePluginFamilyAdapter = Object.freeze({
 
 const MCP_ADAPTER: DefinePluginFamilyAdapter = Object.freeze({
     authorKey: 'mcp',
+    runtimeReceiverPaths: [['servers', '*', 'runtime']],
     project(input) {
         const definitions = input.mcp as PluginMcpDefinition | undefined;
         return {
@@ -2004,10 +2094,12 @@ function runtimeDefinitionAdapter<
     TDefinition extends Readonly<{ declaration: object }>,
 >(input: Readonly<{
     authorKey: keyof PluginManifestContributes;
+    runtimeReceiverPaths?: readonly (readonly string[])[];
     register(api: PluginApi, localId: string, definition: TDefinition): void;
 }>): DefinePluginFamilyAdapter {
     return Object.freeze({
         authorKey: input.authorKey,
+        runtimeReceiverPaths: input.runtimeReceiverPaths,
         project(authorInput) {
             const definitions = authorInput[input.authorKey] as Readonly<Record<string, TDefinition>> | undefined;
             return {
@@ -2029,14 +2121,17 @@ const NOTIFICATION_CHANNELS_ADAPTER = runtimeDefinitionAdapter<PluginNotificatio
 });
 const SCM_HOSTING_PROVIDERS_ADAPTER = runtimeDefinitionAdapter<PluginScmHostingProviderDefinition>({
     authorKey: 'scmHostingProviders',
+    runtimeReceiverPaths: [['*', 'runtime']],
     register: (api, localId, definition) => api.scm.registerHostingProvider(localId, definition.runtime),
 });
 const SCM_BACKENDS_ADAPTER = runtimeDefinitionAdapter<PluginScmBackendDefinition>({
     authorKey: 'scmBackends',
+    runtimeReceiverPaths: [['*', 'runtime']],
     register: (api, localId, definition) => api.scm.registerBackend(localId, definition.runtime),
 });
 const CONNECTED_ACCOUNTS_ADAPTER = runtimeDefinitionAdapter<PluginConnectedAccountDefinition>({
     authorKey: 'connectedAccountDescriptors',
+    runtimeReceiverPaths: [['*', 'runtime']],
     register: (api, localId, definition) => api.connectedAccounts.register(localId, definition.runtime),
 });
 const REQUEST_INTERCEPTORS_ADAPTER = runtimeDefinitionAdapter<PluginRequestInterceptorDefinition>({
@@ -2046,6 +2141,7 @@ const REQUEST_INTERCEPTORS_ADAPTER = runtimeDefinitionAdapter<PluginRequestInter
 
 const PROVIDERS_ADAPTER: DefinePluginFamilyAdapter = Object.freeze({
     authorKey: 'providers',
+    runtimeReceiverPaths: [['*', 'runtime']],
     project(input) {
         const definitions = input.providers as Readonly<
             Record<PluginContributionLocalId, PluginProviderAuthorDefinition>
@@ -2073,6 +2169,7 @@ const PROVIDERS_ADAPTER: DefinePluginFamilyAdapter = Object.freeze({
 });
 const VOICE_PROVIDERS_ADAPTER: DefinePluginFamilyAdapter = Object.freeze({
     authorKey: 'voiceProviders',
+    runtimeReceiverPaths: [['*', 'runtime']],
     project(input) {
         const definitions = input.voiceProviders as Readonly<
             Record<PluginContributionLocalId, PluginVoiceProviderDefinition>
@@ -2169,6 +2266,7 @@ function projectComposerAttachmentRuntimeDescriptor(
     } = {};
     if (runtime.prepareForSend !== undefined) descriptor.prepareForSend = true;
     if (runtime.resolveForDispatch !== undefined) descriptor.resolveForDispatch = true;
+    if (runtime.resolveForDispatchV2 !== undefined) descriptor.resolveForDispatchV2 = true;
     if (runtime.afterMessageAccepted !== undefined) descriptor.afterMessageAccepted = true;
     return Object.freeze(descriptor);
 }
@@ -2229,12 +2327,16 @@ function projectComposerRegionDefinition(
 
 const COMPOSER_ADAPTER: DefinePluginFamilyAdapter = Object.freeze({
     authorKey: 'composer',
+    runtimeReceiverPaths: [['references', '*'], ['attachments', '*', 'runtime']],
     project(input) {
         const composer = input.composer as PluginComposerDefinition | undefined;
         return {
             composerReferences: Object.entries(composer?.references ?? {}).map(([localId, definition]) => {
                 const { search: _search, resolve: _resolve, ...declaration } = definition;
-                return Object.freeze({ ...declaration, id: localId });
+                return Object.freeze({
+                    ...captureDefinePluginAuthorValue(declaration) as typeof declaration,
+                    id: localId,
+                });
             }),
             composerAttachments: Object.entries(composer?.attachments ?? {}).map(([localId, definition]) => (
                 projectComposerAttachmentDefinition(localId, definition)
@@ -2250,10 +2352,7 @@ const COMPOSER_ADAPTER: DefinePluginFamilyAdapter = Object.freeze({
     activate(input, api) {
         const composer = input.composer as PluginComposerDefinition | undefined;
         for (const [localId, definition] of Object.entries(composer?.references ?? {})) {
-            api.composerReferences.register(localId, {
-                search: definition.search,
-                resolve: definition.resolve,
-            });
+            api.composerReferences.register(localId, definition);
         }
         for (const [localId, definition] of Object.entries(composer?.attachments ?? {})) {
             if (definition.runtime !== undefined) {
@@ -2679,23 +2778,20 @@ function assertDefinePluginOwnKeys(input: object): void {
     }
 }
 
-const DEFINE_PLUGIN_OPAQUE_AGENT_RUNTIME_KEYS = new Set([
-    'externalSessions',
-    'externalSessionHooks',
-    'externalSessionObservation',
-    'externalSessionTakeover',
-]);
-
 function captureDefinePluginAuthorValue(
     value: unknown,
     seen = new WeakMap<object, unknown>(),
     path: readonly string[] = [],
 ): unknown {
-    if (
-        path.length === 3
-        && path[0] === 'agents'
-        && DEFINE_PLUGIN_OPAQUE_AGENT_RUNTIME_KEYS.has(path[2]!)
-    ) return value;
+    // Declaration data is captured here; executable receiver identity remains
+    // untouched until the single registration-commit snapshot boundary.
+    if (DEFINE_PLUGIN_AUTHOR_ADAPTERS.some((adapter) => (
+        adapter.authorKey === path[0]
+        && adapter.runtimeReceiverPaths?.some((receiverPath) => (
+            receiverPath.length === path.length - 1
+            && receiverPath.every((segment, index) => segment === '*' || segment === path[index + 1])
+        ))
+    ))) return value;
     if (Array.isArray(value)) {
         const incumbent = seen.get(value);
         if (incumbent !== undefined) return incumbent;

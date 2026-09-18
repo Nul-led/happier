@@ -31,7 +31,6 @@ export const COPILOT_PLUGIN = definePlugin({
       scope: {
         executables: [
           { kind: 'systemTool', id: 'copilot-cli' },
-          { kind: 'systemTool', id: 'github-cli' },
         ],
         envKeys: [...COPILOT_AUTH_ENV_KEYS],
       },
@@ -63,7 +62,8 @@ export const COPILOT_PLUGIN = definePlugin({
           auth: {
             support: 'login_terminal',
             environmentVariables: [...COPILOT_AUTH_ENV_KEYS],
-            nonInteractiveStatusProbe: true,
+            credentialPaths: ['~/.copilot/config.json'],
+            missingCredentialState: 'unknown',
             loginLaunches: [{ kind: 'primary', args: ['login'] }],
           },
         },
@@ -74,26 +74,13 @@ export const COPILOT_PLUGIN = definePlugin({
         capabilities: projectAgentCapabilitiesV2FromDefinition(AGENT_DEFINITION.core, {
           sessions: {
             open: ['create', 'resume'],
-            delivery: ['newTurn', 'steer', 'followUp'],
+            delivery: ['newTurn', 'followUp'],
             cancel: true,
+            executionRunContext: { versions: [1] },
           },
         }),
       },
       factory: createCopilotAgentRuntime,
-      cliAuth: {
-        detectAuthStatus: async ({ runDeclaredSystemToolCommand }) => {
-          const result = await runDeclaredSystemToolCommand({
-            toolId: 'github-cli',
-            args: ['auth', 'status'],
-            timeoutMs: 1_500,
-          });
-          return result.ok
-            ? { state: 'logged_in', method: 'oauth_cli', source: 'command' }
-            : result.exitCode === null
-              ? { state: 'unknown', reason: 'probe_failed', source: 'command' }
-              : { state: 'logged_out', reason: 'missing_credentials', source: 'command' };
-        },
-      },
       sessionRunnerFactory: {
         module: './agent/runtime/factory',
         export: 'createCopilotAgentRuntime',
@@ -105,10 +92,6 @@ export const COPILOT_PLUGIN = definePlugin({
     'copilot-cli': {
       title: 'GitHub Copilot CLI',
       executableNames: ['copilot'],
-    },
-    'github-cli': {
-      title: 'GitHub CLI',
-      executableNames: ['gh'],
     },
   },
   ui: {

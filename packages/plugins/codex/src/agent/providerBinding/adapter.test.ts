@@ -107,6 +107,28 @@ describe('Codex provider-binding adapter V1', () => {
     expect(otherConnection.adapterBindingKey).not.toBe(first.adapterBindingKey);
   });
 
+  it('uses a source-neutral Team resource binding key without inventing a Provider Connection', () => {
+    const teamBindingKey = 'team_resource:resource-1:revision:3';
+    const prepared = CODEX_PROVIDER_BINDING_ADAPTER_V1.prepare({
+      v: 1,
+      agentTargetKey: 'backend:codex:built_in',
+      bindingKey: teamBindingKey,
+    });
+    const input = materializeInput({
+      prepared,
+      binding: {
+        ...materializeInput().binding,
+        selection: {
+          bindingKey: teamBindingKey,
+          model: materializeInput().binding.selection.model,
+        },
+      },
+    });
+
+    expect(() => CODEX_PROVIDER_BINDING_ADAPTER_V1.materialize(input))
+      .not.toThrow();
+  });
+
   it('uses reserved Codex ids only for exact audited built-in candidates', () => {
     for (const contributionKey of [
       'happier.provider.ollama/ollama',

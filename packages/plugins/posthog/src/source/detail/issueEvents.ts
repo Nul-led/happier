@@ -155,7 +155,7 @@ export async function readPosthogSampledIssueEvents(
     return {
         ok: true,
         value: {
-            events: projectPosthogIssueEvents(envelope.rawEvents),
+            events: projectPosthogIssueEvents(envelope.rawEvents, input.offset),
             omittedRowCount: envelope.skippedRowCount,
             walk,
             request,

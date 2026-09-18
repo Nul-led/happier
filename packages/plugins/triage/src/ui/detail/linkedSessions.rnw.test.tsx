@@ -38,12 +38,8 @@ async function mountHeader() {
   releaseOpen = null;
   blockOpen = false;
   const fixture = await createPluginUiTestkit({
-    identity: {
-      pluginId: 'happier.triage',
-      pluginVersion: '0.0.0',
-      viewId: 'linked-session-header',
-      generation: 'test-generation',
-    },
+    identity: { instanceId: 'fixture-instance-175', mountNonce: 'fixture-mount-175' },
+    authorPlugin: { id: 'happier.triage', version: '0.0.0' },
     surface: renderHeader,
     surfaceContext: createSurfaceContextFixture(),
     adapter: createPluginUiRnwSemanticSurfaceAdapter(),

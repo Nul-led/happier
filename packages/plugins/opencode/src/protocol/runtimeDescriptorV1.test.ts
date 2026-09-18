@@ -19,6 +19,8 @@ describe('OpenCode runtime descriptor v1', () => {
   it('normalizes valid explicit server URLs', () => {
     const descriptor = buildOpenCodeAgentRuntimeDescriptorV1({
       backendMode: 'server',
+      // OpenCode minted this id: bytes are identity. The server URL beside it
+      // is Happier-owned and keeps its canonicalization.
       providerSessionId: ' opencode-session-1 ',
       serverBaseUrl: ' http://127.0.0.1:49196/path?ignored=true#hash ',
       serverBaseUrlExplicit: true,
@@ -27,7 +29,7 @@ describe('OpenCode runtime descriptor v1', () => {
     expect(readCanonicalOpenCodeAgentRuntimeDescriptorV1(descriptor)).toEqual({
       agentId: 'opencode',
       backendMode: 'server',
-      providerSessionId: 'opencode-session-1',
+      providerSessionId: ' opencode-session-1 ',
       serverBaseUrl: 'http://127.0.0.1:49196/',
       serverBaseUrlExplicit: true,
     });

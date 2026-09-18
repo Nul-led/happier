@@ -2,7 +2,6 @@ import { ingestPluginManifestV2 } from '@happier-dev/protocol';
 import { describe, expect, it } from 'vitest';
 
 import { PLUGIN_MANIFEST } from './manifest.js';
-import { ANTIGRAVITY_AGENT_SETTINGS_CONTRIBUTION } from './agentSettings/definition.js';
 
 describe('Antigravity plugin manifest', () => {
   it('round-trips through canonical Plugin Manifest v2 ingestion', () => {
@@ -13,7 +12,7 @@ describe('Antigravity plugin manifest', () => {
     expect(jsonIngestion).toEqual(objectIngestion);
   });
 
-  it('declares one canonical custom agent while runtime implementation stays daemon-owned', () => {
+  it('declares host-owned ACP as the sole Antigravity session runtime', () => {
     expect(PLUGIN_MANIFEST).toMatchObject({
       id: 'happier.agent.antigravity',
       entrypoints: { daemon: './.happier-plugin/daemon.js' },
@@ -26,7 +25,7 @@ describe('Antigravity plugin manifest', () => {
             access: ['read'],
           },
         }), expect.objectContaining({
-          id: 'localharness-process',
+          id: 'antigravity-acp-process',
           capability: 'process',
         }), expect.objectContaining({
           id: 'antigravity-cli-process',
@@ -40,7 +39,9 @@ describe('Antigravity plugin manifest', () => {
       expect.objectContaining({
         id: 'antigravity',
         title: 'Antigravity',
-        runtime: { kind: 'custom' },
+        runtime: expect.objectContaining({ kind: 'acp', transport: {
+          kind: 'stdio', executable: { kind: 'managedDependency', id: 'agy-acp-server' },
+        } }),
         primary: 'sessions',
         connectedAccounts: [{
           purpose: 'model_upstream',
@@ -50,6 +51,7 @@ describe('Antigravity plugin manifest', () => {
           },
           required: false,
           materializationKinds: ['environment'],
+          credentialKinds: ['token'],
         }],
         capabilities: expect.objectContaining({
           surfaces: ['terminal', 'externalSessions'],
@@ -57,6 +59,7 @@ describe('Antigravity plugin manifest', () => {
             open: ['create', 'resume'],
             delivery: ['newTurn'],
             cancel: true,
+            executionRunContext: { versions: [1] },
           },
         }),
         surfaces: {
@@ -88,31 +91,20 @@ describe('Antigravity plugin manifest', () => {
     ]);
   });
 
-  it('declares canonical localharness dependency and hook identities', () => {
+  it('declares the official pinned ACP registry archive without a custom session hook', () => {
     expect(PLUGIN_MANIFEST.contributes.managedDependencies).toEqual([
       expect.objectContaining({
-        id: 'localharness',
-        executable: 'localharness',
+        id: 'agy-acp-server',
+        executable: 'agy_acp_server',
         platforms: ['macos', 'linux', 'windows'],
         sources: [expect.objectContaining({
-          kind: 'managedPypiWheelAsset',
-          installId: 'dep.antigravity.localharness',
-          distribution: 'google-antigravity',
-          versionSpecifier: '>=0.1.4,<0.2.0',
+          kind: 'pinnedArchive', version: '1.1.1',
+          assetsByPlatform: expect.objectContaining({ 'linux-x64': expect.objectContaining({ args: ['--uid='] }) }),
         })],
       }),
     ]);
     expect(PLUGIN_MANIFEST.contributes).not.toHaveProperty('agentSettings');
-    expect(PLUGIN_MANIFEST.contributes.settings).toEqual([
-      ANTIGRAVITY_AGENT_SETTINGS_CONTRIBUTION,
-    ]);
-    expect(PLUGIN_MANIFEST.contributes.hooks).toEqual([
-      expect.objectContaining({
-        id: 'resolve-prerequisites',
-        on: 'agent.resolvePrerequisites',
-        filters: { agentId: 'antigravity' },
-        executionKind: 'decide',
-      }),
-    ]);
+    expect(PLUGIN_MANIFEST.contributes).not.toHaveProperty('settings');
+    expect(PLUGIN_MANIFEST.contributes).not.toHaveProperty('hooks');
   });
 });

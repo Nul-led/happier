@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, statSync, utimesSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,10 +8,13 @@ import test from 'node:test';
 import ts from 'typescript';
 
 import {
+  canonicalizeGeneratedTypeOrder,
   collectGeneratedModuleDiagnostics,
   createActionTypeMapTimingReporter,
   createGeneratedModuleValidationCompilerOptions,
   renderActionTypeProjection,
+  renderActionMapProjectionType,
+  renderStructuralModule,
   resolveActionTypeProjectionRootNames,
   runActionTypeMapWithWorkspaceLock,
   validateGeneratedModule,
@@ -53,6 +56,12 @@ test('package compilation remains the semantic authority for the generated Actio
   assert.deepEqual(compileGeneratedActionTypeMap(), []);
 });
 
+test('current Protocol Action projection closes recursive author types before publication', () => {
+  const { output, inputKeys, resultKeys } = renderStructuralModule();
+  assert.doesNotThrow(() => validateGeneratedModule(output, inputKeys, resultKeys));
+  assert.match(output, /export type ActionApprovalRequestCreatedResult =/u);
+});
+
 test('generated module validation rejects invalid syntax and private validator references', () => {
   assert.doesNotThrow(() => validateGeneratedModuleSyntax('export type Valid = { value: string };\n'));
   assert.throws(
@@ -67,6 +76,19 @@ test('generated module validation rejects invalid syntax and private validator r
     () => validateGeneratedModuleSyntax('export type Invalid = {\n'),
     /not valid TypeScript/u,
   );
+});
+
+test('generated type ordering is deterministic without reordering tuples or object fields', () => {
+  const left = canonicalizeGeneratedTypeOrder(
+    "export type Example = { second: string; first: ['b', 'a']; format: 'raw' | 'compact'; value: string & { branded: true } };",
+  );
+  const right = canonicalizeGeneratedTypeOrder(
+    "export type Example = { second: string; first: ['b', 'a']; format: 'compact' | 'raw'; value: { branded: true } & string };",
+  );
+
+  assert.equal(left, right);
+  assert.ok(left.indexOf('second: string;') < left.indexOf('first:'));
+  assert.match(left, /first:\s*\[\s*'b',\s*'a'\s*\];/u);
 });
 
 test('Action input projections accept the public readonly JSON value without changing normalized results', () => {
@@ -215,6 +237,66 @@ test('Action type map generation shares the canonical workspace publication lock
   assert.equal(secondEntered, true);
 });
 
+test('Action type map derives and validates before waiting for the publication lock', async (t) => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'happier-action-type-map-prepare-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const lockPath = resolve(directory, 'plugin-sdk.lock');
+  let releaseOwner;
+  const owner = runActionTypeMapWithWorkspaceLock({
+    mode: '--check',
+    lockPath,
+    run: async () => await new Promise((resolve) => { releaseOwner = resolve; }),
+  });
+  while (!releaseOwner) await new Promise((resolve) => setTimeout(resolve, 0));
+
+  let prepared = false;
+  let published = false;
+  const contender = runActionTypeMapWithWorkspaceLock({
+    mode: '--write',
+    lockPath,
+    prepare: () => {
+      prepared = true;
+      return { output: 'generated' };
+    },
+    publish: async () => {
+      published = true;
+    },
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(prepared, true);
+  assert.equal(published, false);
+  releaseOwner();
+  await Promise.all([owner, contender]);
+  assert.equal(published, true);
+});
+
+test('Action type map publication receives the canonical lock ownership fence', async (t) => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'happier-action-type-map-fence-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const lockPath = resolve(directory, 'plugin-sdk.lock');
+  const successorRaw = JSON.stringify({
+    pid: 42,
+    createdAtMs: Date.now(),
+    updatedAtMs: Date.now(),
+    token: 'successor-owner',
+    processInstanceFingerprint: 'successor-incarnation',
+  });
+
+  await assert.rejects(
+    () => runActionTypeMapWithWorkspaceLock({
+      mode: '--write',
+      lockPath,
+      run: async (_mode, { assertOwned }) => {
+        writeFileSync(lockPath, successorRaw, 'utf8');
+        assertOwned();
+      },
+    }),
+    /lost workspace bundle lock ownership/i,
+  );
+  assert.equal(readFileSync(lockPath, 'utf8'), successorRaw);
+});
+
 test('generated Action projection is declaration-neutral and retains its public aliases', () => {
   const source = readFileSync(GENERATED_PATH, 'utf8');
   const importPaths = [...source.matchAll(/^import(?: type)? [^;]+ from '([^']+)';$/gmu)]
@@ -235,13 +317,105 @@ test('generated Action projection is declaration-neutral and retains its public 
     'PluginAgentExternalSessionLinkDataObject',
     'PluginAgentExternalSessionLinkDataValue',
     'JSONType',
+    'PluginActionWorkflowAuthoredResultReferenceV1',
+    'PluginActionWorkflowValueReferenceV1',
+    'PluginActionWorkflowConditionV1',
+    'PluginActionWorkflowStepV1',
+    'PluginActionWorkflowFailurePolicyV1',
+    'PluginActionWorkflowItemExecutionModeV1',
+    'PluginActionWorkflowEvaluatorHistoryModeV1',
+    'PluginActionWorkflowParallelBranchV1',
+    'PluginActionWorkflowRepetitionV1',
+    'PluginActionWorkflowBlockV1',
     'PluginActionInputById',
     'PluginActionResultById',
     'PluginInvocableActionId',
   ]) {
     assert.match(source, new RegExp(`export type ${name}\\b`, 'u'));
   }
+  assert.match(source, /^export type PluginActionWorkflowBlockV1\b/mu);
+  assert.doesNotMatch(
+    source,
+    /(?:^|\W)Workflow(?:AuthoredResultReference|ValueReference|Condition|Step|FailurePolicy|ItemExecutionMode|EvaluatorHistoryMode|ParallelBranch|Repetition|Block)(?:$|\W)/mu,
+  );
   assert.doesNotMatch(source, /\bActionSurfaceBinding(?:Caller|Context|Transform)\b/u);
   assert.doesNotMatch(source, /\bActionCaller\b/u);
   assert.doesNotMatch(source, /\bsurfaceBindings\??:/u);
+});
+
+test('generated Plugin Action projection does not publish the host Action census', () => {
+  const output = readFileSync(GENERATED_PATH, 'utf8');
+  // The generated plugin map is an author capability projection, not a census
+  // of every host Action. Publishing the canonical ActionId union here bypasses
+  // the exact PluginInvocableActionId census and leaks host-only names that are
+  // not invocable through PluginApi.actions.
+  assert.doesNotMatch(output, /\bHostActionId\b/u);
+  for (const internalActionId of [
+    'session.handoff.commit',
+    'sessions.subagents.upsert',
+    'plugin.webhook.delivery.movePending',
+  ]) {
+    assert.doesNotMatch(
+      output,
+      new RegExp(`readonly "${internalActionId.replaceAll('.', '\\\\.')}":`, 'u'),
+    );
+  }
+});
+
+test('Action map rendering expands the complete mapped type once regardless of Action count', () => {
+  const actionIds = Array.from({ length: 125 }, (_, index) => `example.action.${index}`);
+  let materializations = 0;
+  let renders = 0;
+  const mappedType = {};
+  const renderedMap = `{ ${actionIds.map((actionId) => (
+    `readonly ${JSON.stringify(actionId)}: ${JSON.stringify(actionId)};`
+  )).join('\n')} }`;
+  const checker = {
+    getPropertiesOfType() {
+      materializations += 1;
+      throw new Error('render-time mapped-type materialization is forbidden');
+    },
+    getTypeOfSymbolAtLocation() {
+      throw new Error('per-Action type expansion is forbidden');
+    },
+    typeToString(value) {
+      assert.equal(value, mappedType);
+      renders += 1;
+      return renderedMap;
+    },
+  };
+  const rendered = renderActionMapProjectionType(
+    checker,
+    mappedType,
+    {},
+    'PluginActionInputById',
+    actionIds,
+    () => {},
+  );
+
+  assert.equal(materializations, 0);
+  assert.equal(renders, 1);
+  assert.match(rendered, /readonly "example\.action\.124": "example\.action\.124";/u);
+});
+
+test('generated Plugin Action maps retain the safe Account read without human credential lifecycle Actions', () => {
+  const source = readFileSync(GENERATED_PATH, 'utf8');
+  const inputMap = source.slice(
+    source.indexOf('export type PluginActionInputById ='),
+    source.indexOf('export type PluginActionResultById ='),
+  );
+
+  assert.match(inputMap, /readonly "account\.security\.get":/u);
+  for (const actionId of [
+    'account.password.enroll',
+    'account.password.change',
+    'account.password.remove',
+    'account.email.change.request',
+    'account.apiTokens.create',
+    'account.apiTokens.list',
+    'account.apiTokens.revoke',
+    'account.apiTokens.revokeAll',
+  ]) {
+    assert.doesNotMatch(inputMap, new RegExp(`readonly "${actionId.replaceAll('.', '\\\\.')}":`, 'u'));
+  }
 });

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import type {
+  AgentExecutionRunOpenRequest,
   AgentRuntimeContext,
   AgentSessionOpenRequest,
   AgentSessionRuntimeContext,
@@ -13,6 +14,8 @@ import type {
 import type {
   ManagedServices,
 } from '@happier-dev/plugin-sdk/managed-services';
+
+import type { OpenCodeSystemToolResolver } from './managedServerDialect.js';
 
 type OpenCodeWorkStateSnapshot = Readonly<{
   updatedAt: number;
@@ -31,7 +34,16 @@ type OpenCodeWorkStateSnapshot = Readonly<{
   truncated?: Readonly<{ reason: string; omittedCount?: number }>;
 }>;
 
+/**
+ * Where the OpenCode system tool actually resolved. The readiness route of an
+ * owned server follows the executable that will serve it, and that question has
+ * one owner — `managedServerDialect.ts`, shared with the External Sessions browse
+ * surface — so the resolver shape is declared there and reused here.
+ */
+export type { OpenCodeSystemToolResolver } from './managedServerDialect.js';
+
 export type OpenCodeRuntimeContext = Readonly<{
+  exec: Readonly<{ systemTools: OpenCodeSystemToolResolver }>;
   logger: Readonly<{
     debug(message: string, fields?: Readonly<Record<string, unknown>>): void;
     info(message: string, fields?: Readonly<Record<string, unknown>>): void;
@@ -152,13 +164,14 @@ export function requestOpenCodeApprovalWithSignal(params: Readonly<{
 }
 
 export function createOpenCodeRuntimeContext(
-  request: AgentSessionOpenRequest,
+  request: AgentSessionOpenRequest | AgentExecutionRunOpenRequest,
   context: AgentRuntimeContext,
   workStateService?: AgentSessionRuntimeContext['workState'],
 ): OpenCodeRuntimeContext {
   const environment = request.launchEnvironment?.values ?? {};
   const workState = workStateService?.publisher('opencode-todos') ?? null;
   return {
+    exec: { systemTools: context.services.exec.systemTools },
     logger: {
       debug: (message, fields) => context.services.logger.debug(
         message,

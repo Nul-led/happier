@@ -93,6 +93,40 @@ function turnComplete(sequence = 2, turnId = 'host-turn-1'): AgentSessionRuntime
 }
 
 describe('withCursorEmptyResponseFailure', () => {
+  it('preserves the composed runtime identity and capabilities', () => {
+    const fixture = createRuntimeFixture();
+    const source: AgentSessionRuntime = {
+      ...fixture.runtime,
+      runtimeDescriptorV1: { v: 1, agentId: 'cursor', agent: {} },
+      runtimeCapabilities: {
+        localControl: null,
+        sessionCapabilities: {
+          sessionListing: 'supported',
+          sessionFork: { conversation: 'supported', fromMessage: 'unsupported', protocol: 'acp' },
+        },
+      },
+    };
+    const runtime = withCursorEmptyResponseFailure(source);
+
+    expect(runtime.runtimeDescriptorV1).toBe(source.runtimeDescriptorV1);
+    expect(runtime.runtimeCapabilities).toBe(source.runtimeCapabilities);
+  });
+
+  it('preserves connected-service settlement with its original receiver', async () => {
+    const fixture = createRuntimeFixture();
+    const settled: string[] = [];
+    const source: AgentSessionRuntime = {
+      ...fixture.runtime,
+      async connectedServiceApplicationSettled(request) {
+        expect(this).toBe(source);
+        settled.push(request.serviceId);
+      },
+    };
+    const runtime = withCursorEmptyResponseFailure(source);
+    await runtime.connectedServiceApplicationSettled?.({ serviceId: 'cursor', groupId: 'group-1' });
+    expect(settled).toEqual(['cursor']);
+  });
+
   it('rewrites an empty successful terminal event as a Cursor provider failure', () => {
     const fixture = createRuntimeFixture();
     const runtime = withCursorEmptyResponseFailure(fixture.runtime);

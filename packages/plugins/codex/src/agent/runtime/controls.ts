@@ -12,22 +12,16 @@ import {
   listCodexVendorPlugins,
 } from './appServer/catalog/index.js';
 import { createCodexNativeAppServerClient } from './appServer/client.js';
-import { decodeCodexAppServerGoal } from './appServer/work/goalCodec.js';
+import {
+  createCodexGoalProjection,
+  readCodexGoalPayload,
+  type CodexGoalProjection,
+} from './appServer/work/goalProjection.js';
 import {
   isCodexRateLimitSnapshotExhausted,
   readEarliestCodexRateLimitResetAtMs,
 } from '../auth/services/quota/rateLimitSnapshot.js';
 import { readCodexRuntimeRateLimitsSnapshot } from '../auth/services/quota/runtimeRateLimits.js';
-
-type RecordLike = Readonly<Record<string, unknown>>;
-type GoalPayload =
-  | Readonly<{ kind: 'present'; goal: RecordLike }>
-  | Readonly<{ kind: 'absent' }>
-  | Readonly<{ kind: 'malformed' }>;
-
-function record(value: unknown): RecordLike | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as RecordLike : null;
-}
 
 function diagnostic(code: string, message = code) {
   return { code, severity: 'error' as const, message };
@@ -50,80 +44,14 @@ async function withControlClient<T>(
   }
 }
 
-function readGoal(value: unknown): GoalPayload {
-  const root = record(value);
-  if (!root) return { kind: 'malformed' };
-  if (typeof root.objective === 'string') return { kind: 'present', goal: root };
-  if (!Object.prototype.hasOwnProperty.call(root, 'goal') || root.goal === null || root.goal === undefined) {
-    return { kind: 'absent' };
-  }
-  const goal = record(root.goal);
-  return goal ? { kind: 'present', goal } : { kind: 'malformed' };
-}
-
-function createGoalControl(): AgentSessionGoalControl {
-  let sourceSequence = 0;
-  const publish = async (payload: GoalPayload, context: AgentSessionGoalControlContext) => {
-    if (payload.kind === 'malformed') {
-      return {
-        status: 'unavailable' as const,
-        retryable: false,
-        diagnostic: diagnostic('codex_goal_payload_invalid'),
-      };
-    }
-    const decoded = payload.kind === 'absent'
-      ? null
-      : decodeCodexAppServerGoal({ backendId: 'codex', goal: payload.goal });
-    if (payload.kind === 'present' && decoded === null) {
-      return {
-        status: 'unavailable' as const,
-        retryable: false,
-        diagnostic: diagnostic('codex_goal_payload_invalid'),
-      };
-    }
-    const observedAtMs = decoded?.updatedAt ?? Date.now();
-    const outcome = await context.goalSource.publish({
-      sourceSequence: ++sourceSequence,
-      observedAtMs,
-      items: decoded ? [{
-        localId: decoded.id,
-        kind: decoded.kind,
-        origin: decoded.origin,
-        status: decoded.status,
-        ...(decoded.statusReason ? { statusReason: decoded.statusReason } : {}),
-        title: decoded.title,
-        providerRef: decoded.vendorRef,
-        ...(Object.prototype.hasOwnProperty.call(decoded, 'tokenBudget')
-          ? { tokenBudget: decoded.tokenBudget }
-          : {}),
-        ...(typeof decoded.tokensUsed === 'number' ? { tokensUsed: decoded.tokensUsed } : {}),
-        ...(typeof decoded.timeUsedSeconds === 'number'
-          ? { timeUsedSeconds: decoded.timeUsedSeconds }
-          : {}),
-        ...(typeof decoded.createdAt === 'number' ? { createdAtMs: decoded.createdAt } : {}),
-        updatedAtMs: decoded.updatedAt,
-      }] : [],
-      ...(decoded ? { primaryLocalId: decoded.id } : {}),
-    });
-    if (outcome.status === 'applied' || outcome.status === 'unchanged') {
-      return { status: outcome.status, revision: outcome.revision } as const;
-    }
-    if (outcome.status === 'ignoredStale') return { status: 'unchanged' as const, revision: outcome.revision };
-    return {
-      status: 'unavailable' as const,
-      retryable: true,
-      diagnostic: 'diagnostic' in outcome
-        ? outcome.diagnostic
-        : diagnostic('codex_goal_publication_failed'),
-    };
-  };
+function createGoalControl(goalProjection: CodexGoalProjection): AgentSessionGoalControl {
   return {
     async get(context) {
       const threadId = context.session.providerSessionId;
       if (!threadId) return { status: 'unavailable', retryable: false, diagnostic: diagnostic('codex_goal_thread_unavailable') };
       try {
         const response = await withControlClient(context, async (client) => await client.request('thread/goal/get', { threadId }));
-        return await publish(readGoal(response), context);
+        return await goalProjection.publish(readCodexGoalPayload(response), context.goalSource);
       } catch {
         return { status: 'unavailable', retryable: true, diagnostic: diagnostic('codex_goal_read_failed') };
       }
@@ -136,7 +64,7 @@ function createGoalControl(): AgentSessionGoalControl {
           threadId,
           ...mutation,
         }));
-        return await publish(readGoal(response), context);
+        return await goalProjection.publish(readCodexGoalPayload(response), context.goalSource);
       } catch {
         return { status: 'unavailable', retryable: true, diagnostic: diagnostic('codex_goal_write_failed') };
       }
@@ -146,7 +74,7 @@ function createGoalControl(): AgentSessionGoalControl {
       if (!threadId) return { status: 'unavailable', retryable: false, diagnostic: diagnostic('codex_goal_thread_unavailable') };
       try {
         await withControlClient(context, async (client) => await client.request('thread/goal/clear', { threadId }));
-        return await publish({ kind: 'absent' }, context);
+        return await goalProjection.publish({ kind: 'absent' }, context.goalSource);
       } catch {
         return { status: 'unavailable', retryable: true, diagnostic: diagnostic('codex_goal_clear_failed') };
       }
@@ -234,9 +162,11 @@ const continuation: AgentSessionContinuationControl = {
   },
 };
 
-export function createCodexNativeSessionControls() {
+export function createCodexNativeSessionControls(
+  goalProjection: CodexGoalProjection = createCodexGoalProjection(),
+) {
   return Object.freeze({
-    goals: createGoalControl(),
+    goals: createGoalControl(goalProjection),
     catalog,
     usageLimitRecovery,
     continuation,

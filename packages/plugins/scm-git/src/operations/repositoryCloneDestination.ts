@@ -1,4 +1,5 @@
-import { lstat, mkdir, mkdtemp, readdir, rename, rmdir, unlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, open, readdir, rename, rmdir, unlink, writeFile } from 'node:fs/promises';
+import type { FileHandle } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 
 import {
@@ -22,6 +23,7 @@ export type CloneDestinationReservation =
         finalDestinationPath: string;
         cloneDestinationPath: string;
         privateTempPath: string;
+        privateTempHandle: FileHandle;
         privateTempIdentity: FileIdentity;
     }>
     | Readonly<{ ok: false; response: ScmRepositoryCloneOutput }>;
@@ -31,6 +33,7 @@ export type ClonePublishResult =
     | Readonly<{ ok: false; response: ScmRepositoryCloneOutput }>;
 
 export type FileIdentity = Readonly<{
+    birthtimeMs: number;
     dev: number;
     ino: number;
 }>;
@@ -180,6 +183,7 @@ export async function preflightDestination(request: ScmRepositoryCloneInput): Pr
         ok: true,
         parentPath,
         parentIdentity: {
+            birthtimeMs: parentStats.birthtimeMs,
             dev: parentStats.dev,
             ino: parentStats.ino,
         },
@@ -208,13 +212,16 @@ export async function reserveCloneDestination(
             `${PRIVATE_CLONE_DIRECTORY_PREFIX}${basename(destination.destinationPath)}-`,
         ));
         const privateTempStats = await lstat(privateTempPath);
+        const privateTempHandle = await open(privateTempPath, 'r');
         return {
             ok: true,
             parentPath: destination.parentPath,
             finalDestinationPath: destination.destinationPath,
             cloneDestinationPath: privateTempPath,
             privateTempPath,
+            privateTempHandle,
             privateTempIdentity: {
+                birthtimeMs: privateTempStats.birthtimeMs,
                 dev: privateTempStats.dev,
                 ino: privateTempStats.ino,
             },
@@ -249,6 +256,7 @@ async function isSameCloneDestination(input: Readonly<{
     const currentStats = await lstat(input.path);
     return currentStats.isDirectory()
         && !currentStats.isSymbolicLink()
+        && currentStats.birthtimeMs === input.identity.birthtimeMs
         && currentStats.dev === input.identity.dev
         && currentStats.ino === input.identity.ino;
 }
@@ -258,7 +266,8 @@ async function isSamePathIdentity(input: Readonly<{
     identity: FileIdentity;
 }>): Promise<boolean> {
     const currentStats = await lstat(input.path);
-    return currentStats.dev === input.identity.dev
+    return currentStats.birthtimeMs === input.identity.birthtimeMs
+        && currentStats.dev === input.identity.dev
         && currentStats.ino === input.identity.ino;
 }
 
@@ -325,24 +334,28 @@ async function restoreMovedCloneEntries(input: Readonly<{
 export async function publishPrivateCloneDestination(
     reservation: Extract<CloneDestinationReservation, { ok: true }>,
 ): Promise<ClonePublishResult> {
+    let privateDestinationMatches = false;
     try {
-        if (!await isSameCloneDestination({
+        privateDestinationMatches = await isSameCloneDestination({
             path: reservation.privateTempPath,
             identity: reservation.privateTempIdentity,
-        })) {
-            return {
-                ok: false,
-                response: cloneErrorResponse(
-                    'Repository clone private destination changed before publish.',
-                    SCM_OPERATION_ERROR_CODES.INVALID_PATH,
-                ),
-            };
-        }
+        });
     } catch {
+        await reservation.privateTempHandle.close();
         return {
             ok: false,
             response: cloneErrorResponse(
                 'Repository clone private destination could not be inspected before publish.',
+                SCM_OPERATION_ERROR_CODES.INVALID_PATH,
+            ),
+        };
+    }
+    await reservation.privateTempHandle.close();
+    if (!privateDestinationMatches) {
+        return {
+            ok: false,
+            response: cloneErrorResponse(
+                'Repository clone private destination changed before publish.',
                 SCM_OPERATION_ERROR_CODES.INVALID_PATH,
             ),
         };
@@ -371,6 +384,7 @@ export async function publishPrivateCloneDestination(
             };
         }
         finalDestinationIdentity = {
+            birthtimeMs: finalDestinationStats.birthtimeMs,
             dev: finalDestinationStats.dev,
             ino: finalDestinationStats.ino,
         };
@@ -381,6 +395,7 @@ export async function publishPrivateCloneDestination(
             identity: finalDestinationIdentity,
             markerPath: reservationMarkerPath,
             markerIdentity: {
+                birthtimeMs: markerStats.birthtimeMs,
                 dev: markerStats.dev,
                 ino: markerStats.ino,
             },
@@ -440,6 +455,7 @@ export async function publishPrivateCloneDestination(
                 name: entry,
                 finalPath: entryDestinationPath,
                 identity: {
+                    birthtimeMs: entryStats.birthtimeMs,
                     dev: entryStats.dev,
                     ino: entryStats.ino,
                 },

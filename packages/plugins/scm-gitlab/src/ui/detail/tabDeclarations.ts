@@ -91,9 +91,10 @@ export const GITLAB_DETAIL_TABS_V1: readonly GitlabDetailTabDeclarationV1[] = Ob
     title: 'Changes',
     titleKey: 'plugins.gitlab.ui.tabs.changes',
     retention: 'retain' as const,
-    retainedState: 'its one vertical list viewport and file scroll anchor only; the loaded'
-      + ' per-file page model, page position and errors are discarded when the panel'
-      + ' becomes inactive, and no rich diff body is retained while B6 is held',
+    retainedState: 'its parsed per-file page model, the cursor that follows it, and the'
+      + ' visible-file scroll anchor; leaving aborts /diffs paging and collapsed-file and'
+      + ' raw-evidence reads, clears selected line/file, raw-text reveal and Action state,'
+      + ' and no rich diff body is retained while B6 is held',
     readPlane: 'changes' as const,
     scrollOwner: 'list' as const,
     kinds: MERGE_REQUEST_ONLY,

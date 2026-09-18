@@ -9,9 +9,13 @@
             "cancel": true,
             "delivery": [
               "newTurn",
-              "steer",
               "followUp"
             ],
+            "executionRunContext": {
+              "versions": [
+                1
+              ]
+            },
             "open": [
               "create",
               "resume"
@@ -28,6 +32,9 @@
         },
         "cli": {
           "auth": {
+            "credentialPaths": [
+              "~/.copilot/config.json"
+            ],
             "environmentVariables": [
               "COPILOT_GITHUB_TOKEN",
               "GH_TOKEN",
@@ -41,7 +48,7 @@
                 "kind": "primary"
               }
             ],
-            "nonInteractiveStatusProbe": true,
+            "missingCredentialState": "unknown",
             "support": "login_terminal"
           },
           "displayName": "GitHub Copilot CLI",
@@ -137,13 +144,6 @@
         ],
         "id": "copilot-cli",
         "title": "GitHub Copilot CLI"
-      },
-      {
-        "executableNames": [
-          "gh"
-        ],
-        "id": "github-cli",
-        "title": "GitHub CLI"
       }
     ],
     "targetedPluginContributions": [],
@@ -256,10 +256,6 @@
           "executables": [
             {
               "id": "copilot-cli",
-              "kind": "systemTool"
-            },
-            {
-              "id": "github-cli",
               "kind": "systemTool"
             }
           ]

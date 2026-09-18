@@ -3,9 +3,17 @@ import { describe, expect, it } from 'vitest';
 import {
   buildPiRuntimeModelsSnapshot,
   createPiModelCatalogEntry,
+  qualifyPiModelId,
 } from './catalog.js';
 
 describe('Pi model catalog projection', () => {
+  it('preserves the Pi provider when the provider-native model id contains slashes', () => {
+    expect(qualifyPiModelId('openrouter', 'meta/muse-spark-1.3-contributor'))
+      .toBe('openrouter/meta/muse-spark-1.3-contributor');
+    expect(qualifyPiModelId('openrouter', 'openrouter/meta/muse-spark-1.3-contributor'))
+      .toBe('openrouter/meta/muse-spark-1.3-contributor');
+  });
+
   it('uses one provider-qualified identity and Thinking option shape', () => {
     expect(createPiModelCatalogEntry({
       provider: 'openai',

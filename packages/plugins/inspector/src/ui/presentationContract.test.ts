@@ -73,13 +73,8 @@ describe('Inspector public presentation contract', () => {
       action === 'plugins.list' ? { plugins: [] } : { ok: true }
     ));
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.inspector',
-        pluginVersion: '0.0.0',
-        viewId: 'inspector-app',
-        generation: 'inspector-self-check-settlement',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-151', mountNonce: 'fixture-mount-151' },
+      authorPlugin: { id: 'happier.inspector', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createInspectorSurfaceContext(),
       adapter: createPluginUiRnwSemanticSurfaceAdapter(),
@@ -101,13 +96,8 @@ describe('Inspector public presentation contract', () => {
       return { ok: true };
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.inspector',
-        pluginVersion: '0.0.0',
-        viewId: 'inspector-app',
-        generation: 'inspector-without-open-surface-contract',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-152', mountNonce: 'fixture-mount-152' },
+      authorPlugin: { id: 'happier.inspector', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createInspectorSurfaceContext(),
       adapter: createPluginUiRnwSemanticSurfaceAdapter(),
@@ -128,13 +118,8 @@ describe('Inspector public presentation contract', () => {
     });
     const openSurface = vi.fn(async () => undefined);
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.inspector',
-        pluginVersion: '0.0.0',
-        viewId: 'inspector-app',
-        generation: 'inspector-with-open-surface-contract',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-153', mountNonce: 'fixture-mount-153' },
+      authorPlugin: { id: 'happier.inspector', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createInspectorSurfaceContext(),
       adapter: createPluginUiRnwSemanticSurfaceAdapter(),
@@ -175,13 +160,8 @@ describe('Inspector public presentation contract', () => {
       return { ok: true };
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.inspector',
-        pluginVersion: '0.0.0',
-        viewId: 'inspector-app',
-        generation: 'inspector-presentation-contract',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-154', mountNonce: 'fixture-mount-154' },
+      authorPlugin: { id: 'happier.inspector', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createInspectorSurfaceContext(),
       adapter: createPluginUiRnwSemanticSurfaceAdapter(),
@@ -232,13 +212,8 @@ describe('Inspector public presentation contract', () => {
         }
       : { ok: true });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.inspector',
-        pluginVersion: '0.0.0',
-        viewId: 'inspector-app',
-        generation: 'inspector-scroll-owner-contract',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-155', mountNonce: 'fixture-mount-155' },
+      authorPlugin: { id: 'happier.inspector', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createInspectorSurfaceContext(),
       adapter: createPluginUiRnwSemanticSurfaceAdapter(),
@@ -265,13 +240,8 @@ describe('Inspector public presentation contract', () => {
       ? { plugins: [] }
       : { ok: true });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.inspector',
-        pluginVersion: '0.0.0',
-        viewId: 'inspector-app',
-        generation: 'inspector-image-contract',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-156', mountNonce: 'fixture-mount-156' },
+      authorPlugin: { id: 'happier.inspector', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createInspectorSurfaceContext(),
       adapter: createPluginUiRnwSemanticSurfaceAdapter(),
@@ -314,13 +284,8 @@ describe('Inspector public presentation contract', () => {
         : pendingRefresh;
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.inspector',
-        pluginVersion: '0.0.0',
-        viewId: 'inspector-app',
-        generation: 'inspector-refresh-progress-contract',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-157', mountNonce: 'fixture-mount-157' },
+      authorPlugin: { id: 'happier.inspector', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createInspectorSurfaceContext(),
       adapter: createPluginUiRnwSemanticSurfaceAdapter(),
@@ -396,13 +361,8 @@ describe('Inspector public presentation contract', () => {
       return { ok: true };
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.inspector',
-        pluginVersion: '0.0.0',
-        viewId: 'inspector-app',
-        generation: 'inspector-search-selection-contract',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-158', mountNonce: 'fixture-mount-158' },
+      authorPlugin: { id: 'happier.inspector', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createInspectorSurfaceContext(),
       adapter: createPluginUiRnwSemanticSurfaceAdapter(),
@@ -467,13 +427,8 @@ describe('Inspector public presentation contract', () => {
       return { ok: true };
     });
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.inspector',
-        pluginVersion: '0.0.0',
-        viewId: 'inspector-app',
-        generation: 'inspector-selection-currentness-contract',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-159', mountNonce: 'fixture-mount-159' },
+      authorPlugin: { id: 'happier.inspector', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createInspectorSurfaceContext(),
       adapter: createPluginUiRnwSemanticSurfaceAdapter(),

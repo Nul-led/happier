@@ -39,6 +39,7 @@ export type PreparedPiQualifiedConnectedAccounts = Readonly<{
   launchEnvironment: AgentLaunchEnvironment;
   isInvalidated(): boolean;
   bind(runtime: AgentSessionRuntime): AgentSessionRuntime;
+  bindExecutionRun<T extends Readonly<{ dispose(): void | Promise<void> }>>(runtime: T): T;
   dispose(): Promise<void>;
 }>;
 
@@ -127,7 +128,7 @@ export async function preparePiQualifiedConnectedAccounts(input: Readonly<{
   const subscriptions: Array<Readonly<{ dispose(): void }>> = [];
   const initialObservations: Promise<void>[] = [];
   let invalidated = false;
-  let boundRuntime: AgentSessionRuntime | null = null;
+  let disposeBoundRuntime: (() => Promise<void>) | null = null;
   let subscriptionsDisposed = false;
 
   const disposeSubscriptions = (): void => {
@@ -137,7 +138,7 @@ export async function preparePiQualifiedConnectedAccounts(input: Readonly<{
   };
   const invalidate = async (): Promise<void> => {
     invalidated = true;
-    await boundRuntime?.dispose('runtime_recovery');
+    await disposeBoundRuntime?.();
   };
   const bind = (runtime: AgentSessionRuntime): AgentSessionRuntime => {
     let disposed = false;
@@ -150,8 +151,23 @@ export async function preparePiQualifiedConnectedAccounts(input: Readonly<{
         await runtime.dispose(reason);
       },
     };
-    boundRuntime = wrapped;
+    disposeBoundRuntime = async () => await wrapped.dispose('runtime_recovery');
     if (invalidated) void wrapped.dispose('runtime_recovery');
+    return wrapped;
+  };
+  const bindExecutionRun = <T extends Readonly<{ dispose(): void | Promise<void> }>>(runtime: T): T => {
+    let disposed = false;
+    const wrapped = {
+      ...runtime,
+      async dispose() {
+        if (disposed) return;
+        disposed = true;
+        disposeSubscriptions();
+        await runtime.dispose();
+      },
+    } as T;
+    disposeBoundRuntime = async () => await wrapped.dispose();
+    if (invalidated) void wrapped.dispose();
     return wrapped;
   };
 
@@ -200,6 +216,7 @@ export async function preparePiQualifiedConnectedAccounts(input: Readonly<{
         launchEnvironment: sourceLaunchEnvironment,
         isInvalidated: () => invalidated,
         bind,
+        bindExecutionRun,
         async dispose() {
           disposeSubscriptions();
         },
@@ -313,6 +330,7 @@ export async function preparePiQualifiedConnectedAccounts(input: Readonly<{
       launchEnvironment,
       isInvalidated: () => invalidated,
       bind,
+      bindExecutionRun,
       async dispose() {
         disposeSubscriptions();
       },

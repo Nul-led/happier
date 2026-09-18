@@ -1,4 +1,5 @@
 import type { ClaudeEffectiveModelEvidence } from '../runtime/effectiveModelEvidence.js';
+import { readClaudeProviderIdentityValue } from '../../protocol/providerIdentity.js';
 import type { ClaudeStatuslinePayload } from './payload.js';
 
 /**
@@ -51,9 +52,9 @@ function readPositiveTokens(value: unknown): number | null {
  * nor the transcript path (the id rotates on fork/compact; the transcript path is the steadier key).
  */
 function matchesSession(identity: ClaudeStatuslineIdentity, payload: ClaudeStatuslinePayload): boolean {
-    const payloadSessionId = readString(payload.session_id);
+    const payloadSessionId = readClaudeProviderIdentityValue(payload.session_id);
     const payloadTranscriptPath = readString(payload.transcript_path);
-    const knownSessionId = readString(identity.providerSessionId);
+    const knownSessionId = readClaudeProviderIdentityValue(identity.providerSessionId);
     const knownTranscriptPath = readString(identity.transcriptPath);
 
     if (payloadSessionId && knownSessionId && payloadSessionId === knownSessionId) return true;

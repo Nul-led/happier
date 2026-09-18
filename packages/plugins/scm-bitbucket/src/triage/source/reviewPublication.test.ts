@@ -240,7 +240,7 @@ describe('Bitbucket canonical review publication', () => {
     expect(requests.filter((candidate) => candidate.method !== 'GET')).toHaveLength(0);
   });
 
-  it('does not report settled when the canonical publication settlement fails', async () => {
+  it('never presents a failed canonical settlement as a recorded one', async () => {
     const invalid = entry('comment-1', 12);
     const publicationPlan = plan({
       entries: [{ ...invalid, anchor: { kind: 'file' as const, filePath: 'src/index.ts' } }],
@@ -261,7 +261,84 @@ describe('Bitbucket canonical review publication', () => {
     );
 
     await expect(publishBitbucketPullRequestReviewAction(request(publicationPlan), context))
-      .rejects.toThrow('canonical settlement unavailable');
+      .resolves.toMatchObject({
+        kind: 'settled',
+        settlement: 'unrecorded',
+        publication: { entries: [{ outcome: { kind: 'failed', code: 'anchor_unresolvable' } }] },
+      });
+  });
+
+  it('keeps a confirmed published reference and still re-observes when settlement fails', async () => {
+    // The forge already has the comment. Losing that reference — and skipping the final exact read
+    // that says what the pull request now looks like — is not a safer answer than reporting the
+    // provider truth beside an explicitly unrecorded settlement.
+    const publicationPlan = plan({ entries: [entry('comment-1', 12)], verdict: null });
+    const commentsUrl = `${PULL_REQUEST_URL}/comments`;
+    let pullRequestReads = 0;
+    const { http, requests } = createHttpStub((url, requestInfo) => {
+      if (url.endsWith('/2.0/user')) return { body: { uuid: VIEWER_UUID } };
+      if (url === PULL_REQUEST_URL) {
+        pullRequestReads += 1;
+        return { body: pullRequest() };
+      }
+      if (url.startsWith(commentsUrl) && requestInfo?.method === 'GET') return { body: { values: [] } };
+      if (url === commentsUrl && requestInfo?.method === 'POST') return { status: 201, body: { id: 881 } };
+      return undefined;
+    });
+    const { connectedAccounts } = createConnectedAccountsStub({ accounts: [{ accountId: 'account-1' }] });
+    const context = withClaim(
+      createInvocationContext(connectedAccounts, http),
+      publicationPlan,
+      'dispatch',
+      new Error('canonical settlement unavailable'),
+    );
+
+    await expect(publishBitbucketPullRequestReviewAction(request(publicationPlan), context))
+      .resolves.toMatchObject({
+        kind: 'settled',
+        settlement: 'unrecorded',
+        publication: { entries: [{ outcome: { kind: 'published', externalRef: '881' } }] },
+      });
+    // Exactly one outward write, and the mandatory post-mutation observation still ran.
+    expect(requests.filter((candidate) => candidate.method === 'POST')).toHaveLength(1);
+    expect(pullRequestReads).toBe(2);
+  });
+
+  it('reconciles a comment whose success response could not be decoded instead of failing it', async () => {
+    const publicationPlan = plan({ entries: [entry('comment-1', 12)], verdict: null });
+    const commentsUrl = `${PULL_REQUEST_URL}/comments`;
+    const marker = `<!-- happier-review-comment:v1:${'A'.repeat(43)} -->`;
+    let commentWrites = 0;
+    let commentReads = 0;
+    const { http } = createHttpStub((url, requestInfo) => {
+      if (url.endsWith('/2.0/user')) return { body: { uuid: VIEWER_UUID } };
+      if (url === PULL_REQUEST_URL) return { body: pullRequest() };
+      if (url === commentsUrl && requestInfo?.method === 'POST') {
+        commentWrites += 1;
+        // `201 Created`, with a body this build cannot parse. The comment exists.
+        return { status: 201, bodyBytes: '{broken' };
+      }
+      if (url.startsWith(commentsUrl) && requestInfo?.method === 'GET') {
+        commentReads += 1;
+        return {
+          body: {
+            values: commentReads === 1
+              ? []
+              : [{ id: 993, content: { raw: `landed\n\n${marker}` } }],
+          },
+        };
+      }
+      return undefined;
+    });
+    const { connectedAccounts } = createConnectedAccountsStub({ accounts: [{ accountId: 'account-1' }] });
+    const context = withClaim(createInvocationContext(connectedAccounts, http), publicationPlan);
+
+    await expect(publishBitbucketPullRequestReviewAction(request(publicationPlan), context))
+      .resolves.toMatchObject({
+        kind: 'settled',
+        publication: { entries: [{ outcome: { kind: 'published', externalRef: '993' } }] },
+      });
+    expect(commentWrites).toBe(1);
   });
 
   it('publishes comments in order, stops at the first failure, and marks the suffix skipped', async () => {

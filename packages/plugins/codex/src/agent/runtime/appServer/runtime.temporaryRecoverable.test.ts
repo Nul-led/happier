@@ -13,6 +13,7 @@ import type {
 import type { ExecService } from '@happier-dev/plugin-sdk/exec';
 import type { HttpService } from '@happier-dev/plugin-sdk/http';
 import type { CodexAppServerEvent } from './core.js';
+import { createCodexAppServerRpcError } from './compatibility.js';
 
 const clientState = vi.hoisted(() => {
   const handlers = new Map<string, (params: unknown) => void | Promise<void>>();
@@ -50,9 +51,12 @@ const clientState = vi.hoisted(() => {
   let deferNextRateLimitsRead = false;
   let accountReadResult: unknown = { account: null };
   let threadReadResult: unknown = { thread: { id: 'thread-1', turns: [] } };
+  let threadTurnsListResults: unknown[] = [];
+  let collaborationModesResult: unknown;
   let rejectNextThreadResume: Error | null = null;
   let nextThreadResumeResult: unknown | null = null;
   let rejectNextThreadRead: Error | null = null;
+  let rejectNextThreadRevert: Error | null = null;
   let deferNextLoginStart = false;
   let deferredLoginStart: {
     promise: Promise<unknown>;
@@ -112,9 +116,20 @@ const clientState = vi.hoisted(() => {
       deferNextRateLimitsRead = false;
       accountReadResult = { account: null };
       threadReadResult = { thread: { id: 'thread-1', turns: [] } };
+      threadTurnsListResults = [];
+      collaborationModesResult = {
+        data: [{
+          id: 'plan',
+          name: 'Plan',
+          mode: 'plan',
+          model: 'gpt-5.4',
+          reasoning_effort: 'high',
+        }],
+      };
       rejectNextThreadResume = null;
       nextThreadResumeResult = null;
       rejectNextThreadRead = null;
+      rejectNextThreadRevert = null;
       deferNextLoginStart = false;
       deferredLoginStart = null;
     },
@@ -138,7 +153,7 @@ const clientState = vi.hoisted(() => {
     deferTurnStartForPrompt(prompt: string) {
       delayedTurnStartPrompt = prompt;
     },
-    resolveDeferredTurnStart(turnId: string) {
+    resolveDeferredTurnStart(turnId: string | null) {
       if (!delayedTurnStart) throw new Error('No deferred turn/start request is pending');
       delayedTurnStart.resolve({ turnId });
       delayedTurnStart = null;
@@ -169,6 +184,12 @@ const clientState = vi.hoisted(() => {
     setThreadReadResult(value: unknown) {
       threadReadResult = value;
     },
+    setThreadTurnsListResults(values: readonly unknown[]) {
+      threadTurnsListResults = [...values];
+    },
+    setCollaborationModesResult(value: unknown) {
+      collaborationModesResult = value;
+    },
     rejectNextThreadResume(error: Error) {
       rejectNextThreadResume = error;
     },
@@ -177,6 +198,9 @@ const clientState = vi.hoisted(() => {
     },
     rejectNextThreadRead(error: Error) {
       rejectNextThreadRead = error;
+    },
+    rejectNextThreadRevert(error: Error) {
+      rejectNextThreadRevert = error;
     },
     deferNextLoginStart() {
       deferNextLoginStart = true;
@@ -241,6 +265,17 @@ const clientState = vi.hoisted(() => {
         }
         return threadReadResult;
       }
+      if (method === 'thread/turns/list') {
+        return threadTurnsListResults.shift() ?? threadReadResult;
+      }
+      if (method === 'thread/revert') {
+        if (rejectNextThreadRevert) {
+          const error = rejectNextThreadRevert;
+          rejectNextThreadRevert = null;
+          throw error;
+        }
+        return { thread: { id: 'thread-1', turns: [] } };
+      }
       if (method === 'thread/rollback') {
         return {};
       }
@@ -249,6 +284,12 @@ const clientState = vi.hoisted(() => {
           data: [{ name: 'realtime_conversation', enabled: true }],
           nextCursor: null,
         };
+      }
+      if (method === 'collaborationMode/list') {
+        return collaborationModesResult;
+      }
+      if (method === 'model/list') {
+        return { data: [{ id: 'gpt-5.4', name: 'GPT-5.4', isDefault: true }] };
       }
       if (method === 'thread/realtime/start' || method === 'thread/realtime/stop') {
         return {};
@@ -439,8 +480,10 @@ function createRuntime(overrides: Readonly<{
   happierSessionId?: string;
   processEnv?: Readonly<Record<string, string | undefined>>;
   initialModelId?: string;
+  initialCollaborationModeId?: string;
   initialProviderBinding?: typeof providerBindingMaterialization.engineConfig;
   publishGeneratedMedia?: (candidate: import('./media/generatedMedia.js').CodexGeneratedMediaCandidate) => Promise<void>;
+  observeGoal?: (payload: unknown) => void | Promise<void>;
 }> = {}) {
   const fixture = createCodexTestContextFixture({
     sessionId: overrides.happierSessionId ?? 'session-1',
@@ -494,7 +537,9 @@ function createRuntime(overrides: Readonly<{
     happierSessionId: overrides.happierSessionId ?? 'session-1',
     processEnv: overrides.processEnv,
     initialModelId: overrides.initialModelId,
+    initialCollaborationModeId: overrides.initialCollaborationModeId,
     initialProviderBinding: overrides.initialProviderBinding,
+    ...(overrides.observeGoal ? { observeGoal: overrides.observeGoal } : {}),
   });
 }
 
@@ -560,15 +605,6 @@ function asConnectedServiceAuthRuntime(runtime: ReturnType<typeof createRuntime>
       apply(request: unknown): Promise<unknown>;
       readIdentity(request: unknown): Promise<unknown>;
     }>;
-  }>;
-}
-
-function asConversationRollbackRuntime(runtime: ReturnType<typeof createRuntime>) {
-  return runtime as typeof runtime & Readonly<{
-    rollbackConversation(request: Readonly<{
-      v: 1;
-      target?: Readonly<{ type: 'latest_turn' } | { type: 'before_user_message'; userMessageSeq: number }>;
-    }>): Promise<unknown>;
   }>;
 }
 
@@ -1378,7 +1414,7 @@ describe('Codex app-server temporary recoverable turn failures', () => {
     expect(events.filter((event) => event.kind === 'turn-complete')).toHaveLength(1);
   });
 
-  it('keeps the native turn authoritative when a nonterminal error is followed by primary activity', async () => {
+  it.each([false, true])('keeps the native turn authoritative after a nonterminal error (willRetry=%s)', async (willRetry) => {
     const runtime = createRuntime();
     const events: CodexAppServerEvent[] = [];
     runtime.events.subscribe((event) => events.push(event));
@@ -1387,17 +1423,17 @@ describe('Codex app-server temporary recoverable turn failures', () => {
     emitNotification('error', {
       threadId: 'thread-1',
       turnId: 'turn-1',
-      willRetry: false,
+      willRetry,
       error: {
-        message: 'Usage limit reached',
-        codexErrorInfo: 'UsageLimitExceeded',
+        message: 'Selected model is at capacity. Please try a different model.',
+        codexErrorInfo: 'server_overloaded',
       },
     });
     emitNotification('item/agentMessage/delta', {
       threadId: 'thread-1',
       turnId: 'turn-1',
       itemId: 'continued-after-error',
-      delta: 'Continued after usage warning',
+      delta: 'Continued after capacity warning',
     });
 
     expect(runtime.isTurnInFlight()).toBe(true);
@@ -1511,12 +1547,10 @@ describe('Codex app-server temporary recoverable turn failures', () => {
     await completion;
 
     const assistantCommitIndex = events.findIndex((event) => (
-      event.kind === 'transcript-agent-message-committed'
-      && event.agentId === 'codex'
-      && event.body
-      && typeof event.body === 'object'
-      && !Array.isArray(event.body)
-      && (event.body as Readonly<{ message?: unknown }>).message === 'Late final answer'
+      event.kind === 'message-delta'
+      && typeof event.delta === 'object'
+      && event.delta !== null
+      && (event.delta as Readonly<{ text?: unknown }>).text === 'Late final answer'
     ));
     const turnCompleteIndex = events.findIndex((event) => event.kind === 'turn-complete');
     expect(assistantCommitIndex).toBeGreaterThanOrEqual(0);
@@ -1591,8 +1625,8 @@ describe('Codex app-server temporary recoverable turn failures', () => {
         agentTurnId: 'turn-native-goal-successor',
       });
       expect(events).toContainEqual(expect.objectContaining({
-        kind: 'transcript-agent-message-committed',
-        body: { type: 'message', message: 'Native goal continuation' },
+        kind: 'message-delta',
+        delta: { text: 'Native goal continuation', thinking: false },
       }));
       expect(runtime.isTurnInFlight()).toBe(false);
     },
@@ -1635,8 +1669,8 @@ describe('Codex app-server temporary recoverable turn failures', () => {
       startedBy: 'provider',
     });
     expect(events).toContainEqual(expect.objectContaining({
-      kind: 'transcript-agent-message-committed',
-      body: { type: 'message', message: 'Stream arrived before native turn start' },
+      kind: 'message-delta',
+      delta: { text: 'Stream arrived before native turn start', thinking: false },
     }));
     expect(events.filter((event) => event.kind === 'turn-complete')).toHaveLength(2);
     expect(runtime.isTurnInFlight()).toBe(false);
@@ -1801,7 +1835,7 @@ describe('Codex app-server temporary recoverable turn failures', () => {
     }));
   });
 
-  it('flushes buffered assistant text before publishing app-server tool events', async () => {
+  it('publishes streamed assistant text before app-server tool events without a duplicate committed final', async () => {
     const runtime = createRuntime();
     const events: CodexAppServerEvent[] = [];
     runtime.events.subscribe((event) => {
@@ -1819,6 +1853,14 @@ describe('Codex app-server temporary recoverable turn failures', () => {
       },
       delta: 'I will inspect the repository first.',
     });
+    expect(events).toContainEqual(expect.objectContaining({
+      kind: 'message-delta',
+      turnId: 'codex-turn-1',
+      delta: {
+        text: 'I will inspect the repository first.',
+        thinking: false,
+      },
+    }));
     emitNotification('item/completed', {
       threadId: 'thread-1',
       turnId: 'turn-1',
@@ -1832,17 +1874,19 @@ describe('Codex app-server temporary recoverable turn failures', () => {
     });
 
     const assistantCommitIndex = events.findIndex((event) => (
-      event.kind === 'transcript-agent-message-committed'
-      && event.agentId === 'codex'
-      && event.body
-      && typeof event.body === 'object'
-      && !Array.isArray(event.body)
-      && (event.body as Readonly<{ message?: unknown }>).message === 'I will inspect the repository first.'
+      event.kind === 'message-delta'
+      && typeof event.delta === 'object'
+      && event.delta !== null
+      && (event.delta as Readonly<{ text?: unknown }>).text === 'I will inspect the repository first.'
     ));
     const toolCallIndex = events.findIndex((event) => event.kind === 'tool-call');
 
     expect(assistantCommitIndex).toBeGreaterThanOrEqual(0);
     expect(toolCallIndex).toBeGreaterThan(assistantCommitIndex);
+    expect(events).not.toContainEqual(expect.objectContaining({
+      kind: 'transcript-agent-message-committed',
+      body: { type: 'message', message: 'I will inspect the repository first.' },
+    }));
   });
 
   it('writes app-server thread name updates through the canonical display title field', async () => {
@@ -2049,8 +2093,8 @@ describe('Codex app-server temporary recoverable turn failures', () => {
     expect(events.filter((event) => event.kind === 'turn-start')).toHaveLength(1);
     expect(events.filter((event) => event.kind === 'turn-complete')).toHaveLength(1);
     expect(events).toContainEqual(expect.objectContaining({
-      kind: 'transcript-agent-message-committed',
-      body: { type: 'message', message: 'Still owned by the active turn' },
+      kind: 'message-delta',
+      delta: { text: 'Still owned by the active turn', thinking: false },
     }));
     expect(runtime.isTurnInFlight()).toBe(false);
   });
@@ -2083,54 +2127,6 @@ describe('Codex app-server temporary recoverable turn failures', () => {
     emitNotification('turn/completed', completedTurn('turn-delayed-owned'));
     await waitForCodexAppServerRuntimeTurnCompletion(runtime);
     expect(runtime.isTurnInFlight()).toBe(false);
-  });
-
-  it('rolls back the latest completed app-server turn through the native thread rollback RPC', async () => {
-    const runtime = createRuntime({
-      processEnv: { HAPPIER_CODEX_APP_SERVER_TURN_COMPLETION_SETTLE_MS: '0' },
-    });
-    const events: CodexAppServerEvent[] = [];
-    runtime.events.subscribe((event) => {
-      events.push(event);
-    });
-
-    await runtime.send({ v: 1, text: 'rollback this turn' }, {
-      turnId: 'codex-turn-1',
-      userMessageSeq: 7,
-    });
-    const completion = waitForCodexAppServerRuntimeTurnCompletion(runtime);
-    emitNotification('turn/completed', completedTurn('turn-1'));
-    await completion;
-
-    await expect(asConversationRollbackRuntime(runtime).rollbackConversation({
-      v: 1,
-      target: { type: 'latest_turn' },
-    })).resolves.toEqual({
-      ok: true,
-      target: { type: 'latest_turn' },
-      threadId: 'thread-1',
-    });
-
-    expect(clientState.requests).toContainEqual({
-      method: 'thread/rollback',
-      params: {
-        threadId: 'thread-1',
-        numTurns: 1,
-      },
-    });
-    expect(events).toContainEqual(expect.objectContaining({
-      kind: 'turn-rollback-boundary-observed',
-      turnId: 'codex-turn-1',
-      agentTurnId: 'turn-1',
-      startUserMessageSeq: 7,
-      startSeqInclusive: 7,
-      endSeqInclusive: 7,
-    }));
-    expect(events).toContainEqual(expect.objectContaining({
-      kind: 'turn-rollback-applied',
-      turnId: 'codex-turn-1',
-      agentTurnId: 'turn-1',
-    }));
   });
 
   it('publishes the provider turn checkpoint without requiring a host transcript sequence', async () => {
@@ -2182,24 +2178,69 @@ describe('Codex app-server temporary recoverable turn failures', () => {
       runtimeIncarnationId: 'runtime-1',
     } satisfies AgentSessionConversationRollbackRequest;
 
-    clientState.setThreadReadResult({ thread: { id: 'thread-1', turns: [] } });
+    clientState.setThreadReadResult({ data: [], nextCursor: null });
     await expect(runtime.reconcileNativeConversationRollback(request)).resolves.toEqual({
       status: 'applied',
     });
 
-    clientState.setThreadReadResult({
-      thread: { id: 'thread-1', turns: [{ id: 'turn-1', status: 'completed' }] },
-    });
+    clientState.setThreadReadResult({ data: [{ id: 'turn-1', status: 'completed' }], nextCursor: null });
     await expect(runtime.reconcileNativeConversationRollback(request)).resolves.toEqual({
       status: 'notApplied',
     });
-    expect(clientState.requests.filter(({ method }) => method === 'thread/read')).toEqual([
-      { method: 'thread/read', params: { threadId: 'thread-1', includeTurns: true } },
-      { method: 'thread/read', params: { threadId: 'thread-1', includeTurns: true } },
+    clientState.setThreadTurnsListResults([
+      { data: [{ id: 'unrelated-turn', status: 'completed' }], nextCursor: 'page-2' },
+      { data: [{ id: 'turn-1', status: 'completed' }], nextCursor: null },
+    ]);
+    await expect(runtime.reconcileNativeConversationRollback(request)).resolves.toEqual({
+      status: 'notApplied',
+    });
+    expect(clientState.requests.filter(({ method }) => method === 'thread/turns/list')).toEqual([
+      { method: 'thread/turns/list', params: { threadId: 'thread-1', limit: 100 } },
+      { method: 'thread/turns/list', params: { threadId: 'thread-1', limit: 100 } },
+      { method: 'thread/turns/list', params: { threadId: 'thread-1', limit: 100 } },
+      { method: 'thread/turns/list', params: { threadId: 'thread-1', limit: 100, cursor: 'page-2' } },
     ]);
   });
 
-  it('surfaces the original temporary failure when the host retry fails too', async () => {
+  it('reverts before the first affected provider checkpoint and falls back only when the method is absent', async () => {
+    const runtime = createRuntime();
+    await startCodexAppServerRuntime(runtime);
+    const request = {
+      operationId: 'rollback-exact',
+      providerSessionId: 'thread-1',
+      target: { kind: 'beforeTurn', turnId: 'host-turn-1' },
+      affectedTurns: [
+        { turnId: 'host-turn-1', providerCheckpoint: 'provider-turn-1' },
+        { turnId: 'host-turn-2', providerCheckpoint: 'provider-turn-2' },
+      ],
+      runtimeIncarnationId: 'runtime-1',
+    } satisfies AgentSessionConversationRollbackRequest;
+
+    await expect(runtime.rollbackNativeConversation(request)).resolves.toEqual({ status: 'applied' });
+    expect(clientState.requests).toContainEqual({
+      method: 'thread/revert',
+      params: { threadId: 'thread-1', beforeTurnId: 'provider-turn-1' },
+    });
+
+    const unavailable = createCodexAppServerRpcError({ method: 'thread/revert', code: -32601 });
+    unavailable.name = 'JsonRpcApplicationError';
+    clientState.rejectNextThreadRevert(unavailable);
+    await expect(runtime.rollbackNativeConversation(request)).resolves.toEqual({ status: 'applied' });
+    expect(clientState.requests.at(-1)).toEqual({
+      method: 'thread/rollback',
+      params: { threadId: 'thread-1', numTurns: 2 },
+    });
+
+    const rollbackCallCount = clientState.requests.filter(({ method }) => method === 'thread/rollback').length;
+    clientState.rejectNextThreadRevert(new Error('transport timed out'));
+    await expect(runtime.rollbackNativeConversation(request)).resolves.toEqual({
+      status: 'outcomeUnknown',
+      diagnostic: { code: 'codex_rollback_outcome_unknown', severity: 'error' },
+    });
+    expect(clientState.requests.filter(({ method }) => method === 'thread/rollback')).toHaveLength(rollbackCallCount);
+  });
+
+  it('reports terminal capacity failure once to host recovery without resubmitting the turn', async () => {
     const refreshRuntimeAuth = vi.fn(async () => ({
       status: 'unavailable' as const,
       reason: 'runtime_auth_selection_unavailable',
@@ -2223,19 +2264,8 @@ describe('Codex app-server temporary recoverable turn failures', () => {
     );
 
     const waitForCompletion = waitForCodexAppServerRuntimeTurnCompletion(runtime);
-    await waitForTurnStartCount(2);
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      if (events.some((event) => event.kind === 'turn-agent-id-observed' && event.agentTurnId === 'turn-2')) break;
-      await Promise.resolve();
-    }
-    expect(events).toContainEqual(expect.objectContaining({
-      kind: 'turn-agent-id-observed',
-      agentTurnId: 'turn-2',
-    }));
-    emitNotification(
-      'turn/completed',
-      failedUsageLimitTurn('turn-2'),
-    );
+    expect(clientState.requests.filter(({ method }) => method === 'turn/start')).toHaveLength(1);
+    expect(events.filter((event) => event.kind === 'turn-failed')).toHaveLength(1);
 
     let rejection: unknown;
     try {
@@ -2264,9 +2294,10 @@ describe('Codex app-server temporary recoverable turn failures', () => {
         quotaScope: 'provider',
       }),
     }));
+    expect(refreshRuntimeAuth).toHaveBeenCalledTimes(1);
   });
 
-  it('retries an unaccepted recoverable failure internally', async () => {
+  it('surfaces a pre-ack terminal capacity failure without resubmitting the input', async () => {
     clientState.deferTurnStartForPrompt('recoverable before acceptance');
     const runtime = createRuntime();
 
@@ -2286,11 +2317,11 @@ describe('Codex app-server temporary recoverable turn failures', () => {
     await send;
 
     const completion = waitForCodexAppServerRuntimeTurnCompletion(runtime);
-    await waitForTurnStartCount(2);
-    emitNotification('turn/completed', completedTurn('turn-2'));
-    await completion;
+    await expect(completion).rejects.toMatchObject({
+      runtimeAuthClassification: expect.objectContaining({ kind: 'capacity' }),
+    });
 
-    expect(clientState.requests.filter((request) => request.method === 'turn/start')).toHaveLength(2);
+    expect(clientState.requests.filter((request) => request.method === 'turn/start')).toHaveLength(1);
     expect(clientState.requests.filter((request) => request.method === 'turn/start').at(-1)).toMatchObject({
       params: expect.objectContaining({
         input: [{ type: 'text', text: expect.any(String) }],
@@ -2357,6 +2388,107 @@ describe('Codex app-server temporary recoverable turn failures', () => {
         effort: 'high',
       }),
     });
+  });
+
+  it('applies a discovered collaboration mode to the next turn request', async () => {
+    const runtime = createRuntime();
+
+    await runtime.updateConfig?.({ collaborationModeId: 'plan' } as never);
+    await runtime.updateConfig?.({ collaborationModeId: 'plan' } as never);
+    await runtime.send({ v: 1, text: 'plan the work' });
+
+    expect(clientState.requests.filter((request) => request.method === 'collaborationMode/list')).toHaveLength(1);
+    expect(clientState.requests.filter((request) => request.method === 'model/list')).toHaveLength(0);
+    expect(clientState.requests.find((request) => request.method === 'turn/start')).toMatchObject({
+      params: expect.objectContaining({
+        collaborationMode: {
+          mode: 'plan',
+          settings: {
+            model: 'gpt-5.4',
+            reasoning_effort: 'high',
+            developer_instructions: null,
+          },
+        },
+      }),
+    });
+  });
+
+  it('uses the provider default collaboration mode without probing catalogs on the first turn', async () => {
+    const runtime = createRuntime({ initialCollaborationModeId: 'default' });
+
+    await runtime.send({ v: 1, text: 'use the provider default' });
+
+    expect(clientState.requests.filter((request) => request.method === 'collaborationMode/list')).toHaveLength(0);
+    expect(clientState.requests.filter((request) => request.method === 'model/list')).toHaveLength(0);
+    expect(clientState.requests.find((request) => request.method === 'turn/start')?.params)
+      .not.toEqual(expect.objectContaining({ collaborationMode: expect.anything() }));
+  });
+
+  it('uses a model from the same config update without probing the model catalog', async () => {
+    clientState.setCollaborationModesResult({
+      data: [{ id: 'plan', name: 'Plan', mode: 'plan', model: null }],
+    });
+    const runtime = createRuntime();
+
+    await runtime.updateConfig?.({ collaborationModeId: 'plan', modelId: 'gpt-configured' } as never);
+    await runtime.send({ v: 1, text: 'plan with the configured model' });
+
+    expect(clientState.requests.filter((request) => request.method === 'collaborationMode/list')).toHaveLength(1);
+    expect(clientState.requests.filter((request) => request.method === 'model/list')).toHaveLength(0);
+    expect(clientState.requests.find((request) => request.method === 'turn/start')?.params).toEqual(
+      expect.objectContaining({
+        model: 'gpt-configured',
+        collaborationMode: expect.objectContaining({
+          settings: expect.objectContaining({ model: 'gpt-configured' }),
+        }),
+      }),
+    );
+  });
+
+  it('clears a resolved collaboration mode when switching back to the provider default', async () => {
+    const runtime = createRuntime();
+
+    await runtime.updateConfig?.({ collaborationModeId: 'plan' } as never);
+    await runtime.updateConfig?.({ collaborationModeId: 'default' } as never);
+    await runtime.send({ v: 1, text: 'use the provider default after planning' });
+
+    expect(clientState.requests.filter((request) => request.method === 'collaborationMode/list')).toHaveLength(1);
+    expect(clientState.requests.filter((request) => request.method === 'model/list')).toHaveLength(0);
+    expect(clientState.requests.find((request) => request.method === 'turn/start')?.params)
+      .not.toEqual(expect.objectContaining({ collaborationMode: expect.anything() }));
+  });
+
+  it('rejects an unavailable collaboration mode instead of silently applying it', async () => {
+    const runtime = createRuntime();
+
+    await expect(runtime.updateConfig?.({ collaborationModeId: 'missing' } as never))
+      .rejects.toThrow('Codex collaboration mode is unavailable.');
+    expect(clientState.requests.filter((request) => request.method === 'collaborationMode/list')).toHaveLength(1);
+    expect(clientState.requests.filter((request) => request.method === 'model/list')).toHaveLength(0);
+  });
+
+  it('observes goal updates and clears for the active thread only', async () => {
+    const observations: unknown[] = [];
+    const runtime = createRuntime({
+      observeGoal: async (observation: unknown) => { observations.push(observation); },
+    });
+    await startCodexAppServerRuntime(runtime);
+
+    emitNotification('thread/goal/updated', {
+      threadId: 'thread-other',
+      goal: { id: 'ignored', objective: 'Wrong thread', status: 'active', updatedAt: 1 },
+    });
+    emitNotification('thread/goal/updated', {
+      threadId: 'thread-1',
+      goal: { id: 'goal-1', objective: 'Ship it', status: 'active', updatedAt: 2 },
+    });
+    emitNotification('thread/goal/cleared', { threadId: 'thread-1' });
+    await Promise.resolve();
+
+    expect(observations).toEqual([
+      { kind: 'present', goal: { id: 'goal-1', objective: 'Ship it', status: 'active', updatedAt: 2 } },
+      { kind: 'absent' },
+    ]);
   });
 
   it('keeps a provider-bound non-reasoning model authoritative over later reasoning requests', async () => {
@@ -4118,6 +4250,55 @@ describe('Codex app-server temporary recoverable turn failures', () => {
     await expect(steering).resolves.toEqual({ status: 'accepted' });
   });
 
+  it('projects provider-native user messages once through the canonical transcript event', async () => {
+    const appServerRuntime = createRuntime();
+    const runtime = createCodexNativeAppServerSessionRuntime(appServerRuntime, 'session-1');
+    const events: AgentSessionRuntimeEvent[] = [];
+    runtime.watch((event) => events.push(event));
+
+    await expect(runtime.send({
+      inputIds: ['happier-input-1'],
+      input: { text: 'Happier prompt' },
+      delivery: { kind: 'newTurn', turnId: 'host-turn-1' },
+    })).resolves.toEqual({ status: 'admitted' });
+
+    emitNotification('item/started', {
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      item: {
+        id: 'provider-native-user-1',
+        type: 'userMessage',
+        content: [
+          { type: 'text', text: 'hello from Codex TUI' },
+          { type: 'mention', name: 'README.md', path: '/workspace/README.md' },
+          { type: 'text', text: 'second paragraph' },
+        ],
+      },
+    });
+    emitNotification('item/started', {
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      item: {
+        id: 'provider-happier-user-1',
+        type: 'userMessage',
+        clientId: 'happier-input-1',
+        content: [{ type: 'text', text: 'Happier prompt' }],
+      },
+    });
+
+    expect(events.filter((event) => (
+      event.kind === 'transcript-message-committed' && event.role === 'user'
+    ))).toEqual([
+      expect.objectContaining({
+        kind: 'transcript-message-committed',
+        messageId: 'codex-app-server-user:host-turn-1:provider-native-user-1',
+        role: 'user',
+        text: 'hello from Codex TUI\nsecond paragraph',
+        turnId: 'host-turn-1',
+      }),
+    ]);
+  });
+
   it('does not leave correlated steer custody pending after its provider turn ends without an echo', async () => {
     const runtime = createRuntime();
     await runtime.send({ v: 1, text: 'original prompt' }, { turnId: 'host-turn-288' });
@@ -4190,7 +4371,8 @@ describe('Codex app-server temporary recoverable turn failures', () => {
     expect(clientState.requests.filter((request) => request.method === 'turn/steer')).toHaveLength(1);
   });
 
-  it('keeps an active turn steerable and waits for the provider turn id before steering', async () => {
+  it('keeps an active turn steerable beyond the former timeout while waiting for the provider turn id', async () => {
+    vi.useFakeTimers();
     clientState.deferTurnStartForPrompt('provider id delayed');
     const runtime = createRuntime();
 
@@ -4203,17 +4385,29 @@ describe('Codex app-server temporary recoverable turn failures', () => {
     expect(runtime.isTurnInFlight()).toBe(true);
     expect(runtime.canSteerPrompt()).toBe(true);
 
+    let steerState: 'pending' | 'resolved' | 'rejected' = 'pending';
     const steerSend = runtime.send(
       { v: 1, text: 'steer before provider id' },
       { deliverAs: 'steer', userMessageSeq: 21 },
     );
+    const observedSteer = steerSend.then(
+      () => { steerState = 'resolved'; },
+      () => { steerState = 'rejected'; },
+    );
     await Promise.resolve();
     expect(clientState.requests.filter((request) => request.method === 'turn/steer')).toEqual([]);
 
+    await vi.advanceTimersByTimeAsync(1_001);
+    const steerStateAfterFormerTimeout = steerState;
+
     clientState.resolveDeferredTurnStart('turn-delayed-provider-id');
     await originalSend;
-    await steerSend;
+    await observedSteer;
+    await runtime.dispose();
+    vi.useRealTimers();
 
+    expect(steerStateAfterFormerTimeout).toBe('pending');
+    expect(steerState).toBe('resolved');
     expect(clientState.requests).toContainEqual({
       method: 'turn/steer',
       params: expect.objectContaining({
@@ -4222,6 +4416,58 @@ describe('Codex app-server temporary recoverable turn failures', () => {
         input: [{ type: 'text', text: 'steer before provider id' }],
       }),
     });
+  });
+
+  it('releases a waiting steer without invoking the provider when the turn settles before its id is actionable', async () => {
+    clientState.deferTurnStartForPrompt('provider id absent');
+    const runtime = createRuntime({
+      processEnv: { HAPPIER_CODEX_APP_SERVER_TURN_COMPLETION_SETTLE_MS: '0' },
+    });
+
+    const originalSend = runtime.send({ v: 1, text: 'provider id absent' });
+    await waitForRequestCount('turn/start', 1);
+    clientState.resolveDeferredTurnStart(null);
+    await originalSend;
+
+    const steerSend = runtime.send(
+      { v: 1, text: 'steer while provider id is absent' },
+      { deliverAs: 'steer' },
+    );
+    await Promise.resolve();
+    expect(clientState.requests.filter((request) => request.method === 'turn/steer')).toEqual([]);
+
+    emitNotification('turn/completed', completedTurn('turn-terminal-only'));
+
+    await expect(steerSend).rejects.toThrow('requires an active provider turn');
+    expect(clientState.requests.filter((request) => request.method === 'turn/steer')).toEqual([]);
+    await runtime.dispose();
+  });
+
+  it('does not steer a turn that becomes terminal in the same event window that reveals its provider id', async () => {
+    clientState.deferTurnStartForPrompt('provider id and terminal together');
+    const runtime = createRuntime({
+      processEnv: { HAPPIER_CODEX_APP_SERVER_TURN_COMPLETION_SETTLE_MS: '0' },
+    });
+
+    const originalSend = runtime.send({ v: 1, text: 'provider id and terminal together' });
+    await waitForRequestCount('turn/start', 1);
+    const steerSend = runtime.send(
+      { v: 1, text: 'must not reach a terminal provider turn' },
+      { deliverAs: 'steer' },
+    );
+
+    emitNotification('turn/started', {
+      threadId: 'thread-1',
+      turn: { id: 'turn-terminal-race' },
+    });
+    emitNotification('turn/completed', completedTurn('turn-terminal-race'));
+
+    await expect(steerSend).rejects.toThrow('requires an active provider turn');
+    expect(clientState.requests.filter((request) => request.method === 'turn/steer')).toEqual([]);
+
+    clientState.resolveDeferredTurnStart('turn-terminal-race');
+    await originalSend;
+    await runtime.dispose();
   });
 
   it('interrupts the coding turn without stopping an active realtime attachment', async () => {
@@ -4277,25 +4523,93 @@ describe('Codex app-server temporary recoverable turn failures', () => {
     await runtime.dispose();
   });
 
-  it('interrupts a late provider turn when cancellation wins before turn start returns', async () => {
-    clientState.deferTurnStartForPrompt('cancel before provider id');
-    const runtime = createRuntime();
-    const events: CodexAppServerEvent[] = [];
-    runtime.events.subscribe((event) => events.push(event));
+  it('cancels the exact provider-started successor through the native adapter', async () => {
+    const core = createRuntime({
+      processEnv: { HAPPIER_CODEX_APP_SERVER_TURN_COMPLETION_SETTLE_MS: '0' },
+    });
+    const runtime = createCodexNativeAppServerSessionRuntime(core, 'session-1');
+    const events: AgentSessionRuntimeEvent[] = [];
+    runtime.watch((event) => events.push(event));
+    try {
+      await runtime.send({
+        inputIds: ['input-initial'],
+        input: { text: 'initial goal turn' },
+        delivery: { kind: 'newTurn', turnId: 'session-turn-initial' },
+      });
+      await expect(runtime.cancel?.({ turnId: 'stale-turn', reason: 'user' }))
+        .resolves.toEqual({ status: 'notRunning' });
+      expect(clientState.requests.filter(({ method }) => method === 'turn/interrupt')).toEqual([]);
 
-    const send = runtime.send(
-      { v: 1, text: 'cancel before provider id' },
-      { userMessageSeq: 12 },
-    );
+      const completed = waitForCodexAppServerRuntimeTurnCompletion(core);
+      emitNotification('turn/completed', completedTurn('turn-1'));
+      await completed;
+      emitNotification('turn/started', {
+        threadId: 'thread-1',
+        turnId: 'turn-native-goal-successor',
+      });
+      const successor = events.find((event) => event.kind === 'turn-start' && event.startedBy === 'provider');
+      expect(successor?.kind).toBe('turn-start');
+      if (successor?.kind !== 'turn-start') throw new Error('Expected provider-started successor');
+
+      await expect(runtime.cancel?.({ turnId: 'session-turn-initial', reason: 'user' }))
+        .resolves.toEqual({ status: 'notRunning' });
+      expect(clientState.requests.filter(({ method }) => method === 'turn/interrupt')).toEqual([]);
+      const cancellation = runtime.cancel?.({ turnId: successor.turnId, reason: 'user' });
+      await waitForRequestCount('turn/interrupt', 1);
+      expect(clientState.requests).toContainEqual({
+        method: 'turn/interrupt',
+        params: { threadId: 'thread-1', turnId: 'turn-native-goal-successor' },
+      });
+      emitNotification('turn/interrupted', {
+        threadId: 'thread-1',
+        turn: { id: 'turn-native-goal-successor', status: 'interrupted' },
+      });
+      await expect(cancellation).resolves.toEqual({ status: 'requested', turnId: successor.turnId });
+      await expect(runtime.cancel?.({ turnId: successor.turnId, reason: 'user' }))
+        .resolves.toEqual({ status: 'notRunning' });
+      expect(clientState.requests.filter(({ method }) => method === 'turn/interrupt')).toHaveLength(1);
+      expect(core.isTurnInFlight()).toBe(false);
+      await expect(runtime.send({
+        inputIds: ['input-after-cancel'],
+        input: { text: 'continue after cancellation' },
+        delivery: { kind: 'newTurn', turnId: 'session-turn-after-cancel' },
+      })).resolves.toEqual({ status: 'admitted' });
+      const nextCompletion = waitForCodexAppServerRuntimeTurnCompletion(core);
+      emitNotification('turn/completed', completedTurn('turn-2'));
+      await nextCompletion;
+      expect(events).toContainEqual(expect.objectContaining({
+        kind: 'turn-complete',
+        turnId: 'session-turn-after-cancel',
+      }));
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
+  it('interrupts a late provider turn through the native adapter when cancellation wins before turn start returns', async () => {
+    clientState.deferTurnStartForPrompt('cancel before provider id');
+    const core = createRuntime();
+    const runtime = createCodexNativeAppServerSessionRuntime(core, 'session-1');
+    const events: CodexAppServerEvent[] = [];
+    core.events.subscribe((event) => events.push(event));
+
+    const send = runtime.send({
+      inputIds: ['input-pre-ack'],
+      input: { text: 'cancel before provider id' },
+      delivery: { kind: 'newTurn', turnId: 'session-turn-pre-ack' },
+    });
     await waitForRequestCount('turn/start', 1);
 
-    await expect(runtime.cancel()).resolves.toEqual({ status: 'cancelled' });
+    await expect(runtime.cancel?.({ turnId: 'stale-turn', reason: 'user' }))
+      .resolves.toEqual({ status: 'notRunning' });
+    await expect(runtime.cancel?.({ turnId: 'session-turn-pre-ack', reason: 'user' }))
+      .resolves.toEqual({ status: 'requested', turnId: 'session-turn-pre-ack' });
 
     emitNotification('turn/started', {
       threadId: 'thread-1',
       turn: { id: 'turn-cancelled-late', status: 'inProgress', items: [] },
     });
-    expect(runtime.isTurnInFlight()).toBe(false);
+    expect(core.isTurnInFlight()).toBe(false);
 
     clientState.rejectNextInterruptAsAlreadyCompleted();
     clientState.resolveDeferredTurnStart('turn-cancelled-late');
@@ -4322,12 +4636,13 @@ describe('Codex app-server temporary recoverable turn failures', () => {
         turnId: 'turn-cancelled-late',
       },
     });
-    expect(runtime.canSteerPrompt()).toBe(false);
+    expect(core.canSteerPrompt()).toBe(false);
     expect(events.filter((event) => event.kind === 'turn-start')).toHaveLength(1);
     expect(events.filter((event) => event.kind === 'turn-cancelled')).toHaveLength(1);
     expect(events.filter((event) => (
       event.kind === 'turn-complete' || event.kind === 'turn-failed' || event.kind === 'turn-cancelled'
     ))).toHaveLength(1);
+    await runtime.dispose();
   });
 
   it('reconciles cancellation with a provider completion already in the local settling window', async () => {

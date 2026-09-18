@@ -21,7 +21,6 @@ afterEach(() => {
   openCodeClientMock.sessionStatusList.mockReset();
   openCodeClientMock.dispose.mockReset();
 });
-
 describe('listOpenCodeSessionCandidates', () => {
   it('reads the official OpenCode nested session update timestamp', () => {
     expect(parseOpenCodeSessionCandidate({
@@ -55,16 +54,18 @@ describe('listOpenCodeSessionCandidates', () => {
     }));
     openCodeClientMock.sessionList.mockImplementation(async (options: Readonly<{
       limit: number;
-      cursor?: number;
+      cursor?: Readonly<{ kind: 'updatedAtMs'; updatedAtMs: number }>;
     }>) => {
-      const visible = options.cursor === undefined
+      const anchor = options.cursor?.updatedAtMs;
+      const visible = anchor === undefined
         ? sessions
-        : sessions.filter((session) => session.time.updated < options.cursor!);
-      return visible.slice(0, options.limit);
+        : sessions.filter((session) => session.time.updated < anchor);
+      return { items: visible.slice(0, options.limit), nextCursor: null };
     });
     openCodeClientMock.dispose.mockResolvedValue(undefined);
     const request = {
       source: { kind: 'opencodeServer' as const, baseUrl: 'http://127.0.0.1:49196/' },
+      dialect: 'v1' as const,
       maxBytes: 64 * 1024,
       limit: 50,
     };
@@ -86,7 +87,7 @@ describe('listOpenCodeSessionCandidates', () => {
       nextCursor: null,
     });
     expect(openCodeClientMock.sessionList).toHaveBeenCalledWith(expect.objectContaining({
-      cursor: 9_952,
+      cursor: { kind: 'updatedAtMs', updatedAtMs: 9_952 },
     }));
   });
 
@@ -98,16 +99,18 @@ describe('listOpenCodeSessionCandidates', () => {
     }));
     openCodeClientMock.sessionList.mockImplementation(async (options: Readonly<{
       limit: number;
-      cursor?: number;
+      cursor?: Readonly<{ kind: 'updatedAtMs'; updatedAtMs: number }>;
     }>) => {
-      const visible = options.cursor === undefined
+      const anchor = options.cursor?.updatedAtMs;
+      const visible = anchor === undefined
         ? sessions
-        : sessions.filter((session) => session.time.updated < options.cursor!);
-      return visible.slice(0, options.limit);
+        : sessions.filter((session) => session.time.updated < anchor);
+      return { items: visible.slice(0, options.limit), nextCursor: null };
     });
     openCodeClientMock.dispose.mockResolvedValue(undefined);
     const request = {
       source: { kind: 'opencodeServer' as const, baseUrl: 'http://127.0.0.1:49196/' },
+      dialect: 'v1' as const,
       maxBytes: 64 * 1024,
       limit: 50,
     };
@@ -121,7 +124,7 @@ describe('listOpenCodeSessionCandidates', () => {
       nextCursor: null,
     });
     expect(openCodeClientMock.sessionList).toHaveBeenCalledWith(expect.objectContaining({
-      cursor: 10_001,
+      cursor: { kind: 'updatedAtMs', updatedAtMs: 10_001 },
       limit: 101,
     }));
   });
@@ -137,17 +140,19 @@ describe('listOpenCodeSessionCandidates', () => {
     openCodeClientMock.sessionList.mockImplementation(async (options: Readonly<{
       limit: number;
       search?: string;
-      cursor?: number;
+      cursor?: Readonly<{ kind: 'updatedAtMs'; updatedAtMs: number }>;
     }>) => {
-      if (options.search) return [];
-      const visible = options.cursor === undefined
+      if (options.search) return { items: [], nextCursor: null };
+      const anchor = options.cursor?.updatedAtMs;
+      const visible = anchor === undefined
         ? sessions
-        : sessions.filter((session) => session.time.updated < options.cursor!);
-      return visible.slice(0, options.limit);
+        : sessions.filter((session) => session.time.updated < anchor);
+      return { items: visible.slice(0, options.limit), nextCursor: null };
     });
     openCodeClientMock.dispose.mockResolvedValue(undefined);
     const request = {
       source: { kind: 'opencodeServer' as const, baseUrl: 'http://127.0.0.1:49196/' },
+      dialect: 'v1' as const,
       maxBytes: 64 * 1024,
       limit: 2,
       searchTerm: 'needle-session',
@@ -182,13 +187,16 @@ describe('listOpenCodeSessionCandidates', () => {
 
   it('replaces the private V1 candidate carrier with the bounded OpenCode runtime descriptor model', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-07-24T00:00:00.000Z'));
-    openCodeClientMock.sessionList.mockResolvedValueOnce([
-      {
-        id: 'oc-session-1',
-        title: 'OpenCode session',
-        updatedAtMs: 123,
-      },
-    ]);
+    openCodeClientMock.sessionList.mockResolvedValueOnce({
+      items: [
+        {
+          id: 'oc-session-1',
+          title: 'OpenCode session',
+          updatedAtMs: 123,
+        },
+      ],
+      nextCursor: null,
+    });
     openCodeClientMock.sessionStatusList.mockResolvedValueOnce({});
     openCodeClientMock.dispose.mockResolvedValueOnce(undefined);
 
@@ -197,6 +205,7 @@ describe('listOpenCodeSessionCandidates', () => {
         kind: 'opencodeServer',
         baseUrl: 'http://127.0.0.1:49196/',
       },
+      dialect: 'v1' as const,
       maxBytes: 1_024,
       limit: 10,
     });
@@ -229,5 +238,32 @@ describe('listOpenCodeSessionCandidates', () => {
         },
       },
     ]);
+  });
+});
+
+/**
+ * Bytes OpenCode minted. A candidate's `remoteSessionId` becomes the link the
+ * host resumes with, so the parser decides presence and nothing else.
+ */
+const PROVIDER_MINTED_SESSION_ID = '  provider\nses/AB+cd==  ';
+
+describe('parseOpenCodeSessionCandidate provider identity', () => {
+  it('keeps the candidate remote session id byte-exact', () => {
+    expect(parseOpenCodeSessionCandidate({
+      id: PROVIDER_MINTED_SESSION_ID,
+      title: 'Exact identity',
+      updatedAtMs: 1_000,
+    })).toEqual({
+      remoteSessionId: PROVIDER_MINTED_SESSION_ID,
+      title: 'Exact identity',
+      updatedAtMs: 1_000,
+    });
+  });
+
+  it('rejects a whitespace-only candidate id instead of admitting a blank identity', () => {
+    expect(parseOpenCodeSessionCandidate({
+      id: '  \n ',
+      updatedAtMs: 1_000,
+    })).toBeNull();
   });
 });

@@ -6,6 +6,7 @@ import type {
     AgentExternalSessionsResult,
 } from '@happier-dev/plugin-sdk/sessions/external';
 
+import { readClaudeProviderIdentityValue } from '../../../../protocol/providerIdentity.js';
 import { resolveConfiguredClaudeConfigDir } from './source.js';
 
 export const CLAUDE_EXTERNAL_SESSION_HOOK_SUPPORTED_VERSION = '2.1.217' as const;
@@ -193,7 +194,7 @@ export const claudeExternalSessionHooksContribution =
             const payload = readRecord(request.nativePayload);
             if (!payload) return ok({ kind: 'ignored' as const });
             const hookEventName = readNonemptyString(payload.hook_event_name);
-            const remoteSessionId = readNonemptyString(payload.session_id);
+            const remoteSessionId = readClaudeProviderIdentityValue(payload.session_id);
             if (!remoteSessionId) return ok({ kind: 'ignored' as const });
 
             if (

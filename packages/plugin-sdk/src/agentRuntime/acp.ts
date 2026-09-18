@@ -16,6 +16,10 @@ import type {
   AgentSessionRuntime,
 } from './session.js';
 import type { AgentSessionConversationRollbackControl } from './controls.js';
+import type {
+  AgentExecutionRunOpenRequest,
+  AgentExecutionRunRuntime,
+} from './executionRun.js';
 
 export type AgentAcpHistorySession = Readonly<{
   getProviderSessionId(): string | null;
@@ -120,8 +124,30 @@ export type AgentAcpModel = Readonly<{
   modelOptions?: readonly AgentAcpModelOption[];
 }>;
 
+export type AgentAcpModelState = Readonly<{
+  currentModelId: string;
+  availableModels: readonly AgentAcpModel[];
+}>;
+
 export type AgentAcpModelControls = Readonly<{
   projectModel(rawModel: JsonValue, normalizedModel: AgentAcpModel): AgentAcpModel;
+  projectModelState?(input: Readonly<{
+    normalizedModelState: AgentAcpModelState;
+  }>): AgentAcpModelState;
+  projectModelId?(input: Readonly<{
+    modelId: string;
+    modelState: AgentAcpModelState | null;
+  }>): string;
+  resolveModelUpdate?(input: Readonly<{
+    modelId: string;
+    modelState: AgentAcpModelState | null;
+  }>):
+    | Readonly<{
+        modelId: string;
+        requestMeta?: Readonly<Record<string, JsonValue>>;
+      }>
+    | null
+    | undefined;
   projectUpdate?(input: Readonly<{
     configId: string;
     value: AgentConfigurationScalar;
@@ -162,6 +188,10 @@ export type AgentAcpRuntimeDefinition = Readonly<{
   auth?: AgentAcpAuthenticationDefinition;
   parameterizedModelPicker?: boolean;
   modelConfigOptionId?: string;
+  permissionModeMapping?: Readonly<Partial<Record<
+    'default' | 'read-only' | 'safe-yolo' | 'yolo' | 'plan',
+    string | null
+  >>>;
   models?: AgentAcpModelControls;
   acceptsVerifiedImageInput?: true;
   timeouts?: AgentAcpTimeouts;
@@ -205,6 +235,11 @@ export interface AgentAcpRuntimeComposer {
     request: AgentSessionOpenRequest,
     options: AgentAcpRuntimeOptions,
   ): Promise<AgentSessionRuntime>;
+  /** Versioned ACP composition for a truthful detached Execution Run. */
+  openExecutionRunV1(
+    request: AgentExecutionRunOpenRequest,
+    options: AgentAcpRuntimeOptions,
+  ): Promise<AgentExecutionRunRuntime>;
 }
 
 export interface AgentRuntimeProtocolComposers {

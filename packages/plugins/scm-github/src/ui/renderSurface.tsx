@@ -3198,6 +3198,16 @@ function FeedbackPanel({
   const currentChecks = checks.state.kind === 'ready'
     ? checks.state.value.rowState ?? null
     : null;
+  /**
+   * The checks read SUCCEEDED and still did not list the whole suite.
+   *
+   * It is neither a failed connection nor a settled verdict, and the canonical
+   * checks projection already withholds the rollup for exactly this reason. This
+   * plane owes the reader the same fact: the unread part of the suite is where a
+   * failure it never saw would be.
+   */
+  const checksKnownIncomplete = checks.state.kind === 'ready'
+    && checks.state.value.state === 'knownIncomplete';
   const view: GithubFeedbackViewV1 = React.useMemo(
     () => projectGithubFeedback({
       facts: observation.snapshot.facts,
@@ -3281,6 +3291,11 @@ function FeedbackPanel({
   const connectionFailure = conversation.state.failure ?? threadsFailure ?? reviewsFailure
     ?? requestsFailure ?? checksFailure;
   const commentsIncomplete = incompleteDescription(text, conversation.state.incomplete, null);
+  const checksIncompleteDescription = text(
+    'plugins.github.ui.feedbackChecksIncomplete',
+    'GitHub did not list this pull request\'s whole check suite, so nothing here says its checks'
+      + ' are clean.',
+  );
 
   return (
     <List
@@ -3319,6 +3334,20 @@ function FeedbackPanel({
             fallback={'This keeps issue comments, review bodies, outstanding requests, line'
               + ' conversations, check state, and timeline history as distinct GitHub facts.'}
           />
+          {checksKnownIncomplete
+            ? (
+              // The same fact the Checks plane states, in the plane that would
+              // otherwise imply a clean suite. It is deliberately separate from
+              // the failure banner below: an incomplete read is not a failed one.
+              <Banner
+                tone="warning"
+                title="This check suite is larger than GitHub will list"
+                titleKey="plugins.github.ui.checkSuiteIncomplete"
+                description={checksIncompleteDescription}
+                descriptionKey="plugins.github.ui.feedbackChecksIncomplete"
+              />
+            )
+            : null}
           {failedConnections.length === 0 || connectionFailure === null
             ? null
             : (
@@ -3343,11 +3372,20 @@ function FeedbackPanel({
         <EmptyState
           title="Nothing has been said yet"
           titleKey="plugins.github.ui.noFeedback"
-          description={text(
-            'plugins.github.ui.noFeedback.description',
-            'No comment has been left on this pull request, and GitHub reports nothing wrong'
-              + ' with it.',
-          )}
+          description={checksKnownIncomplete
+            // "GitHub reports nothing wrong with it" is a claim about the whole
+            // suite. Over a suite GitHub would not list, it is a claim nobody
+            // could compute, and it is the reassuring half of this plane.
+            ? text(
+              'plugins.github.ui.noFeedback.checksIncomplete',
+              'No comment has been left on this pull request, and GitHub did not list its whole'
+                + ' check suite.',
+            )
+            : text(
+              'plugins.github.ui.noFeedback.description',
+              'No comment has been left on this pull request, and GitHub reports nothing wrong'
+                + ' with it.',
+            )}
         />
       )}
       footer={(

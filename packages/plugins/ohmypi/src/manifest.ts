@@ -111,6 +111,7 @@ export const OH_MY_PI_PLUGIN = definePlugin({
             delivery: ['newTurn'],
             cancel: true,
             configuration: true,
+            executionRunContext: { versions: [1] },
           },
         }),
         surfaces: {

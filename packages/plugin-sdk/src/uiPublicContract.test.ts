@@ -276,8 +276,10 @@ describe('UI/testing public type contract', () => {
             .toEqualTypeOf<CanonicalDeclarativeNodeOfKind<'field'>>();
         expectTypeOf<SdkDeclarativeNodeOfKind<'status'>>()
             .toEqualTypeOf<CanonicalDeclarativeNodeOfKind<'status'>>();
-        expectTypeOf<SdkDeclarativeNodeOfKind<'action'>>()
-            .toEqualTypeOf<CanonicalDeclarativeNodeOfKind<'action'>>();
+        expectTypeOf<Omit<SdkDeclarativeNodeOfKind<'action'>, 'hostAction'>>()
+            .toEqualTypeOf<Omit<CanonicalDeclarativeNodeOfKind<'action'>, 'hostAction'>>();
+        expectTypeOf<SdkDeclarativeNodeOfKind<'action'>['hostAction']>()
+            .toEqualTypeOf<CanonicalDeclarativeNodeOfKind<'action'>['hostAction']>();
         expectTypeOf<SdkDeclarativeNodeOfKind<'list'>>()
             .toEqualTypeOf<CanonicalDeclarativeNodeOfKind<'list'>>();
         expectTypeOf<SdkDeclarativeNodeOfKind<'section'>>()
@@ -290,17 +292,23 @@ describe('UI/testing public type contract', () => {
             .toEqualTypeOf<CanonicalDeclarativeNodeOfKind<'targetedSurface'>>();
         expectTypeOf<SdkDeclarativeNodeOfKind<'metadata'>>()
             .toEqualTypeOf<CanonicalDeclarativeNodeOfKind<'metadata'>>();
-        expectTypeOf<SdkDeclarativeNodeOfKind<'actionPanel'>>()
-            .toEqualTypeOf<CanonicalDeclarativeNodeOfKind<'actionPanel'>>();
+        expectTypeOf<Omit<SdkDeclarativeNodeOfKind<'actionPanel'>, 'children'>>()
+            .toEqualTypeOf<Omit<CanonicalDeclarativeNodeOfKind<'actionPanel'>, 'children'>>();
+        expectTypeOf<SdkDeclarativeNodeOfKind<'actionPanel'>['children'][number]['kind']>()
+            .toEqualTypeOf<CanonicalDeclarativeNodeOfKind<'actionPanel'>['children'][number]['kind']>();
         expectTypeOf<SdkDeclarativeNodeOfKind<'collectionList'>>()
             .toEqualTypeOf<CanonicalDeclarativeNodeOfKind<'collectionList'>>();
         expectTypeOf<PluginUiDeclarativeToneV2>().toEqualTypeOf<CanonicalPluginUiDeclarativeToneV2>();
         // Every named export the SDK derives from the grammar is pinned too, so
         // one drifting projection cannot hide behind its matching node member.
-        expectTypeOf<PluginDeclarativeActionNodeV2>()
-            .toEqualTypeOf<CanonicalDeclarativeNodeOfKind<'action'>>();
-        expectTypeOf<PluginDeclarativeActionPanelNodeV2>()
-            .toEqualTypeOf<CanonicalDeclarativeNodeOfKind<'actionPanel'>>();
+        expectTypeOf<Omit<PluginDeclarativeActionNodeV2, 'hostAction'>>()
+            .toEqualTypeOf<Omit<CanonicalDeclarativeNodeOfKind<'action'>, 'hostAction'>>();
+        expectTypeOf<PluginDeclarativeActionNodeV2['hostAction']>()
+            .toEqualTypeOf<CanonicalDeclarativeNodeOfKind<'action'>['hostAction']>();
+        expectTypeOf<Omit<PluginDeclarativeActionPanelNodeV2, 'children'>>()
+            .toEqualTypeOf<Omit<CanonicalDeclarativeNodeOfKind<'actionPanel'>, 'children'>>();
+        expectTypeOf<PluginDeclarativeActionPanelNodeV2['children'][number]['kind']>()
+            .toEqualTypeOf<CanonicalDeclarativeNodeOfKind<'actionPanel'>['children'][number]['kind']>();
         expectTypeOf<PluginDeclarativeCollectionListNodeV2>()
             .toEqualTypeOf<CanonicalDeclarativeNodeOfKind<'collectionList'>>();
         expectTypeOf<PluginDeclarativeComposerApplyEffectV1>()

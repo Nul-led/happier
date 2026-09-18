@@ -13,18 +13,27 @@ export const AGENT_DEFINITION = Object.freeze({
     resume: { vendorResume: 'supported' as const, vendorResumeIdField: 'kimiSessionId' },
     sessionStorage: { direct: false, persisted: true },
     sessionCapabilities: {
-      sessionListing: 'unsupported',
-      sessionFork: { conversation: 'unsupported', fromMessage: 'unsupported' },
+      sessionListing: 'supported',
+      sessionFork: { conversation: 'supported', fromMessage: 'unsupported' },
       sessionRollback: { conversation: 'unsupported' },
     },
     handoff: { vendorStateTransfer: 'unsupported' },
-    tools: { delivery: 'shell_bridge', support: 'experimental' },
+    localControl: { supported: true, topology: 'exclusive', attachStrategy: 'terminal_host' },
+    // Kimi Code receives Happier's tools as ACP MCP servers, which is exactly
+    // what this Agent's runtime declaration promises with
+    // `mcp: { policy: 'pass_through' }`. `shell_bridge` contradicted that: the
+    // host builds a session's MCP servers only for `native_mcp`
+    // (`runHostSessionRuntime`'s `supportsMcpServers`), so `pass_through` had an
+    // empty set to forward and Kimi advertised tools it never received.
+    tools: { delivery: 'native_mcp', support: 'experimental' },
   },
-  sessionModeDescriptor: { source: 'none', semantics: 'none', runtimeSwitch: 'none' },
-  sessionModesKind: 'none',
+  sessionModeDescriptor: { source: 'acp', semantics: 'agent-modes', runtimeSwitch: 'acp-setSessionMode' },
+  sessionModesKind: 'acpAgentModes',
   modelConfig: {
     supportsSelection: true,
+    supportsFreeform: false,
     nonAcpApplyScope: 'next_prompt',
+    acpApplyBehavior: 'set_model',
     acpModelConfigOptionId: 'model',
     dynamicProbe: 'auto',
     defaultMode: 'default',

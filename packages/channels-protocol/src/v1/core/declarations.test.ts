@@ -20,12 +20,16 @@ import {
     ConversationProviderConnectionsListResultV1JsonSchema,
 } from '../provider/connection.js';
 import {
+    ConversationPermissionMediationSourceCurrentnessInputV1JsonSchema,
+    ConversationPermissionMediationSourceCurrentnessResultV1JsonSchema,
+} from '../management/permissionMediationSourceCurrentness.js';
+import {
     AutomationResultDeliveryInputV1JsonSchema,
     AutomationResultDeliveryResultV1JsonSchema,
 } from '@happier-dev/plugin-sdk/automations';
 
-describe('Channels V1 core provider Action declarations', () => {
-    it('maps every provider-facing core Action exactly once to its canonical V1 schema contracts', () => {
+describe('Channels V1 core plugin Action declarations', () => {
+    it('maps every plugin-facing core Action exactly once to its canonical V1 schema contracts', () => {
         expect(CONVERSATION_CORE_PROVIDER_ACTION_DECLARATIONS_V1).toEqual({
             observationIngest: {
                 inputSchema: ConversationProviderObservationIngestInputV1JsonSchema,
@@ -45,6 +49,10 @@ describe('Channels V1 core provider Action declarations', () => {
             automationResultDeliver: {
                 inputSchema: AutomationResultDeliveryInputV1JsonSchema,
                 resultSchema: AutomationResultDeliveryResultV1JsonSchema,
+            },
+            permissionMediationSourceCurrentness: {
+                inputSchema: ConversationPermissionMediationSourceCurrentnessInputV1JsonSchema,
+                resultSchema: ConversationPermissionMediationSourceCurrentnessResultV1JsonSchema,
             },
         });
         expect(Object.keys(CONVERSATION_CORE_PROVIDER_ACTION_DECLARATIONS_V1).sort()).toEqual(

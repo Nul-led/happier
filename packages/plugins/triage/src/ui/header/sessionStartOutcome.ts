@@ -2,6 +2,19 @@ import type { TriageStartEntrySessionResultV1 } from '../../actions/entrySession
 import type { TriageEntrySessionStartPhaseV1 } from './useEntrySessionStart.js';
 
 /**
+ * A Session id or canonical pending creation answers for the logical start.
+ * An early refusal only answers for its dispatch, not an earlier lost reply.
+ * Both single and bulk controllers use this before releasing unknown custody.
+ */
+export function resolvesTriageUnknownSessionStartV1(result: TriageStartEntrySessionResultV1): boolean {
+  return result.type === 'creationPending'
+    || result.type === 'linkPending'
+    || result.type === 'openPending'
+    || result.type === 'linked'
+    || result.type === 'opened';
+}
+
+/**
  * What a press is allowed to tell the reader, and the ONE place it is decided.
  *
  * A control whose press reports nothing is not really pressable: every arm the
@@ -160,12 +173,14 @@ export function describeTriageEntrySessionPhaseV1(
       if (phase.result.type !== 'opened') return settled;
       switch (phase.delivery?.kind) {
         case 'send':
-          // The canonical admission verdict, told as itself. A refusal and an
+          // The canonical send verdict, told as itself. A refusal and an
           // unknown outcome used to arrive here as success, because the send was
           // awaited and its value discarded — telling somebody their work has
           // started when it has not is the worst thing this surface can say.
           switch (phase.delivery.status) {
             case 'rejected':
+            case 'failed':
+            case 'cancelled':
               return notice(
                 'warning',
                 'plugins.triage.surface.session.deliveryFailed',
@@ -177,7 +192,10 @@ export function describeTriageEntrySessionPhaseV1(
                 'plugins.triage.surface.session.deliveryUnknown',
                 'The session opened, but Happier could not confirm whether this action\u2019s prompt was sent. Pressing again resends the same one rather than a second.',
               );
-            default:
+            case 'notRequested':
+            case 'none':
+            case 'accepted':
+            case 'alreadyAccepted':
               return settled;
           }
         default:
@@ -248,6 +266,17 @@ export function describeTriageEntrySessionPhaseV1(
             'danger',
             'plugins.triage.surface.session.dispatchFailed',
             'Nothing was started: this screen could not reach the session it asked for.',
+          );
+        // The request left and its answer did not come back, so "nothing was
+        // started" is not something this screen knows. It is the same fact the
+        // orchestrator's own unknown creation reports, and the same sentence,
+        // because the reader's next move is identical: press again, and the
+        // retained identity resumes the one request rather than making a second.
+        case 'startOutcomeUnknown':
+          return notice(
+            'warning',
+            'plugins.triage.surface.session.creationUnknown',
+            'Happier could not confirm whether this session was created. Pressing again resumes the same one rather than starting a second.',
           );
       }
   }

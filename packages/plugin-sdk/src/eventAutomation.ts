@@ -1,4 +1,5 @@
 import {
+    AutomationEventAdmitResultV1Schema,
     AutomationEventSourcesListResultV1Schema,
     isAutomationEventSourcesListPageProgressingV1,
 } from '@happier-dev/protocol/automations/event';
@@ -89,7 +90,7 @@ async function readCurrentSourceDefinitions(
             transport: scope,
             ...(cursor === undefined ? {} : { cursor }),
         };
-        let result: SourcesListResult;
+        let result: unknown;
         try {
             result = await context.services.actions.execute(
                 'automation.event.sources.list',
@@ -314,16 +315,20 @@ async function admitPluginEventObservationUnderScopeV1(
             sourceSelectorId: definition.sourceSelectorId,
         })),
     };
-    let admitted: PluginActionResultById['automation.event.admit'];
+    let admitted: PluginActionResultById['automation.event.admit'] | null = null;
     try {
-        admitted = await context.services.actions.execute(
+        const result = await context.services.actions.execute(
             'automation.event.admit',
             admission,
             { signal: context.signal },
         );
         context.signal.throwIfAborted();
+        const parsed = AutomationEventAdmitResultV1Schema.safeParse(result);
+        if (parsed.success) admitted = parsed.data;
     } catch (error) {
         if (context.signal.aborted) throw error;
+    }
+    if (admitted === null) {
         await reportAdmissionStatuses({
             context,
             definitions: matchingDefinitions,

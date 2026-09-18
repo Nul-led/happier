@@ -6,7 +6,7 @@ import { createClaudeUnifiedGoalRuntime } from './goalRuntime.js';
 
 function createHarness(options?: Readonly<{
   injectThrows?: boolean;
-  injectDelivery?: Readonly<{ kind: 'queued' | 'sent-to-terminal' | 'provider-turn-started' }>;
+  injectDelivery?: Readonly<{ kind: 'queued' | 'sent-to-terminal' }>;
 }>) {
   const injected: string[] = [];
   let workState: SessionWorkStateV1 | null = null;

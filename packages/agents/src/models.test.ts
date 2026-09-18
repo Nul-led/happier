@@ -13,11 +13,13 @@ import {
 } from './models.js';
 
 describe('agent model config', () => {
-  it('covers every canonical agent in the shared model artifact map', () => {
+  it('covers every canonical agent in the shared model artifact map without fabricating static config', () => {
     expect(Object.keys(AGENT_MODEL_CONFIG).sort()).toEqual([...AGENT_IDS].sort());
-    for (const agentId of AGENT_IDS) {
-      expect(getAgentModelConfig(agentId)).toBeDefined();
-    }
+    expect(getAgentModelConfig('antigravity')).toBeNull();
+    expect(getAgentStaticModels('antigravity')).toEqual([]);
+    expect(getAgentModelConfig('external.acme')).toBeNull();
+    expect(getAgentStaticModels('external.acme')).toEqual([]);
+    expect(getAgentModelConfig('antigravity')).not.toBe(getAgentModelConfig('gemini'));
   });
 
   it('keeps customAcp out of the canonical model artifact map while preserving explicit compat lookup', () => {
@@ -33,8 +35,8 @@ describe('agent model config', () => {
   });
 
   it('uses the same name and description contract for static models as dynamic models', () => {
-    const claude = getAgentModelConfig('claude');
-    const gemini = getAgentModelConfig('gemini');
+    const claude = getAgentModelConfig('claude')!;
+    const gemini = getAgentModelConfig('gemini')!;
     const claudeModels = getAgentStaticModels('claude');
     const geminiModels = getAgentStaticModels('gemini');
 
@@ -101,16 +103,16 @@ describe('agent model config', () => {
     expect(CANONICAL_AGENT_MODEL_CONFIG.claude).toBe(BUNDLED_AGENT_DEFINITIONS_BY_ID.claude.modelConfig);
   });
 
-  it('sources canonical provider model facts from bundled provider definitions', () => {
+  it('sources declared canonical model facts from bundled agent definitions', () => {
     for (const providerId of AGENT_IDS) {
-      expect(CANONICAL_AGENT_MODEL_CONFIG[providerId]).toBe(
-        BUNDLED_AGENT_DEFINITIONS_BY_ID[providerId].modelConfig,
-      );
+      const definition = BUNDLED_AGENT_DEFINITIONS_BY_ID[providerId];
+      const declaredModelConfig = 'modelConfig' in definition ? definition.modelConfig : null;
+      expect(CANONICAL_AGENT_MODEL_CONFIG[providerId]).toBe(declaredModelConfig);
     }
   });
 
   it('does not ship named static Codex models because Codex model truth is dynamic', () => {
-    const codex = getAgentModelConfig('codex');
+    const codex = getAgentModelConfig('codex')!;
     const codexModels = getAgentStaticModels('codex');
 
     expect(codex.supportsSelection).toBe(true);
@@ -121,7 +123,7 @@ describe('agent model config', () => {
   });
 
   it('constrains Gemini freeform model ids to Gemini resource names', () => {
-    const gemini = getAgentModelConfig('gemini');
+    const gemini = getAgentModelConfig('gemini')!;
 
     expect(gemini.supportsFreeform).toBe(true);
     expect(gemini.dynamicProbe).toBe('static-only');
@@ -133,7 +135,7 @@ describe('agent model config', () => {
   });
 
   it('allows Kimi to use ACP-backed dynamic model probing', () => {
-    const kimi = getAgentModelConfig('kimi');
+    const kimi = getAgentModelConfig('kimi')!;
 
     expect(kimi.supportsSelection).toBe(true);
     expect(kimi.dynamicProbe).toBe('auto');

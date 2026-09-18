@@ -63,6 +63,8 @@ export const bitbucketHostingProviderAdapter: BitbucketScmHostingProviderAdapter
   detectRemote(input) {
     const parsed = parseScmRemoteUrl(input.remoteUrl);
     if (!parsed || parsed.host !== 'bitbucket.org') return null;
+    // Bitbucket Cloud is one fixed origin without a port; a ported remote is another endpoint.
+    if (parsed.syntax === 'url' && parsed.port !== null) return null;
     const nameWithOwner = readNameWithOwner(parsed.path);
     if (!nameWithOwner) return null;
     return {

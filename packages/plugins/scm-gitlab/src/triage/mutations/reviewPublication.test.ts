@@ -162,46 +162,52 @@ function bodyOf(request: RecordedGitlabRequest | undefined): Record<string, unkn
   return JSON.parse(request?.body ?? '{}') as Record<string, unknown>;
 }
 
+function discussion(id: number, body: string, individualNote = false) {
+  return {
+    id: `thread-${id}`,
+    individual_note: individualNote,
+    notes: [{ id, body, type: individualNote ? null : 'DiscussionNote' }],
+  };
+}
+
 describe('gitlab/merge-request/submit-review', () => {
-  it('creates every selected draft, publishes each exact draft, then submits the verdict last', async () => {
-    let notesReads = 0;
+  it.each([false, true])('confirms inline DiscussionNotes and submits the verdict last (lost publish answer: %s)', async (losePublishAnswer) => {
     let draftCreates = 0;
+    const pending = new Map<number, Record<string, unknown>>();
+    const published: Array<{ id: number; body: string; type: 'DiscussionNote' | null }> = [];
     const transport = createTransport((request) => {
       if (request.method === 'GET' && request.url === ITEM_URL) return { status: 200, body: mergeRequestBody() };
       if (request.method === 'GET' && request.url === DRAFTS_LIST_URL) return { status: 200, body: [] };
+      // GitLab Discussions API, "Understand note types in the API":
+      // DiscussionNotes are excluded from Notes, but Discussions includes both.
       if (request.method === 'GET' && request.url === NOTES_LIST_URL) {
-        notesReads += 1;
-        return { status: 200, body: notesReads === 1 ? [] : [
-          { id: 91, body: `Entry\n\n<!-- happier-review-comment:v1:${ENTRY_CORRELATION} -->` },
-          ...(notesReads >= 3
-            ? [{ id: 92, body: `Ready.\n\n<!-- happier-review-verdict:v1:${VERDICT_CORRELATION} -->` }]
-            : []),
-        ] };
+        return { status: 200, body: published.filter((note) => note.type === null) };
+      }
+      if (request.method === 'GET' && request.url === DISCUSSIONS_LIST_URL) {
+        return { status: 200, body: published.map((note) => ({
+          id: `thread-${note.id}`, individual_note: note.type === null, notes: [note],
+        })) };
       }
       if (request.method === 'POST' && request.url === DRAFTS_URL) {
         draftCreates += 1;
-        return { status: 201, body: { id: draftCreates === 1 ? 81 : 82 } };
+        const id = 80 + draftCreates;
+        pending.set(id, bodyOf(request));
+        return { status: 201, body: { id } };
       }
-      if (request.method === 'PUT' && request.url.startsWith(`${DRAFTS_URL}/`)) return { status: 200, body: {} };
+      if (request.method === 'PUT' && request.url.startsWith(`${DRAFTS_URL}/`)) {
+        const id = Number(request.url.split('/').at(-2));
+        const draft = pending.get(id)!;
+        pending.delete(id);
+        published.push({ id: id + 10, body: String(draft.note), type: draft.position ? 'DiscussionNote' : null });
+        if (losePublishAnswer && draft.position) throw new Error('simulated publish response loss');
+        return { status: 204, bodyText: '' };
+      }
       if (request.method === 'POST' && request.url === `${ITEM_URL}/approve`) return { status: 201, body: { approved: true } };
       return undefined;
     });
 
     const result = await publishGitlabMergeRequestReview(actionInput(), transport.context);
 
-    expect(transport.requests.map((request) => `${request.method} ${request.url}`)).toEqual([
-      `GET ${ITEM_URL}`,
-      `GET ${DRAFTS_LIST_URL}`,
-      `GET ${NOTES_LIST_URL}`,
-      `POST ${DRAFTS_URL}`,
-      `PUT ${DRAFTS_URL}/81/publish`,
-      `GET ${NOTES_LIST_URL}`,
-      `POST ${DRAFTS_URL}`,
-      `PUT ${DRAFTS_URL}/82/publish`,
-      `GET ${NOTES_LIST_URL}`,
-      `POST ${ITEM_URL}/approve`,
-      `GET ${ITEM_URL}`,
-    ]);
     expect(result).toMatchObject({
       kind: 'settled',
       publication: {
@@ -210,7 +216,21 @@ describe('gitlab/merge-request/submit-review', () => {
         verdict: { outcome: { kind: 'published', externalRef: '92' } },
       },
     });
+    expect(transport.requests.map((request) => `${request.method} ${request.url}`)).toEqual([
+      `GET ${ITEM_URL}`,
+      `GET ${DRAFTS_LIST_URL}`,
+      `GET ${DISCUSSIONS_LIST_URL}`,
+      `POST ${DRAFTS_URL}`,
+      `PUT ${DRAFTS_URL}/81/publish`,
+      `GET ${DISCUSSIONS_LIST_URL}`,
+      `POST ${DRAFTS_URL}`,
+      `PUT ${DRAFTS_URL}/82/publish`,
+      `GET ${NOTES_LIST_URL}`,
+      `POST ${ITEM_URL}/approve`,
+      `GET ${ITEM_URL}`,
+    ]);
     expect(transport.claimCount()).toBe(2);
+    expect(published).toHaveLength(2);
     expect(bodyOf(transport.requests[3])).toMatchObject({
       note: `Please explain this constant.\n\n<!-- happier-review-comment:v1:${ENTRY_CORRELATION} -->`,
       position: {
@@ -251,27 +271,70 @@ describe('gitlab/merge-request/submit-review', () => {
     expect(unsupported.requests).toHaveLength(0);
   });
 
+  it('reconciles an inline entry and ordinary summary across discussion pages without any provider write', async () => {
+    const nextUrl = `${DISCUSSIONS_LIST_URL}&page=2`;
+    const summaryBody = `Ready.\n\n<!-- happier-review-verdict:v1:${VERDICT_CORRELATION} -->`;
+    const transport = createStubGitlabTransport({ respond(request) {
+      if (request.method === 'GET' && request.url === ITEM_URL) return { status: 200, body: mergeRequestBody() };
+      if (request.method === 'GET' && request.url === DRAFTS_LIST_URL) return { status: 200, body: [] };
+      if (request.method === 'GET' && request.url === NOTES_LIST_URL) {
+        return { status: 200, body: [{ id: 92, body: summaryBody }] };
+      }
+      if (request.method === 'GET' && request.url === DISCUSSIONS_LIST_URL) {
+        return { status: 200, body: [discussion(90, 'Unrelated discussion')], headers: { Link: `<${nextUrl}>; rel="next"` } };
+      }
+      if (request.method === 'GET' && request.url === nextUrl) {
+        return { status: 200, body: [
+          discussion(91, `Entry\n\n<!-- happier-review-comment:v1:${ENTRY_CORRELATION} -->`),
+          discussion(92, summaryBody, true),
+        ] };
+      }
+      return undefined;
+    } });
+    Object.assign(transport.context.services, { actions: { async execute() {
+      return {
+        disposition: 'reconcile', dispatchToken: null, publicationPlanId: PLAN_ID,
+        entries: [{ happierCommentId: 'comment-1', publicationCorrelationId: ENTRY_CORRELATION }],
+        verdict: { publicationCorrelationId: VERDICT_CORRELATION },
+        instructions: { entries: ['reconcile'], verdict: 'reconcile' }, priorResult: null,
+      };
+    } } });
+    const result = await publishGitlabMergeRequestReview(actionInput({
+      publicationPlan: plan({ verdict: { kind: 'comment', body: 'Ready.' } }),
+    }), transport.context);
+    expect(result).toMatchObject({ kind: 'settled', publication: {
+      entries: [{ outcome: { kind: 'published', externalRef: '91' } }],
+      verdict: { outcome: { kind: 'published', externalRef: '92' } },
+    } });
+    expect(transport.requests.some((request) => request.method !== 'GET')).toBe(false);
+    expect(transport.requests.some((request) => request.url === nextUrl)).toBe(true);
+  });
+
   it('folds a diff-less entry into the explicit verdict summary without losing cardinality', async () => {
-    let notesReads = 0;
+    let inlinePublished = false;
+    let summaryPublished = false;
     let draftCreates = 0;
     const transport = createStubGitlabTransport({ respond: (request) => {
       if (request.method === 'GET' && request.url === ITEM_URL) return { status: 200, body: mergeRequestBody() };
       if (request.method === 'GET' && request.url === DRAFTS_LIST_URL) return { status: 200, body: [] };
       if (request.method === 'GET' && request.url === NOTES_LIST_URL) {
-        notesReads += 1;
-        return { status: 200, body: notesReads === 1 ? [] : [
-          { id: 91, body: `Inline\n\n<!-- happier-review-comment:v1:${ENTRY_CORRELATION} -->` },
-          ...(notesReads >= 3 ? [{
+        return { status: 200, body: summaryPublished ? [{
             id: 92,
             body: `Repository-level finding\n\n<!-- happier-review-comment:v1:${SUMMARY_ENTRY_CORRELATION} -->\n\nReady.\n\n<!-- happier-review-verdict:v1:${VERDICT_CORRELATION} -->`,
-          }] : []),
-        ] };
+          }] : [] };
+      }
+      if (request.method === 'GET' && request.url === DISCUSSIONS_LIST_URL) {
+        return { status: 200, body: inlinePublished ? [discussion(91, `Inline\n\n<!-- happier-review-comment:v1:${ENTRY_CORRELATION} -->`)] : [] };
       }
       if (request.method === 'POST' && request.url === DRAFTS_URL) {
         draftCreates += 1;
         return { status: 201, body: { id: draftCreates === 1 ? 81 : 82 } };
       }
-      if (request.method === 'PUT' && request.url.startsWith(`${DRAFTS_URL}/`)) return { status: 200, body: {} };
+      if (request.method === 'PUT' && request.url.startsWith(`${DRAFTS_URL}/`)) {
+        if (request.url === `${DRAFTS_URL}/81/publish`) inlinePublished = true;
+        else summaryPublished = true;
+        return { status: 204, bodyText: '' };
+      }
       if (request.method === 'POST' && request.url === `${ITEM_URL}/approve`) return { status: 201, body: {} };
       return undefined;
     } });
@@ -368,13 +431,13 @@ describe('gitlab/merge-request/submit-review', () => {
           id: 81, note: `Created\n\n<!-- happier-review-comment:v1:${ENTRY_CORRELATION} -->`,
         }] };
       }
-      if (request.method === 'GET' && request.url === NOTES_LIST_URL) {
+      if (request.method === 'GET' && request.url === NOTES_LIST_URL) return { status: 200, body: [] };
+      if (request.method === 'GET' && request.url === DISCUSSIONS_LIST_URL) {
         notesReads += 1;
-        return { status: 200, body: notesReads === 1 ? [] : [{
-          id: 91, body: `Published\n\n<!-- happier-review-comment:v1:${ENTRY_CORRELATION} -->`,
-        }, ...(notesReads >= 3 ? [{
-          id: 92, body: `Second\n\n<!-- happier-review-comment:v1:${SUMMARY_ENTRY_CORRELATION} -->`,
-        }] : [])] };
+        return { status: 200, body: notesReads === 1 ? [] : [
+          discussion(91, `Published\n\n<!-- happier-review-comment:v1:${ENTRY_CORRELATION} -->`),
+          ...(notesReads >= 3 ? [discussion(92, `Second\n\n<!-- happier-review-comment:v1:${SUMMARY_ENTRY_CORRELATION} -->`)] : []),
+        ] };
       }
       if (request.method === 'POST' && request.url === DRAFTS_URL) {
         createCount += 1;
@@ -422,7 +485,7 @@ describe('gitlab/merge-request/submit-review', () => {
     const transport = createTransport((request) => {
       if (request.method === 'GET' && request.url === ITEM_URL) return { status: 200, body: mergeRequestBody() };
       if (request.method === 'GET' && request.url === DRAFTS_LIST_URL) return { status: 200, body: [] };
-      if (request.method === 'GET' && request.url === NOTES_LIST_URL) return { status: 200, body: [] };
+      if (request.method === 'GET' && request.url === DISCUSSIONS_LIST_URL) return { status: 200, body: [] };
       if (request.method === 'POST' && request.url === DRAFTS_URL) return { status: 201, body: { id: 81 } };
       if (request.method === 'PUT' && request.url === `${DRAFTS_URL}/81/publish`) {
         throw new Error('simulated publish response loss');
@@ -473,7 +536,7 @@ describe('gitlab/merge-request/submit-review', () => {
       respond: (request) => {
         if (request.method === 'GET' && request.url === ITEM_URL) return { status: 200, body: mergeRequestBody() };
         if (request.method === 'GET' && request.url === DRAFTS_LIST_URL) return { status: 200, body: [] };
-        if (request.method === 'GET' && request.url === NOTES_LIST_URL) return { status: 200, body: [] };
+        if (request.method === 'GET' && request.url === DISCUSSIONS_LIST_URL) return { status: 200, body: [] };
         if (request.method === 'POST' && request.url === DRAFTS_URL) {
           createCount += 1;
           return createCount === 1 ? { status: 201, body: { id: 81 } } : { status: 422, body: { message: 'invalid position' } };
@@ -523,7 +586,7 @@ describe('gitlab/merge-request/submit-review', () => {
         if (request.method === 'GET' && request.url === DRAFTS_LIST_URL) {
           return { status: 200, body: [{ id: 81, note: `Earlier text\n\n<!-- happier-review-comment:v1:${ENTRY_CORRELATION} -->` }] };
         }
-        if (request.method === 'GET' && request.url === NOTES_LIST_URL) return { status: 200, body: [] };
+        if (request.method === 'GET' && request.url === DISCUSSIONS_LIST_URL) return { status: 200, body: [] };
         return undefined;
       },
     });
@@ -554,27 +617,163 @@ describe('gitlab/merge-request/submit-review', () => {
     expect(transport.requests.filter((request) => request.method === 'PUT')).toHaveLength(0);
   });
 
-  it('does not report settled when the canonical publication settlement fails', async () => {
+  function settlementFailureTransport(settlementError: Error) {
     let notesReads = 0;
-    const transport = createTransport((request) => {
+    return createTransport((request) => {
       if (request.method === 'GET' && request.url === ITEM_URL) return { status: 200, body: mergeRequestBody() };
       if (request.method === 'GET' && request.url === DRAFTS_LIST_URL) return { status: 200, body: [] };
-      if (request.method === 'GET' && request.url === NOTES_LIST_URL) {
+      if (request.method === 'GET' && request.url === DISCUSSIONS_LIST_URL) {
         notesReads += 1;
-        return { status: 200, body: notesReads === 1 ? [] : [{
-          id: 91,
-          body: `Published\n\n<!-- happier-review-comment:v1:${ENTRY_CORRELATION} -->`,
-        }] };
+        return { status: 200, body: notesReads === 1 ? [] : [discussion(91,
+          `Published\n\n<!-- happier-review-comment:v1:${ENTRY_CORRELATION} -->`,
+        )] };
       }
       if (request.method === 'POST' && request.url === DRAFTS_URL) return { status: 201, body: { id: 81 } };
       if (request.method === 'PUT' && request.url === `${DRAFTS_URL}/81/publish`) return { status: 200, body: {} };
       return undefined;
-    }, { settlementError: new Error('canonical settlement unavailable') });
+    }, { settlementError });
+  }
+
+  it('keeps the confirmed external outcome and still observes when settlement fails', async () => {
+    const transport = settlementFailureTransport(new Error('canonical settlement unavailable'));
+
+    const result = await publishGitlabMergeRequestReview(actionInput({
+      publicationPlan: plan({ verdict: null }),
+    }), transport.context);
+
+    // The comment IS published on GitLab. Losing Happier's record of it may not
+    // discard the proven reference, and the mandatory post-mutation observation
+    // still runs.
+    expect(result).toMatchObject({
+      kind: 'settled',
+      publication: { entries: [{ outcome: { kind: 'published', externalRef: '91' } }] },
+      failure: { code: 'gitlab-publication-settlement-unavailable' },
+    });
+    expect(result).toMatchObject({ observed: { headSha: OBSERVED_HEAD } });
+    expect(transport.requests.filter((request) => request.method === 'PUT')).toHaveLength(1);
+    expect(transport.requests.at(-1)).toMatchObject({ method: 'GET', url: ITEM_URL });
+  });
+
+  it('preserves cancellation raised by the canonical settlement', async () => {
+    const cancellation = Object.assign(new Error('the caller went away'), { name: 'AbortError' });
+    const transport = settlementFailureTransport(cancellation);
 
     await expect(publishGitlabMergeRequestReview(actionInput({
       publicationPlan: plan({ verdict: null }),
-    }), transport.context)).rejects.toThrow('canonical settlement unavailable');
-    expect(transport.requests.filter((request) => request.method === 'PUT')).toHaveLength(1);
+    }), transport.context)).rejects.toBe(cancellation);
+  });
+
+  it('retries only the denied approval and never republishes its verdict summary', async () => {
+    const transport = createStubGitlabTransport({
+      respond: (request) => {
+        if (request.method === 'GET' && request.url === ITEM_URL) return { status: 200, body: mergeRequestBody() };
+        if (request.method === 'GET' && request.url === DRAFTS_LIST_URL) return { status: 200, body: [] };
+        if (request.method === 'GET' && request.url === NOTES_LIST_URL) {
+          return { status: 200, body: [{
+            id: 92, body: `Ready.\n\n<!-- happier-review-verdict:v1:${VERDICT_CORRELATION} -->`,
+          }] };
+        }
+        if (request.method === 'POST' && request.url === `${ITEM_URL}/approve`) {
+          return { status: 201, body: { approved: true } };
+        }
+        return undefined;
+      },
+    });
+    (transport.context.services as unknown as { actions: { execute: Function } }).actions = {
+      async execute() {
+        return {
+          disposition: 'dispatch', publicationPlanId: PLAN_ID, entries: [],
+          dispatchToken: 'dispatch-token-2',
+          verdict: { publicationCorrelationId: VERDICT_CORRELATION },
+          instructions: { entries: [], verdict: 'dispatch' },
+          // The first attempt published this summary and was then denied the
+          // approval outright. The claim owner permits exactly that one effect
+          // to be dispatched again.
+          priorResult: {
+            publicationPlanId: PLAN_ID,
+            entries: [],
+            verdict: {
+              publicationCorrelationId: VERDICT_CORRELATION,
+              outcome: { kind: 'failed', code: 'forbidden', externalRef: '92' },
+            },
+          },
+        };
+      },
+    };
+
+    const result = await publishGitlabMergeRequestReview(actionInput({
+      publicationPlan: plan({ entries: [], verdict: { kind: 'approve', body: 'Ready.' } }),
+    }), transport.context);
+
+    expect(result).toMatchObject({
+      kind: 'settled',
+      publication: { verdict: { outcome: { kind: 'published', externalRef: '92' } } },
+    });
+    expect(transport.requests.map((request) => `${request.method} ${request.url}`)).toEqual([
+      `GET ${ITEM_URL}`,
+      `GET ${DRAFTS_LIST_URL}`,
+      `GET ${NOTES_LIST_URL}`,
+      `POST ${ITEM_URL}/approve`,
+      `GET ${ITEM_URL}`,
+    ]);
+  });
+
+  it('publishes the verdict summary draft it already created instead of creating a second', async () => {
+    let notesReads = 0;
+    const transport = createStubGitlabTransport({
+      respond: (request) => {
+        if (request.method === 'GET' && request.url === ITEM_URL) return { status: 200, body: mergeRequestBody() };
+        if (request.method === 'GET' && request.url === DRAFTS_LIST_URL) {
+          return { status: 200, body: [{
+            id: 82, note: `Ready.\n\n<!-- happier-review-verdict:v1:${VERDICT_CORRELATION} -->`,
+          }] };
+        }
+        if (request.method === 'GET' && request.url === NOTES_LIST_URL) {
+          notesReads += 1;
+          return { status: 200, body: notesReads === 1 ? [] : [{
+            id: 92, body: `Ready.\n\n<!-- happier-review-verdict:v1:${VERDICT_CORRELATION} -->`,
+          }] };
+        }
+        if (request.method === 'PUT' && request.url === `${DRAFTS_URL}/82/publish`) return { status: 200, body: {} };
+        if (request.method === 'POST' && request.url === `${ITEM_URL}/approve`) {
+          return { status: 201, body: { approved: true } };
+        }
+        return undefined;
+      },
+    });
+    (transport.context.services as unknown as { actions: { execute: Function } }).actions = {
+      async execute() {
+        return {
+          disposition: 'dispatch', publicationPlanId: PLAN_ID, entries: [],
+          dispatchToken: 'dispatch-token-3',
+          verdict: { publicationCorrelationId: VERDICT_CORRELATION },
+          instructions: { entries: [], verdict: 'dispatch' },
+          priorResult: {
+            publicationPlanId: PLAN_ID,
+            entries: [],
+            verdict: {
+              publicationCorrelationId: VERDICT_CORRELATION,
+              outcome: { kind: 'failed', code: 'gitlab-verdict-draft-publish-failed' },
+            },
+          },
+        };
+      },
+    };
+
+    const result = await publishGitlabMergeRequestReview(actionInput({
+      publicationPlan: plan({ entries: [], verdict: { kind: 'approve', body: 'Ready.' } }),
+      acknowledgedPreexistingDraftIds: ['82'],
+    }), transport.context);
+
+    expect(result).toMatchObject({
+      kind: 'settled',
+      publication: { verdict: { outcome: { kind: 'published', externalRef: '92' } } },
+    });
+    expect(transport.requests.filter((request) => (
+      request.method === 'POST' && request.url === DRAFTS_URL
+    ))).toHaveLength(0);
+    expect(transport.requests.filter((request) => request.method === 'PUT'))
+      .toHaveLength(1);
   });
 
   it.each([

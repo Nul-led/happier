@@ -45,12 +45,8 @@ async function mountSettings(): Promise<PluginUiTestkit> {
   let fixture!: PluginUiTestkit;
   await act(async () => {
     fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: AZURE_DEVOPS_PLUGIN_ID,
-        pluginVersion: '0.0.0',
-        viewId: 'triage-sources',
-        generation: 'triage-sources-mount',
-      },
+      identity: { instanceId: 'fixture-instance-161', mountNonce: 'fixture-mount-161' },
+      authorPlugin: { id: AZURE_DEVOPS_PLUGIN_ID, version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createSurfaceContextFixture(),
       adapter: createPluginUiRnwSemanticSurfaceAdapter(),

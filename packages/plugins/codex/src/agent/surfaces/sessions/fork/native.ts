@@ -1,5 +1,6 @@
 import { readThreadId } from '../../../runtime/appServer/wire/fields.js';
 import { isCodexAppServerApplicationRejectionForMethod } from '../../../runtime/appServer/compatibility.js';
+import { readExactCodexProviderSessionId } from '../../../../protocol/runtimeDescriptorV1.js';
 
 export const CODEX_APP_SERVER_NATIVE_FORK_METHODS = ['thread/fork', 'conversation/fork'] as const;
 
@@ -70,9 +71,8 @@ async function attemptCodexNativeAppServerConversationFork(params: Readonly<{
   signal?: AbortSignal;
   onEvent?: (event: CodexAppServerNativeForkEvent) => void;
 }>): Promise<CodexAppServerNativeForkOutcome> {
-  const parentCodexSessionId = typeof params.parentCodexSessionId === 'string'
-    ? params.parentCodexSessionId.trim()
-    : '';
+  // Codex minted the parent thread id; fork must address its exact bytes.
+  const parentCodexSessionId = readExactCodexProviderSessionId(params.parentCodexSessionId);
   if (!parentCodexSessionId) {
     return {
       kind: 'failed_before_dispatch',

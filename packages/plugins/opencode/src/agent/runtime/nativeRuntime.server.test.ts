@@ -6,6 +6,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { ProviderConnectionIdSchema } from '@happier-dev/protocol';
 import { PluginError } from '@happier-dev/plugin-sdk';
 import type {
+  AgentExecutionRunRuntime,
+  AgentExecutionRunRuntimeContextV1,
   AgentSessionOpenRequest,
   AgentSessionRuntime,
   AgentSessionRuntimeContext,
@@ -17,8 +19,16 @@ const { openOpenCodeServerSession } = vi.hoisted(() => ({
   openOpenCodeServerSession: vi.fn(),
 }));
 
+const { openOpenCodeServerExecutionRun } = vi.hoisted(() => ({
+  openOpenCodeServerExecutionRun: vi.fn(),
+}));
+
 vi.mock('./server/nativeSession.js', () => ({
   openOpenCodeServerSession,
+}));
+
+vi.mock('./server/nativeExecutionRun.js', () => ({
+  openOpenCodeServerExecutionRun,
 }));
 
 import { createOpenCodeAgentRuntime } from './nativeRuntime.js';
@@ -30,6 +40,15 @@ function createSession(): AgentSessionRuntime {
       status: 'requested' as const,
       turnId,
     })),
+    watch: () => ({ dispose: () => undefined }),
+    dispose: vi.fn(async () => undefined),
+  };
+}
+
+function createExecutionRun(): AgentExecutionRunRuntime {
+  return {
+    send: vi.fn(async () => ({ status: 'admitted' as const })),
+    stop: vi.fn(async () => ({ status: 'requested' as const })),
     watch: () => ({ dispose: () => undefined }),
     dispose: vi.fn(async () => undefined),
   };
@@ -126,6 +145,50 @@ describe('createOpenCodeAgentRuntime server dispatch', () => {
     expect(runtime.toolExecution).toEqual({ capability: 'observable' });
   });
 
+  it('opens detached server execution through the run facet without fabricating a Session', async () => {
+    const execution = createExecutionRun();
+    openOpenCodeServerExecutionRun.mockResolvedValueOnce(execution);
+    const runtime = createOpenCodeAgentRuntime({
+      plugin: { id: 'happier.agent.opencode', version: '0.0.0' },
+      agent: { id: 'opencode' },
+      signal: new AbortController().signal,
+    });
+    const request = {
+      kind: 'create' as const,
+      runId: 'opencode-run-1',
+      cwd: '/repo',
+      input: { text: 'Implement the change' },
+      profile: { pluginId: 'happier.agent.opencode', localId: 'opencode' },
+      launchEnvironment: {
+        values: { HAPPIER_OPENCODE_BACKEND_MODE: 'server' },
+        unset: [],
+      },
+    };
+    const context = {
+      scope: { kind: 'execution_run' as const, executionRunId: request.runId },
+      executionRun: { id: request.runId, services: {} },
+      services: { connectedAccounts: createConnectedAccountsHarness().connectedAccounts },
+    } as unknown as AgentExecutionRunRuntimeContextV1;
+
+    expect(context).not.toHaveProperty('session');
+    await expect(runtime.sessions.executionRunContextV1?.open(request, context))
+      .resolves.toMatchObject({
+        send: execution.send,
+        stop: execution.stop,
+        watch: execution.watch,
+      });
+    expect(openOpenCodeServerExecutionRun).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: request.runId }),
+      context,
+    );
+    expect(openOpenCodeServerSession).not.toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: request.runId }),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
   it('routes the canonical configuration override through the common ACP composer', async () => {
     const session = createSession();
     const openAcp = vi.fn(async () => session);
@@ -154,7 +217,9 @@ describe('createOpenCodeAgentRuntime server dispatch', () => {
       services: { connectedAccounts: createConnectedAccountsHarness().connectedAccounts },
     } as unknown as AgentSessionRuntimeContext;
 
-    await expect(runtime.sessions.open(request, context)).resolves.toMatchObject({
+    const opened = await runtime.sessions.open(request, context);
+
+    expect(opened).toMatchObject({
       send: session.send,
       runtimeCapabilities: {
         localControl: null,
@@ -166,6 +231,14 @@ describe('createOpenCodeAgentRuntime server dispatch', () => {
           },
         },
       },
+    });
+    await expect(opened.compact?.({
+      compactionId: 'compact-acp',
+      trigger: 'manual',
+    })).resolves.toMatchObject({
+      status: 'unsupported',
+      diagnostic: { code: 'opencode_acp_compaction_unsupported' },
+      retryable: false,
     });
     expect(openAcp).toHaveBeenCalledWith(request, expect.objectContaining({
       transport: expect.objectContaining({

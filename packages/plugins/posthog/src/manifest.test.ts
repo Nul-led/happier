@@ -293,7 +293,7 @@ describe('PostHog plugin manifest', () => {
             .not.toContain(POSTHOG_ACTION_IDS.issueActivity);
     });
 
-    it('declares the exact mounted-only placement for its six UI-capable reads', () => {
+    it('declares the exact mounted-only placement for its UI-capable reads', () => {
         const actions = new Map(
             PLUGIN_MANIFEST.contributes.actions.map((action) => [action.id, action]),
         );
@@ -312,6 +312,7 @@ describe('PostHog plugin manifest', () => {
             POSTHOG_ACTION_IDS.issueActivity,
             POSTHOG_ACTION_IDS.codeVariables,
             POSTHOG_ACTION_IDS.get,
+            POSTHOG_ACTION_IDS.nativeOverview,
         ];
         for (const id of mountedOnly) {
             expect(actions.get(id)?.placementBindings, id).toEqual([]);
@@ -320,7 +321,7 @@ describe('PostHog plugin manifest', () => {
             .toEqual(sources.operations.listInstances.declaration.surfaces);
         expect(actions.get(POSTHOG_ACTION_IDS.get)?.surfaces, 'posthog/get')
             .toEqual(sources.operations.get.declaration.surfaces);
-        // And the mounted-only list is exact: these six and nothing else.
+        // And the mounted-only list is exact.
         expect(
             PLUGIN_MANIFEST.contributes.actions
                 .filter((action) => action.placementBindings !== undefined

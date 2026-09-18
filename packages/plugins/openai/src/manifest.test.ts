@@ -17,6 +17,9 @@ describe('OpenAI Voice plugin manifest', () => {
         modes: [{
           id: 'api-key',
           kind: 'manual',
+          directExport: {
+            contractVersion: 'happier.team-credential-manual-connected-account-direct.v1',
+          },
           outcomeReconciliation: 'none',
           fields: [{
             id: 'token',

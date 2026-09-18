@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { asRecord, normalizeString } from './openCodeParsing.js';
+import { asRecord, normalizeString, readNonBlankOpaqueIdentifier } from './openCodeParsing.js';
 import type { OpenCodeRuntimeContext } from './runtimeContext.js';
 
 const HAPPIER_AUTHORED_PROVIDER_USER_MESSAGE_IDS_STORAGE_PREFIX =
@@ -51,7 +51,7 @@ function readStoredPendingPromptAnchors(value: unknown): readonly PendingPromptA
   const anchors: PendingPromptAnchor[] = [];
   for (const rawAnchor of record.pendingPromptAnchors) {
     const anchor = asRecord(rawAnchor);
-    const providerSessionId = normalizeString(anchor?.providerSessionId);
+    const providerSessionId = readNonBlankOpaqueIdentifier(anchor?.providerSessionId) ?? '';
     const digest = normalizeString(anchor?.digest);
     const submittedAtMs = typeof anchor?.submittedAtMs === 'number' && Number.isFinite(anchor.submittedAtMs)
       ? Math.trunc(anchor.submittedAtMs)
@@ -68,7 +68,7 @@ function readStoredProviderUserMessageIds(value: unknown): readonly string[] {
   const ids: string[] = [];
   const seen = new Set<string>();
   for (const rawId of record.ids) {
-    const id = normalizeString(rawId);
+    const id = readNonBlankOpaqueIdentifier(rawId) ?? '';
     if (!id || seen.has(id)) continue;
     seen.add(id);
     ids.push(id);
@@ -162,17 +162,17 @@ export function createOpenCodeHappierAuthoredProviderUserMessageIds(params: Read
       return ids.has(messageId);
     },
     async add(messageId) {
-      const normalizedMessageId = normalizeString(messageId);
-      if (!normalizedMessageId || ids.has(normalizedMessageId)) return;
-      ids.add(normalizedMessageId);
-      const providerSessionId = normalizeString(params.readProviderSessionId());
+      const admittedMessageId = readNonBlankOpaqueIdentifier(messageId);
+      if (!admittedMessageId || ids.has(admittedMessageId)) return;
+      ids.add(admittedMessageId);
+      const providerSessionId = readNonBlankOpaqueIdentifier(params.readProviderSessionId());
       if (!providerSessionId) return;
       await persist(providerSessionId);
     },
     recordPendingPromptAnchor(input) {
       const text = normalizePromptText(input.text);
       const submittedAtMs = Number.isFinite(input.submittedAtMs) ? Math.trunc(input.submittedAtMs) : NaN;
-      const providerSessionId = normalizeString(params.readProviderSessionId());
+      const providerSessionId = readNonBlankOpaqueIdentifier(params.readProviderSessionId());
       if (!providerSessionId || !text || !Number.isFinite(submittedAtMs) || submittedAtMs <= 0) return;
       pendingPromptAnchors = [
         ...pendingPromptAnchors,
@@ -189,10 +189,10 @@ export function createOpenCodeHappierAuthoredProviderUserMessageIds(params: Read
       void persist(providerSessionId);
     },
     async markIfHappierAuthoredProviderUserMessage(input) {
-      const messageId = normalizeString(input.messageId);
+      const messageId = readNonBlankOpaqueIdentifier(input.messageId);
       if (!messageId) return false;
       if (ids.has(messageId)) return true;
-      const providerSessionId = normalizeString(params.readProviderSessionId());
+      const providerSessionId = readNonBlankOpaqueIdentifier(params.readProviderSessionId());
       if (!providerSessionId) return false;
       const text = normalizePromptText(input.text);
       const createdAtMs = Number.isFinite(input.createdAtMs) ? Math.trunc(input.createdAtMs) : NaN;
@@ -217,7 +217,7 @@ export function createOpenCodeHappierAuthoredProviderUserMessageIds(params: Read
     async hydrate() {
       ids.clear();
       pendingPromptAnchors = [];
-      const providerSessionId = normalizeString(params.readProviderSessionId());
+      const providerSessionId = readNonBlankOpaqueIdentifier(params.readProviderSessionId());
       if (!providerSessionId) return;
       let stored: unknown;
       try {

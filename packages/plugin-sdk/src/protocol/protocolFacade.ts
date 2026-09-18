@@ -296,7 +296,7 @@ export const defineProtocolUnion = canonicalDefineProtocolUnion as <
         ProtocolComposableSchema<unknown, unknown>,
         ...ProtocolComposableSchema<unknown, unknown>[],
     ],
->(members: TMembers) => ProtocolComposableSchema<
+>(members: TMembers, options?: ProtocolJsonValueOptions) => ProtocolComposableSchema<
     ProtocolSchemaInput<TMembers[number]>,
     ProtocolSchemaOutput<TMembers[number]>
 >;

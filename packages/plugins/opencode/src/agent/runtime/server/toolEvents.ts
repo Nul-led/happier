@@ -3,6 +3,8 @@ import { isTerminalOpenCodeToolPartStatus } from './foregroundToolTracker.js';
 import { asRecord, normalizeString } from './openCodeParsing.js';
 import { readOpenCodeToolCallKey, type OpenCodeServerRuntimeState } from './state.js';
 import type { OpenCodeRuntimeEvent } from './runtimeEvents.js';
+import type { OpenCodeRuntimeScope } from './runtimeEvents.js';
+import { projectOpenCodeRuntimeScope } from './openCodeRuntimeEvents.js';
 
 export function buildOpenCodeToolResultOutput(part: OpenCodeToolPart): unknown {
   const title = normalizeString(part.state.title);
@@ -28,7 +30,7 @@ export function buildOpenCodeToolResultOutput(part: OpenCodeToolPart): unknown {
 export function publishOpenCodeToolPartRuntimeEvents(params: Readonly<{
   part: OpenCodeToolPart;
   state: OpenCodeServerRuntimeState;
-  happierSessionId: string;
+  scope: OpenCodeRuntimeScope;
   publishRuntimeEvent: (event: OpenCodeRuntimeEvent) => void;
   nowMs?: () => number;
 }>): void {
@@ -44,7 +46,7 @@ export function publishOpenCodeToolPartRuntimeEvents(params: Readonly<{
     params.state.currentTurnPublishedToolCallKeys.add(callKey);
     params.publishRuntimeEvent({
       kind: 'tool-call',
-      sessionId: params.happierSessionId,
+      ...projectOpenCodeRuntimeScope(params.scope),
       turnId,
       toolCallId: params.part.callID,
       toolName: params.part.tool,
@@ -59,7 +61,7 @@ export function publishOpenCodeToolPartRuntimeEvents(params: Readonly<{
   const status = params.part.state.status;
   params.publishRuntimeEvent({
     kind: 'tool-result',
-    sessionId: params.happierSessionId,
+    ...projectOpenCodeRuntimeScope(params.scope),
     turnId,
     toolCallId: params.part.callID,
     output: buildOpenCodeToolResultOutput(params.part),

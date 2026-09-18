@@ -93,7 +93,6 @@ export async function resolveCodexDaemonSpawnPrerequisites(
       toolId: 'codex',
       sourcePreference: 'system-first',
       args: ['--version'],
-      timeoutMs: 5_000,
       maxStdoutBytes: 4_096,
       maxStderrBytes: 4_096,
       reason: 'External providers require a verified Codex CLI version.',

@@ -34,7 +34,7 @@
                         "accountId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                          "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                           "type": "string"
                         },
                         "service": {
@@ -43,13 +43,13 @@
                             "localId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                               "type": "string"
                             },
                             "pluginId": {
                               "maxLength": 256,
                               "minLength": 3,
-                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                               "type": "string"
                             }
                           },
@@ -139,7 +139,7 @@
                         "accountId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                          "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                           "type": "string"
                         },
                         "service": {
@@ -148,13 +148,13 @@
                             "localId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                               "type": "string"
                             },
                             "pluginId": {
                               "maxLength": 256,
                               "minLength": 3,
-                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                               "type": "string"
                             }
                           },
@@ -471,7 +471,7 @@
                               "accountId": {
                                 "maxLength": 256,
                                 "minLength": 1,
-                                "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                                "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                                 "type": "string"
                               },
                               "service": {
@@ -480,13 +480,13 @@
                                   "localId": {
                                     "maxLength": 256,
                                     "minLength": 1,
-                                    "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                    "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                     "type": "string"
                                   },
                                   "pluginId": {
                                     "maxLength": 256,
                                     "minLength": 3,
-                                    "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                    "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                     "type": "string"
                                   }
                                 },
@@ -611,7 +611,7 @@
                               "accountId": {
                                 "maxLength": 256,
                                 "minLength": 1,
-                                "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                                "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                                 "type": "string"
                               },
                               "service": {
@@ -620,13 +620,13 @@
                                   "localId": {
                                     "maxLength": 256,
                                     "minLength": 1,
-                                    "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                    "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                     "type": "string"
                                   },
                                   "pluginId": {
                                     "maxLength": 256,
                                     "minLength": 3,
-                                    "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                    "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                     "type": "string"
                                   }
                                 },
@@ -747,7 +747,7 @@
                               "accountId": {
                                 "maxLength": 256,
                                 "minLength": 1,
-                                "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                                "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                                 "type": "string"
                               },
                               "service": {
@@ -756,13 +756,13 @@
                                   "localId": {
                                     "maxLength": 256,
                                     "minLength": 1,
-                                    "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                    "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                     "type": "string"
                                   },
                                   "pluginId": {
                                     "maxLength": 256,
                                     "minLength": 3,
-                                    "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                    "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                     "type": "string"
                                   }
                                 },
@@ -936,7 +936,7 @@
                               "accountId": {
                                 "maxLength": 256,
                                 "minLength": 1,
-                                "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                                "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                                 "type": "string"
                               },
                               "service": {
@@ -945,13 +945,13 @@
                                   "localId": {
                                     "maxLength": 256,
                                     "minLength": 1,
-                                    "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                    "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                     "type": "string"
                                   },
                                   "pluginId": {
                                     "maxLength": 256,
                                     "minLength": 3,
-                                    "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                    "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                     "type": "string"
                                   }
                                 },
@@ -1164,7 +1164,7 @@
                             "accountId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                              "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                               "type": "string"
                             },
                             "service": {
@@ -1173,13 +1173,13 @@
                                 "localId": {
                                   "maxLength": 256,
                                   "minLength": 1,
-                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                   "type": "string"
                                 },
                                 "pluginId": {
                                   "maxLength": 256,
                                   "minLength": 3,
-                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                   "type": "string"
                                 }
                               },
@@ -1237,13 +1237,13 @@
                             "localId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                               "type": "string"
                             },
                             "pluginId": {
                               "maxLength": 256,
                               "minLength": 3,
-                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                               "type": "string"
                             }
                           },
@@ -1360,7 +1360,7 @@
                             "accountId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                              "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                               "type": "string"
                             },
                             "service": {
@@ -1369,13 +1369,13 @@
                                 "localId": {
                                   "maxLength": 256,
                                   "minLength": 1,
-                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                   "type": "string"
                                 },
                                 "pluginId": {
                                   "maxLength": 256,
                                   "minLength": 3,
-                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                   "type": "string"
                                 }
                               },
@@ -1433,13 +1433,13 @@
                             "localId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                               "type": "string"
                             },
                             "pluginId": {
                               "maxLength": 256,
                               "minLength": 3,
-                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                               "type": "string"
                             }
                           },
@@ -3191,7 +3191,7 @@
                         "accountId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                          "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                           "type": "string"
                         },
                         "service": {
@@ -3200,13 +3200,13 @@
                             "localId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                               "type": "string"
                             },
                             "pluginId": {
                               "maxLength": 256,
                               "minLength": 3,
-                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                               "type": "string"
                             }
                           },
@@ -3264,13 +3264,13 @@
                         "localId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                           "type": "string"
                         },
                         "pluginId": {
                           "maxLength": 256,
                           "minLength": 3,
-                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                           "type": "string"
                         }
                       },
@@ -3464,6 +3464,11 @@
                           "type": "object"
                         },
                         "type": "array"
+                      },
+                      "providerOffset": {
+                        "maximum": 9007199254740991,
+                        "minimum": 0,
+                        "type": "integer"
                       },
                       "sessionId": {
                         "minLength": 1,
@@ -3702,7 +3707,7 @@
                         "accountId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                          "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                           "type": "string"
                         },
                         "service": {
@@ -3711,13 +3716,13 @@
                             "localId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                               "type": "string"
                             },
                             "pluginId": {
                               "maxLength": 256,
                               "minLength": 3,
-                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                               "type": "string"
                             }
                           },
@@ -3775,13 +3780,13 @@
                         "localId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                           "type": "string"
                         },
                         "pluginId": {
                           "maxLength": 256,
                           "minLength": 3,
-                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                           "type": "string"
                         }
                       },
@@ -4178,7 +4183,7 @@
                         "accountId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                          "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                           "type": "string"
                         },
                         "service": {
@@ -4187,13 +4192,13 @@
                             "localId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                               "type": "string"
                             },
                             "pluginId": {
                               "maxLength": 256,
                               "minLength": 3,
-                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                               "type": "string"
                             }
                           },
@@ -4251,13 +4256,13 @@
                         "localId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                           "type": "string"
                         },
                         "pluginId": {
                           "maxLength": 256,
                           "minLength": 3,
-                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                           "type": "string"
                         }
                       },
@@ -4486,7 +4491,7 @@
           }
         ],
         "dangerLevel": "safe",
-        "description": "Reads one PostHog error issue authoritatively through its configured environment.",
+        "description": "Reads native overview facts and query-enrichment status through the canonical issue read.",
         "execution": {
           "target": "daemon"
         },
@@ -4494,7 +4499,7 @@
           "posthog-api",
           "posthog-network"
         ],
-        "id": "posthog/get",
+        "id": "posthog/native-overview",
         "inputSchema": {
           "$schema": "http://json-schema.org/draft-07/schema#",
           "additionalProperties": false,
@@ -4511,7 +4516,7 @@
                         "accountId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                          "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                           "type": "string"
                         },
                         "service": {
@@ -4520,13 +4525,13 @@
                             "localId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                               "type": "string"
                             },
                             "pluginId": {
                               "maxLength": 256,
                               "minLength": 3,
-                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                               "type": "string"
                             }
                           },
@@ -4584,13 +4589,1069 @@
                         "localId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                           "type": "string"
                         },
                         "pluginId": {
                           "maxLength": 256,
                           "minLength": 3,
-                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "pluginId",
+                        "localId"
+                      ],
+                      "type": "object"
+                    },
+                    "sourceInstanceId": {
+                      "maxLength": 36,
+                      "minLength": 36,
+                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "source",
+                    "sourceInstanceId"
+                  ],
+                  "type": "object"
+                },
+                "localInstanceKey": {
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000-\\u001f\\u007f]+(?:\\u001f[^\\u0000-\\u001f\\u007f]+)?$",
+                  "type": "string",
+                  "x-happier-max-utf8-bytes": 128
+                },
+                "locator": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "displayLabel": {
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                      "type": "string",
+                      "x-happier-max-utf8-bytes": 512
+                    },
+                    "displayPath": {
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                      "type": "string",
+                      "x-happier-max-utf8-bytes": 512
+                    },
+                    "v": {
+                      "const": 1
+                    },
+                    "webUrl": {
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                      "type": "string",
+                      "x-happier-max-utf8-bytes": 384
+                    }
+                  },
+                  "required": [
+                    "v",
+                    "displayLabel"
+                  ],
+                  "type": "object"
+                },
+                "v": {
+                  "const": 1
+                }
+              },
+              "required": [
+                "v",
+                "instance",
+                "binding",
+                "localInstanceKey",
+                "configuration"
+              ],
+              "type": "object"
+            },
+            "lastKnownLocator": {
+              "additionalProperties": false,
+              "properties": {
+                "displayPath": {
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                  "type": "string",
+                  "x-happier-max-utf8-bytes": 512
+                },
+                "routingToken": {
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                  "type": "string",
+                  "x-happier-max-utf8-bytes": 192
+                },
+                "v": {
+                  "const": 1
+                },
+                "webUrl": {
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                  "type": "string",
+                  "x-happier-max-utf8-bytes": 384
+                }
+              },
+              "required": [
+                "v"
+              ],
+              "type": "object"
+            },
+            "localRef": {
+              "additionalProperties": false,
+              "properties": {
+                "collisionScope": {
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000-\\u001f\\u007f]+(?:\\u001f[^\\u0000-\\u001f\\u007f]+)?$",
+                  "type": "string",
+                  "x-happier-max-utf8-bytes": 192
+                },
+                "entryId": {
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                  "type": "string",
+                  "x-happier-max-utf8-bytes": 128
+                },
+                "kindId": {
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                  "type": "string",
+                  "x-happier-max-utf8-bytes": 128
+                }
+              },
+              "required": [
+                "kindId",
+                "collisionScope",
+                "entryId"
+              ],
+              "type": "object"
+            },
+            "v": {
+              "const": 1
+            }
+          },
+          "required": [
+            "v",
+            "instance",
+            "localRef"
+          ],
+          "type": "object"
+        },
+        "placementBindings": [],
+        "resultSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "additionalProperties": false,
+          "properties": {
+            "enrichmentFailure": {
+              "additionalProperties": false,
+              "properties": {
+                "class": {
+                  "anyOf": [
+                    {
+                      "const": "authentication"
+                    },
+                    {
+                      "const": "permission"
+                    },
+                    {
+                      "const": "rateLimit"
+                    },
+                    {
+                      "const": "transient"
+                    },
+                    {
+                      "const": "unsupportedContract"
+                    },
+                    {
+                      "const": "unknown"
+                    }
+                  ]
+                },
+                "code": {
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                  "type": "string",
+                  "x-happier-max-utf8-bytes": 128
+                },
+                "detail": {
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                  "type": "string",
+                  "x-happier-max-utf8-bytes": 256
+                },
+                "retryNotBeforeMs": {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "class",
+                "code"
+              ],
+              "type": "object"
+            },
+            "observation": {
+              "anyOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "present"
+                    },
+                    "localRef": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "collisionScope": {
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001f\\u007f]+(?:\\u001f[^\\u0000-\\u001f\\u007f]+)?$",
+                          "type": "string",
+                          "x-happier-max-utf8-bytes": 192
+                        },
+                        "entryId": {
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                          "type": "string",
+                          "x-happier-max-utf8-bytes": 128
+                        },
+                        "kindId": {
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                          "type": "string",
+                          "x-happier-max-utf8-bytes": 128
+                        }
+                      },
+                      "required": [
+                        "kindId",
+                        "collisionScope",
+                        "entryId"
+                      ],
+                      "type": "object"
+                    },
+                    "locator": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "displayPath": {
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                          "type": "string",
+                          "x-happier-max-utf8-bytes": 512
+                        },
+                        "routingToken": {
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                          "type": "string",
+                          "x-happier-max-utf8-bytes": 192
+                        },
+                        "v": {
+                          "const": 1
+                        },
+                        "webUrl": {
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                          "type": "string",
+                          "x-happier-max-utf8-bytes": 384
+                        }
+                      },
+                      "required": [
+                        "v"
+                      ],
+                      "type": "object"
+                    },
+                    "nativeRevision": {
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                      "type": "string",
+                      "x-happier-max-utf8-bytes": 128
+                    },
+                    "repository": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "deployment": {
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                          "type": "string",
+                          "x-happier-max-utf8-bytes": 128
+                        },
+                        "kind": {
+                          "anyOf": [
+                            {
+                              "const": "github"
+                            },
+                            {
+                              "const": "gitlab"
+                            },
+                            {
+                              "const": "bitbucket"
+                            },
+                            {
+                              "const": "azure-devops"
+                            }
+                          ]
+                        },
+                        "repository": {
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                          "type": "string",
+                          "x-happier-max-utf8-bytes": 255
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "deployment",
+                        "repository"
+                      ],
+                      "type": "object"
+                    },
+                    "snapshot": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "createdAtMs": {
+                          "maximum": 9007199254740991,
+                          "minimum": -9007199254740991,
+                          "type": "integer"
+                        },
+                        "facts": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "id": {
+                                "minLength": 1,
+                                "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                                "type": "string",
+                                "x-happier-max-utf8-bytes": 64
+                              },
+                              "importance": {
+                                "anyOf": [
+                                  {
+                                    "const": "primary"
+                                  },
+                                  {
+                                    "const": "secondary"
+                                  },
+                                  {
+                                    "const": "supplementary"
+                                  }
+                                ]
+                              },
+                              "label": {
+                                "minLength": 1,
+                                "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                                "type": "string",
+                                "x-happier-max-utf8-bytes": 64
+                              },
+                              "value": {
+                                "anyOf": [
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "kind": {
+                                        "const": "text"
+                                      },
+                                      "value": {
+                                        "minLength": 1,
+                                        "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                                        "type": "string",
+                                        "x-happier-max-utf8-bytes": 64
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "value"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "kind": {
+                                        "const": "actor"
+                                      },
+                                      "value": {
+                                        "minLength": 1,
+                                        "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                                        "type": "string",
+                                        "x-happier-max-utf8-bytes": 64
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "value"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "atMs": {
+                                        "maximum": 9007199254740991,
+                                        "minimum": -9007199254740991,
+                                        "type": "integer"
+                                      },
+                                      "format": {
+                                        "anyOf": [
+                                          {
+                                            "const": "relative"
+                                          },
+                                          {
+                                            "const": "absolute"
+                                          }
+                                        ]
+                                      },
+                                      "kind": {
+                                        "const": "timestamp"
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "atMs",
+                                      "format"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "approximate": {
+                                        "const": true
+                                      },
+                                      "format": {
+                                        "anyOf": [
+                                          {
+                                            "const": "compact"
+                                          },
+                                          {
+                                            "const": "plain"
+                                          }
+                                        ]
+                                      },
+                                      "kind": {
+                                        "const": "number"
+                                      },
+                                      "value": {
+                                        "type": "number"
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "value",
+                                      "format"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "kind": {
+                                        "const": "status"
+                                      },
+                                      "tone": {
+                                        "anyOf": [
+                                          {
+                                            "const": "success"
+                                          },
+                                          {
+                                            "const": "warning"
+                                          },
+                                          {
+                                            "const": "danger"
+                                          },
+                                          {
+                                            "const": "info"
+                                          },
+                                          {
+                                            "const": "neutral"
+                                          }
+                                        ]
+                                      },
+                                      "value": {
+                                        "minLength": 1,
+                                        "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                                        "type": "string",
+                                        "x-happier-max-utf8-bytes": 64
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "value",
+                                      "tone"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "kind": {
+                                        "const": "detailOnly"
+                                      }
+                                    },
+                                    "required": [
+                                      "kind"
+                                    ],
+                                    "type": "object"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "importance",
+                              "value"
+                            ],
+                            "type": "object"
+                          },
+                          "maxItems": 4,
+                          "type": "array"
+                        },
+                        "projectionTruncated": {
+                          "const": true
+                        },
+                        "reviewRevision": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "baseSha": {
+                              "minLength": 1,
+                              "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                              "type": "string",
+                              "x-happier-max-utf8-bytes": 128
+                            },
+                            "headSha": {
+                              "minLength": 1,
+                              "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                              "type": "string",
+                              "x-happier-max-utf8-bytes": 128
+                            },
+                            "nativeRevision": {
+                              "minLength": 1,
+                              "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                              "type": "string",
+                              "x-happier-max-utf8-bytes": 128
+                            }
+                          },
+                          "required": [
+                            "baseSha",
+                            "headSha",
+                            "nativeRevision"
+                          ],
+                          "type": "object"
+                        },
+                        "scopeLabel": {
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                          "type": "string",
+                          "x-happier-max-utf8-bytes": 512
+                        },
+                        "state": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "nativeLabel": {
+                              "minLength": 1,
+                              "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                              "type": "string",
+                              "x-happier-max-utf8-bytes": 512
+                            },
+                            "presentation": {
+                              "anyOf": [
+                                {
+                                  "const": "active"
+                                },
+                                {
+                                  "const": "resolved"
+                                },
+                                {
+                                  "const": "closed"
+                                },
+                                {
+                                  "const": "suppressed"
+                                },
+                                {
+                                  "const": "unknown"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "presentation"
+                          ],
+                          "type": "object"
+                        },
+                        "summary": {
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                          "type": "string",
+                          "x-happier-max-utf8-bytes": 512
+                        },
+                        "title": {
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                          "type": "string",
+                          "x-happier-max-utf8-bytes": 512
+                        },
+                        "v": {
+                          "const": 1
+                        }
+                      },
+                      "required": [
+                        "v",
+                        "title",
+                        "scopeLabel",
+                        "state",
+                        "facts"
+                      ],
+                      "type": "object"
+                    },
+                    "sourceUpdatedAtMs": {
+                      "maximum": 9007199254740991,
+                      "minimum": -9007199254740991,
+                      "type": "integer"
+                    },
+                    "viewer": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "involvement": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "const": "author"
+                              },
+                              {
+                                "const": "assignee"
+                              },
+                              {
+                                "const": "reviewRequested"
+                              },
+                              {
+                                "const": "mentioned"
+                              },
+                              {
+                                "const": "subscribed"
+                              },
+                              {
+                                "const": "participating"
+                              }
+                            ]
+                          },
+                          "maxItems": 6,
+                          "type": "array",
+                          "uniqueItems": true
+                        },
+                        "sourceAttention": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "level": {
+                                  "const": "none"
+                                }
+                              },
+                              "required": [
+                                "level"
+                              ],
+                              "type": "object"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "level": {
+                                  "anyOf": [
+                                    {
+                                      "const": "suggested"
+                                    },
+                                    {
+                                      "const": "required"
+                                    }
+                                  ]
+                                },
+                                "reasonId": {
+                                  "minLength": 1,
+                                  "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                                  "type": "string",
+                                  "x-happier-max-utf8-bytes": 128
+                                },
+                                "reasonLabel": {
+                                  "minLength": 1,
+                                  "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                                  "type": "string",
+                                  "x-happier-max-utf8-bytes": 512
+                                }
+                              },
+                              "required": [
+                                "level",
+                                "reasonId",
+                                "reasonLabel"
+                              ],
+                              "type": "object"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "involvement"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "localRef",
+                    "locator",
+                    "snapshot",
+                    "viewer"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "absent"
+                    },
+                    "localRef": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "collisionScope": {
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001f\\u007f]+(?:\\u001f[^\\u0000-\\u001f\\u007f]+)?$",
+                          "type": "string",
+                          "x-happier-max-utf8-bytes": 192
+                        },
+                        "entryId": {
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                          "type": "string",
+                          "x-happier-max-utf8-bytes": 128
+                        },
+                        "kindId": {
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                          "type": "string",
+                          "x-happier-max-utf8-bytes": 128
+                        }
+                      },
+                      "required": [
+                        "kindId",
+                        "collisionScope",
+                        "entryId"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "localRef"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "merged"
+                    },
+                    "localRef": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "collisionScope": {
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001f\\u007f]+(?:\\u001f[^\\u0000-\\u001f\\u007f]+)?$",
+                          "type": "string",
+                          "x-happier-max-utf8-bytes": 192
+                        },
+                        "entryId": {
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                          "type": "string",
+                          "x-happier-max-utf8-bytes": 128
+                        },
+                        "kindId": {
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                          "type": "string",
+                          "x-happier-max-utf8-bytes": 128
+                        }
+                      },
+                      "required": [
+                        "kindId",
+                        "collisionScope",
+                        "entryId"
+                      ],
+                      "type": "object"
+                    },
+                    "successor": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "collisionScope": {
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001f\\u007f]+(?:\\u001f[^\\u0000-\\u001f\\u007f]+)?$",
+                          "type": "string",
+                          "x-happier-max-utf8-bytes": 192
+                        },
+                        "entryId": {
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                          "type": "string",
+                          "x-happier-max-utf8-bytes": 128
+                        },
+                        "kindId": {
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                          "type": "string",
+                          "x-happier-max-utf8-bytes": 128
+                        }
+                      },
+                      "required": [
+                        "kindId",
+                        "collisionScope",
+                        "entryId"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "localRef",
+                    "successor"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "failure": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "class": {
+                          "anyOf": [
+                            {
+                              "const": "authentication"
+                            },
+                            {
+                              "const": "permission"
+                            },
+                            {
+                              "const": "rateLimit"
+                            },
+                            {
+                              "const": "transient"
+                            },
+                            {
+                              "const": "unsupportedContract"
+                            },
+                            {
+                              "const": "unknown"
+                            }
+                          ]
+                        },
+                        "code": {
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                          "type": "string",
+                          "x-happier-max-utf8-bytes": 128
+                        },
+                        "detail": {
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                          "type": "string",
+                          "x-happier-max-utf8-bytes": 256
+                        },
+                        "retryNotBeforeMs": {
+                          "maximum": 9007199254740991,
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "class",
+                        "code"
+                      ],
+                      "type": "object"
+                    },
+                    "kind": {
+                      "const": "unresolved"
+                    },
+                    "localRef": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "collisionScope": {
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001f\\u007f]+(?:\\u001f[^\\u0000-\\u001f\\u007f]+)?$",
+                          "type": "string",
+                          "x-happier-max-utf8-bytes": 192
+                        },
+                        "entryId": {
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                          "type": "string",
+                          "x-happier-max-utf8-bytes": 128
+                        },
+                        "kindId": {
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                          "type": "string",
+                          "x-happier-max-utf8-bytes": 128
+                        }
+                      },
+                      "required": [
+                        "kindId",
+                        "collisionScope",
+                        "entryId"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "localRef",
+                    "failure"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "severity": {
+              "anyOf": [
+                {
+                  "const": "low"
+                },
+                {
+                  "const": "medium"
+                },
+                {
+                  "const": "high"
+                },
+                {
+                  "const": "critical"
+                }
+              ]
+            }
+          },
+          "required": [
+            "observation"
+          ],
+          "type": "object"
+        },
+        "scopes": [
+          "global"
+        ],
+        "surfaces": [
+          "ui"
+        ],
+        "title": "Read a PostHog issue overview"
+      },
+      {
+        "connectedAccountPurposeBindings": [
+          {
+            "path": "instance.binding.account",
+            "purpose": "posthog-api"
+          }
+        ],
+        "dangerLevel": "safe",
+        "description": "Reads one PostHog error issue authoritatively through its configured environment.",
+        "execution": {
+          "target": "daemon"
+        },
+        "hostAccess": [
+          "posthog-api",
+          "posthog-network"
+        ],
+        "id": "posthog/get",
+        "inputSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "additionalProperties": false,
+          "properties": {
+            "instance": {
+              "additionalProperties": false,
+              "properties": {
+                "binding": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "account": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "accountId": {
+                          "maxLength": 256,
+                          "minLength": 1,
+                          "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
+                          "type": "string"
+                        },
+                        "service": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "localId": {
+                              "maxLength": 256,
+                              "minLength": 1,
+                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
+                              "type": "string"
+                            },
+                            "pluginId": {
+                              "maxLength": 256,
+                              "minLength": 3,
+                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "pluginId",
+                            "localId"
+                          ],
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "service",
+                        "accountId"
+                      ],
+                      "type": "object"
+                    },
+                    "purpose": {
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                      "type": "string",
+                      "x-happier-max-utf8-bytes": 128
+                    }
+                  },
+                  "required": [
+                    "purpose",
+                    "account"
+                  ],
+                  "type": "object"
+                },
+                "configuration": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "token": {
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                      "type": "string",
+                      "x-happier-max-utf8-bytes": 1024
+                    },
+                    "v": {
+                      "const": 1
+                    }
+                  },
+                  "required": [
+                    "v",
+                    "token"
+                  ],
+                  "type": "object"
+                },
+                "instance": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "source": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "localId": {
+                          "maxLength": 256,
+                          "minLength": 1,
+                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
+                          "type": "string"
+                        },
+                        "pluginId": {
+                          "maxLength": 256,
+                          "minLength": 3,
+                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                           "type": "string"
                         }
                       },
@@ -5510,6 +6571,9 @@
                 ],
                 "scope": "account"
               },
+              "directExport": {
+                "contractVersion": "happier.team-credential-manual-connected-account-direct.v1"
+              },
               "fields": [
                 {
                   "description": {
@@ -5715,6 +6779,7 @@
             "plugins.posthog.ui.derivingSessions": "Deriving affected sessions",
             "plugins.posthog.ui.detailOnly": "Read only in the detail plane:",
             "plugins.posthog.ui.differentStatus": "PostHog reports a different status",
+            "plugins.posthog.ui.enrichmentUnavailable": "Query enrichment is unavailable",
             "plugins.posthog.ui.fact.first-seen": "First seen",
             "plugins.posthog.ui.fact.function": "Function",
             "plugins.posthog.ui.fact.last-seen": "Last seen",
@@ -5749,11 +6814,13 @@
             "plugins.posthog.ui.noSessions.description": "None of the sampled occurrences carried a PostHog session id.",
             "plugins.posthog.ui.observation": "Observation",
             "plugins.posthog.ui.partialActivity": "Showing the activity read so far",
+            "plugins.posthog.ui.partialSample": "Showing the sample read so far",
             "plugins.posthog.ui.readFailed": "PostHog could not complete this read.",
             "plugins.posthog.ui.readingActivity": "Reading this issue’s activity",
             "plugins.posthog.ui.readingSamples": "Reading sampled occurrences",
             "plugins.posthog.ui.readingStack": "Reading the sampled stack",
             "plugins.posthog.ui.recordsUnreadable": "{count} record(s) on the pages read could not be understood.",
+            "plugins.posthog.ui.replayUnavailable": "Replay unavailable",
             "plugins.posthog.ui.sampleDisclosure": "PostHog returns a sample of this issue’s exceptions, never all of them.",
             "plugins.posthog.ui.sampleDisclosureUnreadable": "PostHog returns a sample of this issue’s exceptions, never all of them. {count} row(s) in this sample could not be read.",
             "plugins.posthog.ui.sampleStackCounts": "This stack belongs to one sampled occurrence, not to the latest one. {application} application frame(s), {other} other frame(s).",
@@ -5761,6 +6828,7 @@
             "plugins.posthog.ui.sampledOccurrences": "{count} sampled occurrence(s)",
             "plugins.posthog.ui.sampledSession": "Sampled session",
             "plugins.posthog.ui.sampledSessions.description": "These are the PostHog sessions the sampled occurrences named. A session here is not a claim that a recording exists.",
+            "plugins.posthog.ui.sampledSessions.replayUnavailable": "This build cannot open a PostHog session replay, and a sampled session is not a recording.",
             "plugins.posthog.ui.samplesLabel": "Sampled occurrences of this PostHog issue",
             "plugins.posthog.ui.samplesUnavailable": "Sampled occurrences are unavailable",
             "plugins.posthog.ui.selectSampleForStack": "Select a sampled occurrence to read its stack.",
@@ -5900,6 +6968,7 @@
             "plugins.posthog.ui.derivingSessions": "Получение затронутых сессий",
             "plugins.posthog.ui.detailOnly": "Только для чтения в области сведений:",
             "plugins.posthog.ui.differentStatus": "PostHog сообщает о другом статусе",
+            "plugins.posthog.ui.enrichmentUnavailable": "Дополнительные сведения запроса недоступны",
             "plugins.posthog.ui.fact.first-seen": "Впервые замечено",
             "plugins.posthog.ui.fact.function": "Функция",
             "plugins.posthog.ui.fact.last-seen": "Последний раз замечено",
@@ -5934,11 +7003,13 @@
             "plugins.posthog.ui.noSessions.description": "Ни один из отобранных случаев не содержал идентификатора сессии PostHog.",
             "plugins.posthog.ui.observation": "Наблюдение",
             "plugins.posthog.ui.partialActivity": "Показывает активность, прочитанную до сих пор",
+            "plugins.posthog.ui.partialSample": "Показана прочитанная часть выборки",
             "plugins.posthog.ui.readFailed": "PostHog не удалось завершить чтение.",
             "plugins.posthog.ui.readingActivity": "Чтение активности этого вопроса",
             "plugins.posthog.ui.readingSamples": "Чтение отобранных случаев",
             "plugins.posthog.ui.readingStack": "Чтение отобранных трасс стека",
             "plugins.posthog.ui.recordsUnreadable": "Не удалось распознать записей на прочитанных страницах: {count}.",
+            "plugins.posthog.ui.replayUnavailable": "Запись недоступна",
             "plugins.posthog.ui.sampleDisclosure": "PostHog возвращает выборку исключений этой ошибки, а не все исключения.",
             "plugins.posthog.ui.sampleDisclosureUnreadable": "PostHog возвращает выборку исключений этой ошибки, а не все исключения. Не удалось прочитать строк: {count}.",
             "plugins.posthog.ui.sampleStackCounts": "Этот стек относится к одному событию из выборки, а не к последнему событию. Кадров приложения: {application}, других кадров: {other}.",
@@ -5946,6 +7017,7 @@
             "plugins.posthog.ui.sampledOccurrences": "Событий в выборке: {count}",
             "plugins.posthog.ui.sampledSession": "Сеанс из выборки",
             "plugins.posthog.ui.sampledSessions.description": "Это сеансы PostHog, указанные выборочными событиями. Наличие сеанса здесь не означает, что существует запись.",
+            "plugins.posthog.ui.sampledSessions.replayUnavailable": "Эта сборка не может открыть запись сеанса PostHog, а сеанс из выборки не является записью.",
             "plugins.posthog.ui.samplesLabel": "Отобранные случаи этого вопроса PostHog",
             "plugins.posthog.ui.samplesUnavailable": "Отобранные случаи недоступны",
             "plugins.posthog.ui.selectSampleForStack": "Выберите событие из выборки, чтобы прочитать его стек.",
@@ -6085,6 +7157,7 @@
             "plugins.posthog.ui.derivingSessions": "Wyznaczanie afektywnych sesji",
             "plugins.posthog.ui.detailOnly": "Tylko do odczytu w widoku szczegółów:",
             "plugins.posthog.ui.differentStatus": "PostHog zgłasza inny stan",
+            "plugins.posthog.ui.enrichmentUnavailable": "Dodatkowe dane zapytania są niedostępne",
             "plugins.posthog.ui.fact.first-seen": "Pierwsze wystąpienie",
             "plugins.posthog.ui.fact.function": "Funkcja",
             "plugins.posthog.ui.fact.last-seen": "Ostatnie wystąpienie",
@@ -6119,11 +7192,13 @@
             "plugins.posthog.ui.noSessions.description": "Żadna z prób nie zawierała identyfikatora sesji PostHog.",
             "plugins.posthog.ui.observation": "Obserwacja",
             "plugins.posthog.ui.partialActivity": "Pokaż aktywność odczytana do tej pory",
+            "plugins.posthog.ui.partialSample": "Pokazano dotychczas odczytaną próbkę",
             "plugins.posthog.ui.readFailed": "PostHog nie zdołał ukończyć odczytu.",
             "plugins.posthog.ui.readingActivity": "Odczytanie aktywności tej kwestii",
             "plugins.posthog.ui.readingSamples": "Odczytanie próbek obserwacji",
             "plugins.posthog.ui.readingStack": "Odczytanie stosu prób",
             "plugins.posthog.ui.recordsUnreadable": "Nie udało się zrozumieć rekordów na odczytanych stronach: {count}.",
+            "plugins.posthog.ui.replayUnavailable": "Nagranie niedostępne",
             "plugins.posthog.ui.sampleDisclosure": "PostHog zwraca próbkę wyjątków tego zgłoszenia, a nie wszystkie wyjątki.",
             "plugins.posthog.ui.sampleDisclosureUnreadable": "PostHog zwraca próbkę wyjątków tego zgłoszenia, a nie wszystkie wyjątki. Nie udało się odczytać wierszy: {count}.",
             "plugins.posthog.ui.sampleStackCounts": "Ten stos należy do jednego próbkowanego wystąpienia, a nie do najnowszego. Ramki aplikacji: {application}, pozostałe ramki: {other}.",
@@ -6131,6 +7206,7 @@
             "plugins.posthog.ui.sampledOccurrences": "Wystąpienia w próbce: {count}",
             "plugins.posthog.ui.sampledSession": "Sesja z próbki",
             "plugins.posthog.ui.sampledSessions.description": "To sesje PostHog wskazane przez próbkowane zdarzenia. Obecność sesji tutaj nie oznacza, że istnieje nagranie.",
+            "plugins.posthog.ui.sampledSessions.replayUnavailable": "Ta wersja nie może otworzyć nagrania sesji PostHog, a sesja z próbki nie jest nagraniem.",
             "plugins.posthog.ui.samplesLabel": "Próby obserwacji tej kwestii PostHog",
             "plugins.posthog.ui.samplesUnavailable": "Próby obserwacji nie są dostępne",
             "plugins.posthog.ui.selectSampleForStack": "Wybierz próbkowane wystąpienie, aby odczytać jego stos.",
@@ -6270,6 +7346,7 @@
             "plugins.posthog.ui.derivingSessions": "Derivando sesiones afectadas",
             "plugins.posthog.ui.detailOnly": "Solo lectura en la vista de detalles:",
             "plugins.posthog.ui.differentStatus": "PostHog informa un estado diferente",
+            "plugins.posthog.ui.enrichmentUnavailable": "Los detalles adicionales de la consulta no están disponibles",
             "plugins.posthog.ui.fact.first-seen": "Visto por primera vez",
             "plugins.posthog.ui.fact.function": "Función",
             "plugins.posthog.ui.fact.last-seen": "Visto por última vez",
@@ -6304,11 +7381,13 @@
             "plugins.posthog.ui.noSessions.description": "Ninguna de las ocurrencias muestreadas llevaba una ID de sesión de PostHog.",
             "plugins.posthog.ui.observation": "Observación",
             "plugins.posthog.ui.partialActivity": "Mostrando la actividad leída hasta ahora",
+            "plugins.posthog.ui.partialSample": "Mostrando la muestra leída hasta ahora",
             "plugins.posthog.ui.readFailed": "PostHog no pudo completar esta lectura.",
             "plugins.posthog.ui.readingActivity": "Leyendo la actividad de esta incidencia",
             "plugins.posthog.ui.readingSamples": "Leyendo ocurrencias muestreadas",
             "plugins.posthog.ui.readingStack": "Leyendo la pila muestreada",
             "plugins.posthog.ui.recordsUnreadable": "No se pudieron interpretar {count} registro(s) de las páginas leídas.",
+            "plugins.posthog.ui.replayUnavailable": "Repetición no disponible",
             "plugins.posthog.ui.sampleDisclosure": "PostHog devuelve una muestra de las excepciones de esta incidencia, no todas.",
             "plugins.posthog.ui.sampleDisclosureUnreadable": "PostHog devuelve una muestra de las excepciones de esta incidencia, no todas. No se pudieron leer {count} fila(s) de la muestra.",
             "plugins.posthog.ui.sampleStackCounts": "Esta pila pertenece a una ocurrencia muestreada, no a la más reciente. Marcos de aplicación: {application}; otros marcos: {other}.",
@@ -6316,6 +7395,7 @@
             "plugins.posthog.ui.sampledOccurrences": "Eventos de la muestra: {count}",
             "plugins.posthog.ui.sampledSession": "Sesión de la muestra",
             "plugins.posthog.ui.sampledSessions.description": "Estas son las sesiones de PostHog mencionadas por las ocurrencias muestreadas. Que una sesión aparezca aquí no significa que exista una grabación.",
+            "plugins.posthog.ui.sampledSessions.replayUnavailable": "Esta versión no puede abrir una repetición de sesión de PostHog, y una sesión muestreada no es una grabación.",
             "plugins.posthog.ui.samplesLabel": "Ocurrencias muestreadas de esta incidencia de PostHog",
             "plugins.posthog.ui.samplesUnavailable": "Las ocurrencias muestreadas no están disponibles",
             "plugins.posthog.ui.selectSampleForStack": "Seleccione una ocurrencia muestreada para leer su pila.",
@@ -6455,6 +7535,7 @@
             "plugins.posthog.ui.derivingSessions": "Déduit les sessions affectées",
             "plugins.posthog.ui.detailOnly": "Lecture seule dans la vue détaillée :",
             "plugins.posthog.ui.differentStatus": "PostHog signale un statut différent",
+            "plugins.posthog.ui.enrichmentUnavailable": "Les détails supplémentaires de la requête sont indisponibles",
             "plugins.posthog.ui.fact.first-seen": "Première occurrence",
             "plugins.posthog.ui.fact.function": "Fonction",
             "plugins.posthog.ui.fact.last-seen": "Dernière occurrence",
@@ -6489,11 +7570,13 @@
             "plugins.posthog.ui.noSessions.description": "Aucune des occurrences échantillonnées n'a une ID de session PostHog.",
             "plugins.posthog.ui.observation": "Constat",
             "plugins.posthog.ui.partialActivity": "Montrant les activités lues jusqu'à présent",
+            "plugins.posthog.ui.partialSample": "Affichage de l’échantillon lu jusqu’ici",
             "plugins.posthog.ui.readFailed": "PostHog n’a pas pu terminer cette lecture.",
             "plugins.posthog.ui.readingActivity": "Lecture des activités de cette anomalie",
             "plugins.posthog.ui.readingSamples": "Lecture des occurrences échantillonnées",
             "plugins.posthog.ui.readingStack": "Lecture de l'empilement échantillonné",
             "plugins.posthog.ui.recordsUnreadable": "{count} enregistrement(s) des pages lues n’ont pas pu être interprétés.",
+            "plugins.posthog.ui.replayUnavailable": "Relecture indisponible",
             "plugins.posthog.ui.sampleDisclosure": "PostHog renvoie un échantillon des exceptions de cette anomalie, jamais leur totalité.",
             "plugins.posthog.ui.sampleDisclosureUnreadable": "PostHog renvoie un échantillon des exceptions de cette anomalie, jamais leur totalité. {count} ligne(s) de cet échantillon n’ont pas pu être lues.",
             "plugins.posthog.ui.sampleStackCounts": "Cette pile appartient à une occurrence échantillonnée, pas à la plus récente. Cadres d’application : {application} ; autres cadres : {other}.",
@@ -6501,6 +7584,7 @@
             "plugins.posthog.ui.sampledOccurrences": "Occurrences échantillonnées : {count}",
             "plugins.posthog.ui.sampledSession": "Session de l’échantillon",
             "plugins.posthog.ui.sampledSessions.description": "Voici les sessions PostHog mentionnées par les occurrences échantillonnées. La présence d’une session ici ne signifie pas qu’un enregistrement existe.",
+            "plugins.posthog.ui.sampledSessions.replayUnavailable": "Cette version ne peut pas ouvrir un enregistrement de session PostHog, et une session échantillonnée n’est pas un enregistrement.",
             "plugins.posthog.ui.samplesLabel": "Occurrences échantillonnées de cette anomalie PostHog",
             "plugins.posthog.ui.samplesUnavailable": "Les occurrences échantillonnées ne sont pas disponibles",
             "plugins.posthog.ui.selectSampleForStack": "Sélectionnez une occurrence échantillonnée pour lire sa pile.",
@@ -6640,6 +7724,7 @@
             "plugins.posthog.ui.derivingSessions": "Derivazione delle sessioni coinvolte",
             "plugins.posthog.ui.detailOnly": "Sola lettura nella vista dei dettagli:",
             "plugins.posthog.ui.differentStatus": "PostHog segnala uno stato diverso",
+            "plugins.posthog.ui.enrichmentUnavailable": "I dettagli aggiuntivi della query non sono disponibili",
             "plugins.posthog.ui.fact.first-seen": "Prima occorrenza",
             "plugins.posthog.ui.fact.function": "Funzione",
             "plugins.posthog.ui.fact.last-seen": "Ultima occorrenza",
@@ -6674,11 +7759,13 @@
             "plugins.posthog.ui.noSessions.description": "Nessuna delle occorrenze campionate ha contenuto un id di sessione PostHog.",
             "plugins.posthog.ui.observation": "Osservazione",
             "plugins.posthog.ui.partialActivity": "Mostrando l'attività letta finora",
+            "plugins.posthog.ui.partialSample": "Viene mostrato il campione letto finora",
             "plugins.posthog.ui.readFailed": "PostHog non ha potuto completare questa lettura.",
             "plugins.posthog.ui.readingActivity": "Lettura dell'attività di questa questione",
             "plugins.posthog.ui.readingSamples": "Lettura di più occorrenze campionate",
             "plugins.posthog.ui.readingStack": "Lettura dello stack campione",
             "plugins.posthog.ui.recordsUnreadable": "Impossibile interpretare {count} record nelle pagine lette.",
+            "plugins.posthog.ui.replayUnavailable": "Registrazione non disponibile",
             "plugins.posthog.ui.sampleDisclosure": "PostHog restituisce un campione delle eccezioni di questo problema, non tutte.",
             "plugins.posthog.ui.sampleDisclosureUnreadable": "PostHog restituisce un campione delle eccezioni di questo problema, non tutte. Impossibile leggere {count} riga/righe del campione.",
             "plugins.posthog.ui.sampleStackCounts": "Questo stack appartiene a una singola occorrenza campionata, non alla più recente. Frame dell’applicazione: {application}; altri frame: {other}.",
@@ -6686,6 +7773,7 @@
             "plugins.posthog.ui.sampledOccurrences": "Occorrenze campionate: {count}",
             "plugins.posthog.ui.sampledSession": "Sessione del campione",
             "plugins.posthog.ui.sampledSessions.description": "Queste sono le sessioni PostHog indicate dalle occorrenze campionate. La presenza di una sessione qui non implica che esista una registrazione.",
+            "plugins.posthog.ui.sampledSessions.replayUnavailable": "Questa build non può aprire una registrazione di sessione PostHog e una sessione campionata non è una registrazione.",
             "plugins.posthog.ui.samplesLabel": "Occorrenze campionate di questa questione PostHog",
             "plugins.posthog.ui.samplesUnavailable": "Le occorrenze campionate non sono disponibili",
             "plugins.posthog.ui.selectSampleForStack": "Seleziona un’occorrenza campionata per leggerne lo stack.",
@@ -6825,6 +7913,7 @@
             "plugins.posthog.ui.derivingSessions": "Derivando sessões afetadas",
             "plugins.posthog.ui.detailOnly": "Somente leitura na vista de detalhes:",
             "plugins.posthog.ui.differentStatus": "O PostHog relata um status diferente",
+            "plugins.posthog.ui.enrichmentUnavailable": "Os detalhes adicionais da consulta não estão disponíveis",
             "plugins.posthog.ui.fact.first-seen": "Visto pela primeira vez",
             "plugins.posthog.ui.fact.function": "Função",
             "plugins.posthog.ui.fact.last-seen": "Visto pela última vez",
@@ -6859,11 +7948,13 @@
             "plugins.posthog.ui.noSessions.description": "Nenhuma das ocorrências amostradas carregou um ID de sessão do PostHog.",
             "plugins.posthog.ui.observation": "Observação",
             "plugins.posthog.ui.partialActivity": "Mostrando a atividade lida até agora",
+            "plugins.posthog.ui.partialSample": "A mostrar a amostra lida até agora",
             "plugins.posthog.ui.readFailed": "O PostHog não conseguiu concluir esta leitura.",
             "plugins.posthog.ui.readingActivity": "Lendo a atividade desta questão",
             "plugins.posthog.ui.readingSamples": "Lendo ocorrências amostradas",
             "plugins.posthog.ui.readingStack": "Lendo a pilha da amostra",
             "plugins.posthog.ui.recordsUnreadable": "Não foi possível interpretar {count} registro(s) nas páginas lidas.",
+            "plugins.posthog.ui.replayUnavailable": "Reprodução indisponível",
             "plugins.posthog.ui.sampleDisclosure": "O PostHog retorna uma amostra das exceções deste problema, não todas.",
             "plugins.posthog.ui.sampleDisclosureUnreadable": "O PostHog retorna uma amostra das exceções deste problema, não todas. Não foi possível ler {count} linha(s) da amostra.",
             "plugins.posthog.ui.sampleStackCounts": "Esta pilha pertence a uma ocorrência da amostra, não à mais recente. Quadros da aplicação: {application}; outros quadros: {other}.",
@@ -6871,6 +7962,7 @@
             "plugins.posthog.ui.sampledOccurrences": "Ocorrências da amostra: {count}",
             "plugins.posthog.ui.sampledSession": "Sessão da amostra",
             "plugins.posthog.ui.sampledSessions.description": "Estas são as sessões do PostHog indicadas pelas ocorrências amostradas. A presença de uma sessão aqui não significa que exista uma gravação.",
+            "plugins.posthog.ui.sampledSessions.replayUnavailable": "Esta versão não consegue abrir uma reprodução de sessão do PostHog, e uma sessão amostrada não é uma gravação.",
             "plugins.posthog.ui.samplesLabel": "As ocorrências amostradas desta questão do PostHog",
             "plugins.posthog.ui.samplesUnavailable": "As ocorrências amostradas não estão disponíveis",
             "plugins.posthog.ui.selectSampleForStack": "Selecione uma ocorrência da amostra para ler sua pilha.",
@@ -7010,6 +8102,7 @@
             "plugins.posthog.ui.derivingSessions": "Betroffene Sitzungen werden ermittelt",
             "plugins.posthog.ui.detailOnly": "Nur im Detailbereich gelesen:",
             "plugins.posthog.ui.differentStatus": "PostHog meldet einen anderen Status",
+            "plugins.posthog.ui.enrichmentUnavailable": "Die Abfrage zusätzlicher Details ist nicht verfügbar",
             "plugins.posthog.ui.fact.first-seen": "Erstmals gesehen",
             "plugins.posthog.ui.fact.function": "Funktion",
             "plugins.posthog.ui.fact.last-seen": "Zuletzt gesehen",
@@ -7044,11 +8137,13 @@
             "plugins.posthog.ui.noSessions.description": "Keines der Vorkommen aus der Stichprobe enthielt eine PostHog-Sitzungs-ID.",
             "plugins.posthog.ui.observation": "Beobachtung",
             "plugins.posthog.ui.partialActivity": "Bisher gelesene Aktivität wird angezeigt",
+            "plugins.posthog.ui.partialSample": "Bisher gelesene Stichprobe wird angezeigt",
             "plugins.posthog.ui.readFailed": "PostHog konnte diesen Lesevorgang nicht abschließen.",
             "plugins.posthog.ui.readingActivity": "Aktivität dieses Problems wird gelesen",
             "plugins.posthog.ui.readingSamples": "Vorkommen aus der Stichprobe werden gelesen",
             "plugins.posthog.ui.readingStack": "Stack der Stichprobe wird gelesen",
             "plugins.posthog.ui.recordsUnreadable": "{count} Einträge auf den gelesenen Seiten konnten nicht verstanden werden.",
+            "plugins.posthog.ui.replayUnavailable": "Aufzeichnung nicht verfügbar",
             "plugins.posthog.ui.sampleDisclosure": "PostHog gibt eine Stichprobe der Ausnahmen dieses Problems zurück, niemals alle.",
             "plugins.posthog.ui.sampleDisclosureUnreadable": "PostHog gibt eine Stichprobe der Ausnahmen dieses Problems zurück, niemals alle. {count} Zeilen dieser Stichprobe konnten nicht gelesen werden.",
             "plugins.posthog.ui.sampleStackCounts": "Dieser Stack gehört zu einem Vorkommen aus der Stichprobe, nicht zum neuesten. {application} Anwendungsframes, {other} andere Frames.",
@@ -7056,6 +8151,7 @@
             "plugins.posthog.ui.sampledOccurrences": "{count} Vorkommen in der Stichprobe",
             "plugins.posthog.ui.sampledSession": "Stichproben-Sitzung",
             "plugins.posthog.ui.sampledSessions.description": "Dies sind die PostHog-Sitzungen, die in den Vorkommen der Stichprobe genannt wurden. Eine hier aufgeführte Sitzung bedeutet nicht, dass eine Aufzeichnung vorhanden ist.",
+            "plugins.posthog.ui.sampledSessions.replayUnavailable": "Diese Version kann keine PostHog-Sitzungsaufzeichnung öffnen, und eine Stichproben-Sitzung ist keine Aufzeichnung.",
             "plugins.posthog.ui.samplesLabel": "Vorkommen in der Stichprobe dieses PostHog-Problems",
             "plugins.posthog.ui.samplesUnavailable": "Vorkommen aus der Stichprobe sind nicht verfügbar",
             "plugins.posthog.ui.selectSampleForStack": "Wähle ein Vorkommen aus der Stichprobe aus, um dessen Stack zu lesen.",
@@ -7195,6 +8291,7 @@
             "plugins.posthog.ui.derivingSessions": "Derivant sessions afectades",
             "plugins.posthog.ui.detailOnly": "Només lectura a la vista de detalls:",
             "plugins.posthog.ui.differentStatus": "El PostHog informa d'un estat diferent",
+            "plugins.posthog.ui.enrichmentUnavailable": "Els detalls addicionals de la consulta no estan disponibles",
             "plugins.posthog.ui.fact.first-seen": "Vist per primera vegada",
             "plugins.posthog.ui.fact.function": "Funció",
             "plugins.posthog.ui.fact.last-seen": "Vist per última vegada",
@@ -7229,11 +8326,13 @@
             "plugins.posthog.ui.noSessions.description": "Cap d'aquestes ocurrències amostrades porta un identificador de sessió del PostHog.",
             "plugins.posthog.ui.observation": "Observació",
             "plugins.posthog.ui.partialActivity": "Mostrant l'activitat llegida fins avui",
+            "plugins.posthog.ui.partialSample": "Es mostra la mostra llegida fins ara",
             "plugins.posthog.ui.readFailed": "PostHog no ha pogut completar aquesta lectura.",
             "plugins.posthog.ui.readingActivity": "Llegint l'activitat d'aquest problema",
             "plugins.posthog.ui.readingSamples": "Llegint ocurrències amostrades",
             "plugins.posthog.ui.readingStack": "Llegint la pila d'ocurrències amostrades",
             "plugins.posthog.ui.recordsUnreadable": "No s’han pogut interpretar {count} registre(s) de les pàgines llegides.",
+            "plugins.posthog.ui.replayUnavailable": "Reproducció no disponible",
             "plugins.posthog.ui.sampleDisclosure": "PostHog retorna una mostra de les excepcions d’aquesta incidència, no totes.",
             "plugins.posthog.ui.sampleDisclosureUnreadable": "PostHog retorna una mostra de les excepcions d’aquesta incidència, no totes. No s’han pogut llegir {count} fila(es) de la mostra.",
             "plugins.posthog.ui.sampleStackCounts": "Aquesta pila pertany a una ocurrència de la mostra, no a la més recent. Marcs de l’aplicació: {application}; altres marcs: {other}.",
@@ -7241,6 +8340,7 @@
             "plugins.posthog.ui.sampledOccurrences": "Ocurrències de la mostra: {count}",
             "plugins.posthog.ui.sampledSession": "Sessió de la mostra",
             "plugins.posthog.ui.sampledSessions.description": "Aquestes són les sessions de PostHog indicades per les ocurrències mostrejades. Que una sessió aparegui aquí no significa que existeixi cap enregistrament.",
+            "plugins.posthog.ui.sampledSessions.replayUnavailable": "Aquesta versió no pot obrir cap reproducció de sessió de PostHog, i una sessió mostrejada no és cap enregistrament.",
             "plugins.posthog.ui.samplesLabel": "Ocurrències amostrades d'aquest problema del PostHog",
             "plugins.posthog.ui.samplesUnavailable": "Les ocurrències amostrades no estan disponibles",
             "plugins.posthog.ui.selectSampleForStack": "Seleccioneu una ocurrència de la mostra per llegir-ne la pila.",
@@ -7380,6 +8480,7 @@
             "plugins.posthog.ui.derivingSessions": "推断受影响的会话",
             "plugins.posthog.ui.detailOnly": "仅在详细信息视图中读取：",
             "plugins.posthog.ui.differentStatus": "PostHog报告了不同的状态",
+            "plugins.posthog.ui.enrichmentUnavailable": "查询补充详情不可用",
             "plugins.posthog.ui.fact.first-seen": "首次出现",
             "plugins.posthog.ui.fact.function": "函数",
             "plugins.posthog.ui.fact.last-seen": "最后出现",
@@ -7414,11 +8515,13 @@
             "plugins.posthog.ui.noSessions.description": "这个样本中的任何采样发生情况都没有PostHog会话ID。",
             "plugins.posthog.ui.observation": "观察",
             "plugins.posthog.ui.partialActivity": "显示已读取的活动",
+            "plugins.posthog.ui.partialSample": "显示目前已读取的抽样",
             "plugins.posthog.ui.readFailed": "PostHog 无法完成此次读取。",
             "plugins.posthog.ui.readingActivity": "读取此问题的活动",
             "plugins.posthog.ui.readingSamples": "读取采样发生情况",
             "plugins.posthog.ui.readingStack": "读取采样堆栈",
             "plugins.posthog.ui.recordsUnreadable": "已读取页面中有 {count} 条记录无法解析。",
+            "plugins.posthog.ui.replayUnavailable": "回放不可用",
             "plugins.posthog.ui.sampleDisclosure": "PostHog 仅返回此问题异常的样本，而不是全部异常。",
             "plugins.posthog.ui.sampleDisclosureUnreadable": "PostHog 仅返回此问题异常的样本，而不是全部异常。样本中有 {count} 行无法读取。",
             "plugins.posthog.ui.sampleStackCounts": "此堆栈属于一个抽样事件，而不是最新事件。应用帧：{application}；其他帧：{other}。",
@@ -7426,6 +8529,7 @@
             "plugins.posthog.ui.sampledOccurrences": "抽样发生记录：{count}",
             "plugins.posthog.ui.sampledSession": "抽样会话",
             "plugins.posthog.ui.sampledSessions.description": "这些是抽样事件提及的 PostHog 会话。会话出现在此处并不表示存在录制内容。",
+            "plugins.posthog.ui.sampledSessions.replayUnavailable": "此版本无法打开 PostHog 会话回放，抽样会话也不是录制内容。",
             "plugins.posthog.ui.samplesLabel": "这个PostHog问题的采样发生情况",
             "plugins.posthog.ui.samplesUnavailable": "采样发生情况不可用",
             "plugins.posthog.ui.selectSampleForStack": "请选择一个抽样事件以读取其堆栈。",
@@ -7565,6 +8669,7 @@
             "plugins.posthog.ui.derivingSessions": "推導受影響的會話",
             "plugins.posthog.ui.detailOnly": "僅在詳細資訊視圖中讀取：",
             "plugins.posthog.ui.differentStatus": "PostHog 報告了一個不同的狀態",
+            "plugins.posthog.ui.enrichmentUnavailable": "查詢補充詳情無法使用",
             "plugins.posthog.ui.fact.first-seen": "首次出現",
             "plugins.posthog.ui.fact.function": "函式",
             "plugins.posthog.ui.fact.last-seen": "最後出現",
@@ -7599,11 +8704,13 @@
             "plugins.posthog.ui.noSessions.description": "這個樣本中的任何採樣事件都沒有 PostHog 會話 ID",
             "plugins.posthog.ui.observation": "觀察",
             "plugins.posthog.ui.partialActivity": "顯示已經讀取的活動",
+            "plugins.posthog.ui.partialSample": "顯示目前已讀取的抽樣",
             "plugins.posthog.ui.readFailed": "PostHog 無法完成此次讀取。",
             "plugins.posthog.ui.readingActivity": "讀取這個問題的活動",
             "plugins.posthog.ui.readingSamples": "讀取採樣事件",
             "plugins.posthog.ui.readingStack": "讀取採樣堆疊",
             "plugins.posthog.ui.recordsUnreadable": "已讀取頁面中有 {count} 筆記錄無法解析。",
+            "plugins.posthog.ui.replayUnavailable": "重播無法使用",
             "plugins.posthog.ui.sampleDisclosure": "PostHog 僅傳回此問題例外的樣本，而不是全部例外。",
             "plugins.posthog.ui.sampleDisclosureUnreadable": "PostHog 僅傳回此問題例外的樣本，而不是全部例外。樣本中有 {count} 列無法讀取。",
             "plugins.posthog.ui.sampleStackCounts": "此堆疊屬於一個抽樣事件，而不是最新事件。應用程式框架：{application}；其他框架：{other}。",
@@ -7611,6 +8718,7 @@
             "plugins.posthog.ui.sampledOccurrences": "取樣發生記錄：{count}",
             "plugins.posthog.ui.sampledSession": "取樣工作階段",
             "plugins.posthog.ui.sampledSessions.description": "這些是抽樣事件提及的 PostHog 工作階段。工作階段出現在此處並不表示存在錄製內容。",
+            "plugins.posthog.ui.sampledSessions.replayUnavailable": "此版本無法開啟 PostHog 工作階段重播，抽樣工作階段也不是錄製內容。",
             "plugins.posthog.ui.samplesLabel": "這個 PostHog 事件的採樣事件",
             "plugins.posthog.ui.samplesUnavailable": "採樣事件不可用",
             "plugins.posthog.ui.selectSampleForStack": "請選取一個抽樣事件以讀取其堆疊。",
@@ -7750,6 +8858,7 @@
             "plugins.posthog.ui.derivingSessions": "影響しているセッションを推定しています。",
             "plugins.posthog.ui.detailOnly": "詳細ビューでのみ読み取ります：",
             "plugins.posthog.ui.differentStatus": "PostHogは異なるステータスを報告しています。",
+            "plugins.posthog.ui.enrichmentUnavailable": "クエリの追加情報を取得できません",
             "plugins.posthog.ui.fact.first-seen": "初回確認",
             "plugins.posthog.ui.fact.function": "関数",
             "plugins.posthog.ui.fact.last-seen": "最終確認",
@@ -7784,11 +8893,13 @@
             "plugins.posthog.ui.noSessions.description": "サンプルされた発生にはPostHogセッションIDが含まれていません。",
             "plugins.posthog.ui.observation": "観察",
             "plugins.posthog.ui.partialActivity": "読み込んだ活動を表示しています",
+            "plugins.posthog.ui.partialSample": "ここまでに読み取ったサンプルを表示しています",
             "plugins.posthog.ui.readFailed": "PostHog はこの読み取りを完了できませんでした。",
             "plugins.posthog.ui.readingActivity": "この問題の活動を読み込み中",
             "plugins.posthog.ui.readingSamples": "サンプルされた発生を読み込み中",
             "plugins.posthog.ui.readingStack": "サンプルされたスタックを読み込み中",
             "plugins.posthog.ui.recordsUnreadable": "読み取ったページ内の {count} 件の記録を解釈できませんでした。",
+            "plugins.posthog.ui.replayUnavailable": "リプレイは利用できません",
             "plugins.posthog.ui.sampleDisclosure": "PostHog はこの問題の例外の一部のみを返し、すべては返しません。",
             "plugins.posthog.ui.sampleDisclosureUnreadable": "PostHog はこの問題の例外の一部のみを返し、すべては返しません。サンプル内の {count} 行を読み取れませんでした。",
             "plugins.posthog.ui.sampleStackCounts": "このスタックは最新の発生ではなく、1 件のサンプル発生に属します。アプリケーションフレーム: {application}、その他のフレーム: {other}。",
@@ -7796,6 +8907,7 @@
             "plugins.posthog.ui.sampledOccurrences": "サンプル内の発生件数: {count}",
             "plugins.posthog.ui.sampledSession": "サンプル内のセッション",
             "plugins.posthog.ui.sampledSessions.description": "これらはサンプルされたイベントが示した PostHog セッションです。ここにセッションがあっても、録画が存在するとは限りません。",
+            "plugins.posthog.ui.sampledSessions.replayUnavailable": "このビルドは PostHog のセッションリプレイを開けません。サンプルされたセッションは録画ではありません。",
             "plugins.posthog.ui.samplesLabel": "このPostHog問題のサンプルされた発生",
             "plugins.posthog.ui.samplesUnavailable": "サンプルされた発生が利用できません",
             "plugins.posthog.ui.selectSampleForStack": "スタックを読み取るサンプル発生を選択してください。",

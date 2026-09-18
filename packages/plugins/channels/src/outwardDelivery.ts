@@ -7,6 +7,8 @@ import type {
   ConversationDeliveryReplyContextV1,
   ConversationDeliveryResultV1,
   ConversationResolvedEndpointV1,
+  ConversationPermissionMediationSourceCurrentnessInputV1,
+  ConversationPermissionMediationSourceCurrentnessResultV1,
 } from '@happier-dev/channels-protocol/v1';
 import {
   areConversationEndpointIdentitiesEqual,
@@ -18,6 +20,8 @@ import {
   ConversationDeliveryReplyContextV1Schema,
   ConversationDeliveryResultV1Schema,
   ConversationProviderConnectionInputV1Schema,
+  ConversationPermissionMediationSourceCurrentnessInputV1Schema,
+  ConversationPermissionMediationSourceCurrentnessResultV1Schema,
   ConversationResolvedEndpointV1Schema,
   CONVERSATION_OUTBOUND_TEXT_UNITS_V1,
   MAX_CONVERSATION_DELIVERY_CHUNKS,
@@ -32,6 +36,7 @@ import {
 import {
   isPluginError,
   PluginError,
+  type PluginInvocationContext,
   type TargetedContributionsService,
 } from '@happier-dev/plugin-sdk';
 import type {
@@ -85,6 +90,7 @@ import type {
   ConversationSessionProjectionSource,
 } from './sessionProjection.js';
 import type { ConversationPendingPermissionRequest } from './permissionMediation.js';
+import { requireChannelsAccountStorage } from './requiredAccountStorage.js';
 
 /**
  * Loading the collection definition during generic delivery-module evaluation
@@ -2525,6 +2531,7 @@ type CurrentConversationPermissionWaitMediationSource = Extract<
   endpoint: ConversationResolvedEndpointV1;
   linkPreviewPolicy: ConversationDeliveryLinkPreviewPolicyV1;
   routingIdentityKey: string;
+  remoteApprovalMaxScope: 'off' | 'request' | 'session';
 }>;
 
 type CurrentConversationPermissionWaitMediationSourceReadResult =
@@ -2613,7 +2620,56 @@ async function readCurrentConversationPermissionWaitMediationSource(input: Reado
     endpoint: binding.endpoint,
     linkPreviewPolicy: binding.linkPreviewPolicy,
     routingIdentityKey: connection.routingIdentityKey,
+    remoteApprovalMaxScope: target.data.policy.approvals.kind === 'enabled'
+      ? target.data.policy.approvals.maximumScope
+      : 'off',
   };
+}
+
+/**
+ * Exact source-currentness operation for host-owned delayed work. It delegates
+ * all binding/connection eligibility to the same retained-row reader used by
+ * live permission mediation and reveals only the fail-closed boolean result.
+ */
+export async function readConversationPermissionMediationSourceCurrentnessForInvocation(
+  input: JsonValue,
+  context: PluginInvocationContext,
+): Promise<ConversationPermissionMediationSourceCurrentnessResultV1> {
+  const accepted = ConversationPermissionMediationSourceCurrentnessInputV1Schema.parse(input);
+  const collections = await loadConversationCollectionsModule();
+  const stateCollection = requireChannelsAccountStorage(context).collection(
+    collections.CHANNEL_STATE_COLLECTION,
+  );
+  return ConversationPermissionMediationSourceCurrentnessResultV1Schema.parse({
+    current: await isConversationPermissionMediationSourceCurrent({
+      stateCollection,
+      accepted,
+      signal: context.signal,
+    }),
+  });
+}
+
+/** Canonical retained-row check shared by the Action adapter and owner tests. */
+export async function isConversationPermissionMediationSourceCurrent(input: Readonly<{
+  stateCollection: ChannelStateCollection;
+  accepted: ConversationPermissionMediationSourceCurrentnessInputV1;
+  signal: AbortSignal;
+}>): Promise<boolean> {
+  const sourcePrefix = 'channels:binding:';
+  if (!input.accepted.sourceRef.startsWith(sourcePrefix)) return false;
+  const bindingId = ConversationBindingIdV1Schema.safeParse(
+    input.accepted.sourceRef.slice(sourcePrefix.length),
+  );
+  if (!bindingId.success) return false;
+  const current = await readCurrentConversationPermissionWaitMediationSource({
+    stateCollection: input.stateCollection,
+    bindingId: bindingId.data,
+    signal: input.signal,
+  });
+  return current.kind === 'ready'
+    && current.source.sourceRef === input.accepted.sourceRef
+    && current.source.sourceRevisionOrEpoch === input.accepted.sourceRevisionOrEpoch
+    && current.remoteApprovalMaxScope === input.accepted.remoteApprovalMaxScope;
 }
 
 /**

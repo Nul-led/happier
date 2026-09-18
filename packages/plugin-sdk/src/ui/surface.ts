@@ -13,10 +13,9 @@ type PluginUiContributionInput = NonNullable<PluginManifestContributes['ui']>;
 // The high-level surface descriptor needs the canonical discriminated author
 // grammar so a renderer kind and its build target remain correlated.
 
-export type UiSurfaceRendererDefinition = DistributiveOmit<
-    UiRenderer,
-    'id' | 'artifact' | 'source'
->;
+export type UiSurfaceRendererDefinition =
+    | DistributiveOmit<Exclude<UiRenderer, Readonly<{ kind: 'hostedHtml' }>>, 'id' | 'artifact' | 'source'>
+    | DistributiveOmit<Extract<UiRenderer, Readonly<{ kind: 'hostedHtml' }>>, 'id'>;
 export type UiSurfaceReactNativeRendererDefinition = DistributiveOmit<
     Extract<UiRenderer, Readonly<{ kind: 'reactNative' }>>,
     'id' | 'artifact'
@@ -27,6 +26,10 @@ export type UiSurfaceHostedWebRendererDefinition = DistributiveOmit<
 >;
 export type UiSurfaceDeclarativeRendererDefinition = DistributiveOmit<
     Extract<UiRenderer, Readonly<{ kind: 'declarative' }>>,
+    'id'
+>;
+export type UiSurfaceHostedHtmlRendererDefinition = DistributiveOmit<
+    Extract<UiRenderer, Readonly<{ kind: 'hostedHtml' }>>,
     'id'
 >;
 export type UiSurfaceAppPageDefinitionFor<
@@ -136,7 +139,9 @@ export type UiSurfaceDeclarativeDefinition =
 export type UiSurfaceDefinition =
     | UiSurfaceReactNativeDefinition
     | UiSurfaceHostedWebDefinition
-    | UiSurfaceDeclarativeDefinition;
+    | UiSurfaceDeclarativeDefinition
+    | UiSurfacePlacement<UiSurfaceHostedHtmlRendererDefinition>
+    | UiSurfaceRendererOnlyDefinition<UiSurfaceHostedHtmlRendererDefinition>;
 
 /** The `definePlugin({ ui })` input, including the high-level surface shorthand. */
 export type UiAuthoringInput = PluginUiContributionInput & Readonly<{
@@ -200,7 +205,7 @@ export function buildUiSurfaceTargets(surface: UiSurfaceDefinition): readonly Pl
         };
         return Object.freeze([Object.freeze(target)]);
     }
-    if (surface.renderer.kind === 'declarative') {
+    if (surface.renderer.kind === 'declarative' || surface.renderer.kind === 'hostedHtml') {
         return Object.freeze([]);
     }
     throw new TypeError(`defineUiSurfaceDefinition ${surface.id} has an unsupported renderer kind`);

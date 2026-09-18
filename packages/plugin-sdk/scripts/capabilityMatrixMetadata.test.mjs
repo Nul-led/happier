@@ -32,6 +32,24 @@ function everyDeclaration() {
   ));
 }
 
+test('cites only consumer files that still exist in the repository', async () => {
+  // A published row's consumer evidence is a claim about current source. When a
+  // retired owner is deleted (Antigravity's custom/localharness session stack),
+  // its rows must move to a surviving consumer instead of citing a dead path.
+  const repoRoot = resolve(import.meta.dirname, '..', '..', '..');
+  const cited = everyDeclaration()
+    .filter(([, declaration]) => typeof declaration.provingConsumer === 'string');
+  const missing = [];
+  for (const [id, declaration] of cited) {
+    try {
+      await readFile(resolve(repoRoot, declaration.provingConsumer), 'utf8');
+    } catch {
+      missing.push(`${id} -> ${declaration.provingConsumer}`);
+    }
+  }
+  assert.deepEqual(missing, []);
+});
+
 test('defers exactly the capabilities with no applicable-realm binder', () => {
   const deferred = everyDeclaration()
     .filter(([, declaration]) => declaration.availabilityDisposition === 'deferred')

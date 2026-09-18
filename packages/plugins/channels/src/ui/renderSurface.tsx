@@ -12406,9 +12406,12 @@ function ChannelsAccountSettingsSurface(props: Readonly<{
  */
 export function ChannelsSurface(context: RenderContext): React.ReactElement {
   const target = context.surface.target;
+  const isSessionConversationsMount = context.surface.mount.kind === 'destination'
+    ? context.surface.mount.destination.localId === CHANNELS_SESSION_CONVERSATIONS_VIEW_ID
+    : context.surface.mount.kind === 'embedded'
+      && context.surface.mount.role === 'sessionWidget';
   if (
-    context.surface.mount.kind === 'destination'
-    && context.surface.mount.destination.localId === CHANNELS_SESSION_CONVERSATIONS_VIEW_ID
+    isSessionConversationsMount
     && target.kind === 'session'
   ) {
     return <SessionConversationsSurface sessionId={target.sessionId} />;

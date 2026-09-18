@@ -23,11 +23,14 @@ export function readBitbucketCloneUrl(
     const href = readTrimmedString(link.href);
     if (href === null) continue;
     const parsed = parseScmRemoteUrl(href);
+    // Bitbucket Cloud publishes one fixed origin without a port; a ported link is not it.
+    const isHttps = parsed?.syntax === 'url' && parsed.protocol === 'https:';
     if (
       parsed !== null
+      && !(parsed.syntax === 'url' && parsed.port !== null)
       && parsed.host === BITBUCKET_FORGE_HOST_ID
       && parsed.path === repositoryPath
-      && (transport === 'https' ? parsed.scheme === 'https:' : parsed.scheme !== 'https:')
+      && (transport === 'https' ? isHttps : !isHttps)
     ) {
       return href;
     }

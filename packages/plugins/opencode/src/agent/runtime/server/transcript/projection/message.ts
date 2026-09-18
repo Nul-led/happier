@@ -1,8 +1,8 @@
+import { readNonBlankOpaqueIdentifier } from '../../../../../protocol/opaqueIdentifier.js';
 import {
   asOpenCodeProjectionRecord,
   hasOpenCodeInternalFlag,
   normalizeOpenCodeProjectionLowerString,
-  normalizeOpenCodeProjectionString,
   readOpenCodeBooleanLike,
   readOpenCodeNestedRecord,
   readOpenCodeTimestampMs,
@@ -60,7 +60,8 @@ function isAssistantCompactionInternal(
 export function classifyOpenCodeMessageForProjection(messageOrInfo: unknown): OpenCodeMessageProjection {
   const info = readMessageInfo(messageOrInfo);
   const role = normalizeRole(info?.role);
-  const messageId = normalizeOpenCodeProjectionString(info?.id).trim();
+  // OpenCode minted this message id; presence only, bytes preserved.
+  const messageId = readNonBlankOpaqueIdentifier(info?.id) ?? '';
   const createdAtMs = readCreatedAtMs(info);
 
   if (!info || !role) {

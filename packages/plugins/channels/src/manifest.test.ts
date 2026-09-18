@@ -78,6 +78,7 @@ import {
   CHANNELS_SESSION_CONVERSATIONS_HEADER_ACTION_ID,
   CHANNELS_SESSION_CONVERSATIONS_RESOURCE_ID,
   CHANNELS_SESSION_CONVERSATIONS_VIEW_ID,
+  CHANNELS_SESSION_CONVERSATIONS_WIDGET_ID,
   PLUGIN_MANIFEST,
 } from './manifest.js';
 import {
@@ -275,6 +276,11 @@ describe('Channels core manifest', () => {
       views: [{
         id: 'session-conversations',
         container: 'rightSidebarTab',
+        target: { kind: 'session' },
+        renderer: 'channels-renderer',
+      }, {
+        id: 'session-conversations-widget',
+        container: 'sessionWidget',
         target: { kind: 'session' },
         renderer: 'channels-renderer',
       }],
@@ -831,6 +837,17 @@ describe('Channels core manifest', () => {
         ...CONVERSATION_CORE_PROVIDER_ACTION_DECLARATIONS_V1.connectionRead,
         title: 'Read current provider connection',
         description: 'Reads one current provider connection for the Channels runtime.',
+        scopes: ['global'],
+        surfaces: ['plugin'],
+        dangerLevel: 'safe',
+        execution: { target: 'daemon' },
+        hostAccess: ['account-storage'],
+      },
+      {
+        id: CONVERSATION_CORE_PROVIDER_ACTION_IDS_V1.permissionMediationSourceCurrentness,
+        ...CONVERSATION_CORE_PROVIDER_ACTION_DECLARATIONS_V1.permissionMediationSourceCurrentness,
+        title: 'Check mediated conversation source currentness',
+        description: 'Checks whether one accepted mediated source witness is still current.',
         scopes: ['global'],
         surfaces: ['plugin'],
         dangerLevel: 'safe',
@@ -2043,6 +2060,7 @@ describe('Channels Session-facing surfaces (CU-03)', () => {
   it('exports the exact persisted local ids its Session destinations route on', () => {
     expect({
       view: CHANNELS_SESSION_CONVERSATIONS_VIEW_ID,
+      widget: CHANNELS_SESSION_CONVERSATIONS_WIDGET_ID,
       headerAction: CHANNELS_SESSION_CONVERSATIONS_HEADER_ACTION_ID,
       control: CHANNELS_SESSION_COMPOSER_CONTROL_ID,
       attentionControl: CHANNELS_SESSION_COMPOSER_ATTENTION_CONTROL_ID,
@@ -2051,6 +2069,7 @@ describe('Channels Session-facing surfaces (CU-03)', () => {
       attentionStateResource: CHANNELS_SESSION_COMPOSER_ATTENTION_STATE_RESOURCE_ID,
     }).toEqual({
       view: 'session-conversations',
+      widget: 'session-conversations-widget',
       headerAction: 'open-session-conversations',
       control: 'session-conversations-chip',
       attentionControl: 'session-conversations-attention-chip',
@@ -2073,6 +2092,15 @@ describe('Channels Session-facing surfaces (CU-03)', () => {
         fallback: 'External conversations',
       },
       icon: 'globe',
+    }, {
+      id: 'session-conversations-widget',
+      container: 'sessionWidget',
+      target: { kind: 'session' },
+      renderer: 'channels-renderer',
+      title: {
+        key: 'plugins.channels.session.title',
+        fallback: 'External conversations',
+      },
     }]);
 
     expect(PLUGIN_MANIFEST.contributes?.sessionHeaderActions).toEqual([{

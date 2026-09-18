@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 
 import { PluginAgentExternalSessionLinkDataSchema } from '@happier-dev/protocol';
 import { createCanonicalJsonSigningInput } from '@happier-dev/protocol/crypto/canonicalJson';
+import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol/strings/opaqueIdentifier';
 
 function compareCodeUnits(left: string, right: string): number {
     return left < right ? -1 : left > right ? 1 : 0;
@@ -19,7 +20,7 @@ export function resolveExternalSessionCandidateIdentityKey(
         linkData?: unknown;
     }>,
 ): string {
-    if (!candidate.remoteSessionId) {
+    if (readNonBlankOpaqueIdentifier(candidate.remoteSessionId) === null) {
         throw new Error('External-session candidate identity requires a remote session id');
     }
     let linkData = null;

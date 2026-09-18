@@ -412,6 +412,85 @@ describe('Claude handoff bundle leaf', () => {
         });
     });
 
+    it('preserves nonblank vendor session ids exactly while rejecting unsafe or absent identities', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-claude-plugin-handoff-exact-import-id-'));
+        const targetPath = join(root, 'workspace');
+        const configDir = join(root, '.claude-target');
+        const projectId = resolveClaudeProjectId(targetPath);
+        const exactProviderSessionId = '  padded-session\n  ';
+        const strippedSiblingSessionId = 'padded-session';
+        await mkdir(targetPath, { recursive: true });
+        vi.stubEnv('HAPPIER_CLAUDE_CONFIG_DIR', configDir);
+
+        const exactResult = await claudeHandoffSurface.importBundle({
+            bundle: {
+                agentId: 'claude',
+                remoteSessionId: exactProviderSessionId,
+                transcriptBase64: Buffer.from('{"identity":"exact"}\n', 'utf8').toString('base64'),
+            },
+            targetDirectory: targetPath,
+        }, handoffContext());
+        expect(exactResult).toMatchObject({
+            ok: true,
+            value: {
+                providerSessionId: exactProviderSessionId,
+                launch: {
+                    sessionStateUpdates: [{
+                        fieldId: 'identity.providerSessionId',
+                        value: exactProviderSessionId,
+                    }],
+                },
+            },
+        });
+
+        const siblingResult = await claudeHandoffSurface.importBundle({
+            bundle: {
+                agentId: 'claude',
+                remoteSessionId: strippedSiblingSessionId,
+                transcriptBase64: Buffer.from('{"identity":"sibling"}\n', 'utf8').toString('base64'),
+            },
+            targetDirectory: targetPath,
+        }, handoffContext());
+        expect(siblingResult).toMatchObject({
+            ok: true,
+            value: { providerSessionId: strippedSiblingSessionId },
+        });
+        await expect(readFile(
+            join(configDir, 'projects', projectId, `${exactProviderSessionId}.jsonl`),
+            'utf8',
+        )).resolves.toBe('{"identity":"exact"}\n');
+        await expect(readFile(
+            join(configDir, 'projects', projectId, `${strippedSiblingSessionId}.jsonl`),
+            'utf8',
+        )).resolves.toBe('{"identity":"sibling"}\n');
+
+        const blankResult = await claudeHandoffSurface.importBundle({
+            bundle: {
+                agentId: 'claude',
+                remoteSessionId: '  \n ',
+                transcriptBase64: Buffer.from('{}\n', 'utf8').toString('base64'),
+            },
+            targetDirectory: targetPath,
+        }, handoffContext());
+        expect(blankResult).toMatchObject({ ok: false, code: 'bundle_invalid' });
+
+        for (const unsafeProviderSessionId of ['slash/session', 'backslash\\session']) {
+            const unsafeResult = await claudeHandoffSurface.importBundle({
+                bundle: {
+                    agentId: 'claude',
+                    remoteSessionId: unsafeProviderSessionId,
+                    transcriptBase64: Buffer.from('{}\n', 'utf8').toString('base64'),
+                },
+                targetDirectory: targetPath,
+            }, handoffContext());
+            expect(unsafeResult).toMatchObject({
+                ok: false,
+                code: 'target_import_failed',
+                message: expect.stringMatching(/Invalid remoteSessionId/),
+            });
+        }
+    });
+
     it('does not write the native transcript after its runtime generation retires mid-import', async () => {
         const root = await mkdtemp(join(tmpdir(), 'happier-claude-plugin-handoff-retired-'));
         const targetPath = join(root, 'workspace');

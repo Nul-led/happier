@@ -81,6 +81,7 @@ describe('OpenCode plugin manifest', () => {
         localId: 'claude-subscription',
       },
       materializationKinds: ['environment', 'httpHeaders'],
+      credentialKinds: ['oauth', 'token'],
     }, {
       purpose: 'openai-codex-model-request',
       service: {
@@ -88,6 +89,7 @@ describe('OpenCode plugin manifest', () => {
         localId: 'openai-codex',
       },
       materializationKinds: ['httpHeaders'],
+      credentialKinds: ['oauth'],
     }, {
       purpose: 'openai-api-key',
       service: {
@@ -95,6 +97,7 @@ describe('OpenCode plugin manifest', () => {
         localId: 'openai',
       },
       materializationKinds: ['environment'],
+      credentialKinds: ['token'],
     }, {
       purpose: 'anthropic-api-key',
       service: {
@@ -102,6 +105,7 @@ describe('OpenCode plugin manifest', () => {
         localId: 'anthropic',
       },
       materializationKinds: ['environment'],
+      credentialKinds: ['token'],
     }]);
   });
 });

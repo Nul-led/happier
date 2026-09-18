@@ -51,17 +51,21 @@ export type AgentProviderBindingMaterialization = Readonly<{
     }>
 );
 
+export type AgentProviderBindingSourceKey = Readonly<
+    | { bindingKey: string; connectionId?: never }
+    | { connectionId: string; bindingKey?: never }
+>;
+
 export type AgentProviderBindingPrepareInput = Readonly<{
     v: 1;
     agentTargetKey: string;
-    connectionId: string;
     reservedBindingCandidate?: Readonly<{
         contributionKey: string;
         endpointTemplateId: string;
         protocol: ProviderWireProtocol;
         normalizedUrl: string;
     }>;
-}>;
+}> & AgentProviderBindingSourceKey;
 
 export type AgentProviderBindingPrepared = Readonly<{
     v: 1;
@@ -81,9 +85,8 @@ export type AgentProviderBindingResolvedFacts = Readonly<{
     v: 1;
     agentTargetKey: string;
     selection: Readonly<{
-        connectionId: string;
         model: AgentProviderBindingModel;
-    }>;
+    }> & AgentProviderBindingSourceKey;
     contributionKey: string | null;
     endpoint: Readonly<{
         endpointTemplateId: string;

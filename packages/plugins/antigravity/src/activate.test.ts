@@ -1,7 +1,6 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import { createPluginTestkit } from '@happier-dev/plugin-sdk/testing';
-import type { AgentRuntimeContext } from '@happier-dev/plugin-sdk/agents/runtime';
 
 import { activate } from './activate.js';
 import { antigravityExternalSessionsContribution } from './agent/cliPrint/externalSessions.js';
@@ -12,9 +11,7 @@ describe('Antigravity plugin activation', () => {
   it('reexports the activation compiled by its canonical public plugin definition', async () => {
     expect(Object.keys(PLUGIN_MANIFEST.contributes).sort()).toEqual([
       'agents',
-      'hooks',
       'managedDependencies',
-      'settings',
       'systemTools',
     ]);
     expect(await import('./manifest.js')).toEqual(expect.objectContaining({
@@ -22,276 +19,106 @@ describe('Antigravity plugin activation', () => {
     }));
   });
 
-  it('commits the complete Antigravity Agent aggregate through manifest-derived registration rights', async () => {
-    const testkit = await createPluginTestkit({
+  it('registers auxiliary leaves only, leaving the session runtime to the host ACP owner', async () => {
+    const fixture = await createPluginTestkit({
       manifest: PLUGIN_MANIFEST,
       module: { activate },
     });
     try {
-      expect(testkit.registrations()).toContainEqual({
+      expect(fixture.registrations()).toContainEqual({
         family: 'agents',
         localId: 'antigravity',
       });
-    } finally {
-      await testkit.dispose();
-    }
-  });
+      const registration = fixture.registration('agents', 'antigravity');
 
-  it('registers only the data-only Connected Account state-sharing descriptor before open', async () => {
-    const fixture = await createPluginTestkit({ manifest: PLUGIN_MANIFEST, module: { activate } });
-    try {
-      const launch = fixture.registration('agents', 'antigravity')?.connectedAccountLaunch;
+      // The declarative ACP runtime is the sole session owner: no plugin-side session
+      // factory, runner-factory locator, spawn hook, or preflight control may exist.
+      expect(registration?.factory).toBeUndefined();
+      expect(registration?.sessionRunnerFactory).toBeUndefined();
+      expect(registration?.daemonSpawnHooks).toBeUndefined();
+      expect(registration?.preflightSessionControls).toBeUndefined();
+      expect(registration?.connectedAccountLaunch).toBeUndefined();
+      expect(registration?.cliSessionCommand).toBeUndefined();
+      expect(fixture.registration('hooks', 'resolve-prerequisites')).toBeUndefined();
 
-      expect(Object.keys(launch ?? {}).sort()).toEqual(['stateSharingDescriptor']);
-      expect(launch?.stateSharingDescriptor).toEqual({
-        providerSupportStatus: 'unsupported',
-        config: {
-          supported: false,
-          modes: ['isolated'],
-          entries: [],
-          unavailableReason: 'not_implemented',
-        },
-        state: {
-          supported: false,
-          modes: ['isolated'],
-          entries: [],
-          symlinkUnavailableDegradePolicy: 'block_continuity',
-          unavailableReason: 'not_implemented',
-        },
-        authIsolation: {
-          mode: 'process_env',
-          secretEntries: [
-            'GEMINI_API_KEY',
-            'GOOGLE_API_KEY',
-            'GOOGLE_GENAI_USE_VERTEXAI',
-            'GOOGLE_CLOUD_PROJECT',
-            'GOOGLE_CLOUD_LOCATION',
-            'ANTIGRAVITY_AUTH_MODE',
-            'GEMINI_FORCE_ENCRYPTED_FILE_STORAGE',
-            'GOOGLE_APPLICATION_CREDENTIALS',
-          ],
-        },
-      });
+      expect(registration?.terminal).toEqual({ resolveLaunch: expect.any(Function) });
+      expect(Object.keys(registration?.externalSessions ?? {}).sort()).toEqual([
+        'listCandidates',
+        'pageTranscript',
+        'readAfterTranscript',
+        'resolveLinkIdentity',
+        'resolveLinkedIdentity',
+        'resolveSource',
+      ]);
+      expect(Object.keys(
+        registration?.externalSessionObservation ?? {},
+      ).sort()).toEqual([
+        'describeResource',
+        'observeResource',
+        'reconcileResource',
+      ]);
+      expect(registration?.externalSessionHooks).toBeUndefined();
+      expect(registration?.externalSessionTakeover).toBeUndefined();
+
+      const cancelled = new AbortController();
+      cancelled.abort();
+      const cancelledRequest = {
+        signal: cancelled.signal,
+        deadlineAtMs: Date.now() + 30_000,
+        maxSerializedBytes: 64 * 1024,
+        source: {},
+      } as never;
+      expect(registration?.externalSessions?.resolveSource(cancelledRequest)).toEqual(
+        antigravityExternalSessionsContribution.resolveSource(cancelledRequest),
+      );
+      expect(registration?.externalSessions).not.toBe(
+        antigravityExternalSessionsContribution,
+      );
+      expect(registration?.externalSessionObservation).not.toBe(
+        antigravityExternalSessionObservationContribution,
+      );
     } finally {
       await fixture.dispose();
     }
   });
 
-  it('registers one native Antigravity runtime with both structured modes and no V1 fallback', async () => {
+  it('launches the interactive Antigravity CLI as a surface separate from ACP sessions', async () => {
     const fixture = await createPluginTestkit({
       manifest: PLUGIN_MANIFEST,
       module: { activate },
     });
+    try {
+      const terminal = fixture.registration('agents', 'antigravity')?.terminal;
+      if (!terminal) throw new Error('Expected the Antigravity terminal surface.');
 
-    expect(fixture.registrations()).toContainEqual({
-      family: 'agents',
-      localId: 'antigravity',
-    });
-    const registration = fixture.registration('agents', 'antigravity');
-    expect(registration?.factory).toEqual(expect.any(Function));
-    expect(registration?.externalSessions).toEqual({
-      resolveSource: expect.any(Function),
-      listCandidates: expect.any(Function),
-      resolveLinkIdentity: expect.any(Function),
-      resolveLinkedIdentity: expect.any(Function),
-      pageTranscript: expect.any(Function),
-      readAfterTranscript: expect.any(Function),
-    });
-    expect(registration?.externalSessions).not.toBe(
-      antigravityExternalSessionsContribution,
-    );
-    expect(Object.keys(registration?.externalSessions ?? {}).sort()).toEqual([
-      'listCandidates',
-      'pageTranscript',
-      'readAfterTranscript',
-      'resolveLinkIdentity',
-      'resolveLinkedIdentity',
-      'resolveSource',
-    ]);
-    expect(registration?.externalSessionObservation).toEqual({
-      describeResource: expect.any(Function),
-      observeResource: expect.any(Function),
-      reconcileResource: expect.any(Function),
-    });
-    expect(registration?.externalSessionObservation).not.toBe(
-      antigravityExternalSessionObservationContribution,
-    );
-    expect(Object.keys(
-      registration?.externalSessionObservation ?? {},
-    ).sort()).toEqual([
-      'describeResource',
-      'observeResource',
-      'reconcileResource',
-    ]);
-    expect(registration?.externalSessionHooks).toBeUndefined();
-    expect(registration?.externalSessionTakeover).toBeUndefined();
-    const cancelled = new AbortController();
-    cancelled.abort();
-    const cancelledRequest = {
-      signal: cancelled.signal,
-      deadlineAtMs: Date.now() + 30_000,
-      maxSerializedBytes: 64 * 1024,
-      source: {},
-    } as never;
-    expect(registration?.externalSessions?.resolveSource(cancelledRequest)).toEqual(
-      antigravityExternalSessionsContribution.resolveSource(cancelledRequest),
-    );
-    expect(fixture.registration('hooks', 'resolve-prerequisites')).toEqual(expect.any(Function));
-
-    const runtime = await registration!.factory!({
-      plugin: { id: 'happier.agent.antigravity', version: '0.0.0' },
-      agent: { id: 'antigravity' },
-      signal: new AbortController().signal,
-    });
-
-    expect(runtime.sessions).toEqual({ open: expect.any(Function) });
-    expect(runtime.executionRuns).toBeUndefined();
-    await fixture.dispose();
-  });
-
-  it('opens the registered runtime through the declared Gemini Connected Account purpose', async () => {
-    const fixture = await createPluginTestkit({
-      manifest: PLUGIN_MANIFEST,
-      module: { activate },
-    });
-    const factory = fixture.registration('agents', 'antigravity')?.factory;
-    if (!factory) throw new Error('Expected the Antigravity Agent factory.');
-    const runtime = await factory({
-      plugin: { id: 'happier.agent.antigravity', version: '0.0.0' },
-      agent: { id: 'antigravity' },
-      signal: new AbortController().signal,
-    });
-    const signal = new AbortController().signal;
-    const disposeSubscription = vi.fn();
-    const connectedAccounts = {
-      getBinding: vi.fn(async () => ({
-        purpose: 'model_upstream',
-        service: { pluginId: 'happier.agent.gemini', localId: 'gemini-account' },
-        target: { kind: 'account' as const, displayName: 'Gemini API key' },
-      })),
-      materialize: vi.fn(async () => ({
-        kind: 'environment' as const,
-        env: { GEMINI_API_KEY: 'registered-runtime-key' },
-      })),
-      requestSelection: vi.fn(),
-      watch: vi.fn(() => ({ dispose: disposeSubscription })),
-    };
-
-    const session = await runtime.sessions?.open({
-      kind: 'create',
-      sessionId: 'registered-antigravity',
-      cwd: '/repo',
-      configuration: {
-        mode: { value: 'cliPrint', updatedAtMs: 1 },
-        model: { value: null, updatedAtMs: 1 },
-        permissionIntent: { value: null, updatedAtMs: 1 },
-        options: {},
-      },
-    }, {
-      signal,
-      services: { connectedAccounts, exec: {} },
-      protocols: {},
-      ui: {},
-      session: { id: 'registered-antigravity' },
-    } as unknown as AgentRuntimeContext);
-
-    expect(connectedAccounts.watch).toHaveBeenCalledWith(
-      'model_upstream',
-      expect.any(Function),
-    );
-    expect(connectedAccounts.getBinding).toHaveBeenCalledWith(
-      'model_upstream',
-      { signal },
-    );
-    expect(connectedAccounts.materialize).toHaveBeenCalledWith(
-      'model_upstream',
-      {
-        kind: 'environment',
-        keys: [
-          'GEMINI_API_KEY',
-          'GOOGLE_API_KEY',
-          'GOOGLE_GENAI_USE_VERTEXAI',
-          'GOOGLE_CLOUD_PROJECT',
-          'GOOGLE_CLOUD_LOCATION',
-        ],
-      },
-      { signal },
-    );
-
-    await session?.dispose();
-    expect(disposeSubscription).toHaveBeenCalledOnce();
-    await fixture.dispose();
-  });
-
-  it('routes SDK setup through the canonical managed-dependency service without consulting the predecessor owner', async () => {
-    const fixture = await createPluginTestkit({
-      manifest: PLUGIN_MANIFEST,
-      module: { activate },
-    });
-
-    const registration = fixture.registration('hooks', 'resolve-prerequisites');
-    const resolveManagedInstallable = vi.fn(async () => ({
-      ok: false as const,
-      errorMessage: 'missing localharness',
-    }));
-    const ensure = vi.fn(async () => ({ state: 'ready' as const }));
-    const result = await registration?.({
-      payload: {
-        runtimeSelection: {
-          agentRuntimeSelection: { antigravityRuntimeMode: 'sdk' },
-          env: { GEMINI_API_KEY: 'sdk-key' },
+      const launch = terminal.resolveLaunch({
+        metadata: {
+          runtimeDescriptorV1: {
+            v: 1,
+            agentId: 'antigravity',
+            agent: {
+              // A host ACP session id must never become an `agy --conversation` argument.
+              providerSessionId: 'acp-session-1',
+              agentExtra: {
+                owner: 'antigravity',
+                schemaId: 'antigravity.agentRuntimeDescriptorExtra',
+                v: 1,
+                runtimeHandle: { agyConversationId: 'agy-conversation-1' },
+              },
+            },
+          },
         },
-      },
-    }, {
-      tools: {
-        resolveManagedInstallable,
-      },
-      services: { managedServices: { dependencies: { ensure } } },
-    });
+        modelSelection: { modelId: 'Gemini 3.5 Flash (High)' },
+      } as never);
 
-    expect(result).toEqual({ decision: 'allow' });
-    expect(resolveManagedInstallable).not.toHaveBeenCalled();
-    expect(ensure).toHaveBeenCalledWith('localharness', undefined);
-    await fixture.dispose();
-  });
-
-  it('passes direct activation-hook payloads through to the spawn prerequisite owner', async () => {
-    const fixture = await createPluginTestkit({
-      manifest: PLUGIN_MANIFEST,
-      module: { activate },
-    });
-    const runSystemTool = vi.fn(async () => ({
-      ok: true as const,
-      command: '/usr/local/bin/agy',
-      args: ['models'],
-      exitCode: 0,
-      signal: null,
-      stdout: 'Gemini 3.5 Flash (Medium)\n',
-      stderr: '',
-    }));
-
-    const registration = fixture.registration('hooks', 'resolve-prerequisites');
-    const result = await registration?.({
-      runtimeSelection: {
-        agentRuntimeSelection: { antigravityRuntimeMode: 'cliPrint' },
-        cwd: '/repo',
-        env: { SAFE_TEST_ENV: 'kept' },
-      },
-    }, {
-      tools: {
-        runSystemTool,
-        resolveManagedInstallable: async () => ({
-          ok: false,
-          errorMessage: 'localharness unavailable',
-        }),
-      },
-    });
-
-    expect(runSystemTool).toHaveBeenCalledWith(expect.objectContaining({
-      cwd: '/repo',
-      env: { SAFE_TEST_ENV: 'kept' },
-    }));
-    expect(result).toEqual({ decision: 'allow' });
-    await fixture.dispose();
+      expect(launch.argv).toEqual([
+        '--conversation',
+        'agy-conversation-1',
+        '--model',
+        'Gemini 3.5 Flash (High)',
+      ]);
+    } finally {
+      await fixture.dispose();
+    }
   });
 });

@@ -82,12 +82,12 @@ function toQueryRows(
  * One read per rendered row per revision, and never one per render: a settled
  * read is retained until the pager reports that row at a different revision, and
  * rows that leave the page leave the map with them. A refused read becomes a
- * stated row state rather than a retry loop — the Data pager already owns the
- * wakeups that would make a retry meaningful.
+ * stated row state rather than a retry loop. Explicit refresh invalidates only
+ * failed reads, including when the query revision has not changed.
  */
 function useLinkHydration(
     rows: readonly TriageSessionLinkQueryRowV1[],
-): TriageSessionLinkHydrationMapV1 {
+): Readonly<{ hydration: TriageSessionLinkHydrationMapV1; retryUnreadable: () => void }> {
     const client = usePluginUiDataClientOrNull();
     const [hydration, setHydration] = React.useState<TriageSessionLinkHydrationMapV1>(EMPTY_HYDRATION);
 
@@ -153,7 +153,14 @@ function useLinkHydration(
         };
     }, [client, hydration, rows]);
 
-    return hydration;
+    const retryUnreadable = React.useCallback(() => {
+        setHydration((previous) => {
+            if (![...previous.values()].some((known) => known.kind === 'unreadable')) return previous;
+            return new Map([...previous].filter(([, known]) => known.kind !== 'unreadable'));
+        });
+    }, []);
+
+    return { hydration, retryUnreadable };
 }
 
 export type TriageSessionLinkedEntriesV1 = Readonly<{
@@ -193,7 +200,11 @@ export function useTriageSessionLinkedEntries(sessionId: string): TriageSessionL
         () => triageSessionLinkHydrationTargets(queryState),
         [queryState],
     );
-    const hydration = useLinkHydration(targets);
+    const { hydration, retryUnreadable } = useLinkHydration(targets);
+    const refresh = React.useCallback(async () => {
+        retryUnreadable();
+        await query.refresh();
+    }, [query.refresh, retryUnreadable]);
 
     const view = React.useMemo(
         () => projectTriageSessionLinkedEntries({ query: queryState, hydration }),
@@ -201,7 +212,7 @@ export function useTriageSessionLinkedEntries(sessionId: string): TriageSessionL
     );
 
     return React.useMemo(
-        () => Object.freeze({ view, refresh: query.refresh, loadMore: query.loadMore }),
-        [query.loadMore, query.refresh, view],
+        () => Object.freeze({ view, refresh, loadMore: query.loadMore }),
+        [query.loadMore, refresh, view],
     );
 }

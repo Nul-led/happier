@@ -9,6 +9,16 @@ import type {
 import type {
   OpenCodeNativeFetch,
 } from '../../../runtime/server/transport.js';
+import type { OpenCodeServerDialect } from '../../../runtime/server/dialect.js';
+import {
+  normalizeOpenCodeV2Messages,
+  normalizeOpenCodeV2SessionInfo,
+  readOpenCodeV2ActiveSessionStatusMap,
+  readOpenCodeV2Data,
+  readOpenCodeV2MessagePage,
+  readOpenCodeV2SessionListPage,
+} from '../../../runtime/server/openCodeV2Wire.js';
+import { readNonBlankOpaqueIdentifier } from '../../../runtime/server/openCodeParsing.js';
 import { createManagedEndpointFetch } from './managedEndpointFetch.js';
 
 export type OpenCodeExternalSessionSourceValidationResult =
@@ -30,13 +40,32 @@ export function projectOpenCodeExternalSessionSource(
     : null;
 }
 
+/**
+ * Where a session listing continues from, in the only terms each OpenCode
+ * generation actually offers.
+ *
+ * V1's `/experimental/session` takes a numeric `cursor` compared against
+ * `time.updated`, which is what lets the candidate walk anchor on a timestamp it
+ * can re-validate. V2's `/api/session` takes an opaque server-minted token that
+ * already carries its own query and enumerates by `time.created`. Neither can be
+ * expressed in the other's terms, so the caller names which one it holds and the
+ * client refuses a cursor its server cannot read rather than silently restarting
+ * the walk at the newest session.
+ */
+export type OpenCodeExternalSessionListCursor =
+  | Readonly<{ kind: 'updatedAtMs'; updatedAtMs: number }>
+  | Readonly<{ kind: 'sourceToken'; token: string }>;
+
 export type OpenCodeExternalSessionClient = Readonly<{
   sessionList: (opts: Readonly<{
     limit: number;
     search?: string;
-    cursor?: number;
+    cursor?: OpenCodeExternalSessionListCursor;
     signal?: AbortSignal;
-  }>) => Promise<unknown[]>;
+  }>) => Promise<Readonly<{
+    items: unknown[];
+    nextCursor: string | null;
+  }>>;
   sessionGet: (opts: Readonly<{ sessionId: string; signal?: AbortSignal }>) => Promise<unknown>;
   sessionStatusList: (opts?: Readonly<{ signal?: AbortSignal }>) => Promise<Record<string, { type?: string }>>;
   sessionMessagesList: (opts: Readonly<{
@@ -139,12 +168,31 @@ function readPositiveResponseByteBudget(value: number | undefined): number | und
   return value;
 }
 
-function readSessionListCursor(value: number | undefined): string | undefined {
-  if (value === undefined) return undefined;
-  if (!Number.isSafeInteger(value) || value < 0) {
+function readUpdatedAtMsSessionListCursor(
+  cursor: OpenCodeExternalSessionListCursor | undefined,
+  dialect: OpenCodeServerDialect,
+): string | undefined {
+  if (cursor === undefined) return undefined;
+  if (cursor.kind !== 'updatedAtMs') {
+    throw new Error(`OpenCode ${dialect} servers cannot resume a ${cursor.kind} session cursor.`);
+  }
+  if (!Number.isSafeInteger(cursor.updatedAtMs) || cursor.updatedAtMs < 0) {
     throw new Error('OpenCode session cursor must be a non-negative safe integer.');
   }
-  return String(value);
+  return String(cursor.updatedAtMs);
+}
+
+function readSourceTokenSessionListCursor(
+  cursor: OpenCodeExternalSessionListCursor | undefined,
+  dialect: OpenCodeServerDialect,
+): string | undefined {
+  if (cursor === undefined) return undefined;
+  if (cursor.kind !== 'sourceToken') {
+    throw new Error(`OpenCode ${dialect} servers cannot resume a ${cursor.kind} session cursor.`);
+  }
+  const token = readNonBlankOpaqueIdentifier(cursor.token);
+  if (token === null) throw new Error('OpenCode session cursor token must not be empty.');
+  return token;
 }
 
 async function readResponseText(
@@ -300,9 +348,21 @@ function resolveDirectory(source: OpenCodeExternalSessionSource): string {
  * and no address: the managed service holds the endpoint, and the host applies
  * whichever credential authenticates it, so "connect to an OpenCode server" has
  * exactly one implementation instead of one per surface.
+ *
+ * `dialect` is which OpenCode generation is on the other end, decided once per
+ * call by `resolveOpenCodeExternalSessionsDialect` from the executable the host
+ * resolves for a browse-owned server. It is required and never re-derived here:
+ * a client that guessed would give the browse surface a second opinion about the
+ * server whose readiness route was already chosen from that same fact.
+ *
+ * V2 route and envelope details are read from the pinned comparator
+ * (`comparators/opencode` at `10765ff2a9da8c3b88e4de873aa383a49c318912`) and
+ * mapped by the one V2 wire owner, `openCodeV2Wire.ts` — the reads below choose
+ * a route, never a second message or session vocabulary.
  */
 export async function createOpenCodeExternalSessionClient(params: Readonly<{
   source: OpenCodeExternalSessionSource;
+  dialect: OpenCodeServerDialect;
   env?: Readonly<Record<string, string | undefined>>;
   managedEndpointRead?: AgentExternalSessionsManagedEndpointRead;
   baseUrlAuthority?: 'configured' | 'canonical';
@@ -330,16 +390,91 @@ export async function createOpenCodeExternalSessionClient(params: Readonly<{
   const directoryQuery = directory ? { directory } : {};
   const maxResponseBytes = readPositiveResponseByteBudget(params.maxResponseBytes);
 
+  if (params.dialect === 'v2') {
+    return {
+      sessionList: async ({ limit, search, cursor, signal }) => {
+        const sourceToken = readSourceTokenSessionListCursor(cursor, params.dialect);
+        // A continuation sends the token alone: it already carries the search,
+        // the location scope and the order it was minted with, and the server
+        // reads the query from it rather than from the request.
+        const page = readOpenCodeV2SessionListPage(await fetchJson<unknown>(
+          buildRequestTarget('/api/session', sourceToken === undefined
+            ? {
+              ...directoryQuery,
+              limit: String(Math.max(1, Math.trunc(limit))),
+              ...(search ? { search } : {}),
+            }
+            : {
+              limit: String(Math.max(1, Math.trunc(limit))),
+              cursor: sourceToken,
+            }),
+          fetchFn,
+          maxResponseBytes,
+          signal,
+        ));
+        return {
+          items: page.sessions.map(normalizeOpenCodeV2SessionInfo),
+          nextCursor: page.nextCursor,
+        };
+      },
+      sessionGet: async ({ sessionId, signal }) => {
+        // `/api/session/:sessionID` is resolved from the stored session row by
+        // the server's session-location middleware, so it takes no location
+        // query at all.
+        return normalizeOpenCodeV2SessionInfo(readOpenCodeV2Data(await fetchJson<unknown>(
+          buildRequestTarget(`/api/session/${encodeURIComponent(sessionId)}`),
+          fetchFn,
+          maxResponseBytes,
+          signal,
+        )));
+      },
+      sessionStatusList: async (opts) => {
+        return readOpenCodeV2ActiveSessionStatusMap(await fetchJson<unknown>(
+          buildRequestTarget('/api/session/active'),
+          fetchFn,
+          maxResponseBytes,
+          opts?.signal,
+        ));
+      },
+      sessionMessagesList: async ({ sessionId, limit, before, signal }) => {
+        const page = readOpenCodeV2MessagePage(await fetchJson<unknown>(
+          buildRequestTarget(`/api/session/${encodeURIComponent(sessionId)}/message`, {
+            limit: String(Math.max(1, Math.trunc(limit))),
+            // The opaque cursor carries its own order and the schema refuses to
+            // combine the two, so a continuation sends no `order`.
+            ...(before ? { cursor: before } : {}),
+          }),
+          fetchFn,
+          maxResponseBytes,
+          signal,
+        ));
+        // V2 defaults to `order: 'desc'` — newest first within the page, paging
+        // toward older messages, which is the same direction V1's `before`
+        // walked. Its readers window backwards from the end of a chronological
+        // page and anchor each assistant message to the user message before it,
+        // so the page is put back in ascending order before normalization.
+        return {
+          items: [...normalizeOpenCodeV2Messages([...page.messages].reverse(), sessionId)],
+          nextCursor: page.nextCursor,
+        };
+      },
+      dispose: async () => {},
+    };
+  }
+
   return {
     sessionList: async ({ limit, search, cursor, signal }) => {
-      const sessionCursor = readSessionListCursor(cursor);
-      const raw = await fetchJson<unknown>(buildRequestTarget('/experimental/session', {
+      const sessionCursor = readUpdatedAtMsSessionListCursor(cursor, params.dialect);
+      const result = await fetchJsonResponse<unknown>(buildRequestTarget('/experimental/session', {
         ...directoryQuery,
         limit: String(Math.max(1, Math.trunc(limit))),
         ...(search ? { search } : {}),
         ...(sessionCursor !== undefined ? { cursor: sessionCursor } : {}),
       }), fetchFn, maxResponseBytes, signal);
-      return parseOpenCodeArrayResponse(raw, '/experimental/session');
+      return {
+        items: parseOpenCodeArrayResponse(result.value, '/experimental/session'),
+        nextCursor: result.response.headers.get('x-next-cursor'),
+      };
     },
     sessionGet: async ({ sessionId, signal }) => {
       return await fetchJson<unknown>(

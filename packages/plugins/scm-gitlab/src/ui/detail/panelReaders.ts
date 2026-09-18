@@ -51,9 +51,9 @@ import {
  *
  * Each reader's request lifetime is the active interval of the panel that owns
  * it. Leaving aborts the request and rejects a late result. Retained display
- * state remains source-specific: Overview keeps its settled description and
- * Changes keeps only List-owned viewport geometry while resetting provider rows
- * and continuation through the shared paged reducer.
+ * state remains source-specific: Overview keeps its settled description, and
+ * Changes keeps the parsed per-file page model and the cursor that follows it,
+ * while every discarding panel resets through the shared paged reducer.
  *
  * That lifetime is also the rate budget. GitLab involvement scanning already
  * issues real provider work, and the Activity panel alone owns four independent
@@ -252,7 +252,7 @@ function useGitlabPagedWalk<TRow>(
   readPage: PageReader<TRow>,
   enabled: boolean,
   disabledFailure: TriageSourceFailureV1,
-  options: Readonly<{ retainOnRefresh?: boolean }> = {},
+  options: Readonly<{ retainOnRefresh?: boolean; retainAcrossLeave?: boolean }> = {},
 ): GitlabPagedControllerV1<TRow> {
   const [state, dispatch] = useReducer(
     gitlabPagedReducer<TRow>,
@@ -270,6 +270,23 @@ function useGitlabPagedWalk<TRow>(
    * would then be accepted into the walk it was meant to replace.
    */
   const nextToken = useRef(0);
+  /**
+   * Whether this panel holds settled pages its next active interval may keep.
+   *
+   * It describes the WALK, not the request in flight over it. A later page that
+   * failed, or one abandoned when the reader left, says nothing about the pages
+   * already read; only a cold restart discards them. Conflating the two threw
+   * away every accepted page as soon as one continuation went wrong.
+   */
+  const settledWalk = useRef(false);
+  /**
+   * The continuation of the request in flight, when it has one.
+   *
+   * A position that was requested but never read must be released — from the
+   * admission set and from the reducer's `pending` — or the reader is left
+   * looking at a control that can no longer reach it.
+   */
+  const inFlightContinuation = useRef<string | null>(null);
 
   const runPage = useCallback(async (
     token: number,
@@ -277,13 +294,20 @@ function useGitlabPagedWalk<TRow>(
     pageSignal: AbortSignal,
     startKind: 'requestStarted' | 'refreshStarted' = 'requestStarted',
   ): Promise<void> => {
+    inFlightContinuation.current = continuation;
     dispatch({ kind: startKind, token });
     const outcome = await readPage(continuation, pageSignal);
     if (pageSignal.aborted) return;
+    inFlightContinuation.current = null;
     if (outcome.kind === 'failed') {
+      // Only a position this walk actually consumed may be refused a second
+      // time. A page that failed was never read, and the reader is looking at an
+      // enabled control for it.
+      if (continuation !== null) requested.current.delete(continuation);
       dispatch({ kind: 'pageFailed', token, failure: outcome.failure });
       return;
     }
+    settledWalk.current = true;
     dispatch({ kind: 'pageSettled', token, page: outcome.page });
   }, [readPage]);
 
@@ -292,7 +316,11 @@ function useGitlabPagedWalk<TRow>(
     retainLastKnownGood: boolean,
   ): void => {
     requested.current = new Set();
-    if (!retainLastKnownGood) dispatch({ kind: 'panelLeft' });
+    inFlightContinuation.current = null;
+    if (!retainLastKnownGood) {
+      settledWalk.current = false;
+      dispatch({ kind: 'panelLeft' });
+    }
     nextToken.current += 1;
     if (enabled) {
       void runPage(
@@ -316,13 +344,28 @@ function useGitlabPagedWalk<TRow>(
     // never on mount of the detail surface.
     if (!active) return undefined;
     interval.current = activeSignal;
-    startWalk(activeSignal, false);
+    const retained = options.retainAcrossLeave === true && settledWalk.current;
+    // A retaining panel returns to the pages the reader already loaded and to
+    // the cursor that follows them. Re-reading page one here would discard the
+    // later files §4.6 says this tab keeps, and would repeat provider work.
+    if (!retained) startWalk(activeSignal, false);
     return () => {
       interval.current = null;
+      if (options.retainAcrossLeave === true && settledWalk.current) {
+        // The interval's signal aborted whatever was in flight, so its result
+        // can never arrive: release the position it was reading and stop the
+        // walk waiting for it, without touching the pages that settled.
+        const abandoned = inFlightContinuation.current;
+        if (abandoned !== null) requested.current.delete(abandoned);
+        inFlightContinuation.current = null;
+        dispatch({ kind: 'walkAbandoned' });
+        return;
+      }
       requested.current = new Set();
+      inFlightContinuation.current = null;
       dispatch({ kind: 'panelLeft' });
     };
-  }, [active, activeSignal, startWalk]);
+  }, [active, activeSignal, options.retainAcrossLeave, startWalk]);
 
   const loadMore = useCallback(() => {
     const pageSignal = interval.current;
@@ -588,7 +631,7 @@ export function useGitlabChanges(
     readPage,
     routingToken !== null,
     ROUTE_UNAVAILABLE,
-    { retainOnRefresh: true },
+    { retainOnRefresh: true, retainAcrossLeave: true },
   );
   return useMemo(() => ({ ...controller, diffLimitStatus }), [controller, diffLimitStatus]);
 }

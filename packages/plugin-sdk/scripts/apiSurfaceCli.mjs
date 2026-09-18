@@ -668,7 +668,9 @@ function packageRuntimeExportTarget(packageJson, exportKey, realm, resolutionCon
     const selected = selectConditionalExportTarget(exportValue, realm, resolutionCondition);
     if (selected) return selected;
   }
-  if (exportKey !== '.') return packageExports === undefined ? exportKey : null;
+  const isLegacyPackageRoot = exportKey === '.'
+    || (exportKey === './' && packageExports === undefined);
+  if (!isLegacyPackageRoot) return packageExports === undefined ? exportKey : null;
   const legacyTarget = typeof packageJson.module === 'string'
     ? packageJson.module
     : typeof packageJson.main === 'string'

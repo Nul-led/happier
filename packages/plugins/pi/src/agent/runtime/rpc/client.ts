@@ -176,6 +176,7 @@ export function createPiJsonStreamRpcClient(params: PiJsonStreamRpcClientParams)
         : responseTimeout.afterMs;
       const id = randomUUID();
       const payload: PiRpcCommand = { ...command, id } as PiRpcCommand;
+      let scheduleResponseTimeout = (): void => undefined;
       const response = new Promise<PiRpcResponse>((resolve, reject) => {
         let timeout: ReturnType<typeof setTimeout> | undefined;
         const clearPendingTimeout = () => {
@@ -198,7 +199,8 @@ export function createPiJsonStreamRpcClient(params: PiJsonStreamRpcClientParams)
           },
         });
         const dispose = () => pending.delete(id);
-        const scheduleResponseTimeout = () => {
+        scheduleResponseTimeout = () => {
+          if (!pending.has(id)) return;
           timeout = setTimeout(() => {
             timeout = undefined;
             if (
@@ -212,7 +214,6 @@ export function createPiJsonStreamRpcClient(params: PiJsonStreamRpcClientParams)
           }, timeoutMs);
           timeout.unref?.();
         };
-        scheduleResponseTimeout();
       });
       try {
         await params.handle.client.write(payload);
@@ -223,6 +224,7 @@ export function createPiJsonStreamRpcClient(params: PiJsonStreamRpcClientParams)
             entry.phase = 'yielded_to_terminal';
             const observedTerminal = readTerminal();
             if (observedTerminal) removePending(id)?.reject(observedTerminal.error);
+            else scheduleResponseTimeout();
           }
           return await response;
         }
@@ -235,6 +237,7 @@ export function createPiJsonStreamRpcClient(params: PiJsonStreamRpcClientParams)
         entry.phase = 'awaiting_response';
         const observedTerminal = readTerminal();
         if (observedTerminal) removePending(id)?.reject(observedTerminal.error);
+        else scheduleResponseTimeout();
       }
       return await response;
     },

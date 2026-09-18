@@ -2,8 +2,42 @@ import { describe, expect, it } from 'vitest';
 import { ProviderContributionV1Schema } from '@happier-dev/protocol';
 
 import { CLIPROXYAPI_PROVIDER_CONTRIBUTION } from './contribution.js';
+import {
+  projectCLIProxyAPIProviderConnectionApplication,
+  resolveCLIProxyAPIManagedPurposeFamily,
+} from './managedContract.js';
 
 describe('CLIPROXYAPI_PROVIDER_CONTRIBUTION', () => {
+  it('owns the exact endpoint/protocol to Connected Account purpose mapping', () => {
+    expect(resolveCLIProxyAPIManagedPurposeFamily({
+      endpointTemplateId: 'cliproxyapi-openai-responses',
+      protocol: 'openai-responses',
+    })?.purpose).toBe('openai-upstream');
+    expect(resolveCLIProxyAPIManagedPurposeFamily({
+      endpointTemplateId: 'cliproxyapi-anthropic',
+      protocol: 'anthropic',
+    })?.purpose).toBe('anthropic-upstream');
+    expect(resolveCLIProxyAPIManagedPurposeFamily({
+      endpointTemplateId: 'cliproxyapi-anthropic',
+      protocol: 'openai-responses',
+    })).toBeNull();
+  });
+
+  it('projects Provider Connection traffic onto the same managed executable without changing its Agent target', () => {
+    expect(projectCLIProxyAPIProviderConnectionApplication({
+      agentTargetKey: 'agent:example/custom',
+      protocol: 'openai-chat',
+    })).toEqual({
+      agentTargetKey: 'agent:example/custom',
+      implementationIdentity: { pluginId: 'happier.provider.cliproxyapi', localId: 'cliproxyapi' },
+      endpointTemplateId: 'cliproxyapi-openai-chat',
+      protocol: 'openai-chat',
+    });
+    expect(projectCLIProxyAPIProviderConnectionApplication({
+      agentTargetKey: 'agent:example/custom',
+      protocol: 'unsupported',
+    })).toBeNull();
+  });
   it('declares one discovery-backed aggregator for adopted local and explicit remote connections', () => {
     const parsed = ProviderContributionV1Schema.parse(CLIPROXYAPI_PROVIDER_CONTRIBUTION);
 

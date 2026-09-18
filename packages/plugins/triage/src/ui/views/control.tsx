@@ -55,13 +55,16 @@ export type TriageViewsControlPropsV1 = Readonly<{
   notice: TriageSavedViewsNoticeV1 | null;
   text: TriageTextResolverV1;
   onSelectView: (viewId: string | null) => void;
-  onCreateView: (label: string) => void;
-  onRenameView: (view: CorpusSavedViewV1, label: string) => void;
+  /** True only after the naming write was applied by the Account owner. */
+  onCreateView: (label: string) => Promise<boolean>;
+  onRenameView: (view: CorpusSavedViewV1, label: string) => Promise<boolean>;
   onUpdateView: (view: CorpusSavedViewV1) => void;
   onDeleteView: (view: CorpusSavedViewV1) => void;
 }>;
 
-type NameDraft = Readonly<{ kind: 'create' | 'rename'; label: string }>;
+type NameDraft =
+  | Readonly<{ kind: 'create'; label: string }>
+  | Readonly<{ kind: 'rename'; viewId: string; label: string }>;
 
 export function TriageViewsControl(props: TriageViewsControlPropsV1): React.ReactElement {
   const {
@@ -97,21 +100,26 @@ export function TriageViewsControl(props: TriageViewsControlPropsV1): React.Reac
   const startCreate = React.useCallback(() => { setDraft({ kind: 'create', label: '' }); }, []);
   const startRename = React.useCallback(() => {
     if (selected === null) return;
-    setDraft({ kind: 'rename', label: selected.label });
+    setDraft({ kind: 'rename', viewId: selected.viewId, label: selected.label });
   }, [selected]);
   const cancelDraft = React.useCallback(() => { setDraft(null); }, []);
   const changeDraft = React.useCallback((label: string) => {
     setDraft((current) => (current === null ? current : { ...current, label }));
   }, []);
-  const commitDraft = React.useCallback(() => {
-    if (draft === null) return;
-    setDraft(null);
-    if (draft.kind === 'create') {
-      onCreateView(draft.label);
-      return;
-    }
-    if (selected !== null) onRenameView(selected, draft.label);
-  }, [draft, onCreateView, onRenameView, selected]);
+  const commitDraft = React.useCallback(async () => {
+    if (draft === null || busy) return;
+    // Re-read this same target after a conflict; Rename must preserve its
+    // current stored lens rather than overwrite it with the original draft.
+    const target = draft.kind === 'rename'
+      ? views.find((view) => view.viewId === draft.viewId)
+      : undefined;
+    const applied = draft.kind === 'create'
+      ? await onCreateView(draft.label)
+      : target !== undefined && await onRenameView(target, draft.label);
+    // An edit or Cancel while the write settled is a newer intent. Only the
+    // exact submitted draft may be retired by this successful naming write.
+    if (applied) setDraft((current) => current === draft ? null : current);
+  }, [busy, draft, onCreateView, onRenameView, views]);
   const update = React.useCallback(() => {
     if (selected !== null) onUpdateView(selected);
   }, [onUpdateView, selected]);

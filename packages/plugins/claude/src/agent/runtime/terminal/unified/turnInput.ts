@@ -81,6 +81,28 @@ export function createClaudeUnifiedPromptInput(params: Readonly<{
   };
 }
 
+export function createClaudeUnifiedTurnNeutralControlInput(params: Readonly<{
+  text: string;
+  sessionId: string;
+  nonce: number;
+}>): TerminalPromptInput {
+  return {
+    text: params.text,
+    multiline: params.text.includes('\n'),
+    origin: {
+      // `rpc` is the existing terminal-host transport classification. Turn neutrality remains an
+      // arbiter-owned semantic and does not expand the public TerminalPromptInput contract.
+      kind: 'rpc',
+      nonce: `${params.sessionId}:${params.nonce}`,
+    },
+    scheduling: {
+      deferredUntilQuietMs: CLAUDE_UNIFIED_TERMINAL_INPUT_QUIET_PERIOD_MS,
+      deferReason: 'user_typing',
+      timeoutMs: resolveTerminalPromptWriteTimeoutMs(params.text),
+    },
+  };
+}
+
 export function createClaudeUnifiedWritableReadiness(
   handle: TerminalHostHandle,
   activeTurnId: string | null,

@@ -50,6 +50,7 @@ describe('Gemini native runtime migration', () => {
       purpose: 'model_upstream',
       service: 'gemini-account',
       required: false,
+      credentialKinds: ['token'],
       materializationKinds: ['files', 'environment'],
     }]);
   });
@@ -146,6 +147,50 @@ describe('Gemini native runtime migration', () => {
       if (previous === undefined) delete process.env[ambientKey];
       else process.env[ambientKey] = previous;
     }
+  });
+
+  it('uses the same isolated Gemini home for the ACP probe and launched child', async () => {
+    const runtime = await createGeminiRuntime();
+    const run = vi.fn(async () => ({
+      termination: { observed: { kind: 'exit' as const, exitCode: 0 }, requestedBy: { kind: 'none' as const } },
+      stdout: new TextEncoder().encode('--acp'),
+      stderr: new Uint8Array(),
+      stdoutTruncated: false,
+      stderrTruncated: false,
+    }));
+    const open = vi.fn(async () => ({
+      send: vi.fn(), watch: () => ({ dispose: () => undefined }), dispose: vi.fn(),
+    }));
+
+    const session = await runtime.sessions.open({
+      kind: 'create',
+      sessionId: 'gemini-isolated-home',
+      cwd: '/workspace',
+      launchEnvironment: {
+        values: {
+          GEMINI_API_KEY: 'AIzaPluginScopedKey',
+          GEMINI_CLI_HOME: '/caller/gemini-home',
+          HOME: '/caller/home',
+          XDG_CONFIG_HOME: '/caller/xdg',
+        },
+        unset: [],
+      },
+    }, {
+      signal: new AbortController().signal,
+      services: { exec: { run }, connectedAccounts: disconnectedConnectedAccounts() },
+      protocols: { acp: { open } },
+    } as unknown as AgentSessionRuntimeContext);
+
+    const probeEnvironment = run.mock.calls[0]?.[0].env;
+    const childEnvironment = open.mock.calls[0]?.[0].launchEnvironment?.values;
+    await session.dispose();
+
+    expect(probeEnvironment?.GEMINI_CLI_HOME).toContain('happier-gemini-mcp-home-');
+    expect(childEnvironment).toMatchObject({
+      GEMINI_CLI_HOME: probeEnvironment?.GEMINI_CLI_HOME,
+      HOME: probeEnvironment?.HOME,
+      XDG_CONFIG_HOME: probeEnvironment?.XDG_CONFIG_HOME,
+    });
   });
 
   it('opens Gemini through the native ACP composer instead of the V1 compatibility envelope', async () => {

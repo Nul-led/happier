@@ -6,6 +6,7 @@ import {
     mapSaplingScmErrorCode as canonicalMapSaplingScmErrorCode,
     supportedCapability as canonicalSupportedCapability,
     unsupportedCapability as canonicalUnsupportedCapability,
+    resolveScmBackendCapabilities as canonicalResolveScmBackendCapabilities,
 } from '@happier-dev/protocol/scm';
 
 import type {
@@ -17,7 +18,21 @@ import type {
 import type {
     ScmCapabilities,
     ScmOperationErrorCode,
+    ScmRefreshPolicy,
+    ScmRepoMode,
 } from './projections.js';
+
+/** Resolve declaration availability through the shared SCM policy owner. */
+export const resolveScmBackendCapabilities: (input: Readonly<{
+    declaredCapabilities: ScmBackendCapabilities;
+    mode: ScmRepoMode | null;
+    supportedRepoModes?: readonly ScmRepoMode[];
+    executableAvailable?: boolean;
+    freshness?: Readonly<{
+        state?: ScmBackendCapabilities['freshness']['state'];
+        refreshPolicy?: ScmRefreshPolicy;
+    }>;
+}>) => ScmBackendCapabilities = canonicalResolveScmBackendCapabilities;
 
 /** Canonical Protocol validators with SDK-local declaration contracts. */
 export const ScmBackendCapabilitiesSchema: {

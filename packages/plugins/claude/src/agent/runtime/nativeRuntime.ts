@@ -1,4 +1,8 @@
 import type {
+  AgentExecutionRunConversationEventV1,
+  AgentExecutionRunConversationRuntimeV1,
+  AgentExecutionRunOpenRequest,
+  AgentExecutionRunRuntimeContextV1,
   AgentLaunchEnvironment,
   AgentRuntime,
   AgentRuntimeContext,
@@ -11,6 +15,7 @@ import type {
   AgentSessionRuntimeContext,
   AgentSessionRuntimeEvent,
 } from '@happier-dev/plugin-sdk/agents/runtime';
+import { createExecutionRunHostBackendFromConversationRuntime } from '@happier-dev/plugin-sdk/agents/runtime';
 import { claudeHandoffSurface } from '../surfaces/sessions/handoff/providerOps.js';
 import { isDeepStrictEqual } from 'node:util';
 import { AgentRuntimeJsonValueSchema } from '@happier-dev/plugin-sdk/agents/runtime';
@@ -23,6 +28,7 @@ import {
 } from '@happier-dev/plugin-sdk/agents/runtime';
 import { isRuntimeConfigUpdateOutcomeApplied } from '@happier-dev/plugin-sdk/agents/runtime';
 
+import { readClaudeProviderIdentityValue } from '../../protocol/providerIdentity.js';
 import { createClaudeNativePermissionEngine } from '../permissions/nativePermissionEngine.js';
 import { CLAUDE_STATIC_MODELS } from '../models.js';
 import type {
@@ -37,6 +43,7 @@ import type {
 import type { ClaudeProviderEvent } from './providerEvents.js';
 import {
   createClaudeNativeAgentSdkContext,
+  createClaudeNativeExecutionRunAgentSdkContext,
   createClaudeNativeGoalWorkStatePublisher,
 } from './nativeServices.js';
 import { createClaudeNativeGoalControl } from './goalControl/nativeControl.js';
@@ -55,7 +62,7 @@ import {
   resolveClaudeNativeBaseLaunchEnvironment,
   resolveClaudeNativeLaunchSettings,
 } from './launchSettings.js';
-import { mapToClaudePermissionMode } from './permissionMode.js';
+import { buildClaudePermissionModeArgs, mapToClaudePermissionMode } from './permissionMode.js';
 import type {
   ClaudeUsageObservation,
   ClaudeUsageObservationSubscription,
@@ -186,6 +193,10 @@ type ClaudeSupportsEffortResolver = (input: Readonly<{
 
 export type CreateClaudeNativeRuntimeOptions = Readonly<{
   openSession: ClaudeNativeSessionFactory;
+  openExecutionRunConversation?: (input: Readonly<{
+    request: Extract<AgentExecutionRunOpenRequest, { kind: 'create' | 'resume' }>;
+    context: AgentExecutionRunRuntimeContextV1;
+  }>) => AgentExecutionRunConversationRuntimeV1 | Promise<AgentExecutionRunConversationRuntimeV1>;
   resolveSupportsEffort?: ClaudeSupportsEffortResolver;
 }>;
 
@@ -250,14 +261,14 @@ function committedMessage(
   return text === null ? null : { text, role: body.thinking === true ? 'reasoning' : 'assistant' };
 }
 
-function mapEvent(event: ClaudeProviderEvent): NativeSessionEventInput | null {
+function mapEvent(event: ClaudeProviderEvent): AgentExecutionRunConversationEventV1 | null {
   switch (event.kind) {
     case 'turn-start':
       return {
         kind: event.kind,
         turnId: event.turnId,
         ...(event.agentTurnId ? { agentTurnId: event.agentTurnId } : {}),
-        startedBy: event.startedBy === 'provider' ? 'provider' : 'host',
+        startedBy: event.startedBy === 'host' ? 'host' : 'provider',
       };
     case 'turn-progress':
       return { kind: event.kind, turnId: event.turnId, ...(event.agentTurnId ? { agentTurnId: event.agentTurnId } : {}) };
@@ -308,9 +319,10 @@ function mapEvent(event: ClaudeProviderEvent): NativeSessionEventInput | null {
         ...(event.isError === true ? { isError: true } : {}),
       };
     case 'session-id-publish': {
-      const providerSessionId = typeof event.publishedSessionId === 'string'
-        ? event.publishedSessionId.trim()
-        : '';
+      // Claude minted this id and `--resume` receives it verbatim, so only
+      // presence is decided here; `nativeSessionLogPath` below is a Happier-read
+      // filesystem path and keeps its own canonicalization.
+      const providerSessionId = readClaudeProviderIdentityValue(event.publishedSessionId);
       if (!providerSessionId) return null;
       const nativeSessionLogPath = typeof event.nativeSessionLogPath === 'string'
         ? event.nativeSessionLogPath.trim()
@@ -351,6 +363,21 @@ function sendFailure(
     retryable,
     diagnostic: diagnostic(`claude_send_${status}`, message ?? `Claude input was ${status}.`),
   };
+}
+
+async function submitClaudeProviderInput(
+  operations: ClaudeRuntimeTurnOperations,
+  request: Parameters<AgentSessionRuntime['send']>[0],
+): Promise<ClaudeRuntimePromptSubmissionOutcome> {
+  const meta = {
+    localId: request.inputIds[0] ?? null,
+    localIds: [...request.inputIds],
+  };
+  if (request.delivery.kind === 'steer') {
+    return await operations.steerProviderTurn(request.input.text, meta);
+  }
+  operations.beginProviderTurn(request.delivery.turnId);
+  return await operations.sendProviderTurnPrompt(request.input.text, meta);
 }
 
 /**
@@ -603,7 +630,9 @@ export function createClaudeNativeSessionRuntimeFromOperations(
       return { dispose: () => { modelListeners.delete(listener); } };
     },
   });
-  const initialProviderSessionId = operations.readProviderIdentity().sessionId?.trim();
+  // Claude minted this id; presence only, bytes preserved.
+  const initialProviderSessionIdRaw = operations.readProviderIdentity().sessionId;
+  const initialProviderSessionId = readClaudeProviderIdentityValue(initialProviderSessionIdRaw) ?? undefined;
   const sourceRuntimeDescriptor = request.runtimeDescriptorV1;
   const sourceRuntimeAgent = sourceRuntimeDescriptor?.agent;
   const effectiveConfigDir = request.launchEnvironment?.values.CLAUDE_CONFIG_DIR?.trim();
@@ -647,16 +676,7 @@ export function createClaudeNativeSessionRuntimeFromOperations(
       }
       let submissionOutcome: ClaudeRuntimePromptSubmissionOutcome;
       try {
-        const meta = {
-          localId: nativeRequest.inputIds[0] ?? null,
-          localIds: [...nativeRequest.inputIds],
-        };
-        if (nativeRequest.delivery.kind === 'steer') {
-          submissionOutcome = await operations.steerProviderTurn(nativeRequest.input.text, meta);
-        } else {
-          operations.beginProviderTurn(nativeRequest.delivery.turnId);
-          submissionOutcome = await operations.sendProviderTurnPrompt(nativeRequest.input.text, meta);
-        }
+        submissionOutcome = await submitClaudeProviderInput(operations, nativeRequest);
       } catch (error) {
         const queued = terminalPromptDelivery?.decision?.kind === 'accepted'
           ? bufferedEvents?.drain() ?? []
@@ -768,7 +788,8 @@ export function createClaudeNativeSessionRuntimeFromOperations(
           };
         }
         if (nextProviderBinding && (
-          nextProviderBinding.connectionId !== currentProviderBinding.connectionId
+          JSON.stringify(nextProviderBinding.source ?? nextProviderBinding.connectionId)
+            !== JSON.stringify(currentProviderBinding.source ?? currentProviderBinding.connectionId)
           || !isDeepStrictEqual(
             nextProviderBinding.materialization,
             currentProviderBinding.materialization,
@@ -958,6 +979,68 @@ export function createClaudeNativeSessionRuntimeFromOperations(
   };
 }
 
+function createClaudeExecutionRunConversationFromOperations(
+  operations: ReturnType<typeof createClaudeAgentSdkTurnOperations>,
+): AgentExecutionRunConversationRuntimeV1 {
+  const listeners = new Set<Parameters<AgentExecutionRunConversationRuntimeV1['watch']>[0]>();
+  let disposed = false;
+  const unsubscribe = operations.subscribeProviderEvents((providerEvent) => {
+    if (disposed) return;
+    const mapped = mapEvent(providerEvent);
+    if (!mapped) return;
+    const event = Object.freeze({ ...mapped, emittedAtMs: providerEvent.emittedAtMs });
+    for (const listener of listeners) listener(event);
+  });
+  return {
+    async send(request) {
+      if (disposed) return sendFailure('unavailable', 'Claude execution runtime is disposed.');
+      try {
+        const outcome = await submitClaudeProviderInput(operations, request);
+        if (outcome.kind === 'accepted' || outcome.kind === 'custody_observed') {
+          return { status: 'admitted' };
+        }
+        return sendFailure(
+          outcome.kind === 'rejected_before_effect' ? 'rejected' : 'unavailable',
+          outcome.reason,
+          outcome.kind === 'rejected_before_effect',
+        );
+      } catch (error) {
+        return sendFailure(
+          'unavailable',
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    },
+    async cancel(request) {
+      try {
+        const cancelled = await operations.cancelProviderTurn(request.turnId);
+        return cancelled !== false
+          ? { status: 'requested', turnId: request.turnId }
+          : { status: 'notRunning' };
+      } catch (error) {
+        return {
+          status: 'unavailable',
+          diagnostic: diagnostic(
+            'claude_cancel_unavailable',
+            error instanceof Error ? error.message : String(error),
+          ),
+        };
+      }
+    },
+    watch(listener) {
+      listeners.add(listener);
+      return { dispose: () => { listeners.delete(listener); } };
+    },
+    async dispose() {
+      if (disposed) return;
+      disposed = true;
+      unsubscribe();
+      listeners.clear();
+      await operations.disposeProviderSession('runtime_recovery');
+    },
+  };
+}
+
 function metadataRecord(value: unknown): Readonly<Record<string, unknown>> {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Readonly<Record<string, unknown>>
@@ -983,7 +1066,7 @@ function terminalSurface(): NonNullable<AgentRuntime['surfaces']>['terminal'] {
         argv: resolveClaudeLaunchSettingsOverlayArgs({
           args: [
             ...(model ? ['--model', model] : []),
-            ...(permissionMode ? ['--permission-mode', mapToClaudePermissionMode(permissionMode)] : []),
+            ...buildClaudePermissionModeArgs(permissionMode),
           ],
           interactionKind: 'interactive_terminal',
           permissionMode: permissionMode ? mapToClaudePermissionMode(permissionMode) : null,
@@ -1030,6 +1113,29 @@ export function createClaudeNativeRuntime(
       goals: goals.control,
       async open(request, context) {
         return await openSession(request, context);
+      },
+      executionRunContextV1: {
+        async open(request, context) {
+          if (request.kind === 'fork') {
+            throw new Error('Claude does not support native execution-run fork');
+          }
+          const openConversation = options.openExecutionRunConversation
+            ?? (async (input) => {
+              const supportsEffort = await (options.resolveSupportsEffort
+                ?? resolveClaudeInstalledEffortSupport)({ request: input.request, context: input.context });
+              return await openClaudeNativeAgentSdkExecutionRunConversation({
+                ...input,
+                supportsEffort,
+              });
+            });
+          return await createExecutionRunHostBackendFromConversationRuntime({
+            request,
+            openConversation: async () => await openConversation({ request, context }),
+            readCheckpointId: (event) => event.kind === 'provider-session-id'
+              ? event.providerSessionId
+              : null,
+          });
+        },
       },
     },
     surfaces: {
@@ -1097,6 +1203,56 @@ async function openClaudeNativeAgentSdkSession(input: Readonly<{
     enableSessionResumability: true,
     publishGoalWorkState: createClaudeNativeGoalWorkStatePublisher(input.context),
   });
+}
+
+async function openClaudeNativeAgentSdkExecutionRunConversation(input: Readonly<{
+  request: Extract<AgentExecutionRunOpenRequest, { kind: 'create' | 'resume' }>;
+  context: AgentExecutionRunRuntimeContextV1;
+  supportsEffort: boolean;
+}>): Promise<AgentExecutionRunConversationRuntimeV1> {
+  const sdkContext = createClaudeNativeExecutionRunAgentSdkContext(input.context);
+  const launchSettings = await resolveClaudeNativeLaunchSettings({
+    settings: input.context.services.settings.forScope({ kind: 'account' }),
+    launchEnv: resolveClaudeNativeBaseLaunchEnvironment({
+      launchEnvironment: input.request.launchEnvironment,
+      processEnv: process.env,
+    }),
+    includeAdvancedOptions: true,
+  });
+  const initialModelId = input.request.providerBinding?.model.id
+    ?? input.request.configuration?.model.value
+    ?? null;
+  const providerModel = input.request.providerBinding?.model;
+  const requestedEffort = input.request.configuration?.options.reasoning_effort?.value;
+  const initialEffort = input.supportsEffort ? resolveClaudeEffortForModel({
+    modelId: initialModelId,
+    effort: requestedEffort,
+    ...(providerModel ? { providerModel } : {}),
+  }) : null;
+  const requestedUltracode = input.request.configuration?.options.ultracode?.value;
+  const initialUltracode = input.supportsEffort
+    && (requestedUltracode === true || requestedUltracode === 'true')
+    && isClaudeUltracodeSupportedModelId(initialModelId, providerModel);
+  const operations = createClaudeAgentSdkTurnOperations({
+    ctx: sdkContext,
+    queryContext: sdkContext.agentRuntime.exec,
+    permissionEngine: createClaudeNativePermissionEngine(input.context),
+    directory: input.request.cwd,
+    launchEnv: launchSettings.launchEnv,
+    advancedOptions: launchSettings.advancedOptions,
+    permissionMode: input.request.configuration?.permissionIntent.value ?? 'default',
+    supportsEffort: input.supportsEffort,
+    initialModelId,
+    ...(initialEffort ? { initialEffort } : {}),
+    ...(initialUltracode ? { initialUltracode: true } : {}),
+    ...(input.request.providerBinding
+      ? { providerModel: input.request.providerBinding.model }
+      : {}),
+    initialProviderSessionId: input.request.kind === 'resume' ? input.request.checkpointId : null,
+    mcpServers: input.request.mcpServers,
+    publishSdkMessages: true,
+  });
+  return createClaudeExecutionRunConversationFromOperations(operations);
 }
 
 export const createClaudeAgentRuntime: AgentRuntimeFactory = () => createClaudeNativeRuntime({

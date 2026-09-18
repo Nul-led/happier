@@ -1386,13 +1386,7 @@ type PluginTranslationValues = Readonly<Record<string, string | number>>;
 Declared by `dist/hostApi/ephemeralSharedScope.public.d.ts` as `PluginUiEphemeralSharedScope`.
 
 ```ts
-type PluginUiEphemeralSharedScope = Readonly<{
-    acquire<T>(localKey: string, create: () => Readonly<{
-        value: T;
-        dispose(): void;
-        onExecutionOriginChange?(): void;
-    }>): PluginUiEphemeralSharedValueLease<T> | null;
-}>;
+type PluginUiEphemeralSharedScope = PluginEphemeralSharedScope;
 ```
 
 
@@ -1401,10 +1395,7 @@ type PluginUiEphemeralSharedScope = Readonly<{
 Declared by `dist/hostApi/ephemeralSharedScope.public.d.ts` as `PluginUiEphemeralSharedValueLease`.
 
 ```ts
-type PluginUiEphemeralSharedValueLease<T> = Readonly<{
-    value: T;
-    release(): void;
-}>;
+type PluginUiEphemeralSharedValueLease<T> = PluginEphemeralSharedValueLease<T>;
 ```
 
 
@@ -5070,13 +5061,7 @@ Re-exported from another package as `PluginUiActionResultFor`; that package owns
 Declared by `dist/hostApi/ephemeralSharedScope.public.d.ts` as `PluginUiEphemeralSharedScope`.
 
 ```ts
-type PluginUiEphemeralSharedScope = Readonly<{
-    acquire<T>(localKey: string, create: () => Readonly<{
-        value: T;
-        dispose(): void;
-        onExecutionOriginChange?(): void;
-    }>): PluginUiEphemeralSharedValueLease<T> | null;
-}>;
+type PluginUiEphemeralSharedScope = PluginEphemeralSharedScope;
 ```
 
 
@@ -5085,10 +5070,7 @@ type PluginUiEphemeralSharedScope = Readonly<{
 Declared by `dist/hostApi/ephemeralSharedScope.public.d.ts` as `PluginUiEphemeralSharedValueLease`.
 
 ```ts
-type PluginUiEphemeralSharedValueLease<T> = Readonly<{
-    value: T;
-    release(): void;
-}>;
+type PluginUiEphemeralSharedValueLease<T> = PluginEphemeralSharedValueLease<T>;
 ```
 
 
@@ -8644,6 +8626,8 @@ type ScaledTextStyleArray<T extends readonly unknown[]> = number extends T['leng
 - `@happier-dev/plugin-sdk#Disposable`
 - `@happier-dev/plugin-sdk#PluginAccountCollectionDefinition`
 - `@happier-dev/plugin-sdk#PluginAccountCollectionForDefinition`
+- `@happier-dev/plugin-sdk#PluginEphemeralSharedScope`
+- `@happier-dev/plugin-sdk#PluginEphemeralSharedValueLease`
 - `@happier-dev/plugin-sdk#PluginError`
 - `@happier-dev/plugin-sdk#PluginReference`
 - `@happier-dev/plugin-sdk#PluginUiActionExecutionOptions`

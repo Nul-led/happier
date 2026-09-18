@@ -221,10 +221,10 @@ const TEST_ONLY_PRIVATE_AGENT_PACKAGE_PLUGIN_IDS = [
 ] as const;
 
 const AGENT_RUNTIME_EVENT_TEST_IMPORTS = {
-  'packages/plugins/antigravity/src/agent/cliPrint/runtime.test.ts': [
+  'packages/plugins/opencode/src/agent/runtime/server/sessionRuntime.native.test.ts': [
     'AgentSessionRuntimeEventSchema',
   ],
-  'packages/plugins/antigravity/src/agent/localharness/runtime/sessionRuntime.test.ts': [
+  'packages/plugins/pi/src/agent/runtime/rpc/operations.test.ts': [
     'AgentSessionRuntimeEventSchema',
   ],
 } as const;

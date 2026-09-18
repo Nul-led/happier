@@ -61,12 +61,8 @@ async function mountBinding(): Promise<Readonly<{
     let fixture!: PluginUiTestkit;
     await act(async () => {
         fixture = await createPluginUiTestkit({
-            identity: {
-                pluginId: 'happier.triage',
-                pluginVersion: '0.0.0',
-                viewId: 'triage-bound-composer',
-                generation: 'binding',
-            },
+            identity: { instanceId: 'fixture-instance-169', mountNonce: 'fixture-mount-169' },
+            authorPlugin: { id: 'happier.triage', version: '0.0.0' },
             surface: defineUiSurface(Harness),
             surfaceContext: createSurfaceContextFixture({}),
             adapter: createPluginUiRnwSemanticSurfaceAdapter(),

@@ -23,16 +23,20 @@ describe('buildPiToolsForPermissionMode', () => {
   it.each([
     { mode: 'plan', expected: ['read', 'grep', 'find', 'ls'] },
     { mode: 'read-only', expected: ['read', 'grep', 'find', 'ls'] },
+    { mode: 'read_only', expected: ['read', 'grep', 'find', 'ls'] },
     { mode: 'default', expected: null },
-    { mode: 'safe-yolo', expected: ['read', 'edit', 'write', 'grep', 'find', 'ls'] },
-    { mode: 'acceptEdits', expected: ['read', 'edit', 'write', 'grep', 'find', 'ls'] },
+    { mode: 'auto', expected: null },
+    { mode: 'safe-yolo', expected: null },
+    { mode: 'workspace_write', expected: null },
+    { mode: 'acceptEdits', expected: null },
     { mode: 'yolo', expected: null },
+    { mode: 'bypass', expected: null },
     { mode: 'bypassPermissions', expected: null },
   ] as const)('maps $mode to tools list', ({ mode, expected }) => {
     expect(buildPiToolsForPermissionMode(mode)).toEqual(expected);
   });
 
-  it.each(['readOnly', 'yolo!', 'bypass'] as const)('fails closed for unknown mode %s', (mode) => {
+  it.each(['yolo!', 'unexpected-mode'] as const)('fails closed for unknown mode %s', (mode) => {
     expect(buildPiToolsForPermissionMode(mode)).toEqual(['read', 'grep', 'find', 'ls']);
   });
 
@@ -40,14 +44,14 @@ describe('buildPiToolsForPermissionMode', () => {
     const loaded = await import('./permissions.js') as PermissionModule;
     expect(loaded.resolvePiToolsForPermissionMode).toEqual(expect.any(Function));
 
-    const resolved = loaded.resolvePiToolsForPermissionMode?.('readOnly');
+    const resolved = loaded.resolvePiToolsForPermissionMode?.('yolo!');
 
     expect(resolved).toEqual({
       tools: ['read', 'grep', 'find', 'ls'],
       resolvedIntent: 'read-only',
       diagnostic: {
         kind: 'unknown_permission_mode',
-        requestedMode: 'readOnly',
+        requestedMode: 'yolo!',
         appliedIntent: 'read-only',
       },
     });
@@ -56,17 +60,17 @@ describe('buildPiToolsForPermissionMode', () => {
 
 describe('buildPiRpcArgs', () => {
   it('builds Pi RPC argv with permission tools and normalized thinking level', () => {
-    expect(buildPiRpcArgs({ permissionMode: 'acceptEdits', thinkingLevel: 'HIGH' })).toEqual([
+    expect(buildPiRpcArgs({ permissionMode: 'read-only', thinkingLevel: 'HIGH' })).toEqual([
       '--mode',
       'rpc',
       '--tools',
-      'read,edit,write,grep,find,ls',
+      'read,grep,find,ls',
       '--thinking',
       'high',
     ]);
   });
 
-  it('omits invalid thinking levels and trims resume session ids', () => {
+  it('omits invalid thinking levels and preserves provider-minted resume session ids', () => {
     expect(buildPiRpcArgs({
       permissionMode: 'default',
       thinkingLevel: 'invalid',
@@ -75,7 +79,7 @@ describe('buildPiRpcArgs', () => {
       '--mode',
       'rpc',
       '--session',
-      'pi-session-1',
+      ' pi-session-1 ',
     ]);
   });
 
@@ -151,7 +155,7 @@ describe('buildPiRpcArgs', () => {
     ]);
   });
 
-  it.each(['plan', 'read-only', 'safe-yolo'] as const)(
+  it.each(['plan', 'read-only'] as const)(
     'keeps native extension tools available when %s restricts Pi built-in tools',
     (permissionMode) => {
       const args = buildPiRpcArgs({

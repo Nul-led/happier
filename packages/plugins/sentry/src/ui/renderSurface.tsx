@@ -79,7 +79,10 @@ import type {
   SentryFrameV1,
 } from '../privacy/sentryEventProjection.js';
 import { sentryProjectionHasTrace } from '../privacy/sentryEventProjection.js';
-import { createSentryEvidenceCandidate } from '../composer/candidate.js';
+import {
+  createSentryEvidenceCandidate,
+  summarizeSentryEvidenceDisclosure,
+} from '../composer/candidate.js';
 
 import {
   projectSentryDetailOverview,
@@ -313,36 +316,57 @@ function SelectedEventRefreshNotice({
 /**
  * The redaction disclosure every Tier-B/C region owes its reader.
  *
- * It is built from the projection's own two arrays rather than from a boolean, so it
- * names what was withheld instead of implying a completeness the projection never had
- * (`SENTRY.md` §8.2, §8.4).
+ * It is built from the projection's own arrays rather than from a boolean, so it names
+ * what was withheld instead of implying a completeness the projection never had
+ * (`SENTRY.md` §8.2, §8.4). All three facts are stated, because they are three
+ * different things a reader can be wrong about: values this organization's own Sentry
+ * rules scrubbed, values this source withheld — frame locals above all — and the
+ * sensitive values that ARE on screen. A notice that spoke only of provider scrubbing
+ * rendered nothing at all for an occurrence whose locals were withheld and whose event
+ * user fields were retained, which is the case where saying nothing misleads most.
  */
 function RedactionNotice({
   projection,
 }: Readonly<{ projection: SentryEventProjectionV1 }>): React.ReactElement | null {
   const text = usePluginTranslation();
-  const scrubbed = projection.redactions.filter(
-    (redaction) => redaction.reason === 'providerScrubbed',
-  ).length;
-  if (scrubbed === 0 && !projection.projectionTruncated) return null;
-  return (
-    <Banner
-      tone="neutral"
-      title={scrubbed === 0
-        ? text('plugins.sentry.ui.shortened', 'Some details were shortened')
-        : text('plugins.sentry.ui.valuesRedacted', 'Sentry redacted some values')}
-      description={scrubbed === 0
-        ? text(
-          'plugins.sentry.ui.shortened.description',
-          'Open the issue in Sentry to read the complete text.',
-        )
-        : text(
-          'plugins.sentry.ui.valuesRedacted.description',
-          '{count} value(s) were already scrubbed by this organization’s own Sentry rules.',
-          { count: scrubbed },
-        )}
-    />
-  );
+  const disclosure = summarizeSentryEvidenceDisclosure(projection);
+  const { providerScrubbed, pluginWithheld, sensitivePaths } = disclosure;
+  if (
+    providerScrubbed === 0
+    && pluginWithheld === 0
+    && sensitivePaths === 0
+    && !disclosure.truncated
+  ) return null;
+
+  const title = providerScrubbed > 0
+    ? text('plugins.sentry.ui.valuesRedacted', 'Sentry redacted some values')
+    : pluginWithheld > 0 || sensitivePaths > 0
+      ? text('plugins.sentry.ui.valuesWithheld', 'Some values are withheld')
+      : text('plugins.sentry.ui.shortened', 'Some details were shortened');
+
+  const description = [
+    providerScrubbed === 0 ? null : text(
+      'plugins.sentry.ui.valuesRedacted.description',
+      '{count} value(s) were already scrubbed by this organization’s own Sentry rules.',
+      { count: providerScrubbed },
+    ),
+    pluginWithheld === 0 ? null : text(
+      'plugins.sentry.ui.valuesWithheld.description',
+      '{count} value(s) are withheld by Happier, including every frame’s local variables.',
+      { count: pluginWithheld },
+    ),
+    sensitivePaths === 0 ? null : text(
+      'plugins.sentry.ui.sensitiveRetained.description',
+      '{count} sensitive value(s), such as event user fields and tag values, are shown here.',
+      { count: sensitivePaths },
+    ),
+    !disclosure.truncated ? null : text(
+      'plugins.sentry.ui.shortened.description',
+      'Open the issue in Sentry to read the complete text.',
+    ),
+  ].filter((line): line is string => line !== null).join(' ');
+
+  return <Banner tone="neutral" title={title} description={description} />;
 }
 
 /* --------------------------------------------------------------------- Overview */
@@ -970,6 +994,34 @@ function SelectedOccurrenceEvidenceAction({
     'plugins.sentry.ui.addSelectedOccurrence',
     'Add selected occurrence to message',
   );
+  // What "Add" actually forwards, counted from the projection on screen. The
+  // selecting panel shows the occurrence's title and tags, while dispatch also
+  // sends its frames, source context lines and breadcrumbs — so a confirmation
+  // naming only the action asks for approval of evidence it never described
+  // (`SENTRY.md` §8.4).
+  const evidence = summarizeSentryEvidenceDisclosure(projection);
+  const confirmation = [
+    action,
+    text(
+      'plugins.sentry.ui.evidence.includes',
+      'Sends this occurrence: {frames} stack frame(s), {contextLines} source context'
+        + ' line(s), {breadcrumbs} breadcrumb(s), {tags} tag(s), and its title, location,'
+        + ' culprit and platform.',
+      {
+        frames: evidence.frames,
+        contextLines: evidence.contextLines,
+        breadcrumbs: evidence.breadcrumbs,
+        tags: evidence.tags,
+      },
+    ),
+    text(
+      'plugins.sentry.ui.evidence.excludes',
+      'Never sent: frame local variables, event user fields, request headers, cookies'
+        + ' and bodies, {scrubbed} value(s) Sentry already scrubbed and {withheld} value(s)'
+        + ' Happier withheld.',
+      { scrubbed: evidence.providerScrubbed, withheld: evidence.pluginWithheld },
+    ),
+  ].join('\n\n');
 
   return (
     <Button
@@ -983,9 +1035,10 @@ function SelectedOccurrenceEvidenceAction({
         setBusy(true);
         try {
           // The selected projection and its redaction notice are visible in
-          // this exact panel. Confirmation happens before candidate issuance;
-          // a selection change or unmount aborts the host dialog.
-          const confirmed = await hostApi.confirm(action, {
+          // this exact panel, and the confirmation names the evidence itself.
+          // Confirmation happens before candidate issuance; a selection change
+          // or unmount aborts the host dialog.
+          const confirmed = await hostApi.confirm(confirmation, {
             title,
             signal: controller.signal,
           });
@@ -1027,22 +1080,70 @@ function OccurrencesPanel({
   selectedEvent: SentrySelectedEventControllerV1;
 }>): React.ReactElement {
   const text = usePluginTranslation();
-  const controller = useSentryOccurrences(input);
+  // The reader's own ordering choice (`SENTRY.md` §7.4). It lives in the panel
+  // because it is a way of looking at this list, not a fact about the issue —
+  // and it resets with the panel's active interval, which is the only state
+  // Occurrences is allowed to keep across a tab leave (§7.2b).
+  const [spread, setSpread] = React.useState(false);
+  const { active } = useTabPanelActivity();
+  React.useEffect(() => {
+    if (!active) setSpread(false);
+  }, [active]);
+  const controller = useSentryOccurrences(input, spread);
   const { state } = controller;
 
+  const spreadControl = (
+    <Stack gap="small">
+      <Button
+        title={spread
+          ? text('plugins.sentry.ui.hideSpread', 'Show Sentry’s own order')
+          : text('plugins.sentry.ui.showSpread', 'Show a spread of events')}
+        variant="plain"
+        onPress={() => {
+          setSpread((current) => !current);
+        }}
+      />
+      {spread
+        ? (
+          <Text
+            variant="caption"
+            tone="neutral"
+            valueKey="plugins.sentry.ui.spread.description"
+            fallback={'A spread is a pseudo-random deterministic ordering of the same retained'
+              + ' events, not a statistical sample.'}
+          />
+        )
+        : null}
+    </Stack>
+  );
+
   if (state.kind === 'idle' || state.kind === 'loading') {
-    return <LoadingState title="Reading retained events" titleKey="plugins.sentry.ui.readingEvents" />;
+    // The control outlives the read it starts. Changing the ordering re-reads
+    // the first page, and a control that disappeared while that page loaded
+    // would move out from under the reader's own pointer every time they used
+    // it.
+    return (
+      <Stack gap="small">
+        {spreadControl}
+        <LoadingState title="Reading retained events" titleKey="plugins.sentry.ui.readingEvents" />
+      </Stack>
+    );
   }
   if (state.kind === 'unavailable') {
+    // The control stays reachable: a read that failed under the spread is
+    // exactly when a reader needs to go back to the ordinary order.
     return (
-      <ErrorState
-        title="Retained events are unavailable"
-        titleKey="plugins.sentry.ui.eventsUnavailable"
-        description={failureDescription(
-          state.failure,
-          text('plugins.sentry.ui.readFailed', 'Sentry could not complete this read.'),
-        )}
-      />
+      <Stack gap="small">
+        <ErrorState
+          title="Retained events are unavailable"
+          titleKey="plugins.sentry.ui.eventsUnavailable"
+          description={failureDescription(
+            state.failure,
+            text('plugins.sentry.ui.readFailed', 'Sentry could not complete this read.'),
+          )}
+        />
+        {spreadControl}
+      </Stack>
     );
   }
 
@@ -1060,6 +1161,7 @@ function OccurrencesPanel({
             valueKey={RETENTION_DISCLOSURE_KEY}
             fallback={RETENTION_DISCLOSURE}
           />
+          {spreadControl}
           {state.failure === null
             ? null
             : (

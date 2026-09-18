@@ -65,6 +65,7 @@ function coreContext(services: Readonly<{
         id: 'connection-setup-v1',
         qualifiedId: 'happier.channels/actions/connection-setup-v1',
       },
+      immutableGenerationId: 'telegram-activation-fixture-generation',
       materialization: {
         machineId: 'telegram-activation-fixture-machine',
         materializationId: 'telegram-activation-fixture-materialization',

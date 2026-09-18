@@ -331,6 +331,14 @@ export const BitbucketReviewPublicationResultV1Schema = defineProtocolUnion([
   defineProtocolObject({
     kind: defineProtocolLiteral('settled'),
     publication: ReviewCommentPublicationResultV1ProtocolSchema,
+    /**
+     * Present only when the canonical Reviews settlement could not be recorded.
+     *
+     * What Bitbucket did and what Happier persisted are separate facts. `publication` is still
+     * exactly the provider outcome, including any external reference already confirmed; this says
+     * the canonical claim stayed open, so no reader may treat the result as durably settled.
+     */
+    settlement: defineProtocolLiteral('unrecorded').optional(),
     observation: TriageSourceObservationV1Schema.optional(),
     failure: TriageSourceFailureV1Schema.optional(),
   }, { policy: 'closed' }),

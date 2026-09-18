@@ -9,15 +9,13 @@ import type {
 import {
   SCM_OPERATION_ERROR_CODES,
   SCM_WORKTREE_REMOVE_AUTHORIZATION_TOKEN,
+  hasForbiddenGitRefName,
+  normalizeWorktreeDisplayName,
 } from '@happier-dev/plugin-sdk/scm';
 import type { ScmBackendContext } from '../types.js';
 import { runScmCommand } from '../runtime.js';
 import { buildScmNonInteractiveEnv } from '../providers/shared/nonInteractiveEnv.js';
 import { mapGitErrorCode } from '../remote.js';
-import {
-    hasForbiddenGitRefName,
-    normalizeWorktreeDisplayName,
-} from './worktreeName.js';
 import { createGitWorkspaceCheckoutAtDefaultPath } from './materializeGitWorkspaceCheckout.js';
 
 function normalizeBaseRef(value: string | null | undefined): string | null {

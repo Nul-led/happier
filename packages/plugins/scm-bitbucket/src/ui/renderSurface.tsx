@@ -35,6 +35,7 @@ import {
   Item,
   ItemGroup,
   List,
+  Markdown,
   LoadingState,
   Metadata,
   Row,
@@ -228,6 +229,7 @@ function OverviewPanel({
     },
   };
   const overview: BitbucketDetailOverviewV1 = projectBitbucketDetailOverview(effectiveInput);
+  const description = overviewResult === null ? overview.summary : overviewResult.description;
   const statusFields = overview.fields.filter(
     (field): field is Extract<BitbucketDetailFieldV1, { kind: 'status' }> => field.kind === 'status',
   );
@@ -244,17 +246,17 @@ function OverviewPanel({
   return (
     <ScrollArea>
       <Stack gap="large">
-        {controller.result?.kind !== 'unavailable' ? null : (
+        {controller.failure === null ? null : (
           <Banner
             tone="warning"
-            title={text('plugins.bitbucket.ui.overviewFallback', 'Showing the launch observation')}
+            title={text('plugins.bitbucket.ui.partial', 'Showing what was read so far')}
             description={failureDescription(
-              controller.result.failure,
+              controller.failure,
               text('plugins.bitbucket.ui.overviewRefreshFailed', 'Bitbucket could not refresh this overview.'),
             )}
           />
         )}
-        {!overview.projectionTruncated ? null : (
+        {!(overview.projectionTruncated || overviewResult?.descriptionTruncated) ? null : (
           <Banner
             tone="neutral"
             title="Some details were shortened"
@@ -263,10 +265,10 @@ function OverviewPanel({
             descriptionKey="plugins.bitbucket.ui.shortened.description"
           />
         )}
-        {overview.summary === null ? null : (
+        {description === null ? null : (
           <Stack gap="small">
             <Text variant="caption" tone="neutral" valueKey="plugins.bitbucket.ui.description" fallback="Description" />
-            <Text value={overview.summary} />
+            <Markdown value={description} />
           </Stack>
         )}
         {statusFields.length === 0 ? null : (
@@ -647,7 +649,7 @@ function commentHeadline(
   const author = row.author ?? text('plugins.bitbucket.ui.someone', 'Someone');
   const edited = row.editedAtMs === undefined ? '' : ` · ${text('plugins.bitbucket.ui.edited', 'edited')}`;
   const reply = row.parentId === undefined ? '' : ` · ${text('plugins.bitbucket.ui.reply', 'reply')}`;
-  return `${author}${reply}${edited}`;
+  return `${author} · #${row.id}${reply}${edited}`;
 }
 
 function CommentsPanel({
@@ -662,6 +664,33 @@ function CommentsPanel({
   const text = usePluginTranslation();
   const controller = useBitbucketComments(input);
   const { state } = controller;
+  const [expandedParents, setExpandedParents] = React.useState<ReadonlySet<string>>(() => new Set());
+  const replyGroups = React.useMemo(() => {
+    const groups = new Map<string, string[]>();
+    for (const row of state.rows) {
+      if (row.parentId === undefined) continue;
+      const replies = groups.get(row.parentId);
+      if (replies) replies.push(row.id);
+      else groups.set(row.parentId, [row.id]);
+    }
+    return groups;
+  }, [state.rows]);
+  const visibleRows = React.useMemo(() => {
+    const precedingVisibility = new Map<string, boolean>();
+    // Keep provider order, including when a later page brings another reply. Missing
+    // parents never hide returned evidence or manufacture a synthetic root comment.
+    // A parent returned after its replies must not retroactively hide a visible
+    // orphan when appending a page and move the reader's existing viewport.
+    return state.rows.filter((row) => {
+      const visible = row.parentId === undefined
+        || !precedingVisibility.has(row.parentId)
+        || (precedingVisibility.get(row.parentId) === true
+          && (expandedParents.has(row.parentId)
+            || replyGroups.get(row.parentId)?.[0] === row.id));
+      precedingVisibility.set(row.id, visible);
+      return visible;
+    });
+  }, [state.rows, expandedParents, replyGroups]);
 
   if (state.kind === 'idle' || state.kind === 'loading') {
     return <LoadingState title="Reading the comments from Bitbucket" titleKey="plugins.bitbucket.ui.readingComments" />;
@@ -682,7 +711,7 @@ function CommentsPanel({
     <List
       accessibilityLabel="Comments on this Bitbucket pull request"
       accessibilityLabelKey="plugins.bitbucket.ui.commentsLabel"
-      items={state.rows}
+      items={visibleRows}
       keyForItem={(row) => row.id}
       header={(
         <Stack gap="small">
@@ -745,6 +774,22 @@ function CommentsPanel({
             * Pressable and these are not buttons inside a button.
             */}
           <BitbucketCommentResolutionControls input={input} comment={row} />
+          {row.parentId === undefined ? null : (
+            <Text
+              variant="caption"
+              valueKey="plugins.bitbucket.ui.replyToComment"
+              fallback="Reply to comment {id}"
+              values={{ id: row.parentId }}
+            />
+          )}
+          {(replyGroups.get(row.id)?.length ?? 0) > 1 && !expandedParents.has(row.id) ? (
+            <Button
+              title="Show returned replies"
+              titleKey="plugins.bitbucket.ui.showReturnedReplies"
+              variant="plain"
+              onPress={() => setExpandedParents((previous) => new Set([...previous, row.id]))}
+            />
+          ) : null}
         </Item>
       )}
     />

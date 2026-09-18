@@ -335,6 +335,8 @@ describe('General Sessions package-local projections', () => {
             text: string;
             idempotencyKey: string;
         }>>();
+        expectTypeOf<Extract<SessionSendRequest, { kind: 'userText' }>>()
+            .toHaveProperty('recipient');
         expectTypeOf<SessionSendResult>().toHaveProperty('status');
         expectTypeOf<SessionListQuery>().toEqualTypeOf<Readonly<{
             cursor?: string;

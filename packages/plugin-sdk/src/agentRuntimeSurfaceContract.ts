@@ -482,6 +482,13 @@ type _ExecutionRunOpenMustCarryProviderBoundLaunchInputs = AssertTrue<
   >
 >;
 
+type _ExecutionRunOpenMustCarryOnlyBoundedMcpLaunchConfigs = AssertTrue<
+  Equal<
+    NonNullable<AgentExecutionRunOpenRequest['mcpServers']>,
+    Readonly<Record<string, AgentSessionMcpLaunchConfig>>
+  >
+>;
+
 type _ExecutionRunOpenMustNotExposeAnotherEnvironmentCarrier = AssertNever<
   Extract<keyof AgentExecutionRunOpenRequest, 'env' | 'environment' | 'unsetEnvKeys' | 'rawMetadata'>
 >;
@@ -489,7 +496,7 @@ type _ExecutionRunOpenMustNotExposeAnotherEnvironmentCarrier = AssertNever<
 type _ExecutionRunOpenMustNotBecomeAPersistentSessionCarrier = AssertNever<
   Extract<
     keyof AgentExecutionRunOpenRequest,
-    'connectedAccounts' | 'mcpServers' | 'startupInstructions'
+    'connectedAccounts' | 'startupInstructions'
   >
 >;
 

@@ -133,6 +133,35 @@ describe('Codex External Session observation', () => {
     fsBoundary.readdir.mockImplementation(actual.readdir);
   });
 
+  it('keeps the observed native session id byte-exact, bounds the raw value, and rejects blank', () => {
+    // Codex mints these ids; `  x  ` and `x` are different provider sessions,
+    // so the opaque link key must not collapse them together.
+    const exactRemoteSessionId = '  provider\nses/AB+cd==  ';
+    const codexHome = '/tmp/happier-codex-observation-exact-home';
+    const contribution = createCodexExternalSessionObservationContribution({
+      env: { CODEX_HOME: codexHome },
+    });
+
+    const exact = contribution.describeResource(
+      linkedSource({ codexHome, remoteSessionId: exactRemoteSessionId }),
+    );
+    const trimmed = contribution.describeResource(
+      linkedSource({ codexHome, remoteSessionId: exactRemoteSessionId.trim() }),
+    );
+
+    expect(exact.linkKey).not.toBe(trimmed.linkKey);
+
+    // The 2000-char ceiling is a raw-value bound: padding must not buy headroom.
+    const overLongRawValue = `${' '.repeat(64)}${'a'.repeat(2_000)}${' '.repeat(64)}`;
+    expect(() => contribution.describeResource(
+      linkedSource({ codexHome, remoteSessionId: overLongRawValue }),
+    )).toThrow(/bounded native session id/);
+
+    expect(() => contribution.describeResource(
+      linkedSource({ codexHome, remoteSessionId: ' \n\t ' }),
+    )).toThrow(/bounded native session id/);
+  });
+
   it('groups rollout links with bounded opaque keys and obtains authority only from descriptor reconciliation', async () => {
     const fixture = await createRolloutSetFixture();
     const otherHomeFixture = await createRolloutSetFixture();

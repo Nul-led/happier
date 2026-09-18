@@ -7,6 +7,7 @@ import { isCanonicalAbsolutePathInsideRoot } from '@happier-dev/plugin-sdk/fs';
 import type { HandoffExportSessionMetadata } from '@happier-dev/plugin-sdk/agents/runtime';
 
 import { resolveClaudeConfigDir } from '../../../environment.js';
+import { hasClaudeProviderIdentityValue } from '../../../../protocol/providerIdentity.js';
 import { resolveClaudeJsonlSessionFile } from '../external/files.js';
 import type { ClaudeExternalSessionSource } from '../external/source.js';
 import { getClaudeProjectPath, resolveClaudeProjectId } from './path.js';
@@ -189,7 +190,12 @@ async function resolveReadableTranscriptPath(params: Readonly<{
 }
 
 function assertSafeClaudeHandoffRemoteSessionId(remoteSessionId: string): void {
-    if (!remoteSessionId || remoteSessionId.includes('/') || remoteSessionId.includes('\\')) {
+    if (!hasClaudeProviderIdentityValue(remoteSessionId)) {
+        throw new Error(`Invalid remoteSessionId for Claude handoff: ${remoteSessionId}`);
+    }
+    // This protects the transcript filename boundary only. It is not identity
+    // normalization: every accepted byte is still persisted and resumed exactly.
+    if (remoteSessionId.includes('/') || remoteSessionId.includes('\\')) {
         throw new Error(`Invalid remoteSessionId for Claude handoff: ${remoteSessionId}`);
     }
 }

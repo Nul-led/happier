@@ -4,13 +4,14 @@ import { buildClaudeRuntimeLocalHandoffMetadata } from './runtimeLocalMetadata.j
 
 describe('buildClaudeRuntimeLocalHandoffMetadata', () => {
     it('builds runtime-local Claude direct-session metadata from narrow session input', () => {
+        const providerSessionId = '  claude-session-1\n ';
         expect(buildClaudeRuntimeLocalHandoffMetadata({
             metadata: {
                 machineId: 'machine-1',
                 path: '/repo/project',
             },
             session: {
-                vendorResumeId: 'claude-session-1',
+                vendorResumeId: providerSessionId,
                 spawnOptions: {
                     transcriptStorage: 'direct',
                     environmentVariables: {
@@ -24,12 +25,12 @@ describe('buildClaudeRuntimeLocalHandoffMetadata', () => {
                 CLAUDE_CONFIG_DIR: '/tmp/process-claude',
             },
         })).toEqual({
-            claudeSessionId: 'claude-session-1',
+            claudeSessionId: providerSessionId,
             externalSessionV1: {
                 v: 1,
                 agentId: 'claude',
                 machineId: 'machine-1',
-                remoteSessionId: 'claude-session-1',
+                remoteSessionId: providerSessionId,
                 source: {
                     kind: 'claudeConfig',
                     configDir: '/tmp/native-claude',

@@ -20,6 +20,7 @@ import type {
     AgentExperimentalVendorResumeSupportContributionV1,
     AgentPreflightSessionControlsContributionV1,
     AgentTerminalPromptSubmitVerificationPolicyV1,
+    AgentTerminalSurface,
     AgentProviderBindingAdapter,
     AgentDaemonSpawnHooks,
     AgentProviderCliAttachDeclarationV1,
@@ -64,6 +65,7 @@ export interface PluginRegistrationValueByFamily {
         connectedAccountLaunch?: AgentConnectedAccountLaunchContributionV1;
         preflightSessionControls?: AgentPreflightSessionControlsContributionV1;
         terminalPromptSubmitVerification?: AgentTerminalPromptSubmitVerificationPolicyV1;
+        terminal?: AgentTerminalSurface;
         sessionStartup?: AgentSessionStartupContributionV1;
         vendorResumeSupport?: AgentExperimentalVendorResumeSupportContributionV1;
         externalSessions?: AgentExternalSessionsContribution;

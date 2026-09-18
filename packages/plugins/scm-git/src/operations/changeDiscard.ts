@@ -6,6 +6,7 @@ import { SCM_OPERATION_ERROR_CODES } from '@happier-dev/plugin-sdk/scm';
 
 import { normalizePathspec, runScmCommand } from '../runtime.js';
 import type { ScmBackendContext } from '../types.js';
+import { toLiteralPathspec } from '../literalPathspec.js';
 
 export async function gitChangeDiscard(input: {
     context: ScmBackendContext;
@@ -34,10 +35,31 @@ export async function gitChangeDiscard(input: {
             };
         }
 
-        const pathspec = normalized.pathspec;
+        const pathspec = toLiteralPathspec(normalized.pathspec);
 
         const shouldRemove = entry.kind === 'untracked' || entry.kind === 'added';
+        let shouldRestore = true;
         if (shouldRemove) {
+            // Request kind can be stale: inspect the index instead of treating every
+            // restore failure as evidence that this is an untracked file.
+            const tracked = await runScmCommand({
+                bin: 'git',
+                cwd: context.cwd,
+                args: ['ls-files', '--cached', '-z', '--', pathspec],
+                timeoutMs: 10_000,
+            });
+            if (!tracked.success) {
+                return {
+                    success: false,
+                    errorCode: SCM_OPERATION_ERROR_CODES.COMMAND_FAILED,
+                    error: tracked.stderr || 'Failed to inspect file before discard',
+                    stderr: tracked.stderr,
+                };
+            }
+            shouldRestore = tracked.stdout.length > 0;
+        }
+
+        if (shouldRestore) {
             const restore = await runScmCommand({
                 bin: 'git',
                 cwd: context.cwd,
@@ -45,10 +67,18 @@ export async function gitChangeDiscard(input: {
                 timeoutMs: 10_000,
             });
             if (restore.stdout) outputs.push(restore.stdout);
-            if (!restore.success && restore.stderr) {
-                errors.push(restore.stderr);
+            if (!restore.success) {
+                return {
+                    success: false,
+                    errorCode: SCM_OPERATION_ERROR_CODES.COMMAND_FAILED,
+                    error: restore.stderr || 'Failed to discard file',
+                    stderr: restore.stderr,
+                };
             }
+            if (restore.stderr) errors.push(restore.stderr);
+        }
 
+        if (shouldRemove) {
             const clean = await runScmCommand({
                 bin: 'git',
                 cwd: context.cwd,
@@ -64,25 +94,7 @@ export async function gitChangeDiscard(input: {
                     stderr: clean.stderr,
                 };
             }
-            continue;
         }
-
-        const restore = await runScmCommand({
-            bin: 'git',
-            cwd: context.cwd,
-            args: ['restore', '--staged', '--worktree', '--', pathspec],
-            timeoutMs: 10_000,
-        });
-        if (restore.stdout) outputs.push(restore.stdout);
-        if (!restore.success) {
-            return {
-                success: false,
-                errorCode: SCM_OPERATION_ERROR_CODES.COMMAND_FAILED,
-                error: restore.stderr || 'Failed to discard file',
-                stderr: restore.stderr,
-            };
-        }
-        if (restore.stderr) errors.push(restore.stderr);
     }
 
     return {

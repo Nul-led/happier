@@ -3,4 +3,4 @@
 // credentials on https). Local re-export preserves this file's public surface for
 // downstream importers of @happier-dev/plugins-scm-gitlab.
 export { encodeCompareRef, parseScmRemoteUrl, stripTrailingSlash } from '@happier-dev/plugin-sdk/scm';
-export type { ParsedScmRemoteUrl } from '@happier-dev/plugin-sdk/scm';
+export type { ScmTransportIdentityV1 } from '@happier-dev/plugin-sdk/scm';

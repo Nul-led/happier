@@ -80,13 +80,16 @@ export async function inspectGitWorkspaceLocation(input: Readonly<{
     }
 
     const identity = await inspectGitCheckoutIdentity({ cwd: input.context.cwd });
+    const committedRevision = await readGitRevision({ cwd: input.context.cwd });
 
     return {
         rootPath: input.context.detection.rootPath,
         scmProvider: 'git',
+        ...(committedRevision ? { committedRevision } : {}),
         checkoutDiscovery: [{
             kind: 'git_worktree',
             path: identity?.registeredWorktreePath ?? identity?.worktreePath,
+            ...(identity?.commonDirPath ? { repositoryIdentityPath: identity.commonDirPath } : {}),
         }],
     };
 }

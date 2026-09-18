@@ -61,7 +61,7 @@ describe('the /protocol Collection cursor projection', () => {
             type: 'string',
             minLength: 1,
             maxLength: 4096,
-            pattern: '^[A-Za-z0-9_-]+$',
+            pattern: '^[A-Za-z0-9_-]+$(?![\\s\\S])',
         });
     });
 

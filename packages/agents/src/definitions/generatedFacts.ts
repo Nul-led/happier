@@ -12,12 +12,26 @@ const GENERATED_AGENT_DEFINITIONS_BY_ID = BUNDLED_AGENT_DEFINITIONS_BY_ID as Rea
   Partial<Record<BundledAgentId, BundledAgentDefinition>>
 >;
 
-export function mergeAuthoredWithGeneratedAgentFacts<T>(params: Readonly<{
+type MergeGeneratedAgentFactsParams<T> = Readonly<{
   authored: Readonly<Partial<Record<BundledAgentId, T>>>;
   label: string;
   readGenerated: (definition: BundledAgentDefinition, agentId: BundledAgentId) => T | null | undefined;
-}>): Readonly<Record<BundledAgentId, T>> {
-  const entries: Array<[BundledAgentId, T]> = [];
+}>;
+
+export function mergeAuthoredWithGeneratedAgentFacts<T>(
+  params: MergeGeneratedAgentFactsParams<T>,
+): Readonly<Record<BundledAgentId, T>>;
+export function mergeAuthoredWithGeneratedAgentFacts<T, TMissing>(
+  params: MergeGeneratedAgentFactsParams<T> & Readonly<{
+    resolveMissing: (agentId: BundledAgentId) => TMissing;
+  }>,
+): Readonly<Record<BundledAgentId, T | TMissing>>;
+export function mergeAuthoredWithGeneratedAgentFacts<T, TMissing>(
+  params: MergeGeneratedAgentFactsParams<T> & Readonly<{
+    resolveMissing?: (agentId: BundledAgentId) => TMissing;
+  }>,
+): Readonly<Record<BundledAgentId, T | TMissing>> {
+  const entries: Array<[BundledAgentId, T | TMissing]> = [];
 
   for (const agentId of AGENT_IDS) {
     const authored = params.authored[agentId];
@@ -29,12 +43,16 @@ export function mergeAuthoredWithGeneratedAgentFacts<T>(params: Readonly<{
     const generated = GENERATED_AGENT_DEFINITIONS_BY_ID[agentId];
     const generatedFact = generated ? params.readGenerated(generated, agentId) : null;
     if (generatedFact === null || generatedFact === undefined) {
+      if (params.resolveMissing) {
+        entries.push([agentId, params.resolveMissing(agentId)]);
+        continue;
+      }
       throw new Error(`Missing ${params.label} for agent '${agentId}'`);
     }
     entries.push([agentId, generatedFact]);
   }
 
-  return Object.freeze(Object.fromEntries(entries) as Record<BundledAgentId, T>);
+  return Object.freeze(Object.fromEntries(entries) as Record<BundledAgentId, T | TMissing>);
 }
 
 /**

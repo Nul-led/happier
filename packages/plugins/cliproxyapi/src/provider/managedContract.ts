@@ -119,3 +119,69 @@ export const CLIPROXYAPI_MANAGED_ENDPOINT_TEMPLATE_IDS = Object.freeze(
     ...family.endpointTemplateIds,
   ]),
 );
+
+/** Canonical endpoint-to-purpose lookup shared by every managed CLIProxyAPI consumer. */
+export function resolveCLIProxyAPIManagedPurposeFamily(input: Readonly<{
+  endpointTemplateId: string;
+  protocol: string;
+}>): typeof CLIPROXYAPI_MANAGED_PURPOSE_FAMILIES[number] | null {
+  return CLIPROXYAPI_MANAGED_PURPOSE_FAMILIES.find((family) => (
+    family.endpointTemplateIds.some((candidate) => candidate === input.endpointTemplateId)
+    && family.protocols.some((candidate) => candidate === input.protocol)
+  )) ?? null;
+}
+
+/** Projects the one executable CLIProxyAPI application used when an external
+ * Provider Connection is carried through the managed gateway. The source
+ * Provider still owns endpoint, catalog and credential currentness; this
+ * projection names only the process and route that actually execute on the
+ * broker Machine. */
+export function projectCLIProxyAPIProviderConnectionApplication(input: Readonly<{
+  agentTargetKey: string;
+  protocol: string;
+}>): Readonly<{
+  agentTargetKey: string;
+  implementationIdentity: Readonly<{ pluginId: 'happier.provider.cliproxyapi'; localId: 'cliproxyapi' }>;
+  endpointTemplateId: string;
+  protocol: 'openai-chat' | 'openai-responses' | 'anthropic';
+}> | null {
+  const supported = CLIPROXYAPI_MANAGED_PURPOSE_FAMILIES.some((family) => (
+    family.protocols.some((protocol) => protocol === input.protocol)
+  ));
+  if (!supported) return null;
+  const protocol = input.protocol as 'openai-chat' | 'openai-responses' | 'anthropic';
+  const endpointTemplateId = protocol === 'openai-chat'
+    ? 'cliproxyapi-openai-chat'
+    : protocol === 'openai-responses' ? 'cliproxyapi-openai-responses' : 'cliproxyapi-anthropic';
+  return Object.freeze({
+    agentTargetKey: input.agentTargetKey,
+    implementationIdentity: Object.freeze({ pluginId: 'happier.provider.cliproxyapi', localId: 'cliproxyapi' }),
+    endpointTemplateId,
+    protocol,
+  });
+}
+
+/** Reverse lookup for the public broker arm. The connected-service source and
+ * requested wire protocol select the same immutable managed family used by
+ * launch; callers cannot nominate an implementation or endpoint. */
+export function resolveCLIProxyAPIManagedBrokerApplication(input: Readonly<{
+  service: Readonly<{ pluginId: string; localId: string }>;
+  protocol: string;
+}>): Readonly<{
+  agentTargetKey: string;
+  implementationIdentity: Readonly<{ pluginId: 'happier.provider.cliproxyapi'; localId: 'cliproxyapi' }>;
+  endpointTemplateId: string;
+  protocol: 'openai-chat' | 'openai-responses' | 'anthropic';
+}> | null {
+  const family = CLIPROXYAPI_MANAGED_PURPOSE_FAMILIES.find((candidate) =>
+    candidate.connectedAccount.service.pluginId === input.service.pluginId
+    && candidate.connectedAccount.service.localId === input.service.localId
+    && candidate.protocols.some((protocol) => protocol === input.protocol));
+  if (!family) return null;
+  return projectCLIProxyAPIProviderConnectionApplication({
+    agentTargetKey: input.protocol === 'anthropic'
+      ? 'agent:happier.agent.claude/claude'
+      : 'agent:happier.agent.codex/codex',
+    protocol: input.protocol,
+  });
+}

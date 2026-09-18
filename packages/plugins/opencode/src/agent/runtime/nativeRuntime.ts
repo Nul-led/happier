@@ -1,5 +1,8 @@
 import {
   type AgentAcpRuntimeDefinition,
+  type AgentExecutionRunOpenRequest,
+  type AgentExecutionRunRuntime,
+  type AgentExecutionRunRuntimeContextV1,
   type AgentRuntimeFactory,
   type AgentRuntimeContext,
   type AgentSessionOpenRequest,
@@ -12,6 +15,7 @@ import {
 } from './mode.js';
 import { OPEN_CODE_SYSTEM_TOOL_ID } from '../systemTool.js';
 import { openOpenCodeServerSession } from './server/nativeSession.js';
+import { openOpenCodeServerExecutionRun } from './server/nativeExecutionRun.js';
 import {
   createOpenCodeNativeSessionControls,
   type OpenCodeActiveSkillsReaderRegistrar,
@@ -35,7 +39,9 @@ const OPEN_CODE_ACP_RUNTIME_DEFINITION = {
   },
 } satisfies AgentAcpRuntimeDefinition;
 
-function readOpenCodeNativeMode(request: AgentSessionOpenRequest): 'server' | 'acp' {
+function readOpenCodeNativeMode(
+  request: AgentSessionOpenRequest | AgentExecutionRunOpenRequest,
+): 'server' | 'acp' {
   const modeOption = request.configuration?.options.opencodeBackendMode?.value;
   return resolveOpenCodeBackendMode({
     env: request.launchEnvironment?.values,
@@ -43,6 +49,46 @@ function readOpenCodeNativeMode(request: AgentSessionOpenRequest): 'server' | 'a
       ? { opencodeBackendMode: modeOption }
       : null,
   });
+}
+
+async function openOpenCodeAcpExecutionRun(
+  request: AgentExecutionRunOpenRequest,
+  context: AgentExecutionRunRuntimeContextV1,
+): Promise<AgentExecutionRunRuntime> {
+  const launchRequest = await withOpenCodeProviderConfigLaunchEnvironment(request);
+  return await context.protocols.acp.openExecutionRunV1(launchRequest, {
+    transport: {
+      kind: 'stdio',
+      executable: { kind: 'systemTool', id: OPEN_CODE_SYSTEM_TOOL_ID },
+      args: ['acp'],
+      env: { NODE_ENV: 'production', DEBUG: '' },
+      timeouts: { initializeMs: 60_000, toolCallMs: 120_000, idleMs: 1_500 },
+    },
+    definition: OPEN_CODE_ACP_RUNTIME_DEFINITION,
+  });
+}
+
+async function openOpenCodeExecutionRun(
+  request: AgentExecutionRunOpenRequest,
+  context: AgentExecutionRunRuntimeContextV1,
+): Promise<AgentExecutionRunRuntime> {
+  const prepared = await prepareOpenCodeQualifiedConnectedAccounts(request, context);
+  try {
+    if (prepared.isInvalidated()) {
+      throw new Error('OpenCode qualified Connected Account launch was invalidated before opening the runtime.');
+    }
+    const runtime = readOpenCodeNativeMode(prepared.request) === 'acp'
+      ? await openOpenCodeAcpExecutionRun(prepared.request, context)
+      : await openOpenCodeServerExecutionRun(prepared.request, context);
+    if (prepared.isInvalidated()) {
+      await runtime.dispose();
+      throw new Error('OpenCode qualified Connected Account launch was invalidated while opening the runtime.');
+    }
+    return prepared.bindExecutionRun(runtime);
+  } catch (error) {
+    await prepared.dispose();
+    throw error;
+  }
 }
 
 async function openOpenCodeAcpSession(
@@ -95,9 +141,21 @@ async function openOpenCodeSession(
       await session.dispose('runtime_recovery');
       throw new Error('OpenCode qualified Connected Account launch was invalidated while opening the runtime.');
     }
-    const boundSession = prepared.bind(session);
+    const boundSession = prepared.bindSession(session);
     return {
       ...boundSession,
+      ...(mode === 'acp' && typeof boundSession.compact !== 'function'
+        ? {
+            compact: async () => ({
+              status: 'unsupported' as const,
+              diagnostic: {
+                code: 'opencode_acp_compaction_unsupported',
+                severity: 'error' as const,
+              },
+              retryable: false,
+            }),
+          }
+        : {}),
       runtimeCapabilities: {
         ...boundSession.runtimeCapabilities,
         localControl: mode === 'server'
@@ -137,6 +195,9 @@ export const createOpenCodeAgentRuntime: AgentRuntimeFactory = () => {
         context,
         controlsOwner.bindActiveSkillsReader,
       ),
+      executionRunContextV1: {
+        open: (request, context) => openOpenCodeExecutionRun(request, context),
+      },
     },
     surfaces: {
       handoff: openCodeHandoffSurface,

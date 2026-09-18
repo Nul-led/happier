@@ -1,7 +1,8 @@
+import { parsePermissionIntentAlias } from '@happier-dev/plugin-sdk/agents/runtime';
+
 import type { PiPermissionMode } from './types.js';
 
 const READ_ONLY_TOOLS = ['read', 'grep', 'find', 'ls'] as const;
-const SAFE_WRITE_TOOLS = ['read', 'edit', 'write', 'grep', 'find', 'ls'] as const;
 
 type PiPermissionIntent = 'default' | 'read-only' | 'safe-yolo' | 'yolo' | 'plan';
 
@@ -19,24 +20,22 @@ export type PiPermissionModeResolutionV1 = Readonly<{
 function normalizePermissionMode(permissionMode?: PiPermissionMode): PiPermissionIntent | null {
   const rawMode = typeof permissionMode === 'string' ? permissionMode.trim() : '';
   if (!rawMode) return 'default';
-  if (rawMode === 'acceptEdits') return 'safe-yolo';
-  if (rawMode === 'bypassPermissions') return 'yolo';
-  if (
-    rawMode === 'default'
-    || rawMode === 'read-only'
-    || rawMode === 'safe-yolo'
-    || rawMode === 'yolo'
-    || rawMode === 'plan'
-  ) {
-    return rawMode;
-  }
-  return null;
+  return parsePermissionIntentAlias(rawMode);
 }
 
 function toolsForIntent(intent: PiPermissionIntent): readonly string[] | null {
   if (intent === 'plan' || intent === 'read-only') return READ_ONLY_TOOLS;
-  if (intent === 'safe-yolo') return SAFE_WRITE_TOOLS;
   return null;
+}
+
+export type PiEffectiveLaunchPermissionPolicy = 'read-only-tools' | 'native-catalog';
+
+export function resolvePiEffectiveLaunchPermissionPolicy(
+  permissionMode?: PiPermissionMode,
+): PiEffectiveLaunchPermissionPolicy {
+  return resolvePiToolsForPermissionMode(permissionMode).tools === null
+    ? 'native-catalog'
+    : 'read-only-tools';
 }
 
 // Restricted Pi permissions are launch-time-only via the tools allowlist.

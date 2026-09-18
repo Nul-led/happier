@@ -23,7 +23,13 @@ describe('PostHog plugin activation', () => {
         // rejected by the canonical local-id pattern.
         expect(registerAccount)
             .toHaveBeenCalledWith(POSTHOG_CONNECTED_ACCOUNT_PURPOSE, expect.any(Object));
+        // Registration carries the whole authored reference: the declared
+        // presentation arrives with the two required handlers in one call, so the
+        // exact shape asserts both that neither handler was dropped and that no
+        // undeclared field was added.
         expect(registerComposerReference).toHaveBeenCalledWith('posthog-evidence', {
+            title: 'PostHog occurrence',
+            icon: 'error',
             search: expect.any(Function),
             resolve: expect.any(Function),
         });

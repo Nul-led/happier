@@ -32,14 +32,6 @@ type ClaudeTestPermissionDecision = Readonly<{
     requestId: string;
     approved: boolean;
 }>;
-type ClaudeTestPromptAcceptedInfo = Readonly<{
-    localInputId?: string | null;
-    localInputIds?: readonly string[];
-    userMessageSeq: number | null;
-    userMessageSeqs?: readonly number[];
-}>;
-type ClaudeTestPromptAcceptedCallback = (info: ClaudeTestPromptAcceptedInfo) => void;
-
 export type ClaudeRuntimePromptSendMeta = ClaudeProviderPromptSendMeta;
 
 export type ClaudeRuntimeTurnOperations = Readonly<{
@@ -58,12 +50,15 @@ export type ClaudeRuntimeTurnOperations = Readonly<{
     updateSessionRuntimeConfig(
         update: ClaudeProviderConfigurationUpdate,
     ): Promise<ClaudeProviderConfigurationOutcome | void>;
+    setOnPromptDeliveryOutcome(handler: ClaudeProviderPromptDeliveryOutcomeCallback | null): void;
     resetOrDisposeRuntime(
         reason?: ClaudeProviderDisposeReason | Readonly<{ reason?: ClaudeProviderDisposeReason }>,
     ): Promise<void>;
 }>;
 
-export function adaptClaudeProviderOperationsForTest<TOperations extends ClaudeProviderOperations>(
+export function adaptClaudeProviderOperationsForTest<
+    TOperations extends ClaudeProviderOperations & Pick<ClaudeRuntimeTurnOperations, 'setOnPromptDeliveryOutcome'>,
+>(
     operations: TOperations,
 ): TOperations & ClaudeRuntimeTurnOperations {
     return Object.freeze({
@@ -82,11 +77,6 @@ export function adaptClaudeProviderOperationsForTest<TOperations extends ClaudeP
         resetOrDisposeRuntime: async (reason) => await operations.disposeProviderSession(reason),
     });
 }
-
-type ClaudeRuntimePromptAcceptedOperations = Readonly<{
-    setOnPromptAcceptedByProvider?(handler: ClaudeTestPromptAcceptedCallback | null): void;
-    setOnPromptDeliveryOutcome?(handler: ClaudeProviderPromptDeliveryOutcomeCallback | null): void;
-}>;
 
 export type ClaudeTestSessionRuntime<TOperations extends ClaudeRuntimeTurnOperations = ClaudeRuntimeTurnOperations> =
     TOperations & Readonly<{
@@ -110,8 +100,7 @@ export type ClaudeTestSessionRuntime<TOperations extends ClaudeRuntimeTurnOperat
         updateConfig(
             update: ClaudeProviderConfigurationUpdate,
         ): Promise<ClaudeProviderConfigurationOutcome | void>;
-        setOnPromptAcceptedByProvider?(handler: ClaudeTestPromptAcceptedCallback | null): void;
-        setOnPromptDeliveryOutcome?(handler: ClaudeProviderPromptDeliveryOutcomeCallback | null): void;
+        setOnPromptDeliveryOutcome(handler: ClaudeProviderPromptDeliveryOutcomeCallback | null): void;
         dispose(reason?: ClaudeProviderDisposeReason): Promise<void>;
     }>;
 
@@ -170,18 +159,6 @@ function readSendMeta(
     return Object.keys(meta).length > 0 ? meta : undefined;
 }
 
-function readRuntimePromptAcceptedInfo(
-    options: ClaudeTestRuntimeSendOptions | undefined,
-): ClaudeTestPromptAcceptedInfo {
-    const meta = readSendMeta(options);
-    return {
-        ...(meta?.localId ? { localInputId: meta.localId } : {}),
-        ...(meta?.localIds && meta.localIds.length > 0 ? { localInputIds: meta.localIds } : {}),
-        userMessageSeq: isUserMessageSeq(meta?.userMessageSeq) ? meta.userMessageSeq : null,
-        ...(meta?.userMessageSeqs && meta.userMessageSeqs.length > 0 ? { userMessageSeqs: meta.userMessageSeqs } : {}),
-    };
-}
-
 function unsupportedDelivery(
     deliverAs: ClaudeTestRuntimeDeliveryMode,
 ): ClaudeTestRuntimeSendResult {
@@ -204,22 +181,6 @@ export function createClaudeTestSessionRuntime<TOperations extends ClaudeRuntime
     operations: TOperations,
 ): ClaudeTestSessionRuntime<TOperations> {
     const subscribers = new Set<(event: ClaudeProviderEvent) => void>();
-    const operationsPromptAcceptedHandler =
-        (operations as TOperations & ClaudeRuntimePromptAcceptedOperations).setOnPromptAcceptedByProvider;
-    const usesOperationsPromptAcceptedHandler = typeof operationsPromptAcceptedHandler === 'function';
-    const operationsPromptDeliveryOutcomeHandler =
-        (operations as TOperations & ClaudeRuntimePromptAcceptedOperations).setOnPromptDeliveryOutcome;
-    let promptAcceptedCallback: ClaudeTestPromptAcceptedCallback | null = null;
-    const submitPromptWithAcceptanceTracking = async (
-        info: ClaudeTestPromptAcceptedInfo,
-        submit: () => Promise<ClaudeRuntimePromptSubmissionOutcome>,
-    ): Promise<ClaudeRuntimePromptSubmissionOutcome> => {
-        const outcome = await submit();
-        if (!usesOperationsPromptAcceptedHandler && outcome.kind === 'accepted') {
-            promptAcceptedCallback?.(info);
-        }
-        return outcome;
-    };
     const unsubscribeOperations = operations.subscribeRuntimeEvents((event) => {
         for (const subscriber of Array.from(subscribers)) {
             subscriber(event);
@@ -254,12 +215,8 @@ export function createClaudeTestSessionRuntime<TOperations extends ClaudeRuntime
             }
             if (options?.deliverAs === 'followUp') return unsupportedDelivery(options.deliverAs);
             const meta = readSendMeta(options);
-            const acceptedInfo = readRuntimePromptAcceptedInfo(options);
             if (options?.deliverAs === 'steer') {
-                const outcome = await submitPromptWithAcceptanceTracking(
-                    acceptedInfo,
-                    async () => await operations.steerInFlightTurn(text, meta),
-                );
+                const outcome = await operations.steerInFlightTurn(text, meta);
                 return outcome.kind === 'rejected_before_effect'
                     ? { status: 'rejected', diagnostic: outcome.reason }
                     : outcome.kind === 'effect_may_have_occurred'
@@ -267,10 +224,7 @@ export function createClaudeTestSessionRuntime<TOperations extends ClaudeRuntime
                         : accepted();
             }
             operations.beginTurnLifecycle();
-            const outcome = await submitPromptWithAcceptanceTracking(
-                acceptedInfo,
-                async () => await operations.sendTurnPrompt(text, meta),
-            );
+            const outcome = await operations.sendTurnPrompt(text, meta);
             return outcome.kind === 'rejected_before_effect'
                 ? { status: 'rejected', diagnostic: outcome.reason }
                 : outcome.kind === 'effect_may_have_occurred'
@@ -287,24 +241,13 @@ export function createClaudeTestSessionRuntime<TOperations extends ClaudeRuntime
                 await operations.respondToPermission(decision.requestId, decision.approved),
         }),
         updateConfig: async (update) => await operations.updateSessionRuntimeConfig(update),
-        setOnPromptAcceptedByProvider(handler) {
-            if (usesOperationsPromptAcceptedHandler) {
-                operationsPromptAcceptedHandler.call(operations, handler);
-                return;
-            }
-            promptAcceptedCallback = handler;
-        },
         setOnPromptDeliveryOutcome(handler) {
-            operationsPromptDeliveryOutcomeHandler?.call(operations, handler);
+            operations.setOnPromptDeliveryOutcome(handler);
         },
         dispose: async (reason) => {
-            if (usesOperationsPromptAcceptedHandler) {
-                operationsPromptAcceptedHandler.call(operations, null);
-            }
-            operationsPromptDeliveryOutcomeHandler?.call(operations, null);
+            operations.setOnPromptDeliveryOutcome(null);
             unsubscribeOperations();
             subscribers.clear();
-            promptAcceptedCallback = null;
             await operations.resetOrDisposeRuntime(normalizeDisposeReason(reason));
         },
     }) as ClaudeTestSessionRuntime<TOperations>;

@@ -1,7 +1,7 @@
+import { readNonBlankOpaqueIdentifier } from '../../../../../protocol/opaqueIdentifier.js';
 import { classifyOpenCodeMessageForProjection } from './message.js';
 import {
   normalizeOpenCodeProjectionLowerString,
-  normalizeOpenCodeProjectionString,
   readOpenCodeNestedRecord,
   readOpenCodeTimestampMs,
 } from './parsing.js';
@@ -34,7 +34,8 @@ export function classifyOpenCodeAssistantCompletion(messageOrInfo: unknown): Ope
   const projection = classifyOpenCodeMessageForProjection(messageOrInfo);
   const info = projection.info;
   const finish = normalizeFinish(info?.finish);
-  const messageId = projection.messageId || normalizeOpenCodeProjectionString(info?.id).trim();
+  // OpenCode minted this message id; presence only, bytes preserved.
+  const messageId = projection.messageId || (readNonBlankOpaqueIdentifier(info?.id) ?? '');
 
   if (projection.kind === 'compaction_internal' || projection.kind === 'ignored_internal') {
     return { kind: 'ignored_internal', messageId, completedAtMs: null, finish };

@@ -125,7 +125,7 @@ const emptyRuntime = undefined as never; /* @sdk-negative-type-case-end */
     expectTypeOf<NonNullable<AgentRuntimeRegistrationOptions['providerCliAttach']>>()
       .toEqualTypeOf<AgentProviderCliAttachDeclarationV1>();
     expectTypeOf<keyof AgentProviderCliAttachDeclarationV1>().toEqualTypeOf<
-      'resolveTarget' | 'createArgs' | 'buildHealthUrl'
+      'resolveTarget' | 'createArgs' | 'resolveReachability'
     >();
     expectTypeOf<ReturnType<AgentProviderCliAttachDeclarationV1['resolveTarget']>>()
       .toEqualTypeOf<AgentProviderCliAttachTargetResolutionV1>();

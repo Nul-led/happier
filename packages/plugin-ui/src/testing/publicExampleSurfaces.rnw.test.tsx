@@ -46,12 +46,8 @@ describe('public React Native authoring examples', () => {
     async ({ id, surface, renderedText, copyLabel, copiedValue }) => {
       const writeClipboard = vi.fn(async () => undefined);
       const fixture = await createPluginUiTestkit({
-        identity: {
-          pluginId: `examples.${id}`,
-          pluginVersion: '0.1.0',
-          viewId: 'example-panel',
-          generation: `${id}-semantic-example`,
-        },
+        identity: { instanceId: 'fixture-instance-44', mountNonce: 'fixture-mount-44' },
+        authorPlugin: { id: `examples.${id}`, version: '0.1.0' },
         surface,
         surfaceContext: createSurfaceContextFixture(),
         adapter: createPluginUiRnwSemanticSurfaceAdapter(),

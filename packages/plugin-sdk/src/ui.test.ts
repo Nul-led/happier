@@ -168,6 +168,21 @@ describe('plugin UI public surface', () => {
         }, { policy: 'closed' });
         expect(launchInput.parse({ originComposer: { kind: 'session', sessionId: 'session-1' } }))
             .toEqual({ originComposer: { kind: 'session', sessionId: 'session-1' } });
+        expect(launchInput.parse({
+            originComposer: {
+                kind: 'workflowAuthoring',
+                draftId: 'draft-1',
+                blockId: 'block-1',
+                instanceId: 'instance-1',
+            },
+        })).toEqual({
+            originComposer: {
+                kind: 'workflowAuthoring',
+                draftId: 'draft-1',
+                blockId: 'block-1',
+                instanceId: 'instance-1',
+            },
+        });
         expect(launchInput.parse({})).toEqual({});
         // The arms stay closed through the projection.
         expect(launchInput.safeParse({
@@ -290,10 +305,7 @@ describe('plugin UI public surface', () => {
         expect(desktopUiChannel).toBe('desktop');
         expect(defineHostedWebBridgeMessage({
             version: 1,
-            pluginId: 'acme.preview',
-            contributionId: 'preview-web',
-            surfaceId: 'sessionSurface:acme.preview:preview-pane',
-            nonce: 'nonce-1',
+            identity: { instanceId: 'mount-1', mountNonce: 'nonce-1' },
             sequence: 1,
             kind: 'ready',
             payload: { ready: true },

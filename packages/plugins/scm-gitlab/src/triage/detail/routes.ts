@@ -211,6 +211,25 @@ export function buildGitlabMergeRequestPipelinesUrl(
 }
 
 /**
+ * `GET /projects/{projectId}` — one project, addressed by GitLab's own numeric id.
+ *
+ * A merge request names its editable source project as `source_project_id` and
+ * nothing else: the merge-request resource carries no nested project object, so
+ * its path and clone URL exist only in the Projects API. The id is used rather
+ * than a rebuilt path because a fork lives under a namespace this source has
+ * never seen, and reconstructing one would address the wrong repository.
+ */
+export function buildGitlabProjectUrl(input: Readonly<{
+  origin: GitlabConfiguredOrigin;
+  projectId: number;
+}>): string {
+  if (!Number.isSafeInteger(input.projectId) || input.projectId < 1) {
+    throw new Error('gitlab_project_id_invalid');
+  }
+  return buildGitlabApiUrl(input.origin, `/projects/${String(input.projectId)}`);
+}
+
+/**
  * `GET /projects/{id}/pipelines/{pipelineId}/jobs`.
  *
  * Project-scoped rather than item-scoped: a pipeline belongs to the project, and

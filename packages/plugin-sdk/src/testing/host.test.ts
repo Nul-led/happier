@@ -624,6 +624,7 @@ describe('createPluginTestkit', () => {
                   id: caller.contribution.id,
                   qualifiedId: caller.contribution.qualifiedId,
                 },
+                immutableGenerationId: caller.immutableGenerationId,
                 materialization: {
                   pluginId: caller.materialization.pluginId,
                   machineId: caller.materialization.machineId,
@@ -670,6 +671,7 @@ describe('createPluginTestkit', () => {
             id: 'send',
             qualifiedId: 'acme.alpha/actions/send',
           },
+          immutableGenerationId: expect.any(String),
           materialization: alphaMaterialization,
           originSurface: 'cli',
         },
@@ -1772,6 +1774,7 @@ describe('createPluginTestkit', () => {
   it('activates declared registrations and invokes the real registered action without daemon state', async () => {
     const presentationCalls: string[] = [];
     const presentation = Object.freeze({
+      async present() {},
       async notify(message: string) {
         presentationCalls.push(`notify:${message}`);
       },
@@ -2139,8 +2142,8 @@ describe('createPluginTestkit', () => {
         return ['attach'];
       }
 
-      buildHealthUrl() {
-        return `${this.baseUrl}/global/health`;
+      resolveReachability() {
+        return { kind: 'http' as const, url: `${this.baseUrl}/global/health` };
       }
     }
 
@@ -2183,8 +2186,8 @@ describe('createPluginTestkit', () => {
       value: { baseUrl: 'http://127.0.0.1:4096' },
     });
     expect(captured?.createArgs({ baseUrl: 'http://127.0.0.1:4096' })).toEqual(['attach']);
-    expect(captured?.buildHealthUrl({ baseUrl: 'http://127.0.0.1:4096' }))
-      .toBe('http://127.0.0.1:4096/global/health');
+    expect(captured?.resolveReachability({ baseUrl: 'http://127.0.0.1:4096' }))
+      .toEqual({ kind: 'http', url: 'http://127.0.0.1:4096/global/health' });
     await testkit.dispose();
   });
 

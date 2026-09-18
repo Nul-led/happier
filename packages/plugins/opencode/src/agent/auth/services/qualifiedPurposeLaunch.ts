@@ -4,6 +4,8 @@ import {
   CLAUDE_SUBSCRIPTION_SETUP_TOKEN_ENVIRONMENT_REQUEST_V1,
 } from '@happier-dev/plugin-sdk/first-party/connected-accounts';
 import type {
+  AgentExecutionRunOpenRequest,
+  AgentExecutionRunRuntime,
   AgentRuntimeContext,
   AgentSessionOpenRequest,
   AgentSessionRuntime,
@@ -51,10 +53,13 @@ const OPEN_CODE_NATIVE_AUTH_ENV_KEYS = Object.freeze([
   CLAUDE_SUBSCRIPTION_MATERIALIZATION_CONTRACT_V1.setupToken.environmentKey,
 ] as const);
 
-export type PreparedOpenCodeQualifiedConnectedAccounts = Readonly<{
-  request: AgentSessionOpenRequest;
+export type PreparedOpenCodeQualifiedConnectedAccounts<
+  Request extends AgentSessionOpenRequest | AgentExecutionRunOpenRequest,
+> = Readonly<{
+  request: Request;
   isInvalidated(): boolean;
-  bind(session: AgentSessionRuntime): AgentSessionRuntime;
+  bindSession(session: AgentSessionRuntime): AgentSessionRuntime;
+  bindExecutionRun(runtime: AgentExecutionRunRuntime): AgentExecutionRunRuntime;
   dispose(): Promise<void>;
 }>;
 
@@ -96,9 +101,9 @@ function readExactEnvironmentValue(
 }
 
 function mergeQualifiedLaunchEnvironment(input: Readonly<{
-  request: AgentSessionOpenRequest;
+  request: AgentSessionOpenRequest | AgentExecutionRunOpenRequest;
   authContent: string;
-}>): AgentSessionOpenRequest {
+}>): AgentSessionOpenRequest | AgentExecutionRunOpenRequest {
   const values = { ...(input.request.launchEnvironment?.values ?? {}) };
   for (const key of OPEN_CODE_NATIVE_AUTH_ENV_KEYS) delete values[key];
   Object.assign(values, {
@@ -144,17 +149,26 @@ async function waitForInitialPurposeObservations(
   }
 }
 
-export async function prepareOpenCodeQualifiedConnectedAccounts(
+export function prepareOpenCodeQualifiedConnectedAccounts(
   request: AgentSessionOpenRequest,
   context: AgentRuntimeContext,
-): Promise<PreparedOpenCodeQualifiedConnectedAccounts> {
+): Promise<PreparedOpenCodeQualifiedConnectedAccounts<AgentSessionOpenRequest>>;
+export function prepareOpenCodeQualifiedConnectedAccounts(
+  request: AgentExecutionRunOpenRequest,
+  context: AgentRuntimeContext,
+): Promise<PreparedOpenCodeQualifiedConnectedAccounts<AgentExecutionRunOpenRequest>>;
+export async function prepareOpenCodeQualifiedConnectedAccounts(
+  request: AgentSessionOpenRequest | AgentExecutionRunOpenRequest,
+  context: AgentRuntimeContext,
+): Promise<PreparedOpenCodeQualifiedConnectedAccounts<AgentSessionOpenRequest | AgentExecutionRunOpenRequest>> {
   // A Provider binding is the complete model credential authority. Selected
   // native OpenCode accounts must not be consulted or merged into that launch.
   if (request.providerBinding !== undefined) {
     return Object.freeze({
       request,
       isInvalidated: () => context.signal?.aborted === true,
-      bind: (session) => session,
+      bindSession: (session) => session,
+      bindExecutionRun: (runtime) => runtime,
       async dispose() {},
     });
   }
@@ -291,7 +305,7 @@ export async function prepareOpenCodeQualifiedConnectedAccounts(
     return Object.freeze({
       request: preparedRequest,
       isInvalidated: () => invalidated || context.signal?.aborted === true,
-      bind(session) {
+      bindSession(session) {
         let sessionDisposed = false;
         const preparedSession: AgentSessionRuntime = {
           ...session,
@@ -305,6 +319,21 @@ export async function prepareOpenCodeQualifiedConnectedAccounts(
         invalidationHandler = async () => await preparedSession.dispose('runtime_recovery');
         if (invalidated) void invalidationHandler();
         return preparedSession;
+      },
+      bindExecutionRun(runtime) {
+        let runtimeDisposed = false;
+        const preparedRuntime: AgentExecutionRunRuntime = {
+          ...runtime,
+          async dispose() {
+            if (runtimeDisposed) return;
+            runtimeDisposed = true;
+            await dispose();
+            await runtime.dispose();
+          },
+        };
+        invalidationHandler = async () => await preparedRuntime.dispose();
+        if (invalidated) void invalidationHandler();
+        return preparedRuntime;
       },
       dispose,
     });

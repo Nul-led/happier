@@ -345,18 +345,43 @@ async function claimPublication(
   }
 }
 
+const GITLAB_SETTLEMENT_UNAVAILABLE_FAILURE: TriageSourceFailureV1 = Object.freeze({
+  class: 'transient',
+  code: 'gitlab-publication-settlement-unavailable',
+  detail: 'GitLab accepted this publication, but Happier could not record its outcome.',
+});
+
+/**
+ * Records the outcome with the canonical claim owner.
+ *
+ * External publication truth and Happier's record of it are two facts, and only
+ * one of them just failed. A settlement transport failure therefore neither
+ * discards the provider references this invocation proved nor cancels the
+ * mandatory post-mutation observation (`sources/SCM.md` §3.9.3): it is returned
+ * as a stated failure. The server keeps the claim outstanding, so recovery stays
+ * the next explicit claim's decision — nothing here retries, replays or waits.
+ *
+ * Cancellation remains cancellation and propagates unchanged.
+ */
 async function reportPublication(
   plan: ReviewCommentPublicationPlanV1,
   claim: ReviewCommentClaimPublicationDispatchResponseV1,
   result: ReviewCommentPublicationResultV1,
   context: PluginInvocationContext,
   signal: AbortSignal,
-): Promise<void> {
-  await context.services.actions.execute(
-    'reviews.comments.claimPublicationDispatch',
-    createReviewCommentPublicationSettlementRequestV1(plan, claim, result),
-    { signal },
-  );
+): Promise<TriageSourceFailureV1 | null> {
+  try {
+    await context.services.actions.execute(
+      'reviews.comments.claimPublicationDispatch',
+      createReviewCommentPublicationSettlementRequestV1(plan, claim, result),
+      { signal },
+    );
+    return null;
+  } catch (error) {
+    signal.throwIfAborted();
+    if (error instanceof Error && error.name === 'AbortError') throw error;
+    return GITLAB_SETTLEMENT_UNAVAILABLE_FAILURE;
+  }
 }
 
 function resultForStoppedCreate(
@@ -412,6 +437,102 @@ async function settleWithObservation<TRow extends PublicationObservedRow>(
     preexistingDraftCount,
     ...(confirmed.ok ? { observed: confirmed.row } : {}),
     ...(failure !== undefined ? { failure } : !confirmed.ok ? { failure: confirmed.failure } : {}),
+  };
+}
+
+type GitlabVerdictSummaryEffectOutcome =
+  | Readonly<{ kind: 'failed'; code: string; message?: string }>
+  | Readonly<{ kind: 'uncertain' }>;
+
+type GitlabVerdictSummary =
+  | Readonly<{ kind: 'published'; externalRef: string }>
+  | Readonly<{
+    kind: 'unresolved';
+    failure: TriageSourceFailureV1;
+    outcome: GitlabVerdictSummaryEffectOutcome;
+  }>;
+
+/**
+ * Brings the verdict summary comment into existence exactly once.
+ *
+ * The summary carries the verdict's own exact marker, and the marker is derived
+ * from the plan, so it survives across attempts. This invocation has already read
+ * the complete notes and pending-draft collections; consulting them here is what
+ * makes an explicitly permitted retry dispatch only the effect that actually
+ * remains. Creating a second summary after a definite approval denial would both
+ * repeat public prose the reader already wrote and make the marker ambiguous —
+ * the one condition attribution can never recover from.
+ *
+ * It does not replay anything on its own: a summary that is already published is
+ * reported, a draft that already exists is published, and nothing else changes.
+ */
+async function ensureGitlabVerdictSummary(input: Readonly<{
+  preflight: PublicationPreflight;
+  marker: string;
+  body: string;
+  publishedRows: readonly RawCollectionRow[];
+  pendingDraftRows: readonly RawCollectionRow[];
+}>): Promise<GitlabVerdictSummary> {
+  const { preflight, marker } = input;
+  const alreadyPublished = matchRawCollectionMarker(input.publishedRows, marker);
+  if (alreadyPublished.kind === 'unique') {
+    return { kind: 'published', externalRef: alreadyPublished.externalRef };
+  }
+  const pendingDraft = matchRawCollectionMarker(input.pendingDraftRows, marker);
+  if (alreadyPublished.kind === 'duplicate' || pendingDraft.kind === 'duplicate') {
+    return {
+      kind: 'unresolved',
+      failure: { class: 'unsupportedContract', code: 'gitlab-publication-marker-duplicate' },
+      outcome: { kind: 'uncertain' },
+    };
+  }
+
+  let draftId = pendingDraft.kind === 'unique' ? pendingDraft.externalRef : null;
+  if (draftId === null) {
+    const created = await sendJson(preflight, {
+      url: draftsCollectionUrl(preflight),
+      method: 'POST',
+      body: { note: input.body },
+    });
+    draftId = created.kind === 'ok' ? externalId(record(created.response.body)?.id) : null;
+    if ((created.kind === 'failed' && gitlabWriteAnswerLost(created))
+      || (created.kind === 'ok' && draftId === null)) {
+      const reread = await readRawCollection(draftsListUrl(preflight), preflight);
+      const matched = reread.ok ? matchRawCollectionMarker(reread.rows, marker) : null;
+      draftId = matched?.kind === 'unique' ? matched.externalRef : null;
+    }
+    if (draftId === null) {
+      return {
+        kind: 'unresolved',
+        failure: created.kind === 'failed'
+          ? projectGitlabSourceFailure(created.failure)
+          : { class: 'unsupportedContract', code: 'gitlab-verdict-draft-create-unconfirmed' },
+        outcome: created.kind === 'failed' && !gitlabWriteAnswerLost(created)
+          ? outcomeFailure(created).outcome
+          : { kind: 'uncertain' },
+      };
+    }
+  }
+
+  const published = await sendJson(preflight, {
+    url: `${buildGitlabItemUrl(preflight.route)}/draft_notes/${encodeURIComponent(draftId)}/publish`,
+    method: 'PUT',
+  });
+  const summaryRead = await readRawCollection(notesUrl(preflight), preflight);
+  const summary = summaryRead.ok ? matchRawCollectionMarker(summaryRead.rows, marker) : null;
+  if (summary?.kind === 'unique') {
+    return { kind: 'published', externalRef: summary.externalRef };
+  }
+  return {
+    kind: 'unresolved',
+    failure: published.kind === 'failed'
+      ? projectGitlabSourceFailure(published.failure)
+      : summaryRead.ok
+        ? { class: 'unsupportedContract', code: 'gitlab-verdict-summary-unconfirmed' }
+        : summaryRead.failure,
+    outcome: published.kind === 'failed' && !gitlabWriteAnswerLost(published)
+      ? outcomeFailure(published).outcome
+      : { kind: 'uncertain' },
   };
 }
 
@@ -488,8 +609,19 @@ export async function publishGitlabMergeRequestReview(
     publication: ReviewCommentPublicationResultV1,
     failure?: TriageSourceFailureV1,
   ): Promise<GitlabReviewPublicationResultV1> => {
-    await reportPublication(plan, claim, publication, context, current.dependencies.signal);
-    return await settleWithObservation(current, publication, preexistingDrafts.length, failure);
+    const settlementFailure = await reportPublication(
+      plan,
+      claim,
+      publication,
+      context,
+      current.dependencies.signal,
+    );
+    return await settleWithObservation(
+      current,
+      publication,
+      preexistingDrafts.length,
+      failure ?? settlementFailure ?? undefined,
+    );
   };
   const projectedEntries = plan.entries.map((entry, index) => projectEntry(
     entry,
@@ -506,7 +638,13 @@ export async function publishGitlabMergeRequestReview(
   }
   const specs = projectedEntries as readonly EntrySpec[];
 
-  const publishedBefore = await readRawCollection(notesUrl(current), current);
+  // DiscussionNote is excluded from GitLab's Notes API. Discussions includes
+  // both inline threads and ordinary notes, so a mixed review reconciles once
+  // through that collection; summary-only plans retain the ordinary Notes read.
+  const publishedBefore = await readRawCollection(
+    specs.some((spec) => spec.kind === 'entry') ? discussionsUrl(current) : notesUrl(current),
+    current,
+  );
   if (!publishedBefore.ok) {
     const uncertain = validateReviewCommentPublicationResultAgainstPlanV1(plan, claim, {
       publicationPlanId: claim.publicationPlanId,
@@ -674,7 +812,7 @@ export async function publishGitlabMergeRequestReview(
     if (published.kind === 'failed') {
       const failed = outcomeFailure(published);
       if (failed.outcome.kind === 'uncertain') {
-        const reread = await readRawCollection(notesUrl(current), current);
+        const reread = await readRawCollection(discussionsUrl(current), current);
         const found = reread.ok ? matchRawCollectionMarker(reread.rows, spec.marker) : null;
         if (found?.kind === 'unique') {
           entryOutcomes[planIndex] = { kind: 'published', externalRef: found.externalRef };
@@ -685,7 +823,7 @@ export async function publishGitlabMergeRequestReview(
       entryOutcomes[planIndex] = failed.outcome;
       continue;
     }
-    const reread = await readRawCollection(notesUrl(current), current);
+    const reread = await readRawCollection(discussionsUrl(current), current);
     const confirmed = reread.ok ? matchRawCollectionMarker(reread.rows, spec.marker) : null;
     if (confirmed?.kind !== 'unique') {
       terminalFailure = reread.ok
@@ -717,76 +855,33 @@ export async function publishGitlabMergeRequestReview(
       };
     } else {
       const marker = formatReviewCommentPublicationMarkerV1('verdict', claim.verdict.publicationCorrelationId);
-      const summaryBody = [
-        ...summarySpecs.map(({ spec }) => spec.body),
-        bodyWithMarker(plan.verdict.body, marker),
-      ].join('\n\n');
-      const created = await sendJson(current, {
-        url: draftsCollectionUrl(current),
-        method: 'POST',
-        body: { note: summaryBody },
+      const summary = await ensureGitlabVerdictSummary({
+        preflight: current,
+        marker,
+        body: [
+          ...summarySpecs.map(({ spec }) => spec.body),
+          bodyWithMarker(plan.verdict.body, marker),
+        ].join('\n\n'),
+        publishedRows: publishedBefore.rows,
+        pendingDraftRows: initialDrafts.rows,
       });
-      let verdictDraftId = created.kind === 'ok'
-        ? externalId(record(created.response.body)?.id)
-        : null;
-      if ((created.kind === 'failed' && gitlabWriteAnswerLost(created))
-        || (created.kind === 'ok' && verdictDraftId === null)) {
-        const reread = await readRawCollection(draftsListUrl(current), current);
-        const matched = reread.ok ? matchRawCollectionMarker(reread.rows, marker) : null;
-        verdictDraftId = matched?.kind === 'unique' ? matched.externalRef : null;
-      }
-      if (verdictDraftId === null) {
-        const failure = created.kind === 'failed'
-          ? projectGitlabSourceFailure(created.failure)
-          : { class: 'unsupportedContract' as const, code: 'gitlab-verdict-draft-create-unconfirmed' };
-        terminalFailure = failure;
-        const summaryEntryOutcome = created.kind === 'failed' && !gitlabWriteAnswerLost(created)
-          ? outcomeFailure(created).outcome
-          : { kind: 'uncertain' as const };
-        for (const { planIndex } of summarySpecs) entryOutcomes[planIndex] = summaryEntryOutcome;
+      if (summary.kind !== 'published') {
+        terminalFailure = summary.failure;
+        for (const { planIndex } of summarySpecs) entryOutcomes[planIndex] = summary.outcome;
         verdictOutcome = {
           publicationCorrelationId: claim.verdict.publicationCorrelationId,
-          outcome: created.kind === 'failed' && !gitlabWriteAnswerLost(created)
-            ? outcomeFailure(created).outcome
-            : { kind: 'uncertain' },
+          outcome: summary.outcome,
         };
       } else {
-        const publishedSummary = await sendJson(current, {
-          url: `${buildGitlabItemUrl(current.route)}/draft_notes/${encodeURIComponent(verdictDraftId)}/publish`,
-          method: 'PUT',
-        });
-        const summaryRead = await readRawCollection(notesUrl(current), current);
-        const summary = summaryRead.ok
-          ? matchRawCollectionMarker(summaryRead.rows, marker)
-          : null;
-        if (summary?.kind !== 'unique') {
-          terminalFailure = publishedSummary.kind === 'failed'
-            ? projectGitlabSourceFailure(publishedSummary.failure)
-            : summaryRead.ok
-              ? { class: 'unsupportedContract', code: 'gitlab-verdict-summary-unconfirmed' }
-              : summaryRead.failure;
-          const summaryEntryOutcome = publishedSummary.kind === 'failed' && !gitlabWriteAnswerLost(publishedSummary)
-            ? outcomeFailure(publishedSummary).outcome
-            : { kind: 'uncertain' as const };
-          for (const { planIndex } of summarySpecs) entryOutcomes[planIndex] = summaryEntryOutcome;
-          verdictOutcome = {
-            publicationCorrelationId: claim.verdict.publicationCorrelationId,
-            outcome: publishedSummary.kind === 'failed' && !gitlabWriteAnswerLost(publishedSummary)
-              ? outcomeFailure(publishedSummary).outcome
-              : { kind: 'uncertain' },
-          };
-        } else if (plan.verdict.kind === 'comment') {
-          for (const { planIndex } of summarySpecs) {
-            entryOutcomes[planIndex] = { kind: 'published', externalRef: summary.externalRef };
-          }
+        for (const { planIndex } of summarySpecs) {
+          entryOutcomes[planIndex] = { kind: 'published', externalRef: summary.externalRef };
+        }
+        if (plan.verdict.kind === 'comment') {
           verdictOutcome = {
             publicationCorrelationId: claim.verdict.publicationCorrelationId,
             outcome: { kind: 'published', externalRef: summary.externalRef },
           };
         } else {
-          for (const { planIndex } of summarySpecs) {
-            entryOutcomes[planIndex] = { kind: 'published', externalRef: summary.externalRef };
-          }
           const approval = await sendJson(current, {
             url: `${buildGitlabItemUrl(current.route)}/approve`,
             method: 'POST',
@@ -869,14 +964,19 @@ async function publishSingleComment<TRow extends PublicationObservedRow>(options
     publication: ReviewCommentPublicationResultV1,
     failure?: TriageSourceFailureV1,
   ): Promise<GitlabReviewPublicationResultV1> => {
-    await reportPublication(
+    const settlementFailure = await reportPublication(
       options.plan,
       claim,
       publication,
       options.context,
       options.preflight.dependencies.signal,
     );
-    return await settleWithObservation(options.preflight, publication, 0, failure);
+    return await settleWithObservation(
+      options.preflight,
+      publication,
+      0,
+      failure ?? settlementFailure ?? undefined,
+    );
   };
   const correlationId = claim.entries[0]!.publicationCorrelationId;
   const marker = formatReviewCommentPublicationMarkerV1('entry', correlationId);

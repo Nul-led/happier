@@ -105,6 +105,7 @@ function coreContext(
         id: 'connection-setup-v1',
         qualifiedId: 'happier.channels/actions/connection-setup-v1',
       },
+      immutableGenerationId: 'github-channel-actions-fixture-generation',
       materialization: {
         machineId: 'github-channel-actions-fixture-machine',
         materializationId: 'github-channel-actions-fixture-materialization',
@@ -168,6 +169,7 @@ describe('GitHub Channel Actions', () => {
           id: 'unrelated-caller-role',
           qualifiedId: 'happier.other-plugin/actions/unrelated-caller-role',
         },
+        immutableGenerationId: 'github-channel-actions-unrelated-fixture-generation',
         materialization: {
           machineId: 'github-channel-actions-fixture-machine',
           materializationId: 'github-channel-actions-fixture-materialization',

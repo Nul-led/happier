@@ -37,6 +37,17 @@ export type PosthogProjectedException = Readonly<{
 export type PosthogProjectedIssueEvent = Readonly<{
     uuid: string;
     timestampMs?: number;
+    /**
+     * This row's own absolute offset in the frozen sampled query that produced it.
+     *
+     * It is provider geometry rather than provider content: the exact address the
+     * selected-evidence reread and the code-variable reveal re-request, carried per row
+     * because skipped siblings and envelope fitting both change list positions without
+     * changing what the provider numbered. It is optional only so a mounted detail
+     * paired with an older daemon still reads samples normally; a row without it
+     * discloses no evidence rather than being addressed by its list index.
+     */
+    providerOffset?: number;
     /** `$session_id`, used only to derive Affected Sessions candidates. */
     sessionId?: string;
     /** `$current_url`, used only for the URL column and permalink inputs. */
@@ -47,6 +58,7 @@ export type PosthogProjectedIssueEvent = Readonly<{
 type RawEventInput = Readonly<{
     uuid: string;
     timestampMs?: number;
+    pageRowIndex: number;
     rawProperties: Readonly<Record<string, unknown>>;
 }>;
 
@@ -122,7 +134,7 @@ function projectException(value: unknown): PosthogProjectedException | null {
     };
 }
 
-function projectEvent(event: RawEventInput): PosthogProjectedIssueEvent {
+function projectEvent(event: RawEventInput, pageOffset: number): PosthogProjectedIssueEvent {
     const properties = event.rawProperties;
     const sessionId = readProjectedString(properties['$session_id']);
     const url = readProjectedString(properties['$current_url']);
@@ -140,14 +152,23 @@ function projectEvent(event: RawEventInput): PosthogProjectedIssueEvent {
     return {
         uuid: event.uuid,
         ...(event.timestampMs === undefined ? {} : { timestampMs: event.timestampMs }),
+        providerOffset: pageOffset + event.pageRowIndex,
         ...(sessionId === null ? {} : { sessionId }),
         ...(url === null ? {} : { url }),
         exceptions,
     };
 }
 
+/**
+ * Projects one accepted page.
+ *
+ * `pageOffset` is the offset the source requested, not one the response echoed: it is the
+ * number a later one-row reread reproduces, so each row's address is stated in the same
+ * terms the reread will use.
+ */
 export function projectPosthogIssueEvents(
     events: readonly RawEventInput[],
+    pageOffset: number,
 ): readonly PosthogProjectedIssueEvent[] {
-    return events.map(projectEvent);
+    return events.map((event) => projectEvent(event, pageOffset));
 }

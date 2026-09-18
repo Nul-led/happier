@@ -35,6 +35,25 @@ function readUtilizationPct(value: unknown): number | null {
   return Math.max(0, Math.min(100, numeric));
 }
 
+function readWindowDurationMs(record: Record<string, unknown>): number | null {
+  const exactMs = readFiniteNumber(record.windowDurationMs ?? record.window_duration_ms);
+  if (exactMs !== null && exactMs > 0) return Math.round(exactMs);
+  const minutes = readFiniteNumber(
+    record.windowDurationMins
+      ?? record.window_duration_mins
+      ?? record.windowMinutes
+      ?? record.window_minutes,
+  );
+  if (minutes !== null && minutes > 0) return Math.round(minutes * 60_000);
+  const seconds = readFiniteNumber(
+    record.limitWindowSeconds
+      ?? record.limit_window_seconds
+      ?? record.windowSeconds
+      ?? record.window_seconds,
+  );
+  return seconds !== null && seconds > 0 ? Math.round(seconds * 1_000) : null;
+}
+
 export function unwrapCodexRateLimitSnapshot(rawSnapshot: unknown): unknown {
   const record = isRecord(rawSnapshot) ? rawSnapshot : null;
   if (record && isRecord(record.rateLimits)) return record.rateLimits;
@@ -43,46 +62,137 @@ export function unwrapCodexRateLimitSnapshot(rawSnapshot: unknown): unknown {
   return rawSnapshot;
 }
 
-function buildMeter(meterId: 'primary' | 'secondary', raw: unknown): AgentAccountUsageMeter | null {
+function buildMeter(input: Readonly<{
+  meterId: string;
+  window: 'primary' | 'secondary';
+  raw: unknown;
+  providerLimitId?: string;
+  providerLimitLabel?: string | null;
+  modelId?: string | null;
+  windowLabel?: string;
+  scope?: AgentAccountUsageMeter['scope'];
+  source?: AgentAccountUsageMeter['source'];
+}>): AgentAccountUsageMeter | null {
+  const { meterId, raw } = input;
   const record = isRecord(raw) ? raw : null;
   if (!record) return null;
   const utilizationPct = readUtilizationPct(record.usedPercent ?? record.used_percent ?? record.utilizationPct ?? record.utilization_pct);
   const used = readFiniteNumber(record.used ?? record.usedTokens ?? record.used_tokens);
   const limit = readFiniteNumber(record.limit ?? record.tokenLimit ?? record.token_limit);
   const resetsAt = parseProviderTimestampMs(record.resetsAt ?? record.resets_at ?? record.resetAt ?? record.reset_at);
+  const windowDurationMs = readWindowDurationMs(record);
   if (utilizationPct === null && used === null && limit === null && resetsAt === null) return null;
   const derivedRemainingPct = utilizationPct !== null
     ? Math.max(0, Math.min(100, 100 - utilizationPct))
     : used !== null && limit !== null && limit > 0
       ? Math.max(0, Math.min(100, ((limit - used) / limit) * 100))
       : null;
-  const providerLimitId =
+  const providerLimitId = input.providerLimitId ?? (
     readString(record.providerLimitId ?? record.provider_limit_id ?? record.limitId ?? record.limit_id)
-    ?? meterId;
+    ?? meterId
+  );
+  const baseLabel = input.windowLabel ?? (input.window === 'primary' ? 'Primary' : 'Secondary');
   return {
     meterId,
-    label: meterId === 'primary' ? 'Primary' : 'Secondary',
+    label: input.providerLimitLabel ? `${input.providerLimitLabel} · ${baseLabel}` : baseLabel,
     used,
     limit,
     remainingPct: derivedRemainingPct,
     resetAtMs: resetsAt,
     providerLimitId,
+    ...(windowDurationMs !== null ? { windowDurationMs } : {}),
+    modelId: input.modelId ?? null,
     unit: 'unknown',
     utilizationPct,
     resetsAt,
     status: 'ok',
-    source: 'in_band_provider_snapshot',
-    scope: meterId,
+    source: input.source ?? 'in_band_provider_snapshot',
+    scope: input.scope ?? input.window,
     limitScope: 'account',
     confidence: utilizationPct !== null || (used !== null && limit !== null) ? 'exact' : 'unknown',
     details: {},
   };
 }
 
-function readCodexRateLimitMeter(rawSnapshot: unknown, key: 'primary' | 'secondary'): Record<string, unknown> | null {
-  const unwrappedSnapshot = unwrapCodexRateLimitSnapshot(rawSnapshot);
-  const snapshot = isRecord(unwrappedSnapshot) ? unwrappedSnapshot : null;
-  return snapshot && isRecord(snapshot[key]) ? snapshot[key] : null;
+function readNamedRateLimitMap(rawSnapshot: unknown): Record<string, unknown> | null {
+  const envelope = isRecord(rawSnapshot) ? rawSnapshot : null;
+  if (!envelope) return null;
+  const value = envelope.rateLimitsByLimitId ?? envelope.rate_limits_by_limit_id;
+  if (!isRecord(value) || Object.keys(value).length === 0) return null;
+  return value;
+}
+
+function readNamedRateLimitMetadata(entry: Record<string, unknown>): Readonly<{
+  source: Record<string, unknown>;
+  providerLimitId: string | null;
+  label: string | null;
+  modelId: string | null;
+}> {
+  const source = isRecord(entry.rateLimits)
+    ? entry.rateLimits
+    : isRecord(entry.rate_limits)
+      ? entry.rate_limits
+      : isRecord(entry.rate_limit)
+        ? entry.rate_limit
+      : entry;
+  return {
+    source,
+    providerLimitId: readString(
+      entry.providerLimitId ?? entry.provider_limit_id ?? entry.limitId ?? entry.limit_id
+      ?? entry.meteredFeature ?? entry.metered_feature
+      ?? source.providerLimitId ?? source.provider_limit_id ?? source.limitId ?? source.limit_id,
+    ),
+    label: readString(
+      entry.limitName ?? entry.limit_name ?? entry.displayName ?? entry.display_name ?? entry.name
+      ?? source.limitName ?? source.limit_name ?? source.displayName ?? source.display_name ?? source.name,
+    ),
+    modelId: readString(
+      entry.modelId ?? entry.model_id ?? source.modelId ?? source.model_id,
+    ),
+  };
+}
+
+type CodexRateLimitAllowance = Readonly<{
+  providerLimitId: string | null;
+  label: string | null;
+  modelId: string | null;
+  source: Record<string, unknown>;
+}>;
+
+function collectCodexRateLimitAllowances(rawSnapshot: unknown): readonly CodexRateLimitAllowance[] {
+  const root = isRecord(rawSnapshot) ? rawSnapshot : {};
+  const allowances: CodexRateLimitAllowance[] = [];
+  const seenProviderLimitIds = new Set<string>();
+  const add = (value: unknown, fallbackProviderLimitId?: string | null): void => {
+    const entry = isRecord(value) ? value : null;
+    if (!entry) return;
+    const metadata = readNamedRateLimitMetadata(entry);
+    const providerLimitId = metadata.providerLimitId ?? readString(fallbackProviderLimitId);
+    if (providerLimitId && seenProviderLimitIds.has(providerLimitId)) return;
+    if (providerLimitId) seenProviderLimitIds.add(providerLimitId);
+    allowances.push({ ...metadata, providerLimitId });
+  };
+
+  const named = readNamedRateLimitMap(rawSnapshot);
+  if (named) {
+    for (const providerLimitId of Object.keys(named).sort()) {
+      add(named[providerLimitId], providerLimitId);
+    }
+  } else {
+    add(readCodexRateLimitRecord(rawSnapshot));
+  }
+
+  for (const collection of [root.additionalRateLimits, root.additional_rate_limits]) {
+    if (Array.isArray(collection)) {
+      for (const entry of collection) add(entry);
+      continue;
+    }
+    if (!isRecord(collection)) continue;
+    for (const providerLimitId of Object.keys(collection).sort()) {
+      add(collection[providerLimitId], providerLimitId);
+    }
+  }
+  return allowances;
 }
 
 function readCodexRateLimitRecord(rawSnapshot: unknown): Record<string, unknown> {
@@ -113,31 +223,46 @@ export function readCodexRateLimitSnapshotAccountLabel(rawSnapshot: unknown): st
   );
 }
 
-export function mapCodexRateLimitSnapshotToUsageMeters(rawSnapshot: unknown): readonly AgentAccountUsageMeter[] {
-  const raw = readCodexRateLimitRecord(rawSnapshot);
-  return [
-    buildMeter('primary', raw.primary ?? raw.primary_window ?? raw.primaryWindow),
-    buildMeter('secondary', raw.secondary ?? raw.secondary_window ?? raw.secondaryWindow),
-  ].filter((meter): meter is AgentAccountUsageMeter => meter !== null);
+export function mapCodexRateLimitSnapshotToUsageMeters(
+  rawSnapshot: unknown,
+  options: Readonly<{
+    legacyPrimary?: Readonly<{ meterId: string; label: string; scope?: AgentAccountUsageMeter['scope'] }>;
+    legacySecondary?: Readonly<{ meterId: string; label: string; scope?: AgentAccountUsageMeter['scope'] }>;
+    source?: AgentAccountUsageMeter['source'];
+  }> = {},
+): readonly AgentAccountUsageMeter[] {
+  const legacyPrimary = options.legacyPrimary ?? { meterId: 'primary', label: 'Primary' };
+  const legacySecondary = options.legacySecondary ?? { meterId: 'secondary', label: 'Secondary' };
+  return collectCodexRateLimitAllowances(rawSnapshot).flatMap((allowance) => (
+    (['primary', 'secondary'] as const).flatMap((window) => {
+      const legacy = window === 'primary' ? legacyPrimary : legacySecondary;
+      const meter = buildMeter({
+        meterId: allowance.providerLimitId ? `${allowance.providerLimitId}:${window}` : legacy.meterId,
+        window,
+        raw: allowance.source[window]
+          ?? allowance.source[`${window}_window`]
+          ?? allowance.source[`${window}Window`],
+        ...(allowance.providerLimitId ? { providerLimitId: allowance.providerLimitId } : {}),
+        providerLimitLabel: allowance.label ?? allowance.providerLimitId,
+        modelId: allowance.modelId,
+        ...(!allowance.providerLimitId ? { windowLabel: legacy.label } : {}),
+        scope: allowance.providerLimitId ? window : legacy.scope ?? window,
+        ...(options.source ? { source: options.source } : {}),
+      });
+      return meter ? [meter] : [];
+    })
+  ));
 }
 
 export function isCodexRateLimitSnapshotExhausted(rawSnapshot: unknown): boolean {
-  for (const key of ['primary', 'secondary'] as const) {
-    const meter = readCodexRateLimitMeter(rawSnapshot, key);
-    const usedPercent = readFiniteNumber(meter?.usedPercent ?? meter?.used_percent ?? meter?.utilizationPct ?? meter?.utilization_pct);
-    if (usedPercent !== null && usedPercent >= 100) return true;
-    const status = readString(meter?.status)?.toLowerCase();
-    if (status === 'exhausted' || status === 'limited' || status === 'rate_limited') return true;
-  }
-  return false;
+  return mapCodexRateLimitSnapshotToUsageMeters(rawSnapshot).some((meter) =>
+    meter.isExhausted === true || (meter.utilizationPct !== null && meter.utilizationPct >= 100),
+  );
 }
 
 export function readEarliestCodexRateLimitResetAtMs(rawSnapshot: unknown): number | null {
-  const resets = (['primary', 'secondary'] as const)
-    .map((key) => {
-      const meter = readCodexRateLimitMeter(rawSnapshot, key);
-      return parseProviderTimestampMs(meter?.resetsAt ?? meter?.resets_at ?? meter?.resetAt ?? meter?.reset_at);
-    })
+  const resets = mapCodexRateLimitSnapshotToUsageMeters(rawSnapshot)
+    .map((meter) => meter.resetsAt)
     .filter((value): value is number => value !== null);
   return resets.length > 0 ? Math.min(...resets) : null;
 }

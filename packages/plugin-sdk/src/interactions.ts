@@ -32,6 +32,40 @@ export type {
     InteractionTransientResultV1,
 } from '@happier-dev/protocol';
 
+/**
+ * Reversible viewer-local presentation intent for the exact mounted Session.
+ * Protocol owns validation and transport; this structural projection keeps the
+ * public Plugin SDK declaration graph self-contained.
+ */
+export type CurrentSessionPresentationIntentV1 =
+    | { kind: 'chat.return' }
+    | { kind: 'board.open'; mode: 'beside_chat' | 'focus' }
+    | { kind: 'board.view.select'; viewId: string }
+    | { kind: 'board.item.reveal'; widgetId: string; viewId?: string }
+    | { kind: 'companion.show' }
+    | { kind: 'companion.hide' }
+    | {
+        kind: 'companion.item.add';
+        item: { kind: 'builtin'; id: 'session_summary' }
+            | { kind: 'widget'; widgetId: string };
+        index?: number;
+    }
+    | {
+        kind: 'companion.item.remove';
+        item: { kind: 'builtin'; id: 'session_summary' }
+            | { kind: 'widget'; widgetId: string };
+    }
+    | {
+        kind: 'companion.item.move';
+        item: { kind: 'builtin'; id: 'session_summary' }
+            | { kind: 'widget'; widgetId: string };
+        toIndex: number;
+    }
+    | { kind: 'companion.edge.set'; edge: 'leading' | 'trailing' }
+    | { kind: 'companion.collapse.set'; collapsed: boolean }
+    | { kind: 'companion.density.set'; density: 'compact' | 'comfortable' }
+    | { kind: 'companion.open_full' };
+
 export type InteractionOptions = PluginCancellationOptions;
 export type InteractionSeverity = 'info' | 'warning' | 'error';
 
@@ -131,6 +165,11 @@ export interface InteractionsService {
 }
 
 export interface PresentationService {
+    /** Applies one reversible presentation intent to the exact current Session UI. */
+    present(
+        intent: CurrentSessionPresentationIntentV1,
+        options?: PluginCancellationOptions,
+    ): Promise<void>;
     notify(
         message: string,
         options?: Readonly<{ severity?: InteractionSeverity; signal?: AbortSignal }>,

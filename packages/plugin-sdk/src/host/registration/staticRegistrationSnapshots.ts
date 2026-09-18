@@ -636,6 +636,7 @@ export function snapshotComposerAttachmentRuntime(
     const snapshot: {
         prepareForSend?: ComposerAttachmentRuntime['prepareForSend'];
         resolveForDispatch?: ComposerAttachmentRuntime['resolveForDispatch'];
+        resolveForDispatchV2?: ComposerAttachmentRuntime['resolveForDispatchV2'];
         afterMessageAccepted?: ComposerAttachmentRuntime['afterMessageAccepted'];
     } = {};
     for (const field of COMPOSER_ATTACHMENT_RUNTIME_REGISTRATION_FIELDS_V1) {
@@ -754,6 +755,19 @@ export function snapshotConnectedAccountRuntime(
         'Connected-account runtime.quota',
         false,
     );
+    const recoveryReceiverValue = readMember(receiver, 'recoveryCredits');
+    const recoveryReceiver = recoveryReceiverValue === undefined
+        ? undefined
+        : requireObject(recoveryReceiverValue, 'Connected-account runtime.recoveryCredits');
+    type RecoveryFacet = NonNullable<PluginConnectedAccountRuntime['recoveryCredits']>;
+    const recoveryCredits = recoveryReceiver === undefined ? undefined : Object.freeze({
+        read: captureStaticRegistrationMethod<RecoveryFacet['read']>(
+            recoveryReceiver, 'read', 'Connected-account recoveryCredits.read', true,
+        )!,
+        consume: captureStaticRegistrationMethod<RecoveryFacet['consume']>(
+            recoveryReceiver, 'consume', 'Connected-account recoveryCredits.consume', true,
+        )!,
+    });
     return Object.freeze({
         authentication: Object.freeze({ modes: Object.freeze(modes) }),
         refresh: captureStaticRegistrationMethod<PluginConnectedAccountRuntime['refresh']>(
@@ -781,6 +795,7 @@ export function snapshotConnectedAccountRuntime(
             true,
         )!,
         ...(quota ? { quota } : {}),
+        ...(recoveryCredits ? { recoveryCredits } : {}),
     }) as PluginConnectedAccountRuntime;
 }
 

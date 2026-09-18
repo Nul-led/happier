@@ -30,14 +30,6 @@ import {
 } from '../hostApi/index.js';
 import { createPluginUiRnwSemanticSurfaceAdapter } from './rnwSemanticAdapter.testSupport.js';
 
-const identity = {
-  pluginId: 'com.acme.semantic-rnw',
-  pluginVersion: '1.0.0',
-  viewId: 'review',
-  generation: 'generation-1',
-  sessionId: 'session-1',
-} as const;
-
 describe('ephemeral shared scope test host binding', () => {
   it('injects one explicitly host-owned scope into separate semantic artifact mounts', async () => {
     const sharedValue = Object.freeze({ id: 'shared' });
@@ -61,13 +53,15 @@ describe('ephemeral shared scope test host binding', () => {
 
     const adapter = () => createPluginUiRnwSemanticSurfaceAdapter({ ephemeralSharedScope: scope });
     const first = await createPluginUiTestkit({
-      identity: { ...identity, viewId: 'list' },
+      identity: { instanceId: 'fixture-instance-49', mountNonce: 'fixture-mount-49' },
+      authorPlugin: { id: 'com.acme.semantic-rnw', version: '1.0.0' },
       surface: defineUiSurface(SharedScopeProbe),
       surfaceContext: createSurfaceContext(),
       adapter: adapter(),
     });
     const second = await createPluginUiTestkit({
-      identity: { ...identity, viewId: 'composer' },
+      identity: { instanceId: 'fixture-instance-50', mountNonce: 'fixture-mount-50' },
+      authorPlugin: { id: 'com.acme.semantic-rnw', version: '1.0.0' },
       surface: defineUiSurface(SharedScopeProbe),
       surfaceContext: createSurfaceContext(),
       adapter: adapter(),
@@ -102,7 +96,8 @@ describe('plugin-ui RNW semantic fixture adapter', () => {
     const initialSurface = createSurfaceContext();
     const bodyChildCount = document.body.children.length;
     const fixture = await createPluginUiTestkit({
-      identity,
+      identity: { instanceId: 'fixture-instance-51', mountNonce: 'fixture-mount-51' },
+      authorPlugin: { id: 'com.acme.semantic-rnw', version: '1.0.0' },
       surface: defineUiSurface(AuthorSurface),
       surfaceContext: initialSurface,
       adapter: createPluginUiRnwSemanticSurfaceAdapter(),
@@ -265,11 +260,8 @@ describe('plugin-ui RNW semantic fixture adapter', () => {
 
     mounts.current = [admittedMount('target-generation-a', 'contributor-generation-a')];
     const fixture = await createPluginUiTestkit({
-      identity: {
-        ...identity,
-        pluginId: targetPluginId,
-        generation: 'target-generation-a',
-      },
+      identity: { instanceId: 'fixture-instance-52', mountNonce: 'fixture-mount-52' },
+      authorPlugin: { id: targetPluginId, version: '1.0.0' },
       surface: defineUiSurface(TargetSurface),
       surfaceContext: contextFor('target-generation-a', 'contributor-generation-a'),
       adapter: createPluginUiRnwSemanticSurfaceAdapter({
@@ -327,7 +319,8 @@ describe('plugin-ui RNW semantic fixture adapter', () => {
     }
 
     const fixture = await createPluginUiTestkit({
-      identity,
+      identity: { instanceId: 'fixture-instance-53', mountNonce: 'fixture-mount-53' },
+      authorPlugin: { id: 'com.acme.semantic-rnw', version: '1.0.0' },
       surface: defineUiSurface(AuthorSurface),
       surfaceContext: createSurfaceContext(),
       adapter: createPluginUiRnwSemanticSurfaceAdapter(),
@@ -362,7 +355,8 @@ describe('plugin-ui RNW semantic fixture adapter', () => {
 
   it('keeps a malformed Image resource on its fallback path', async () => {
     const fixture = await createPluginUiTestkit({
-      identity,
+      identity: { instanceId: 'fixture-instance-54', mountNonce: 'fixture-mount-54' },
+      authorPlugin: { id: 'com.acme.semantic-rnw', version: '1.0.0' },
       surface: defineUiSurface(() => <Image resource="broken-logo" accessibilityLabel="Broken logo" />),
       surfaceContext: createSurfaceContext(),
       adapter: createPluginUiRnwSemanticSurfaceAdapter(),
@@ -391,7 +385,8 @@ describe('plugin-ui RNW semantic fixture adapter', () => {
       );
     }
     const fixture = await createPluginUiTestkit({
-      identity,
+      identity: { instanceId: 'fixture-instance-55', mountNonce: 'fixture-mount-55' },
+      authorPlugin: { id: 'com.acme.semantic-rnw', version: '1.0.0' },
       surface: defineUiSurface(AuthorSurface),
       surfaceContext: createSurfaceContext(),
       adapter: createPluginUiRnwSemanticSurfaceAdapter(),
@@ -427,7 +422,8 @@ describe('plugin-ui RNW semantic fixture adapter', () => {
     }
 
     const fixture = await createPluginUiTestkit({
-      identity,
+      identity: { instanceId: 'fixture-instance-56', mountNonce: 'fixture-mount-56' },
+      authorPlugin: { id: 'com.acme.semantic-rnw', version: '1.0.0' },
       surface: defineUiSurface(AuthorSurface),
       surfaceContext: createSurfaceContext(),
       adapter: createPluginUiRnwSemanticSurfaceAdapter(),
@@ -494,7 +490,8 @@ describe('plugin-ui RNW semantic fixture adapter', () => {
     }
 
     const fixture = await createPluginUiTestkit({
-      identity,
+      identity: { instanceId: 'fixture-instance-57', mountNonce: 'fixture-mount-57' },
+      authorPlugin: { id: 'com.acme.semantic-rnw', version: '1.0.0' },
       surface: defineUiSurface(AuthorSurface),
       surfaceContext: createSurfaceContext(),
       adapter: createPluginUiRnwSemanticSurfaceAdapter(),
@@ -567,7 +564,8 @@ describe('plugin-ui RNW semantic fixture adapter', () => {
     }
 
     const fixture = await createPluginUiTestkit({
-      identity,
+      identity: { instanceId: 'fixture-instance-58', mountNonce: 'fixture-mount-58' },
+      authorPlugin: { id: 'com.acme.semantic-rnw', version: '1.0.0' },
       surface: defineUiSurface(AuthorSurface),
       surfaceContext: createSurfaceContext(),
       adapter: createPluginUiRnwSemanticSurfaceAdapter(),
@@ -606,7 +604,8 @@ describe('plugin-ui RNW semantic fixture adapter', () => {
     vi.stubGlobal('NodeFilter', undefined);
     try {
       const fixture = await createPluginUiTestkit({
-        identity,
+        identity: { instanceId: 'fixture-instance-59', mountNonce: 'fixture-mount-59' },
+        authorPlugin: { id: 'com.acme.semantic-rnw', version: '1.0.0' },
         surface: defineUiSurface(AuthorSurface),
         surfaceContext: createSurfaceContext(),
         adapter: createPluginUiRnwSemanticSurfaceAdapter(),
@@ -641,7 +640,8 @@ describe('plugin-ui RNW semantic fixture adapter', () => {
 
     const focused: HTMLElement[] = [];
     const fixture = await createPluginUiTestkit({
-      identity,
+      identity: { instanceId: 'fixture-instance-60', mountNonce: 'fixture-mount-60' },
+      authorPlugin: { id: 'com.acme.semantic-rnw', version: '1.0.0' },
       surface: defineUiSurface(AuthorSurface),
       surfaceContext: createSurfaceContext(),
       adapter: createPluginUiRnwSemanticSurfaceAdapter({
@@ -680,7 +680,8 @@ describe('plugin-ui RNW semantic fixture adapter', () => {
     }
 
     const fixture = await createPluginUiTestkit({
-      identity,
+      identity: { instanceId: 'fixture-instance-61', mountNonce: 'fixture-mount-61' },
+      authorPlugin: { id: 'com.acme.semantic-rnw', version: '1.0.0' },
       surface: defineUiSurface(AuthorSurface),
       surfaceContext: createSurfaceContext(),
       adapter: createPluginUiRnwSemanticSurfaceAdapter(),
@@ -717,7 +718,8 @@ describe('plugin-ui RNW semantic fixture adapter', () => {
     }
 
     const fixture = await createPluginUiTestkit({
-      identity,
+      identity: { instanceId: 'fixture-instance-62', mountNonce: 'fixture-mount-62' },
+      authorPlugin: { id: 'com.acme.semantic-rnw', version: '1.0.0' },
       surface: defineUiSurface(AuthorSurface),
       surfaceContext: createSurfaceContext(),
       adapter: createPluginUiRnwSemanticSurfaceAdapter(),
@@ -746,7 +748,8 @@ describe('plugin-ui RNW semantic fixture adapter', () => {
     }
 
     const fixture = await createPluginUiTestkit({
-      identity,
+      identity: { instanceId: 'fixture-instance-63', mountNonce: 'fixture-mount-63' },
+      authorPlugin: { id: 'com.acme.semantic-rnw', version: '1.0.0' },
       surface: defineUiSurface(AuthorSurface),
       surfaceContext: createSurfaceContext(),
       adapter: createPluginUiRnwSemanticSurfaceAdapter(),
@@ -771,7 +774,8 @@ describe('plugin-ui RNW semantic fixture adapter', () => {
 
     try {
       await expect(createPluginUiTestkit({
-        identity: { ...identity, generation: 'initial-render-failure' },
+        identity: { instanceId: 'fixture-instance-64', mountNonce: 'fixture-mount-64' },
+        authorPlugin: { id: 'com.acme.semantic-rnw', version: '1.0.0' },
         surface: defineUiSurface(ThrowingAuthorSurface),
         surfaceContext: createSurfaceContext(),
         adapter: createPluginUiRnwSemanticSurfaceAdapter(),
@@ -794,7 +798,8 @@ describe('plugin-ui RNW semantic fixture adapter', () => {
 
     try {
       const fixture = await createPluginUiTestkit({
-        identity: { ...identity, generation: 'throwing-cleanup' },
+        identity: { instanceId: 'fixture-instance-65', mountNonce: 'fixture-mount-65' },
+        authorPlugin: { id: 'com.acme.semantic-rnw', version: '1.0.0' },
         surface: defineUiSurface(ThrowingCleanupAuthorSurface),
         surfaceContext: createSurfaceContext(),
         adapter: createPluginUiRnwSemanticSurfaceAdapter(),

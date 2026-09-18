@@ -19,8 +19,9 @@ import type { TriageSourceFailureV1 } from '@happier-dev/triage-protocol/v1';
 
 import { AZURE_DEVOPS_PLUGIN_ID } from '../azureDevopsContracts.js';
 import { AZURE_CHANGES_PAGE_SIZE_V1 } from './detail/reads.js';
+import { readAzureChangeEntryRows, readAzureCollectionRows } from './decode.js';
 import { AZURE_DEVOPS_TRIAGE_CONTRIBUTION_ID } from './descriptor.js';
-import { projectAzureSourceFailure } from './failureProjection.js';
+import { createAzureSourceFailure, projectAzureSourceFailure } from './failureProjection.js';
 import { isAzureDevOpsAmbiguousWriteFailure } from './failures.js';
 import {
   admitAzureMutation,
@@ -43,6 +44,19 @@ import {
 import type { AzureDevOpsFailure } from './types.js';
 
 const SOURCE_ID = `${AZURE_DEVOPS_PLUGIN_ID}/${AZURE_DEVOPS_TRIAGE_CONTRIBUTION_ID}`;
+
+/**
+ * Happier's own settlement of a publication this provider already performed did not land.
+ *
+ * It is `transient` because the outward effects are real and the canonical claim is still open:
+ * the next rejoin reconciles it. It is deliberately not a provider failure class — Azure answered
+ * everything it was asked.
+ */
+const SETTLEMENT_UNCONFIRMED_FAILURE = createAzureSourceFailure({
+  class: 'transient',
+  code: 'azure-devops/publication-settlement-unconfirmed',
+  detail: 'This review reached Azure DevOps, but Happier could not record its publication.',
+});
 
 type NativeComment = Readonly<{ threadId: number; externalRef: string; content: string }>;
 type ThreadInventory = Readonly<{
@@ -88,8 +102,7 @@ async function readThreadInventory(
     signal: mutation.signal,
   });
   if (!response.ok) return { ok: false, failure: projectAzureSourceFailure(response.failure) };
-  const body = record(response.body);
-  const rows = body !== null && Array.isArray(body.value) ? body.value : null;
+  const rows = readAzureCollectionRows(response.body);
   if (rows === null) {
     return { ok: false, failure: projectAzureSourceFailure(malformed('Azure DevOps returned an unusable thread collection.')) };
   }
@@ -198,12 +211,12 @@ async function readCurrentChangedFiles(
     route: { resource: 'iterations', ...mutation.address }, signal: mutation.signal,
   });
   if (!iterations.ok) return iterations;
-  const iterationsBody = record(iterations.body);
-  if (iterationsBody === null || !Array.isArray(iterationsBody.value)) {
+  const iterationRows = readAzureCollectionRows(iterations.body);
+  if (iterationRows === null) {
     return { ok: false, failure: malformed('Azure DevOps returned an unusable iteration collection.') };
   }
   let iterationId: number | null = null;
-  for (const raw of iterationsBody.value) {
+  for (const raw of iterationRows) {
     const id = positiveInteger(record(raw)?.id);
     if (id === null) return { ok: false, failure: malformed('Azure DevOps returned an incomplete iteration row.') };
     if (iterationId === null || id > iterationId) iterationId = id;
@@ -225,9 +238,7 @@ async function readCurrentChangedFiles(
     });
     if (!response.ok) return response;
     const body = record(response.body);
-    const changes = body !== null && Array.isArray(body.changeEntries)
-      ? body.changeEntries
-      : body !== null && Array.isArray(body.value) ? body.value : null;
+    const changes = readAzureChangeEntryRows(response.body);
     if (body === null || changes === null) return { ok: false, failure: malformed('Azure DevOps returned an unusable iteration-changes collection.') };
     for (const raw of changes) {
       const change = record(raw);
@@ -282,9 +293,8 @@ function inlineContext(
     threadContext: Object.freeze(threadContext),
     pullRequestThreadContext: Object.freeze({
       changeTrackingId: matches[0]!.changeTrackingId,
-      // Azure iterations are 1-based. This is the same first→current comparison used by the
-      // provider's documented create-thread example (1→2); `0` belongs only to changes `$compareTo`.
-      iterationContext: Object.freeze({ firstComparingIteration: 1, secondComparingIteration: changed.iterationId }),
+      // Equal iteration ids select the common-commit left file, matching changes `$compareTo: 0`.
+      iterationContext: Object.freeze({ firstComparingIteration: changed.iterationId, secondComparingIteration: changed.iterationId }),
     }),
   });
 }
@@ -551,15 +561,27 @@ async function executePublication(input: Readonly<{
       entries,
       verdict,
     });
-    await input.context.services.actions.execute(
-      'reviews.comments.claimPublicationDispatch',
-      createReviewCommentPublicationSettlementRequestV1(input.plan, claim, publication),
-      { signal: input.mutation.signal },
-    );
+    // What Azure did and what Happier recorded are separate facts. The provider effects above are
+    // already observed, so a settlement call that cannot reach the canonical Reviews owner must
+    // not delete them or skip the mandatory post-mutation reread (§3.9.3). The claim stays
+    // outstanding server-side and a later rejoin reconciles it; nothing is replayed here.
+    let settlementFailure: TriageSourceFailureV1 | undefined;
+    try {
+      await input.context.services.actions.execute(
+        'reviews.comments.claimPublicationDispatch',
+        createReviewCommentPublicationSettlementRequestV1(input.plan, claim, publication),
+        { signal: input.mutation.signal },
+      );
+    } catch {
+      settlementFailure = SETTLEMENT_UNCONFIRMED_FAILURE;
+    }
     const exact = await finalObservation(input.mutation);
+    // The settlement failure outranks a provider failure the entry outcomes already state: it is
+    // the reason this otherwise complete publication may still be reported as outstanding.
+    const reported = settlementFailure ?? failure;
     return Object.freeze({
       kind: 'settled', publication, ...exact,
-      ...(failure === undefined ? {} : { failure }),
+      ...(reported === undefined ? {} : { failure: reported }),
     });
   };
 

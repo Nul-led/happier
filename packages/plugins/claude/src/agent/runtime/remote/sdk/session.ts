@@ -128,18 +128,32 @@ function deniedToolInterception(message: string): PermissionResult {
     return { behavior: 'deny', message, interrupt: true };
 }
 
-export type ClaudeAgentSdkContext = Readonly<{
+type ClaudeAgentSdkContextBase = Readonly<{
     logger: ClaudeUnifiedTerminalContext['logger'];
     agentRuntime: Readonly<{
         exec: ClaudeSdkQueryContext;
+        toolExecution: ClaudeUnifiedTerminalContext['agentRuntime']['toolExecution'];
+        nativeHome?: ClaudeUnifiedTerminalContext['agentRuntime']['nativeHome'];
+    }>;
+}>;
+
+export type ClaudeAgentSdkSessionContext = ClaudeAgentSdkContextBase & Readonly<{
+    agentRuntime: ClaudeAgentSdkContextBase['agentRuntime'] & Readonly<{
         sessionHooks: ClaudeUnifiedTerminalContext['agentRuntime']['sessionHooks'];
         transcripts: ClaudeUnifiedTerminalContext['agentRuntime']['transcripts'];
         accountUsage: ClaudeUnifiedTerminalContext['agentRuntime']['accountUsage'];
-        nativeHome?: ClaudeUnifiedTerminalContext['agentRuntime']['nativeHome'];
-        toolExecution: ClaudeUnifiedTerminalContext['agentRuntime']['toolExecution'];
     }>;
     sessions: ClaudeUnifiedTerminalContext['sessions'];
 }>;
+
+export type ClaudeAgentSdkExecutionRunContext = ClaudeAgentSdkContextBase & Readonly<{
+    agentRuntime: ClaudeAgentSdkContextBase['agentRuntime'] & Readonly<{
+        fileFollow: ClaudeUnifiedTerminalContext['agentRuntime']['transcripts']['fileFollow'];
+    }>;
+    sessions?: never;
+}>;
+
+export type ClaudeAgentSdkContext = ClaudeAgentSdkSessionContext | ClaudeAgentSdkExecutionRunContext;
 
 type ProviderEventMessage = ClaudeProviderEvent;
 type ClaudeProviderFailureEvidence = Readonly<{
@@ -147,6 +161,7 @@ type ClaudeProviderFailureEvidence = Readonly<{
     source: ClaudeSessionRuntimeIssueSource;
     preview: string | null;
 }>;
+import { readClaudeProviderIdentityValue } from '../../../../protocol/providerIdentity.js';
 const readString = readClaudeRuntimeString;
 const CLAUDE_CONTEXT_USAGE_REFRESH_CONFIG_OPTION_ID = 'context_usage_refresh';
 const CLAUDE_CONTEXT_USAGE_REFRESH_TIMEOUT_MS = 1_500;
@@ -527,7 +542,7 @@ function mapSdkResultUsageTranscriptEvent(params: Readonly<{
 }>): ProviderEventMessage | null {
     const usage = isRecord(params.message.usage) ? params.message.usage : null;
     const modelUsage = isRecord(params.message.modelUsage) ? params.message.modelUsage : null;
-    const providerSessionId = readString(params.message.session_id);
+    const providerSessionId = readClaudeProviderIdentityValue(params.message.session_id);
     const subtype = readString(params.message.subtype);
     if (!usage || !modelUsage || !providerSessionId || !subtype) return null;
     const messageId = readMessageId(params.message, `result-${params.sequence}`);
@@ -633,16 +648,26 @@ export type ClaudeAgentSdkNativeOperations = ClaudeRuntimeTurnOperations & Reado
     setOnPromptDeliveryOutcome(handler: ClaudeProviderPromptDeliveryOutcomeCallback | null): void;
 }>;
 
+function isClaudeAgentSdkSessionContext(
+    context: ClaudeAgentSdkContext,
+): context is ClaudeAgentSdkSessionContext {
+    return context.sessions !== undefined;
+}
+
 export function createClaudeAgentSdkTurnOperations(
     params: ClaudeAgentSdkTurnOperationsParams,
 ): ClaudeAgentSdkNativeOperations {
-    const permissionEngine = params.permissionEngine ?? createClaudePermissionEngine(params.ctx);
+    const sessionContext = isClaudeAgentSdkSessionContext(params.ctx) ? params.ctx : null;
+    const permissionEngine = params.permissionEngine
+        ?? (sessionContext
+            ? createClaudePermissionEngine(sessionContext)
+            : (() => { throw new Error('Claude detached execution requires an explicit permission engine.'); })());
     const listeners = new Set<(event: ClaudeProviderEvent) => void>();
     const effectiveModelListeners = new Set<(evidence: ClaudeEffectiveModelEvidence) => void>();
     const usageObservationListeners = new Set<(observation: ClaudeUsageObservation) => void>();
     let providerSessionId: string | null = null;
     let resumableProviderSessionId: string | null = null;
-    let pendingResumeProviderSessionId: string | null = readString(params.initialProviderSessionId);
+    let pendingResumeProviderSessionId: string | null = readClaudeProviderIdentityValue(params.initialProviderSessionId);
     let activeQuery: ClaudeSdkQuery | null = null;
     let disposeQuery: ClaudeSdkQuery | null = null;
     let retainedInterruptedQuery: ClaudeSdkQuery | null = null;
@@ -652,6 +677,7 @@ export function createClaudeAgentSdkTurnOperations(
     let lastTurnCompletionFailure: Error | null = null;
     const backgroundQueries = new Set<ClaudeSdkQuery>();
     let turnInFlight = false;
+    let pendingSubmission: { cancelled: boolean } | null = null;
     let turnSequence = 0;
     let currentTurnId: string | null = null;
     let currentPermissionMode = params.permissionMode;
@@ -679,19 +705,23 @@ export function createClaudeAgentSdkTurnOperations(
     // `Workflow`/`Task`/`task_*`/`workflow_progress` events on the live SDK stream into durable
     // `activity/workflow_run.v1` records (record-FIRST via the private host-owned System Records port)
     // plus the compact typed workflow headline.
+    const workflowFileFollow = sessionContext?.agentRuntime.transcripts.fileFollow;
+    if (sessionWorkStateEnabled && (!sessionContext || !workflowFileFollow)) {
+        throw new Error('Claude Session work-state requires Session-owned services.');
+    }
     const workflowRuntime = sessionWorkStateEnabled
         ? createClaudeUnifiedWorkflowRuntime({
             backendId: 'claude',
             agentId: 'claude',
             getCurrentClaudeSessionId: () => providerSessionId,
             writeSystemRecord: async (request) =>
-                await params.ctx.sessions.current.writeSystemRecord(request),
+                await sessionContext!.sessions.current.writeSystemRecord(request),
             readSystemRecord: async (request) =>
-                await params.ctx.sessions.current.readSystemRecord(request),
+                await sessionContext!.sessions.current.readSystemRecord(request),
             publishHeadlines: async (bundle) => {
-                await params.ctx.sessions.current.workflowActivity.publishHeadlines(bundle);
+                await sessionContext!.sessions.current.workflowActivity.publishHeadlines(bundle);
             },
-            fileFollow: params.ctx.agentRuntime.transcripts.fileFollow,
+            fileFollow: workflowFileFollow!,
             onProviderTaskActivity: (activity) => {
                 applyProviderTaskActivity(activity);
                 if (activity.type === 'terminal' && activeProviderTaskId === activity.taskId) {
@@ -767,7 +797,7 @@ export function createClaudeAgentSdkTurnOperations(
         if (!transcriptPath) return;
         const goalSource = goalRuntime.source;
         goalStatusTail = createClaudeAgentSdkGoalStatusTail({
-            ctx: params.ctx,
+            ctx: sessionContext!,
             transcriptPath,
             observeGoalStatusRow: (row) => goalSource.observeTranscriptMessage(row),
         });
@@ -775,7 +805,7 @@ export function createClaudeAgentSdkTurnOperations(
 
     const resumeIdentityOwner = params.enableSessionResumability === true && happierSessionId
         ? createClaudeAgentSdkResumeIdentityOwner({
-            ctx: params.ctx,
+            ctx: sessionContext!,
             expectedInitialProviderSessionId: params.initialProviderSessionId,
             onProviderSessionId: observeProviderSessionId,
             onTranscriptCandidateActivated: ({ transcriptPath }) => {
@@ -814,12 +844,16 @@ export function createClaudeAgentSdkTurnOperations(
 
     async function ensureSessionHookPluginDir(): Promise<string | null> {
         if (!happierSessionId) return null;
+        const sessionHooks = sessionContext?.agentRuntime.sessionHooks;
+        if (!sessionHooks) {
+            throw new Error('Claude Session hooks are unavailable for a Session-bound runtime.');
+        }
         if (sessionHookPluginDir) return sessionHookPluginDir;
         if (sessionHookSetupPromise) return await sessionHookSetupPromise;
 
         sessionHookSetupPromise = (async () => {
             const sessionHookSecret = randomUUID();
-            const server = await params.ctx.agentRuntime.sessionHooks.startServer({
+            const server = await sessionHooks.startServer({
                 providerId: 'claude',
                 sessionId: happierSessionId,
                 lifecycle: { kind: 'session', sessionId: happierSessionId },
@@ -834,7 +868,7 @@ export function createClaudeAgentSdkTurnOperations(
                     }
                 },
                 ...(toolPermissionPolicy === null ? {
-                    onPermissionHook: createClaudePermissionHookHandler(params.ctx),
+                    onPermissionHook: createClaudePermissionHookHandler(sessionContext!),
                     defaultPermissionHookResponse: buildDefaultPermissionHookResponse,
                     permissionHookSecret: sessionHookSecret,
                     permissionRequestTimeoutMs: resolveClaudePermissionHookCeilingMs({ env: params.launchEnv }),
@@ -842,7 +876,7 @@ export function createClaudeAgentSdkTurnOperations(
             });
             sessionHookServer = server;
             try {
-                const assets = await params.ctx.agentRuntime.sessionHooks.resolveForwarderAssets();
+                const assets = await sessionHooks.resolveForwarderAssets();
                 const hooks = buildClaudeHookPluginHooks({
                     port: server.port,
                     nodeExecutable: assets.nodeExecutable,
@@ -859,7 +893,7 @@ export function createClaudeAgentSdkTurnOperations(
                         : {}),
                 });
                 const manifest = buildClaudeHookPluginManifest({ instanceId: happierSessionId });
-                sessionHookPluginDir = await params.ctx.agentRuntime.sessionHooks.createPluginDir({
+                sessionHookPluginDir = await sessionHooks.createPluginDir({
                     providerId: 'claude',
                     lifecycle: { kind: 'session', sessionId: happierSessionId },
                     files: [
@@ -1106,7 +1140,7 @@ export function createClaudeAgentSdkTurnOperations(
     }
 
     function observeProviderSessionId(value: unknown): void {
-        const nextSessionId = readString(value);
+        const nextSessionId = readClaudeProviderIdentityValue(value);
         if (!nextSessionId) return;
         const identityChanged = providerSessionId !== nextSessionId;
         if (identityChanged) {
@@ -1171,7 +1205,7 @@ export function createClaudeAgentSdkTurnOperations(
     const claudeSubscriptionRuntimeAuthSelectionJson = readAgentToolInputRecord(
         claudeSubscriptionRuntimeAuthSelection,
     );
-    const refreshRuntimeAuth = params.ctx.sessions.current.auth?.services?.refreshRuntimeAuth;
+    const refreshRuntimeAuth = sessionContext?.sessions.current.auth?.services?.refreshRuntimeAuth;
     let lastClaudeSdkOAuthTokenFingerprint: string | null = null;
     let pendingClaudeSdkOAuthRefreshAttempt: Readonly<{
         expectedCredentialRevision: string;
@@ -1586,7 +1620,7 @@ export function createClaudeAgentSdkTurnOperations(
             }));
         },
         async startProviderSession(opts) {
-            const requestedResumeId = readString(opts?.resumeId);
+            const requestedResumeId = readClaudeProviderIdentityValue(opts?.resumeId);
             if (requestedResumeId && providerSessionId === null) pendingResumeProviderSessionId = requestedResumeId;
             return providerSessionId;
         },
@@ -1604,16 +1638,24 @@ export function createClaudeAgentSdkTurnOperations(
                 };
             }
             turnInFlight = true;
+            const submission = { cancelled: false };
+            pendingSubmission = submission;
             try {
                 lastTurnCompletionFailure = null;
                 reconcileProviderTaskRuntimeActivityForCurrentQuery('new-turn');
                 const completion = createDeferred();
                 completion.promise.catch(() => undefined);
                 const hookPluginDir = await ensureSessionHookPluginDir();
+                if (submission.cancelled) {
+                    throw new Error('Claude Agent SDK turn was cancelled before provider submission.');
+                }
                 if (runtimeDisposed) {
                     throw new Error('Claude Agent SDK runtime is disposed.');
                 }
                 await resumeIdentityOwner?.settleCurrentCandidate();
+                if (submission.cancelled) {
+                    throw new Error('Claude Agent SDK turn was cancelled before provider submission.');
+                }
                 if (runtimeDisposed) {
                     throw new Error('Claude Agent SDK runtime is disposed.');
                 }
@@ -1689,10 +1731,12 @@ export function createClaudeAgentSdkTurnOperations(
                     if (outcome.kind === 'rejected_before_effect') {
                         retainedInterruptedQuery = interruptedQuery;
                         turnInFlight = false;
+                        if (pendingSubmission === submission) pendingSubmission = null;
                         return outcome;
                     }
                     activeCompletion = completion;
                     activeQuery = interruptedQuery;
+                    if (pendingSubmission === submission) pendingSubmission = null;
                     disposeQuery = interruptedQuery;
                     void consumeTurnMessages(interruptedQuery, completion);
                     return outcome;
@@ -1737,8 +1781,9 @@ export function createClaudeAgentSdkTurnOperations(
                         ...params.advancedOptions,
                     },
                     onMessageReceived(message) {
+                        if (!sessionContext) return;
                         void recordClaudeRuntimeProviderAccountUsageSnapshot({
-                            ctx: params.ctx,
+                            ctx: sessionContext,
                             evidence: message,
                             sessionId: readString(params.happierSessionId) ?? providerSessionId ?? 'claude-agent-sdk',
                             launchEnv: params.launchEnv,
@@ -1747,6 +1792,7 @@ export function createClaudeAgentSdkTurnOperations(
                 });
                 activeCompletion = completion;
                 activeQuery = turnQuery;
+                if (pendingSubmission === submission) pendingSubmission = null;
                 disposeQuery = turnQuery;
                 void consumeTurnMessages(turnQuery, completion);
                 const transportOutcome = await turnQuery.promptTransportOutcome;
@@ -1761,6 +1807,7 @@ export function createClaudeAgentSdkTurnOperations(
                 return outcome;
             } catch (error) {
                 turnInFlight = false;
+                if (pendingSubmission === submission) pendingSubmission = null;
                 const outcome: ClaudeRuntimePromptSubmissionOutcome = {
                     kind: 'rejected_before_effect',
                     reason: sanitizeProviderErrorPreview(
@@ -1807,10 +1854,17 @@ export function createClaudeAgentSdkTurnOperations(
             onPromptDeliveryOutcome = handler;
         },
         async respondToProviderPermission(requestId, approved) {
-            return respondToClaudePermission({ ctx: params.ctx, provider: 'claude', requestId, approved });
+            return sessionContext
+                ? respondToClaudePermission({ ctx: sessionContext, provider: 'claude', requestId, approved })
+                : { delivered: false, reason: 'no_active_session' };
         },
         async cancelProviderTurn(expectedTurnId?: string) {
             if (expectedTurnId !== undefined && currentTurnId !== expectedTurnId) return false;
+            if (pendingSubmission) {
+                pendingSubmission.cancelled = true;
+                currentTurnId = null;
+                return true;
+            }
             const turnQuery = activeQuery
                 ?? (activeProviderTaskId
                     ? Array.from(backgroundQueries).at(-1) ?? disposeQuery
@@ -1925,6 +1979,7 @@ export function createClaudeAgentSdkTurnOperations(
                 backgroundQueries.clear();
                 reconcileProviderTaskRuntimeActivityForCurrentQuery('runtime-dispose');
                 turnInFlight = false;
+                pendingSubmission = null;
                 await sessionHookSetupPromise?.catch(() => undefined);
                 if (workflowRuntime) {
                     // Workflow runs, their agents and their `Task` children all live INSIDE this
@@ -1947,7 +2002,7 @@ export function createClaudeAgentSdkTurnOperations(
                 const hookPluginDir = sessionHookPluginDir;
                 sessionHookPluginDir = null;
                 if (hookPluginDir) {
-                    await params.ctx.agentRuntime.sessionHooks.disposePluginDir(hookPluginDir).catch(() => undefined);
+                    await sessionContext?.agentRuntime.sessionHooks.disposePluginDir(hookPluginDir).catch(() => undefined);
                 }
                 const hookServer = sessionHookServer;
                 sessionHookServer = null;

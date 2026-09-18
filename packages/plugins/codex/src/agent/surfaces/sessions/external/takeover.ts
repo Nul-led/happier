@@ -9,6 +9,7 @@ import {
   buildCodexAgentRuntimeDescriptorV1,
   normalizeCodexBackendMode,
   readCanonicalCodexAgentRuntimeDescriptorV1,
+  readExactCodexProviderSessionId,
 } from '../../../../protocol/runtimeDescriptorV1.js';
 
 type CodexExternalSessionTakeoverIdentity =
@@ -57,7 +58,8 @@ function sourcesMatch(left: CodexTakeoverSource, right: CodexTakeoverSource): bo
 export function resolveCodexExternalSessionTakeoverPlan(
   identity: CodexExternalSessionTakeoverIdentity,
 ): AgentExternalSessionTakeoverLaunchPlan | null {
-  const remoteSessionId = readNonEmptyString(identity.remoteSessionId);
+  // Codex minted this id; takeover must resume the session it names exactly.
+  const remoteSessionId = readExactCodexProviderSessionId(identity.remoteSessionId);
   const source = readCodexSource(identity.source);
   const linkedSourceValue = identity.linkData.source;
   const linkedSource = linkedSourceValue && typeof linkedSourceValue === 'object' && !Array.isArray(linkedSourceValue)

@@ -50,7 +50,7 @@ function reconcileCheckout(input: Parameters<typeof reconcileGitWorkspaceCheckou
     return runWithRealGitScmRuntime(() => reconcileGitWorkspaceCheckout(input));
 }
 
-describe('reconcileGitWorkspaceCheckout', () => {
+describe('reconcileGitWorkspaceCheckout', { timeout: REAL_GIT_RECONCILE_TEST_TIMEOUT_MS }, () => {
     it('realigns the target branch ref to the source HEAD when both checkouts are already on the same branch', async () => {
         const sourceRoot = await makeTempDir('git-reconcile-align-source-');
         const targetRoot = await makeTempDir('git-reconcile-align-target-');

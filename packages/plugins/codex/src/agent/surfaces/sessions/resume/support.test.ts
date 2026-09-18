@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { supportsCodexProviderResume } from './support.js';
+import { CodexLegacyMcpBackendModeUnsupportedError } from '../../../lifecycle/backendMode.js';
 
 describe('Codex plugin resume support', () => {
   it('supports final app-server and ACP backend modes', () => {
@@ -12,13 +13,13 @@ describe('Codex plugin resume support', () => {
     })).toBe(true);
   });
 
-  it('fails closed when a released legacy MCP input reaches resume support', () => {
+  it('rejects retired MCP while preserving the released MCP-resume ACP alias', () => {
     expect(() => supportsCodexProviderResume({
       agentRuntimeSelection: { codexBackendMode: 'mcp' },
-    })).toThrow(/codex_legacy_mcp_backend_mode_unsupported/u);
-    expect(() => supportsCodexProviderResume({
+    })).toThrow(CodexLegacyMcpBackendModeUnsupportedError);
+    expect(supportsCodexProviderResume({
       agentRuntimeSelection: { codexBackendMode: 'mcp_resume' },
-    })).toThrow(/codex_legacy_mcp_backend_mode_unsupported/u);
+    })).toBe(true);
   });
 
   it('accepts a canonical runtime descriptor without a Codex-specific host input', () => {

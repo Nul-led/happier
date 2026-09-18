@@ -71,7 +71,7 @@ const OPENCODE_RUNTIME_DESCRIPTOR_READER_PROJECTION = {
   },
   fields: [
     { key: 'backendMode', kind: 'runtimeKind', runtimeHandle: 'whenPresent' },
-    { key: 'providerSessionId', kind: 'trimmedString', runtimeHandle: 'whenPresent' },
+    { key: 'providerSessionId', kind: 'opaqueIdentifier', runtimeHandle: 'whenPresent' },
     { key: 'serverBaseUrl', kind: 'loopbackHttpOrigin', runtimeHandle: 'whenPresent' },
     { key: 'serverBaseUrlExplicit', kind: 'booleanTrue', runtimeHandle: 'booleanTrue', requiresField: 'serverBaseUrl' },
   ],
@@ -79,7 +79,7 @@ const OPENCODE_RUNTIME_DESCRIPTOR_READER_PROJECTION = {
     defaultRuntimeKindWhenAnyFieldPresent: 'server',
     fields: [
       { key: 'backendMode', sourceKey: 'opencodeBackendMode', kind: 'runtimeKind', runtimeHandle: 'whenPresent' },
-      { key: 'providerSessionId', sourceKey: 'opencodeSessionId', kind: 'trimmedString', runtimeHandle: 'whenPresent' },
+      { key: 'providerSessionId', sourceKey: 'opencodeSessionId', kind: 'opaqueIdentifier', runtimeHandle: 'whenPresent' },
       { key: 'serverBaseUrl', sourceKey: 'opencodeServerBaseUrl', kind: 'loopbackHttpOrigin', runtimeHandle: 'whenPresent' },
       {
         key: 'serverBaseUrlExplicit',

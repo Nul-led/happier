@@ -1,3 +1,10 @@
+import {
+  formatTriageTimestampV1,
+  type TriageSourceEntrySnapshotV1,
+  type TriageSourceDescriptorV1,
+  type TriageEntryRefV1,
+} from '@happier-dev/triage-protocol/v1';
+
 import { triageEntryRowKey, type TriageListRowV1 } from '../../projection/listWindow.js';
 
 /**
@@ -18,11 +25,46 @@ import { triageEntryRowKey, type TriageListRowV1 } from '../../projection/listWi
  * order. There is one winner now, and no reader chooses again.
  */
 
+/**
+ * How this projection resolves the words it authors itself.
+ *
+ * Structurally the same resolver the rest of the surface uses
+ * (`ui/shell/windowState.ts`), declared here rather than imported so a
+ * projection every non-UI reader also calls — the search Action, the Composer
+ * picker's facts — does not pull the shell in behind it. Provider text is never
+ * passed through it: a source's own title, summary and state word are quoted
+ * verbatim, because they are the source's statement and not ours to translate.
+ */
+export type TriageEntryDisplayTextV1 = (key: string, fallback?: string) => string;
+
+const ENGLISH_TEXT: TriageEntryDisplayTextV1 = (_key, fallback = '') => fallback;
+
+/**
+ * The closed presentation vocabulary in the reader's own words.
+ *
+ * It is only ever a fallback. A source that named its own state — "Open",
+ * "Merged", "Ignored" — is quoted, because the five-member enum is a lossy
+ * projection of the provider's real lifecycle and announcing "Active" over a
+ * merged pull request would be less true than the word the source sent.
+ */
+const LIFECYCLE_COPY_V1: Readonly<Record<
+  TriageSourceEntrySnapshotV1['state']['presentation'],
+  Readonly<{ key: string; fallback: string }>
+>> = Object.freeze({
+  active: Object.freeze({ key: 'plugins.triage.surface.row.state.active', fallback: 'Active' }),
+  resolved: Object.freeze({ key: 'plugins.triage.surface.row.state.resolved', fallback: 'Resolved' }),
+  closed: Object.freeze({ key: 'plugins.triage.surface.row.state.closed', fallback: 'Closed' }),
+  suppressed: Object.freeze({ key: 'plugins.triage.surface.row.state.suppressed', fallback: 'Suppressed' }),
+  unknown: Object.freeze({ key: 'plugins.triage.surface.row.state.unknown', fallback: 'State unknown' }),
+});
+
 export type TriageEntryDisplayV1 = Readonly<{
   /** Stable list identity across re-reads; injective over the canonical ref. */
   key: string;
   title: string;
   scopeLabel: string;
+  /** Source-authored readable address; never decoded into routing or identity. */
+  identifierLabel: string;
   /** The source's bounded semantic summary, independent of the row status line. */
   summary: string | null;
   /**
@@ -32,6 +74,23 @@ export type TriageEntryDisplayV1 = Readonly<{
   detail: string | null;
   /** Whether the row's presence is a caution rather than ordinary content. */
   tone: 'neutral' | 'warning' | 'danger';
+  /**
+   * The source's own kind id for this entry, exactly as the canonical reference
+   * carries it. A reader moving row by row hears no section heading and sees no
+   * icon, so the kind travels with the row (`core/SURFACE.md` §7.1).
+   */
+  kindId: string;
+  /**
+   * The entry's lifecycle in one word, or `null` when no connection reports the
+   * entry at all and there is therefore no lifecycle to state.
+   */
+  lifecycleLabel: string | null;
+  /**
+   * When this row was last observed, on our clock, or `null` when nothing was
+   * ever observed for it. It is the basis of the row's freshness announcement
+   * and is never compared with a provider timestamp.
+   */
+  observedAtMs: number | null;
 }>;
 
 /**
@@ -39,23 +98,35 @@ export type TriageEntryDisplayV1 = Readonly<{
  * that quietly loses its title reads as a rendering fault, while a row that
  * says the source no longer reports it is information the reader can act on.
  */
-function presenceDetail(row: TriageListRowV1): Readonly<{
+function presenceDetail(
+  row: TriageListRowV1,
+  text: TriageEntryDisplayTextV1,
+): Readonly<{
   detail: string | null;
   tone: TriageEntryDisplayV1['tone'];
 }> {
   switch (row.presence.kind) {
     case 'absent':
-      return { detail: 'No longer reported by the source', tone: 'danger' };
+      return {
+        detail: text('plugins.triage.surface.row.absent', 'No longer reported by the source'),
+        tone: 'danger',
+      };
     case 'unresolved':
-      return { detail: 'Could not be read in the last pass', tone: 'warning' };
+      return {
+        detail: text('plugins.triage.surface.row.unresolved', 'Could not be read in the last pass'),
+        tone: 'warning',
+      };
     case 'present':
       return { detail: null, tone: 'neutral' };
   }
 }
 
-export function projectTriageEntryDisplay(row: TriageListRowV1): TriageEntryDisplayV1 {
+export function projectTriageEntryDisplay(
+  row: TriageListRowV1,
+  text: TriageEntryDisplayTextV1 = ENGLISH_TEXT,
+): TriageEntryDisplayV1 {
   const snapshot = row.content?.outcome.snapshot;
-  const presence = presenceDetail(row);
+  const presence = presenceDetail(row, text);
   // Attention outranks a presence note only when the row is actually present:
   // "your review is requested" over an entry the source no longer reports would
   // send the reader somewhere that is not there.
@@ -68,8 +139,109 @@ export function projectTriageEntryDisplay(row: TriageListRowV1): TriageEntryDisp
     // entry id is the only true thing we know about this row.
     title: snapshot?.title ?? row.entryRef.entryId,
     scopeLabel: snapshot?.scopeLabel ?? row.entryRef.collisionScope,
+    identifierLabel: row.content?.outcome.locator.displayPath ?? row.entryRef.entryId,
     summary: snapshot?.summary ?? null,
     detail,
     tone: presence.tone,
+    kindId: row.entryRef.kindId,
+    lifecycleLabel: snapshot === undefined
+      ? null
+      : snapshot.state.nativeLabel ?? text(
+          LIFECYCLE_COPY_V1[snapshot.state.presentation].key,
+          LIFECYCLE_COPY_V1[snapshot.state.presentation].fallback,
+        ),
+    // Presence is the roll-up of every connection's answer for this entry, so
+    // it is the row's own last observation moment; the content observation is
+    // one connection's. They agree for an ordinary row and presence is the
+    // truthful one when they do not.
+    observedAtMs: row.presence.observedAtMs ?? row.content?.observedAtMs ?? null,
   });
+}
+
+/**
+ * The facts a row announcement is composed from.
+ *
+ * Structural rather than tied to either surface's row type, because the same
+ * sentence has to be available to the shell list and to any other surface that
+ * renders these rows. `stale` is the window's own freshness claim
+ * (`ui/shell/windowState.ts`), not a second judgment made per row: one owner
+ * decides whether what is on screen is current, and the row states it.
+ */
+export type TriageEntryRowAnnouncementFactsV1 = Readonly<{
+  kindId: string;
+  scopeLabel: string;
+  lifecycleLabel: string | null;
+  detail: string | null;
+  observedAtMs: number | null;
+  stale: boolean;
+  /** The same declared source/kind/address context shown in the row. */
+  contextDescription?: string;
+}>;
+
+/** Compact scan context for every mounted reader of the canonical display facts. */
+export function readTriageEntryRowContextV1(
+  facts: Readonly<{
+    kindId: string;
+    scopeLabel: string;
+    identifierLabel?: string;
+    lifecycleLabel: string | null;
+  }>,
+  descriptor?: TriageSourceDescriptorV1 | null,
+  source?: TriageEntryRefV1['source'],
+): Readonly<{ label: string; description: string }> {
+  const kind = descriptor?.kinds.find((candidate) => candidate.id === facts.kindId);
+  const sourceLabel = descriptor?.displayName
+    ?? (source === undefined ? null : `${source.pluginId}/${source.localId}`);
+  const context = [
+    ...(sourceLabel === null ? [] : [sourceLabel]),
+    kind?.displayName ?? facts.kindId,
+    facts.identifierLabel ?? facts.scopeLabel,
+  ];
+  return {
+    label: [...context, ...(facts.lifecycleLabel === null ? [] : [facts.lifecycleLabel])].join(' · '),
+    description: context.join(', '),
+  };
+}
+
+/**
+ * What a reader who cannot see the row is told about it, in one place.
+ *
+ * The row's accessible NAME is the entry and only the entry, so everything else
+ * a sighted reader takes from the row's surroundings — which kind of thing it
+ * is, which lifecycle it is in, and whether what they are looking at is still
+ * current — has to be said here or not at all. `core/SURFACE.md` §7.1 requires
+ * exactly that, and requires the stale state to be said in words rather than
+ * left to opacity, tone or a timestamp.
+ *
+ * The title is deliberately absent: a row that announces its own name twice is
+ * the failure the pinned name exists to prevent.
+ *
+ * `, ` is the separator the platforms this description reaches compose their
+ * own multi-part announcements with; it is punctuation, not copy.
+ */
+export function readTriageEntryRowAnnouncementV1(
+  facts: TriageEntryRowAnnouncementFactsV1,
+  options: Readonly<{
+    nowMs: number;
+    locale: string;
+    text?: TriageEntryDisplayTextV1;
+  }>,
+): string {
+  const text = options.text ?? ENGLISH_TEXT;
+  const parts: string[] = facts.contextDescription === undefined
+    ? [facts.kindId, facts.scopeLabel]
+    : [facts.contextDescription];
+  if (facts.lifecycleLabel !== null) parts.push(facts.lifecycleLabel);
+  if (facts.detail !== null) parts.push(facts.detail);
+  if (facts.stale) {
+    // An age is only stated when one is actually known. A row nothing has ever
+    // observed is still stale, and inventing a moment for it would be the one
+    // freshness claim this surface must never make.
+    parts.push(facts.observedAtMs === null
+      ? text('plugins.triage.surface.row.stale', 'Stale')
+      : `${text('plugins.triage.surface.row.staleSince', 'Stale, last seen')} ${
+        formatTriageTimestampV1(options.locale, facts.observedAtMs, 'relative', options.nowMs)
+      }`);
+  }
+  return parts.join(', ');
 }

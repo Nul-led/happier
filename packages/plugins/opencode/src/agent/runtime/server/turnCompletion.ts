@@ -1,17 +1,17 @@
-import { publishOpenCodeRuntimeEvent } from './openCodeRuntimeEvents.js';
+import { projectOpenCodeRuntimeScope, publishOpenCodeRuntimeEvent } from './openCodeRuntimeEvents.js';
 import type { OpenCodeForegroundToolTracker } from './foregroundToolTracker.js';
 import {
   claimOpenCodeActiveTurnForTerminalEvent,
   type OpenCodeServerRuntimeState,
 } from './state.js';
 import { readStatusType } from './state.js';
-import type { OpenCodeRuntimeEvent } from './runtimeEvents.js';
+import type { OpenCodeRuntimeEvent, OpenCodeRuntimeScope } from './runtimeEvents.js';
 
 export async function completeOpenCodeTurnIfReady(params: Readonly<{
   publishRuntimeEvent: (event: OpenCodeRuntimeEvent) => void;
   state: OpenCodeServerRuntimeState;
   foregroundToolTracker: OpenCodeForegroundToolTracker;
-  happierSessionId: string;
+  scope: OpenCodeRuntimeScope;
   resetCurrentTurnObservations: () => void;
   status: unknown;
   hasTerminalAssistantHistory?: boolean;
@@ -31,7 +31,7 @@ export async function completeOpenCodeTurnIfReady(params: Readonly<{
   params.resetCurrentTurnObservations();
   await publishOpenCodeRuntimeEvent(params.publishRuntimeEvent, {
     kind: 'turn-complete',
-    sessionId: params.happierSessionId,
+    ...projectOpenCodeRuntimeScope(params.scope),
     turnId,
     emittedAtMs: Date.now(),
   });

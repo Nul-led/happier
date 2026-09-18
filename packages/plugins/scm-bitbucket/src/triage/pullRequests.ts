@@ -10,6 +10,7 @@ import {
 import {
   classifyBitbucketAbortSignal,
   createBitbucketFailure,
+  isBitbucketTerminatingScanFailure,
   type BitbucketTriageFailure,
 } from './failures.js';
 import {
@@ -208,12 +209,6 @@ export type BitbucketScanOutcome =
  * the same authorization and would fail identically, and a rate limit must reach the caller with
  * its deadline instead of being spent lane by lane.
  */
-function isScanTerminatingFailure(failure: BitbucketTriageFailure): boolean {
-  return failure.class === 'cancelled'
-    || failure.class === 'rateLimit'
-    || failure.class === 'authentication';
-}
-
 type BitbucketWalkLane = {
   /** The involvement this route proves on its own, or `null` when only the row can prove it. */
   routeInvolvement: BitbucketInvolvement | null;
@@ -411,7 +406,7 @@ export async function scanBitbucketPullRequests(
     });
 
     if (!response.ok) {
-      if (isScanTerminatingFailure(response.failure)) {
+      if (isBitbucketTerminatingScanFailure(response.failure)) {
         return { ok: false, failure: response.failure };
       }
       lane.ended = true;
@@ -527,7 +522,6 @@ export async function getBitbucketPullRequest(
     workspaceUuid: string;
     repositorySlug: string;
     expectedRepositoryUuid: string;
-    expectedRepositoryKey: string;
     entryId: string;
     signal?: AbortSignal;
   }>,
@@ -551,8 +545,9 @@ export async function getBitbucketPullRequest(
     };
   }
 
-  const sameRepository = decoded.entry.repository.uuid === input.expectedRepositoryUuid
-    && decoded.entry.repository.repositoryKey === input.expectedRepositoryKey;
+  // A workspace/repository display path is mutable. Only the provider UUID and PR id prove
+  // entity equality; a successful matching read supplies the replacement locator.
+  const sameRepository = decoded.entry.repository.uuid === input.expectedRepositoryUuid;
   if (!sameRepository || decoded.entry.entryId !== input.entryId) {
     return {
       kind: 'unresolved',

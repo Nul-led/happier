@@ -9,6 +9,7 @@ export type {
   AgentAcpModel,
   AgentAcpModelControls,
   AgentAcpModelOption,
+  AgentAcpModelState,
   AgentAcpNotificationExtension,
   AgentAcpPromptUsageDefinition,
   AgentAcpRequestExtension,
@@ -78,6 +79,8 @@ export type {
   AgentTranscriptFileFollowHandle,
   AgentTranscriptFileFollowInput,
   AgentTranscriptFileFollowService,
+  AgentExecutionRunHostServicesV1,
+  AgentExecutionRunHooksServiceV1,
   AgentTranscriptSessionEventPublicationResult,
   AgentTranscriptSessionEventPublisher,
   TerminalControlPort,
@@ -117,17 +120,25 @@ export type {
   AgentSessionVendorPluginCatalogItem,
 } from './controls.js';
 export type {
+  AgentExecutionRunConversationAdapterOptionsV1,
+  AgentExecutionRunConversationEventV1,
+  AgentExecutionRunConversationRuntimeV1,
+  AgentExecutionRunConversationSendOptionsV1,
   AgentExecutionRunEvent,
+  AgentExecutionRunResultContractV1,
   AgentFiniteExecutionRunHostOptions,
   AgentFiniteExecutionRunProgressEvent,
   AgentFiniteExecutionRunResult,
   AgentExecutionRunOpenRequest,
   AgentExecutionRunRuntime,
+  AgentExecutionRunRuntimeContextV1,
   AgentExecutionRunRuntimeFactory,
+  AgentSessionExecutionRunRuntimeFactoryV1,
   AgentExecutionRunSendResult,
   AgentExecutionRunStopResult,
 } from './executionRun.js';
 export {
+  createExecutionRunHostBackendFromConversationRuntime,
   createFiniteExecutionRunHostRuntime,
 } from './executionRun.js';
 export type { AgentRuntime, AgentRuntimeBase, AgentToolExecutionLifecycle } from './runtime.js';
@@ -139,6 +150,7 @@ export type {
   AgentProviderBindingPrepareInput,
   AgentProviderBindingPrepared,
   AgentProviderBindingResolvedFacts,
+  AgentProviderBindingSourceKey,
   AgentProviderCredentialTransport,
 } from './providerBinding.js';
 export type {
@@ -211,6 +223,7 @@ export type {
   AgentCliSessionCommandOptionsV1,
   AgentCliSessionCommandParsedArgsV1,
   AgentProviderCliAttachDeclarationV1,
+  AgentProviderCliAttachReachabilityV1,
   AgentProviderCliAttachTargetResolutionV1,
   AgentProviderCliAttachTargetV1,
   AgentRuntimeRegistrationOptions,
@@ -319,6 +332,7 @@ export type {
   AgentAcpToolNameInference,
   AgentAcpToolNamePattern,
   AgentAcpToolNameResolver,
+  PluginAgentAcpNativeSessionMcpConfigV2,
 } from './acpTypes.js';
 export type {
   AgentProviderBindingEnvironmentEntry,

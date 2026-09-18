@@ -3,6 +3,7 @@ import type {
     AgentCliAuthContributionV1,
     AgentRuntimeFactory,
     AgentRuntimeRegistrationOptions,
+    AgentTerminalSurface,
 } from './agentRuntime/index.js';
 import type {
     ActionHandler,
@@ -20,7 +21,7 @@ import type {
     ComposerReferenceResolutionV1,
 } from './composerReferenceProviders.js';
 import type { ComposerStagedMediaContentV1 } from './composer.js';
-import type { PluginInvocationContext } from './invocation.js';
+import type { PluginInvocationContext, PluginScopedInvocationContextV1 } from './invocation.js';
 import type { Disposable } from './lifecycle.js';
 import type { BackendRuntimeRegistration } from './scm/backend.js';
 import type { HostingProviderRuntimeRegistration } from './scm/hostingProvider.js';
@@ -103,6 +104,21 @@ export type ComposerAttachmentResolveRequestV1<
     TPrepared extends JsonValue = JsonValue,
 > = Readonly<{
     sessionId: string;
+    localId: string;
+    attachments: readonly Readonly<{
+        instanceId: string;
+        key: string;
+        value: TPrepared;
+    }>[];
+}>;
+
+/** Additive run-capable resolution payload; Session-only V1 remains unchanged. */
+export type ComposerAttachmentResolveRequestV2<
+    TPrepared extends JsonValue = JsonValue,
+> = Readonly<{
+    scope:
+        | Readonly<{ kind: 'session'; sessionId: string }>
+        | Readonly<{ kind: 'execution_run'; executionRunId: string }>;
     localId: string;
     attachments: readonly Readonly<{
         instanceId: string;
@@ -215,6 +231,10 @@ export type ComposerAttachmentRuntime<
     resolveForDispatch?(
         request: ComposerAttachmentResolveRequestV1<TPrepared>,
         context: PluginInvocationContext,
+    ): Promise<ComposerAttachmentResolveResultV1>;
+    resolveForDispatchV2?(
+        request: ComposerAttachmentResolveRequestV2<TPrepared>,
+        context: PluginScopedInvocationContextV1,
     ): Promise<ComposerAttachmentResolveResultV1>;
     /** Best-effort post-durable-admission notification; it receives only sessionId plus localId. */
     afterMessageAccepted?(
@@ -352,6 +372,7 @@ export interface PluginApi {
          * whose runtime remains host-owned (for example an ACP Agent).
          */
         registerCliAuth(id: string, contribution: AgentCliAuthContributionV1): void;
+        registerTerminal(id: string, contribution: AgentTerminalSurface): void;
         registerExternalSessions(id: string, contribution: AgentExternalSessionsContribution): void;
         registerExternalSessionHooks(
             id: string,

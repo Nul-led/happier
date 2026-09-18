@@ -53,8 +53,13 @@ describe('Grok history controls', () => {
   });
 
   it('accepts only an exact nonempty provider session identity from fork', () => {
+    // Grok minted the forked id, so padding is identity, not noise to strip --
+    // it is returned byte-exact. Only a blank or non-string value is rejected.
     expect(GROK_ACP_HISTORY.fork?.readProviderSessionId({
-      newSessionId: ' padded-provider-id ',
+      newSessionId: '  provider\nses/AB+cd==  ',
+    })).toBe('  provider\nses/AB+cd==  ');
+    expect(GROK_ACP_HISTORY.fork?.readProviderSessionId({
+      newSessionId: '   \n  ',
     })).toBeNull();
     expect(GROK_ACP_HISTORY.fork?.readProviderSessionId({
       newSessionId: '',
@@ -100,6 +105,57 @@ describe('Grok history controls', () => {
       force: true,
       mode: 'conversation_only',
     }, expect.any(Object));
+  });
+
+  it('rolls back against a provider session id whose padding is part of its bytes', async () => {
+    // Grok minted this id. The live session reports the same exact bytes, so
+    // rollback must proceed -- rejecting it for "not already trimmed" refuses a
+    // session identity the Agent itself issued.
+    const opaqueProviderSessionId = '  provider\nses/AB+cd==  ';
+    const requestExtension = vi.fn(async (methods: readonly string[]) => (
+      methods[0] === 'x.ai/rewind/points'
+        ? { points: [] }
+        : { success: true }
+    ));
+    const control = createGrokConversationRollbackControl({
+      getProviderSessionId: () => opaqueProviderSessionId,
+      requestExtension,
+    });
+
+    await expect(control.rollback({
+      operationId: 'operation-1',
+      target: { kind: 'beforeTurn', turnId: 'turn-2' },
+      affectedTurns: [{
+        turnId: 'turn-2',
+        providerCheckpoint: { kind: 'grok_prompt_index', promptIndex: 4 },
+      }],
+      providerSessionId: opaqueProviderSessionId,
+      runtimeIncarnationId: 'runtime-1',
+    })).resolves.toEqual({ status: 'applied' });
+
+    expect(requestExtension).toHaveBeenNthCalledWith(1, [
+      'x.ai/rewind/points',
+    ], {
+      sessionId: opaqueProviderSessionId,
+    }, expect.any(Object));
+  });
+
+  it('rejects a blank provider session id', async () => {
+    const control = createGrokConversationRollbackControl({
+      getProviderSessionId: () => '   \n  ',
+      requestExtension: vi.fn(async () => ({ success: true })),
+    });
+
+    await expect(control.rollback({
+      operationId: 'operation-1',
+      target: { kind: 'beforeTurn', turnId: 'turn-2' },
+      affectedTurns: [{
+        turnId: 'turn-2',
+        providerCheckpoint: { kind: 'grok_prompt_index', promptIndex: 4 },
+      }],
+      providerSessionId: '   \n  ',
+      runtimeIncarnationId: 'runtime-1',
+    })).resolves.toMatchObject({ status: 'rejected' });
   });
 
   it('uses the observed legacy rewind namespace after a non-destructive probe', async () => {

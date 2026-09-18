@@ -16,6 +16,9 @@ export const BUNDLED_AGENT_DEFINITION_IDS: readonly string[] = Object.freeze([
   "codex",
   "copilot",
   "cursor",
+  "devin",
+  "droid",
+  "fx",
   "gemini",
   "grok",
   "kilo",
@@ -130,8 +133,8 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
       "persisted": true
     },
     "tools": {
-      "delivery": "unsupported",
-      "support": "unsupported"
+      "delivery": "native_mcp",
+      "support": "experimental"
     }
   },
   "enablementCompatibilityBackendIds": [
@@ -139,25 +142,6 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
     "antigravity-terminal"
   ],
   "id": "antigravity",
-  "modelConfig": {
-    "acpApplyBehavior": "restart_session",
-    "acpModelConfigOptionId": null,
-    "allowedModes": [
-      "Gemini 3.5 Flash (Medium)"
-    ],
-    "defaultMode": "Gemini 3.5 Flash (Medium)",
-    "dynamicProbe": "auto",
-    "nonAcpApplyScope": "next_prompt",
-    "staticModels": [
-      {
-        "description": "Observed Antigravity CLI model fallback. The full list is discovered dynamically with agy models.",
-        "id": "Gemini 3.5 Flash (Medium)",
-        "name": "Gemini 3.5 Flash (Medium)"
-      }
-    ],
-    "supportsFreeform": false,
-    "supportsSelection": true
-  },
   "ownedBackendIds": [
     "antigravity"
   ],
@@ -967,9 +951,9 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
     },
     "id": "codex",
     "localControl": {
-      "attachStrategy": "terminal_host",
+      "attachStrategy": "provider_attach",
       "supported": true,
-      "topology": "exclusive"
+      "topology": "shared"
     },
     "resume": {
       "vendorResume": "experimental",
@@ -980,6 +964,7 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
         "acp": {
           "kind": "acp",
           "overrides": {
+            "localControl": null,
             "sessionCapabilities": {
               "sessionFork": {
                 "conversation": "unsupported"
@@ -1066,6 +1051,11 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
         },
         {
           "key": "providerSessionId",
+          "kind": "opaqueIdentifier",
+          "runtimeHandle": "whenPresent"
+        },
+        {
+          "key": "appServerEndpoint",
           "kind": "trimmedString",
           "runtimeHandle": "whenPresent"
         },
@@ -1105,9 +1095,14 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
           },
           {
             "key": "providerSessionId",
-            "kind": "trimmedString",
+            "kind": "opaqueIdentifier",
             "runtimeHandle": "whenPresent",
             "sourceKey": "codexSessionId"
+          },
+          {
+            "key": "appServerEndpoint",
+            "kind": "trimmedString",
+            "runtimeHandle": "whenPresent"
           },
           {
             "key": "home",
@@ -1172,6 +1167,9 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
   "copilot": Object.freeze(({
   "cli": {
     "auth": {
+      "credentialPaths": [
+        "~/.copilot/config.json"
+      ],
       "environmentVariables": [
         "COPILOT_GITHUB_TOKEN",
         "GH_TOKEN",
@@ -1185,7 +1183,7 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
           "kind": "primary"
         }
       ],
-      "nonInteractiveStatusProbe": true,
+      "missingCredentialState": "unknown",
       "support": "login_terminal"
     },
     "displayName": "GitHub Copilot CLI",
@@ -1350,6 +1348,349 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
       }
     ],
     "supportsFreeform": true,
+    "supportsSelection": true
+  },
+  "sessionModeDescriptor": {
+    "runtimeSwitch": "acp-setSessionMode",
+    "semantics": "agent-modes",
+    "source": "acp"
+  },
+  "sessionModesKind": "acpAgentModes"
+}) as const),
+  "devin": Object.freeze(({
+  "cli": {
+    "auth": {
+      "loginLaunches": [
+        {
+          "args": [
+            "auth",
+            "login"
+          ],
+          "kind": "primary"
+        }
+      ],
+      "nonInteractiveStatusProbe": true,
+      "support": "login_terminal"
+    },
+    "displayName": "Devin CLI",
+    "executable": {
+      "binaryName": "devin",
+      "knownUserBinDirSuffixes": [
+        ".local/bin"
+      ],
+      "sourcePreference": "system-first",
+      "systemCommandResolutionStrategy": "path-first"
+    },
+    "install": {
+      "docsUrl": "https://docs.devin.ai/work-with-devin/devin-cli",
+      "guideUrl": "https://docs.devin.ai/work-with-devin/devin-cli",
+      "managed": null,
+      "manual": {
+        "kind": "command"
+      }
+    }
+  },
+  "core": {
+    "cliSubcommand": "devin",
+    "cloudConnect": null,
+    "connectedServices": null,
+    "detectKey": "devin",
+    "flavorAliases": [
+      "devin-cli"
+    ],
+    "handoff": {
+      "vendorStateTransfer": "unsupported"
+    },
+    "id": "devin",
+    "localControl": {
+      "attachStrategy": "terminal_host",
+      "supported": true,
+      "topology": "exclusive"
+    },
+    "resume": {
+      "vendorResume": "supported",
+      "vendorResumeIdField": "devinSessionId"
+    },
+    "runtimeInput": {
+      "inFlightSteerSupported": false,
+      "terminalPromptInjectionSupported": false
+    },
+    "sessionCapabilities": {
+      "sessionFork": {
+        "conversation": "unsupported",
+        "fromMessage": "unsupported"
+      },
+      "sessionListing": "unsupported",
+      "sessionRollback": {
+        "conversation": "unsupported"
+      }
+    },
+    "sessionStorage": {
+      "direct": true,
+      "persisted": true
+    },
+    "tools": {
+      "delivery": "native_mcp",
+      "support": "supported"
+    }
+  },
+  "id": "devin",
+  "modelConfig": {
+    "acpApplyBehavior": "set_model",
+    "acpModelConfigOptionId": "model",
+    "allowedModes": [
+      "default"
+    ],
+    "defaultMode": "default",
+    "dynamicProbe": "auto",
+    "nonAcpApplyScope": "next_prompt",
+    "supportsFreeform": false,
+    "supportsSelection": true
+  },
+  "sessionModeDescriptor": {
+    "runtimeSwitch": "acp-setSessionMode",
+    "semantics": "agent-modes",
+    "source": "acp"
+  },
+  "sessionModesKind": "acpAgentModes"
+}) as const),
+  "droid": Object.freeze(({
+  "cli": {
+    "auth": {
+      "environmentVariables": [
+        "FACTORY_API_KEY"
+      ],
+      "loginLaunches": [
+        {
+          "args": [],
+          "initialInput": "/login",
+          "kind": "primary"
+        }
+      ],
+      "missingCredentialState": "unknown",
+      "support": "login_terminal"
+    },
+    "displayName": "Factory Droid CLI",
+    "executable": {
+      "binaryName": "droid",
+      "knownUserBinDirSuffixes": [
+        ".local/bin"
+      ],
+      "sourcePreference": "system-first",
+      "systemCommandResolutionStrategy": "path-first"
+    },
+    "install": {
+      "docsUrl": "https://docs.factory.ai/droid-cli/cli-reference",
+      "guideUrl": "https://docs.factory.ai/droid-cli/overview",
+      "managed": null,
+      "manual": {
+        "kind": "vendor_recipe",
+        "recipes": {
+          "darwin": [
+            {
+              "args": [
+                "-lc",
+                "curl -fsSL https://app.factory.ai/cli | sh"
+              ],
+              "cmd": "bash"
+            }
+          ],
+          "linux": [
+            {
+              "args": [
+                "-lc",
+                "curl -fsSL https://app.factory.ai/cli | sh"
+              ],
+              "cmd": "bash"
+            }
+          ],
+          "win32": [
+            {
+              "args": [
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                "Invoke-RestMethod https://app.factory.ai/cli/windows | Invoke-Expression"
+              ],
+              "cmd": "powershell"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "core": {
+    "cliSubcommand": "droid",
+    "cloudConnect": null,
+    "connectedServices": null,
+    "detectKey": "droid",
+    "flavorAliases": [
+      "factory",
+      "factory-droid"
+    ],
+    "handoff": {
+      "vendorStateTransfer": "unsupported"
+    },
+    "id": "droid",
+    "localControl": {
+      "attachStrategy": "terminal_host",
+      "supported": true,
+      "topology": "exclusive"
+    },
+    "resume": {
+      "vendorResume": "supported",
+      "vendorResumeIdField": "droidSessionId"
+    },
+    "runtimeInput": {
+      "inFlightSteerSupported": false,
+      "terminalPromptInjectionSupported": false
+    },
+    "sessionCapabilities": {
+      "sessionFork": {
+        "conversation": "unsupported",
+        "fromMessage": "unsupported"
+      },
+      "sessionListing": "unsupported",
+      "sessionRollback": {
+        "conversation": "unsupported"
+      }
+    },
+    "sessionStorage": {
+      "direct": true,
+      "persisted": true
+    },
+    "tools": {
+      "delivery": "native_mcp",
+      "support": "supported"
+    }
+  },
+  "id": "droid",
+  "modelConfig": {
+    "acpApplyBehavior": "set_model",
+    "acpModelConfigOptionId": "model",
+    "allowedModes": [
+      "default"
+    ],
+    "defaultMode": "default",
+    "dynamicProbe": "auto",
+    "nonAcpApplyScope": "next_prompt",
+    "supportsFreeform": false,
+    "supportsSelection": true
+  },
+  "sessionModeDescriptor": {
+    "runtimeSwitch": "acp-setSessionMode",
+    "semantics": "agent-modes",
+    "source": "acp"
+  },
+  "sessionModesKind": "acpAgentModes"
+}) as const),
+  "fx": Object.freeze(({
+  "cli": {
+    "auth": {
+      "loginLaunches": [
+        {
+          "args": [
+            "login"
+          ],
+          "kind": "primary"
+        }
+      ],
+      "support": "login_terminal"
+    },
+    "displayName": "FX CLI",
+    "executable": {
+      "binaryName": "fx",
+      "knownUserBinDirSuffixes": [
+        ".local/bin"
+      ],
+      "sourcePreference": "system-first",
+      "systemCommandResolutionStrategy": "path-first"
+    },
+    "install": {
+      "docsUrl": "https://github.com/vercel-labs/fx",
+      "guideUrl": "https://github.com/vercel-labs/fx",
+      "managed": null,
+      "manual": {
+        "kind": "vendor_recipe",
+        "recipes": {
+          "darwin": [
+            {
+              "args": [
+                "-lc",
+                "curl -fsSL https://fx.sh/setup.sh | bash"
+              ],
+              "cmd": "bash"
+            }
+          ],
+          "linux": [
+            {
+              "args": [
+                "-lc",
+                "curl -fsSL https://fx.sh/setup.sh | bash"
+              ],
+              "cmd": "bash"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "core": {
+    "cliSubcommand": "fx",
+    "cloudConnect": null,
+    "connectedServices": null,
+    "detectKey": "fx",
+    "flavorAliases": [
+      "vercel-fx"
+    ],
+    "handoff": {
+      "vendorStateTransfer": "unsupported"
+    },
+    "id": "fx",
+    "localControl": {
+      "attachStrategy": "terminal_host",
+      "supported": true,
+      "topology": "exclusive"
+    },
+    "resume": {
+      "vendorResume": "supported",
+      "vendorResumeIdField": "fxSessionId"
+    },
+    "runtimeInput": {
+      "inFlightSteerSupported": false,
+      "terminalPromptInjectionSupported": false
+    },
+    "sessionCapabilities": {
+      "sessionFork": {
+        "conversation": "unsupported",
+        "fromMessage": "unsupported"
+      },
+      "sessionListing": "supported",
+      "sessionRollback": {
+        "conversation": "unsupported"
+      }
+    },
+    "sessionStorage": {
+      "direct": true,
+      "persisted": true
+    },
+    "tools": {
+      "delivery": "native_mcp",
+      "support": "supported"
+    }
+  },
+  "id": "fx",
+  "modelConfig": {
+    "acpApplyBehavior": "set_model",
+    "acpModelConfigOptionId": "model",
+    "allowedModes": [
+      "default"
+    ],
+    "defaultMode": "default",
+    "dynamicProbe": "auto",
+    "nonAcpApplyScope": "next_prompt",
+    "supportsFreeform": false,
     "supportsSelection": true
   },
   "sessionModeDescriptor": {
@@ -1721,17 +2062,18 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
       ],
       "support": "login_terminal"
     },
-    "displayName": "Kimi CLI",
+    "displayName": "Kimi Code CLI",
     "executable": {
       "binaryName": "kimi",
       "knownUserBinDirSuffixes": [
         ".local/bin"
       ],
-      "sourcePreference": "system-first"
+      "sourcePreference": "system-first",
+      "systemCommandResolutionStrategy": "path-first"
     },
     "install": {
-      "docsUrl": "https://code.kimi.com",
-      "guideUrl": "https://kimi.moonshot.cn/docs/cli",
+      "docsUrl": "https://moonshotai.github.io/kimi-code/",
+      "guideUrl": "https://moonshotai.github.io/kimi-code/docs/en/reference/kimi-command.html",
       "managed": null,
       "manual": {
         "kind": "vendor_recipe",
@@ -1740,7 +2082,7 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
             {
               "args": [
                 "-lc",
-                "curl -fsSL https://code.kimi.com/install.sh | bash"
+                "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash"
               ],
               "cmd": "bash"
             }
@@ -1749,7 +2091,7 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
             {
               "args": [
                 "-lc",
-                "curl -fsSL https://code.kimi.com/install.sh | bash"
+                "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash"
               ],
               "cmd": "bash"
             }
@@ -1761,7 +2103,7 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
                 "-ExecutionPolicy",
                 "Bypass",
                 "-Command",
-                "Invoke-RestMethod https://code.kimi.com/install.ps1 | Invoke-Expression"
+                "Invoke-RestMethod https://code.kimi.com/kimi-code/install.ps1 | Invoke-Expression"
               ],
               "cmd": "powershell"
             }
@@ -1782,16 +2124,21 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
       "vendorStateTransfer": "unsupported"
     },
     "id": "kimi",
+    "localControl": {
+      "attachStrategy": "terminal_host",
+      "supported": true,
+      "topology": "exclusive"
+    },
     "resume": {
       "vendorResume": "supported",
       "vendorResumeIdField": "kimiSessionId"
     },
     "sessionCapabilities": {
       "sessionFork": {
-        "conversation": "unsupported",
+        "conversation": "supported",
         "fromMessage": "unsupported"
       },
-      "sessionListing": "unsupported",
+      "sessionListing": "supported",
       "sessionRollback": {
         "conversation": "unsupported"
       }
@@ -1801,12 +2148,13 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
       "persisted": true
     },
     "tools": {
-      "delivery": "shell_bridge",
+      "delivery": "native_mcp",
       "support": "experimental"
     }
   },
   "id": "kimi",
   "modelConfig": {
+    "acpApplyBehavior": "set_model",
     "acpModelConfigOptionId": "model",
     "allowedModes": [
       "default"
@@ -1814,14 +2162,15 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
     "defaultMode": "default",
     "dynamicProbe": "auto",
     "nonAcpApplyScope": "next_prompt",
+    "supportsFreeform": false,
     "supportsSelection": true
   },
   "sessionModeDescriptor": {
-    "runtimeSwitch": "none",
-    "semantics": "none",
-    "source": "none"
+    "runtimeSwitch": "acp-setSessionMode",
+    "semantics": "agent-modes",
+    "source": "acp"
   },
-  "sessionModesKind": "none"
+  "sessionModesKind": "acpAgentModes"
 }) as const),
   "kiro": Object.freeze(({
   "cli": {
@@ -2187,7 +2536,7 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
         },
         {
           "key": "providerSessionId",
-          "kind": "trimmedString",
+          "kind": "opaqueIdentifier",
           "runtimeHandle": "whenPresent"
         },
         {
@@ -2213,7 +2562,7 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
           },
           {
             "key": "providerSessionId",
-            "kind": "trimmedString",
+            "kind": "opaqueIdentifier",
             "runtimeHandle": "whenPresent",
             "sourceKey": "opencodeSessionId"
           },

@@ -16,10 +16,6 @@ import {
   buildAgentAccountUsageRecordId,
 } from '@happier-dev/plugin-sdk/agents/runtime';
 import type { JsonValue } from '@happier-dev/plugin-sdk';
-import {
-  resolveRecoverableTurnFailureRetryDecision,
-  resolveRecoverableTurnFailureSecondFailure,
-} from '@happier-dev/plugin-sdk/agents/runtime';
 import { isChangeTitleToolNameAlias, readPendingLocalId } from '@happier-dev/plugin-sdk/sessions';
 import type {
   AgentSessionRealtimeConversation,
@@ -30,7 +26,6 @@ import type {
   CodexAppServerEvent,
   CodexAppServerEventInput,
   CodexAppServerInput,
-  CodexAppServerRollbackTarget,
   CodexAppServerRuntimeIssue,
   CodexAppServerSendOptions,
   CodexAppServerSendResult,
@@ -59,7 +54,10 @@ import { resolveCodexUsageSubjectRef } from '../../auth/services/usage/identity.
 import {
   mapCodexRateLimitSnapshotToProviderAccountUsageSnapshot,
 } from '../../auth/services/usage/snapshot.js';
-import { buildCodexAgentRuntimeDescriptorV1 } from '../../../protocol/runtimeDescriptorV1.js';
+import {
+  buildCodexAgentRuntimeDescriptorV1,
+  readExactCodexProviderSessionId,
+} from '../../../protocol/runtimeDescriptorV1.js';
 import {
   isCodexAppServerOversizedJsonFrameError,
   resolveCodexHome,
@@ -67,6 +65,7 @@ import {
   type DisposableCodexAppServerClient,
 } from './client.js';
 import {
+  isCodexAppServerDefinitiveMethodNotFoundError,
   isCodexAppServerInvalidParamsError,
   isCodexAppServerNoActiveTurnToInterruptError,
 } from './compatibility.js';
@@ -101,10 +100,12 @@ import {
 } from './connectedServiceRuntimeIdentity.js';
 import {
   createCodexAppServerTurnFailure,
-  isCodexAppServerTemporaryRecoverableTurnFailureError,
 } from './turns/failure.js';
-import { createCodexAppServerSessionTurnRollbackTracker } from './turns/rollbackTracker.js';
 import { createCodexAppServerAssistantReasoningProjector } from './projection/assistantReasoning.js';
+import {
+  hasCodexAppServerCollaborationMode,
+  resolveCodexAppServerCollaborationModeSelection,
+} from './state/controls.js';
 import { projectCodexAppServerToolEventsFromNotification } from './projection/toolEvents.js';
 import {
   extractCodexGeneratedMediaCandidate,
@@ -120,11 +121,9 @@ import {
   readCodexTurnStatus,
   readModelId,
   readProviderEventTurnId,
-  readRollbackUnsupportedErrorMessage,
   readServiceTier,
   readThreadId,
   readTurnId,
-  trimSessionId,
   trimStringValue,
 } from './wire/fields.js';
 import { resolveCodexTerminalPermissionPolicy } from '../terminal/permissionPolicy.js';
@@ -197,23 +196,6 @@ type CodexAppServerStartSession = (
   options?: CodexAppServerStartOrLoadOptions,
 ) => Promise<string>;
 
-type CodexAppServerRollbackConversationRequest = Readonly<{
-  v: 1;
-  target?: CodexAppServerRollbackTarget;
-}>;
-
-type CodexAppServerRollbackConversationResult =
-  | Readonly<{
-      ok: true;
-      target: CodexAppServerRollbackTarget;
-      threadId?: string;
-    }>
-  | Readonly<{
-      ok: false;
-      errorCode: string;
-      errorMessage: string;
-    }>;
-
 const codexAppServerRuntimeStarters = new WeakMap<object, CodexAppServerStartSession>();
 const codexAppServerRuntimeCompletionWaiters = new WeakMap<object, () => Promise<void>>();
 
@@ -229,9 +211,6 @@ export type CodexAppServerRuntime = CodexAppServerSession & Readonly<{
     userMessageSeqs?: readonly number[];
   }>): Promise<void>;
   runtimeAuth: AgentSessionRuntimeAuthControl;
-  rollbackConversation(
-    request: CodexAppServerRollbackConversationRequest,
-  ): Promise<CodexAppServerRollbackConversationResult>;
   rollbackNativeConversation(
     request: AgentSessionConversationRollbackRequest,
   ): Promise<AgentSessionConversationRollbackResult>;
@@ -252,6 +231,10 @@ type PendingTurn = {
   threadId: string;
   sessionTurnId: string;
   agentTurnId: string | null;
+  agentTurnIdObservation: Readonly<{
+    promise: Promise<string | null>;
+    settle: (agentTurnId: string | null) => void;
+  }>;
   providerStartAcknowledged: boolean;
   deferredTerminalNotification: Readonly<{
     method: 'turn/completed' | 'turn/interrupted';
@@ -287,18 +270,25 @@ type BufferedTranscriptSegment = {
   kind: 'assistant' | 'reasoning';
   text: string;
   sidechainId: string | null;
+  needsCommittedReconciliation: boolean;
 };
 
-type CodexAppServerRuntimeParams = Readonly<{
+type CodexAppServerRuntimeTarget =
+  | Readonly<{ happierSessionId: string; executionRunId?: never }>
+  | Readonly<{ happierSessionId?: never; executionRunId: string }>;
+
+type CodexAppServerRuntimeParams = CodexAppServerRuntimeTarget & Readonly<{
   host: CodexAppServerRuntimeHost;
   directory: string;
-  happierSessionId: string;
   initialProviderSessionId?: string | null;
+  appServerEndpoint?: string | null;
   initialModelId?: string | null;
+  initialCollaborationModeId?: string | null;
   initialProviderBinding?: CodexProviderBindingEngineConfigV1 | null;
   processEnv?: Readonly<Record<string, string | undefined>>;
   mcpServers?: unknown;
   resolveCurrentPolicy?: () => CodexAppServerPolicy | null;
+  observeGoal?: (payload: Readonly<{ kind: 'present'; goal: Readonly<Record<string, unknown>> }> | Readonly<{ kind: 'absent' }>) => void | Promise<void>;
 }>;
 
 export type CodexAppServerRuntimeHost = Readonly<{
@@ -317,7 +307,7 @@ export type CodexAppServerRuntimeHost = Readonly<{
     accessToken: string;
     accountId: string | null;
   }>): Promise<unknown>;
-  accountUsage: CodexAppServerAccountUsageService;
+  accountUsage?: CodexAppServerAccountUsageService;
   ui?: Pick<AgentSessionRuntimeContext['services']['interactions'], 'requestApproval' | 'askQuestions'>;
   mcp?: Pick<
     NonNullable<AgentSessionRuntimeContext['services']['sessions']['current']>['mcp'],
@@ -329,16 +319,11 @@ export type CodexAppServerRuntimeHost = Readonly<{
   dispose?(): Promise<void>;
 }>;
 
-const CODEX_TEMPORARY_RECOVERABLE_TURN_CONTINUATION_PROMPT =
-  'Please continue the interrupted work from the recovered Codex turn. Do not restart or repeat completed work.';
-const CODEX_CONTEXT_WINDOW_CONTINUATION_PROMPT_ENV_KEY = 'HAPPIER_CODEX_CONTEXT_WINDOW_CONTINUATION_PROMPT';
 const CODEX_APP_SERVER_TURN_COMPLETION_SETTLE_MS_ENV_KEY = 'HAPPIER_CODEX_APP_SERVER_TURN_COMPLETION_SETTLE_MS';
 const DEFAULT_CODEX_APP_SERVER_TURN_COMPLETION_SETTLE_MS = 25;
 const MAX_CODEX_APP_SERVER_TURN_COMPLETION_SETTLE_MS = 5_000;
 const CODEX_APP_SERVER_TURN_FAILURE_CODE = 'codex_app_server_turn_failed';
 const CODEX_APP_SERVER_TURN_FAILURE_PREVIEW = 'Codex app-server turn failed.';
-const CODEX_APP_SERVER_PROVIDER_TURN_ID_WAIT_TIMEOUT_MS = 1_000;
-const CODEX_APP_SERVER_PROVIDER_TURN_ID_WAIT_POLL_MS = 20;
 const CODEX_APP_SERVER_CANCEL_STARTUP_RETRY_WINDOW_MS = 1_000;
 const CODEX_APP_SERVER_CANCEL_STARTUP_RETRY_INTERVAL_MS = 50;
 const CODEX_APP_SERVER_STATE_RUNTIME_RETRY_INITIAL_DELAY_MS = 250;
@@ -500,17 +485,6 @@ function didHappierTitleToolSucceed(output: unknown, depth = 0): boolean {
   return readMcpContentTextPayloads(record).some((payload) => didHappierTitleToolSucceed(payload, depth + 1));
 }
 
-function normalizeContinuationPrompt(value: unknown): string | null {
-  const prompt = trimStringValue(value);
-  return prompt && prompt.length <= 4000 ? prompt : null;
-}
-
-function resolveTemporaryRecoverableTurnContinuationPrompt(params: CodexAppServerRuntimeParams): string {
-  const env = params.processEnv ?? params.host.baseProcessEnv;
-  return normalizeContinuationPrompt(env[CODEX_CONTEXT_WINDOW_CONTINUATION_PROMPT_ENV_KEY])
-    ?? CODEX_TEMPORARY_RECOVERABLE_TURN_CONTINUATION_PROMPT;
-}
-
 function readCodexAppServerTurnCompletionSettleMs(
   env: Readonly<Record<string, string | undefined>>,
 ): number {
@@ -571,23 +545,6 @@ function acceptedSendResult(): CodexAppServerSendResult {
 
 function cancelledResult(status: CodexAppServerCancelResult['status']): CodexAppServerCancelResult {
   return { status };
-}
-
-function readRollbackTarget(value: unknown): CodexAppServerRollbackTarget | null {
-  const record = readRecord(value);
-  if (!record) return { type: 'latest_turn' };
-  if (record.type === 'latest_turn') return { type: 'latest_turn' };
-  if (
-    record.type === 'before_user_message'
-    && Number.isSafeInteger(record.userMessageSeq)
-    && (record.userMessageSeq as number) >= 0
-  ) {
-    return {
-      type: 'before_user_message',
-      userMessageSeq: record.userMessageSeq as number,
-    };
-  }
-  return null;
 }
 
 function appendRollbackUserMessageSeq(turn: PendingTurn, seq: number): void {
@@ -774,9 +731,13 @@ function createPendingTurn(
 ): PendingTurn {
   let resolve!: () => void;
   let reject!: (error: Error) => void;
+  let settleAgentTurnId!: (agentTurnId: string | null) => void;
   const promise = new Promise<void>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise;
     reject = rejectPromise;
+  });
+  const agentTurnIdPromise = new Promise<string | null>((resolvePromise) => {
+    settleAgentTurnId = resolvePromise;
   });
   const startUserMessageSeq = providerPrompt?.userMessageSeq ?? providerPrompt?.userMessageSeqs[0] ?? null;
   const userMessageSeqs = providerPrompt
@@ -789,6 +750,10 @@ function createPendingTurn(
     threadId,
     sessionTurnId,
     agentTurnId: null,
+    agentTurnIdObservation: {
+      promise: agentTurnIdPromise,
+      settle: settleAgentTurnId,
+    },
     providerStartAcknowledged: false,
     deferredTerminalNotification: null,
     providerPrompt,
@@ -802,16 +767,22 @@ function createPendingTurn(
   };
 }
 
-function buildRuntimeSendOptionsForPendingProviderPrompt(
-  pending: PendingProviderPrompt | null,
-): CodexAppServerSendOptions | undefined {
-  if (!pending || !pendingProviderPromptHasDeliveryIdentity(pending)) return undefined;
-  return {
-    ...(pending.localInputIds.length === 0 ? {} : { localInputIds: pending.localInputIds }),
-    ...(pending.hostTurnId ? { turnId: pending.hostTurnId } : {}),
-    ...(pending.userMessageSeq === null ? {} : { userMessageSeq: pending.userMessageSeq }),
-    ...(pending.userMessageSeqs.length === 0 ? {} : { userMessageSeqs: pending.userMessageSeqs }),
-  };
+function recordPendingTurnAgentTurnId(activeTurn: PendingTurn, agentTurnId: string): boolean {
+  if (activeTurn.agentTurnId === agentTurnId) return false;
+  activeTurn.agentTurnId = agentTurnId;
+  return true;
+}
+
+function observePendingTurnAgentTurnId(activeTurn: PendingTurn, agentTurnId: string): boolean {
+  const changed = recordPendingTurnAgentTurnId(activeTurn, agentTurnId);
+  activeTurn.agentTurnIdObservation.settle(agentTurnId);
+  return changed;
+}
+
+function settlePendingTurnAgentTurnIdObservation(activeTurn: PendingTurn): void {
+  // A turn id first revealed by a terminal notification is useful transcript identity, but it
+  // is no longer an actionable steer target. Release any waiter without dispatching a stale steer.
+  activeTurn.agentTurnIdObservation.settle(null);
 }
 
 function pendingProviderPromptHasDeliveryIdentity(
@@ -843,12 +814,14 @@ function createErrorFromAppServerNotification(
 }
 
 function createCodexRuntimeEvent(
-  happierSessionId: string,
+  target: CodexAppServerRuntimeTarget,
   event: CodexAppServerEventInput,
 ): CodexAppServerEvent {
   return {
     ...event,
-    sessionId: happierSessionId,
+    ...(target.happierSessionId !== undefined
+      ? { sessionId: target.happierSessionId }
+      : { executionRunId: target.executionRunId }),
     emittedAtMs: Date.now(),
   } as CodexAppServerEvent;
 }
@@ -856,13 +829,28 @@ function createCodexRuntimeEvent(
 export function createCodexAppServerRuntime(
   params: CodexAppServerRuntimeParams,
 ): CodexAppServerRuntime {
-  const temporaryRecoverableTurnContinuationPrompt = resolveTemporaryRecoverableTurnContinuationPrompt(params);
+  const runtimeTargetId = params.happierSessionId !== undefined
+    ? params.happierSessionId
+    : params.executionRunId;
   const readRuntimeProcessEnv = (): Readonly<Record<string, string | undefined>> =>
     params.processEnv ?? params.host.baseProcessEnv;
   let clientPromise: Promise<DisposableCodexAppServerClient> | null = null;
   let client: DisposableCodexAppServerClient | null = null;
-  let threadId: string | null = trimSessionId(params.initialProviderSessionId);
+  let threadId: string | null = readExactCodexProviderSessionId(params.initialProviderSessionId);
   let currentModelId: string | null = trimStringValue(params.initialModelId);
+  let currentCollaborationModeId: string | null = trimStringValue(params.initialCollaborationModeId);
+  let currentCollaborationModePayload: Readonly<{
+    mode: string;
+    settings: Readonly<{
+      model: string;
+      reasoning_effort: string | null;
+      developer_instructions: null;
+    }>;
+  }> | null = null;
+  const collaborationModeSelectionCache = new Map<
+    string,
+    NonNullable<ReturnType<typeof resolveCodexAppServerCollaborationModeSelection>>
+  >();
   const providerDisablesReasoning =
     params.initialProviderBinding?.config.model_reasoning_effort === 'none';
   let currentReasoningEffort: string | null = null;
@@ -877,19 +865,13 @@ export function createCodexAppServerRuntime(
   let connectedServiceAuthApplyCount = 0;
   const terminatedProviderTurnIds = new Set<string>();
   const preAckCancelledTurns = new Set<PendingTurn>();
-  let activeTurnHadMeaningfulActivity = false;
   let turnCompletionSettling = false;
   let pendingTurnCompletionTimer: ReturnType<typeof setTimeout> | null = null;
   let scheduledPendingTurnCompletion: Readonly<{
     status: 'completed' | 'interrupted';
     notificationParams: unknown;
   }> | null = null;
-  let deferredTemporaryRecoverableFailure: Error | null = null;
   let terminalPendingTurnFailure: Error | null = null;
-  let originalTemporaryRecoverableFailure: Error | null = null;
-  let inputForTemporaryRecoverableRetry: CodexAppServerInput | null = null;
-  let providerPromptForDeferredTemporaryRecoverableRetry: PendingProviderPrompt | null = null;
-  let temporaryRecoverableRetryAttemptCount = 0;
   let active = false;
   let lastActivityAtMs: number | null = null;
   let disposed = false;
@@ -907,10 +889,6 @@ export function createCodexAppServerRuntime(
   const runtimeSubscribers = new Set<(event: CodexAppServerEvent) => void>();
   const resolveCurrentPolicy = (): CodexAppServerPolicy | null =>
     currentPermissionPolicyOverride ?? params.resolveCurrentPolicy?.() ?? null;
-  const rollbackTracker = createCodexAppServerSessionTurnRollbackTracker({
-    session: {},
-  });
-  const rollbackProviderTurnIdsBySessionTurnId = new Map<string, string>();
 
   const readHostOwnedAuthTokens = async (): Promise<CodexEnvironmentAuthTokens> => {
     try {
@@ -935,10 +913,10 @@ export function createCodexAppServerRuntime(
   const publishedToolEventKeys = new Set<string>();
   const pendingHappierTitleToolNamesByCallId = new Map<string, string>();
   const publishedGeneratedMediaItemIds = new Set<string>();
+  const publishedProviderUserMessageIds = new Set<string>();
 
   const publishRuntimeEvent = (event: CodexAppServerEventInput): void => {
-    const payload = createCodexRuntimeEvent(params.happierSessionId, event);
-    rollbackTracker.observeRuntimeEvent(payload);
+    const payload = createCodexRuntimeEvent(params, event);
     for (const subscriber of runtimeSubscribers) subscriber(payload);
   };
 
@@ -968,6 +946,7 @@ export function createCodexAppServerRuntime(
       text: mode === 'append' && existing?.kind === kind
         ? `${existing.text}${text}`
         : text,
+      needsCommittedReconciliation: mode === 'override' || existing?.needsCommittedReconciliation === true,
     });
   };
 
@@ -979,6 +958,7 @@ export function createCodexAppServerRuntime(
     bufferedTranscriptSegments.clear();
     for (const [streamKey, segment] of segments) {
       if (segment.text.trim().length === 0) continue;
+      if (!segment.needsCommittedReconciliation) continue;
       publishRuntimeEvent({
         kind: 'transcript-agent-message-committed',
         agentId: 'codex',
@@ -1000,9 +980,23 @@ export function createCodexAppServerRuntime(
     bridge: {
       appendAssistantDelta({ deltaText, streamKey, sidechainId }) {
         updateBufferedTranscriptSegment(streamKey, 'assistant', sidechainId, deltaText, 'append');
+        const activeTurn = pendingTurn;
+        if (activeTurn) publishRuntimeEvent({
+          kind: 'message-delta',
+          turnId: activeTurn.sessionTurnId,
+          delta: { text: deltaText, thinking: false },
+          ...(sidechainId ? { sidechainId } : {}),
+        });
       },
       appendThinkingDelta({ deltaText, streamKey, sidechainId }) {
         updateBufferedTranscriptSegment(streamKey, 'reasoning', sidechainId, deltaText, 'append');
+        const activeTurn = pendingTurn;
+        if (activeTurn) publishRuntimeEvent({
+          kind: 'message-delta',
+          turnId: activeTurn.sessionTurnId,
+          delta: { text: deltaText, thinking: true },
+          ...(sidechainId ? { sidechainId } : {}),
+        });
       },
       overrideAssistantText({ text, streamKey, sidechainId }) {
         updateBufferedTranscriptSegment(streamKey, 'assistant', sidechainId, text, 'override');
@@ -1152,6 +1146,7 @@ export function createCodexAppServerRuntime(
     options: RecordProviderAccountUsageSnapshotOptions,
   ): Promise<void> => {
     const service = params.host.accountUsage;
+    if (!service) return;
     const env = readRuntimeProcessEnv();
     const codexHome = resolveCodexHome(env);
     const observedAtMs = Date.now();
@@ -1196,7 +1191,7 @@ export function createCodexAppServerRuntime(
         : null;
       const provisionalDiscriminator = buildCodexProviderAccountUsageProvisionalDiscriminator({
         sourceContext,
-        happierSessionId: params.happierSessionId,
+        happierSessionId: runtimeTargetId,
         codexHome,
       });
       const subject = appliedIdentity
@@ -1347,21 +1342,22 @@ export function createCodexAppServerRuntime(
   };
 
   const publishThreadIdentity = (nextThreadId: string): void => {
-    const normalizedThreadId = trimSessionId(nextThreadId);
-    if (!normalizedThreadId) return;
-    threadId = normalizedThreadId;
-    if (publishedThreadId === normalizedThreadId) return;
-    publishedThreadId = normalizedThreadId;
+    const exactThreadId = readExactCodexProviderSessionId(nextThreadId);
+    if (!exactThreadId) return;
+    threadId = exactThreadId;
+    if (publishedThreadId === exactThreadId) return;
+    publishedThreadId = exactThreadId;
     publishRuntimeEvent({
       kind: 'session-id-publish',
-      publishedSessionId: normalizedThreadId,
+      publishedSessionId: exactThreadId,
       source: 'codex-app-server',
     });
     publishRuntimeEvent({
       kind: 'descriptor-update',
       descriptor: buildCodexAgentRuntimeDescriptorV1({
         backendMode: 'appServer',
-        providerSessionId: normalizedThreadId,
+        providerSessionId: exactThreadId,
+        appServerEndpoint: params.appServerEndpoint,
         homePath: resolveCodexHome(readRuntimeProcessEnv()),
       }),
     });
@@ -1380,15 +1376,6 @@ export function createCodexAppServerRuntime(
     const agentTurnId = readProviderEventTurnId(notificationParams, { allowTopLevelId: true })
       ?? readTurnId(notificationParams);
     return !agentTurnId || !activeTurn.agentTurnId || agentTurnId === activeTurn.agentTurnId;
-  };
-
-  const readMeaningfulText = (notificationParams: unknown, keys: readonly string[]): string | null => {
-    const record = readRecord(notificationParams);
-    for (const key of keys) {
-      const text = trimStringValue(record?.[key]);
-      if (text) return text;
-    }
-    return null;
   };
 
   const readProviderEventText = (notificationParams: unknown, keys: readonly string[]): string | null => {
@@ -1427,6 +1414,21 @@ export function createCodexAppServerRuntime(
     return trimStringValue(item?.clientId) ?? trimStringValue(item?.client_id);
   };
 
+  const readProviderUserMessageText = (notificationParams: unknown): string | null => {
+    const item = readProviderEventItemRecord(notificationParams);
+    if (!Array.isArray(item?.content)) {
+      return readProviderEventText(notificationParams, ['text', 'message']);
+    }
+    const parts = item.content.flatMap((part): string[] => {
+      const record = readRecord(part);
+      const text = readNonEmptyStringValue(record?.text)
+        ?? readNonEmptyStringValue(record?.output_text)
+        ?? readNonEmptyStringValue(record?.outputText);
+      return text === null ? [] : [text];
+    });
+    return parts.length > 0 ? parts.join('\n') : null;
+  };
+
   const markCorrelatedProviderUserMessageAccepted = (notificationParams: unknown): void => {
     const clientUserMessageId = readProviderUserMessageClientId(notificationParams);
     if (!clientUserMessageId) return;
@@ -1438,6 +1440,24 @@ export function createCodexAppServerRuntime(
     if (!acceptance || acceptance.settled) return;
     acceptance.settled = true;
     acceptance.resolve();
+  };
+
+  const publishProviderNativeUserMessage = (notificationParams: unknown): void => {
+    if (readNormalizedProviderEventItemType(notificationParams) !== 'usermessage') return;
+    if (readProviderUserMessageClientId(notificationParams)) return;
+    const activeTurn = pendingTurn;
+    const itemId = readProviderEventItemId(notificationParams);
+    const text = readProviderUserMessageText(notificationParams);
+    if (!activeTurn || !itemId || !text) return;
+    const localId = `codex-app-server-user:${activeTurn.sessionTurnId}:${itemId}`;
+    if (publishedProviderUserMessageIds.has(localId)) return;
+    publishedProviderUserMessageIds.add(localId);
+    publishRuntimeEvent({
+      kind: 'transcript-user-message-committed',
+      localId,
+      text,
+      turnId: activeTurn.sessionTurnId,
+    });
   };
 
   const readThreadNameUpdateTitle = (notificationParams: unknown): string | null => {
@@ -1456,19 +1476,6 @@ export function createCodexAppServerRuntime(
         errorName: error instanceof Error ? error.name : typeof error,
       });
     });
-  };
-
-  const isMeaningfulActivityNotification = (method: string, notificationParams: unknown): boolean => {
-    if (method === 'item/agentMessage/delta') {
-      return readMeaningfulText(notificationParams, ['delta', 'text']) !== null;
-    }
-    if (method === 'turn/diff/updated') {
-      return readMeaningfulText(notificationParams, ['unifiedDiff', 'diff']) !== null;
-    }
-    if (method === 'item/reasoning/summaryTextDelta' || method === 'item/reasoning/textDelta') {
-      return readMeaningfulText(notificationParams, ['delta', 'text']) !== null;
-    }
-    return true;
   };
 
   const observeAssistantReasoningNotification = (method: string, notificationParams: unknown): boolean => {
@@ -1614,12 +1621,6 @@ export function createCodexAppServerRuntime(
     });
   };
 
-  const markMeaningfulActivityFromNotification = (method: string, notificationParams: unknown): void => {
-    if (!notificationMatchesPendingTurn(notificationParams)) return;
-    if (!isMeaningfulActivityNotification(method, notificationParams)) return;
-    activeTurnHadMeaningfulActivity = true;
-  };
-
   const clearPendingTurnCompletionTimer = (): void => {
     if (pendingTurnCompletionTimer) {
       clearTimeout(pendingTurnCompletionTimer);
@@ -1641,7 +1642,6 @@ export function createCodexAppServerRuntime(
           (latestSeq, seq) => Math.max(latestSeq, seq),
           startUserMessageSeq,
         );
-    rollbackProviderTurnIdsBySessionTurnId.set(activeTurn.sessionTurnId, agentTurnId);
     publishRuntimeEvent({
       kind: 'turn-rollback-boundary-observed',
       turnId: activeTurn.sessionTurnId,
@@ -1669,8 +1669,7 @@ export function createCodexAppServerRuntime(
       ?? readTurnId(notificationParams)
       ?? activeTurn.agentTurnId;
     if (agentTurnId && activeTurn.agentTurnId && agentTurnId !== activeTurn.agentTurnId) return;
-    if (agentTurnId && !activeTurn.agentTurnId) {
-      activeTurn.agentTurnId = agentTurnId;
+    if (agentTurnId && recordPendingTurnAgentTurnId(activeTurn, agentTurnId)) {
       publishRuntimeEvent({
         kind: 'turn-agent-id-observed',
         turnId: activeTurn.sessionTurnId,
@@ -1678,6 +1677,7 @@ export function createCodexAppServerRuntime(
       });
     }
     if (agentTurnId) terminatedProviderTurnIds.add(agentTurnId);
+    settlePendingTurnAgentTurnIdObservation(activeTurn);
     clearPendingTurnCompletionTimer();
     flushAssistantReasoningProjection(
       status === 'interrupted' || isCodexTurnInterruptedStatus(readCodexTurnStatus(notificationParams))
@@ -1690,9 +1690,7 @@ export function createCodexAppServerRuntime(
     );
     pendingTurn = null;
     clearPendingHappierTitleToolNamesForTurn(activeTurn.sessionTurnId);
-    providerPromptForDeferredTemporaryRecoverableRetry = null;
     terminalPendingTurnFailure = null;
-    originalTemporaryRecoverableFailure = null;
     setActive(false);
     if (status === 'interrupted' || isCodexTurnInterruptedStatus(readCodexTurnStatus(notificationParams))) {
       publishRuntimeEvent({
@@ -1737,7 +1735,7 @@ export function createCodexAppServerRuntime(
 
     if (activeTurn) {
       if (!activeTurn.agentTurnId) {
-        activeTurn.agentTurnId = agentTurnId;
+        observePendingTurnAgentTurnId(activeTurn, agentTurnId);
         activeTurn.providerStartAcknowledged = true;
         publishRuntimeEvent({
           kind: 'turn-agent-id-observed',
@@ -1777,16 +1775,10 @@ export function createCodexAppServerRuntime(
       null,
       null,
     );
-    providerTurn.agentTurnId = agentTurnId;
+    observePendingTurnAgentTurnId(providerTurn, agentTurnId);
     providerTurn.providerStartAcknowledged = true;
     pendingTurn = providerTurn;
-    activeTurnHadMeaningfulActivity = false;
-    deferredTemporaryRecoverableFailure = null;
     terminalPendingTurnFailure = null;
-    originalTemporaryRecoverableFailure = null;
-    inputForTemporaryRecoverableRetry = null;
-    providerPromptForDeferredTemporaryRecoverableRetry = null;
-    temporaryRecoverableRetryAttemptCount = 0;
     void providerTurn.promise.catch(() => undefined);
     setActive(true);
     publishRuntimeEvent({
@@ -1823,8 +1815,11 @@ export function createCodexAppServerRuntime(
       });
       return false;
     }
-    if (terminalTurnId && !activeTurn.agentTurnId) {
-      activeTurn.agentTurnId = terminalTurnId;
+    if (
+      terminalTurnId
+      && !activeTurn.agentTurnId
+      && recordPendingTurnAgentTurnId(activeTurn, terminalTurnId)
+    ) {
       publishRuntimeEvent({ kind: 'turn-agent-id-observed', turnId: activeTurn.sessionTurnId, agentTurnId: terminalTurnId });
     }
     return true;
@@ -1867,7 +1862,7 @@ export function createCodexAppServerRuntime(
     await quotaEvidence;
     await params.host.refreshRuntimeAuth({
       serviceId: 'openai-codex',
-      targetId: params.happierSessionId,
+      targetId: runtimeTargetId,
       classification,
       reason: kind === 'usage_limit'
         ? 'provider_session_usage_limit_failure'
@@ -1879,73 +1874,39 @@ export function createCodexAppServerRuntime(
     });
   };
 
-  const failPendingTurn = (
-    error: Error,
-    options: Readonly<{
-      deferBackendError?: boolean;
-      preserveProviderPromptForRetry?: boolean;
-    }> = {},
-  ): void => {
+  const failPendingTurn = (error: Error): void => {
     const activeTurn = pendingTurn;
     if (!activeTurn) return;
     if (activeTurn.agentTurnId) terminatedProviderTurnIds.add(activeTurn.agentTurnId);
     clearPendingTurnCompletionTimer();
     flushAssistantReasoningProjection('abort');
+    settlePendingTurnAgentTurnIdObservation(activeTurn);
     pendingTurn = null;
     clearPendingHappierTitleToolNamesForTurn(activeTurn.sessionTurnId);
-    const providerPromptWasPending = activeTurn.providerPrompt
-      ? pendingProviderPrompts.has(activeTurn.providerPrompt)
-      : false;
-    // The failed attempt no longer owns provider acceptance. Keep only its immutable identity
-    // for an internal retry; the retry registers a fresh pending acceptance record.
     clearPendingProviderPrompt(activeTurn.providerPrompt);
     rejectPendingProviderAcceptancesForHostTurn(activeTurn.sessionTurnId, error);
     setActive(false);
     const quotaEvidence = publishImmediateProviderAccountUsageSnapshotForQuotaFailure(error);
-    if (options.deferBackendError !== true) {
-      deferredTemporaryRecoverableFailure = null;
-      providerPromptForDeferredTemporaryRecoverableRetry = null;
-      terminalPendingTurnFailure = resolveTerminalPendingTurnFailure(error);
-      const agentTurnId = activeTurn.agentTurnId;
-      publishRuntimeEvent({
-        kind: 'turn-failed',
-        turnId: activeTurn.sessionTurnId,
-        ...(agentTurnId ? { agentTurnId } : {}),
-        issue: buildCodexAppServerTurnFailureIssue(terminalPendingTurnFailure, activeTurn),
-      });
-      publishRuntimeEvent({
-        kind: 'backend-error',
-        error: {
-          code: CODEX_APP_SERVER_TURN_FAILURE_CODE,
-          message: CODEX_APP_SERVER_TURN_FAILURE_PREVIEW,
-        },
-      });
-      void reportProviderRuntimeAuthFailureForRecovery(
-        terminalPendingTurnFailure,
-        quotaEvidence,
-      );
-    } else {
-      deferredTemporaryRecoverableFailure = error;
-      providerPromptForDeferredTemporaryRecoverableRetry =
-        options.preserveProviderPromptForRetry === true && providerPromptWasPending
-          ? activeTurn.providerPrompt
-          : null;
-    }
+    terminalPendingTurnFailure = error;
+    const agentTurnId = activeTurn.agentTurnId;
+    publishRuntimeEvent({
+      kind: 'turn-failed',
+      turnId: activeTurn.sessionTurnId,
+      ...(agentTurnId ? { agentTurnId } : {}),
+      issue: buildCodexAppServerTurnFailureIssue(terminalPendingTurnFailure, activeTurn),
+    });
+    publishRuntimeEvent({
+      kind: 'backend-error',
+      error: {
+        code: CODEX_APP_SERVER_TURN_FAILURE_CODE,
+        message: CODEX_APP_SERVER_TURN_FAILURE_PREVIEW,
+      },
+    });
+    void reportProviderRuntimeAuthFailureForRecovery(
+      terminalPendingTurnFailure,
+      quotaEvidence,
+    );
     activeTurn.reject(error);
-  };
-
-  const shouldDeferTemporaryRecoverableFailure = (error: Error): boolean => {
-    return isCodexAppServerTemporaryRecoverableTurnFailureError(error)
-      && temporaryRecoverableRetryAttemptCount === 0;
-  };
-
-  const resolveTerminalPendingTurnFailure = (error: Error): Error => {
-    const originalFailure = originalTemporaryRecoverableFailure;
-    if (!originalFailure) return error;
-    return resolveRecoverableTurnFailureSecondFailure({
-      originalFailure,
-      latestFailure: error,
-    }).failure;
   };
 
   const handleTurnCompletedNotification = (notificationParams: unknown): void => {
@@ -1956,11 +1917,7 @@ export function createCodexAppServerRuntime(
         notificationParams,
         pendingTurn?.providerOperationIdentity ?? null,
       );
-      const deferBackendError = shouldDeferTemporaryRecoverableFailure(failure);
-      failPendingTurn(failure, {
-        deferBackendError,
-        preserveProviderPromptForRetry: deferBackendError,
-      });
+      failPendingTurn(failure);
       return;
     }
     completePendingTurn('completed', notificationParams);
@@ -2012,7 +1969,9 @@ export function createCodexAppServerRuntime(
         reason: 'codex_app_server_unexpected_exit',
       });
     });
-    nextClient.registerRequestHandler('account/chatgptAuthTokens/refresh', refreshChatGptAuthTokens);
+    if (params.host.refreshRuntimeAuth) {
+      nextClient.registerRequestHandler('account/chatgptAuthTokens/refresh', refreshChatGptAuthTokens);
+    }
     registerCodexAppServerInteractionHandlers({
       client: nextClient,
       ...(params.host.ui ? { ui: params.host.ui } : {}),
@@ -2022,10 +1981,10 @@ export function createCodexAppServerRuntime(
     nextClient.registerNotificationHandler('account/rateLimits/updated', (notificationParams) => {
       void recordProviderAccountUsageSnapshot(notificationParams, { operationIdentity: null });
     });
-    nextClient.registerNotificationHandler('thread/tokenUsage/updated', (notificationParams) => {
+    if (params.happierSessionId !== undefined) nextClient.registerNotificationHandler('thread/tokenUsage/updated', (notificationParams) => {
       handleTokenUsageNotification({
         notificationParams,
-        sessionId: params.happierSessionId,
+        sessionId: runtimeTargetId,
         modelId: currentModelId,
         modelSource: params.initialProviderBinding ? 'provider' : 'codex-native',
         emit(message, observation) {
@@ -2042,6 +2001,26 @@ export function createCodexAppServerRuntime(
     });
     nextClient.registerNotificationHandler('thread/name/updated', (notificationParams) => {
       applyThreadNameUpdate(notificationParams);
+    });
+    nextClient.registerNotificationHandler('thread/goal/updated', (notificationParams) => {
+      const record = readRecord(notificationParams);
+      const notificationThreadId = readThreadId(notificationParams);
+      const goal = readRecord(record?.goal);
+      if (!params.observeGoal || !threadId || notificationThreadId !== threadId || !goal) return;
+      void Promise.resolve(params.observeGoal({ kind: 'present', goal })).catch((error: unknown) => {
+        params.host.logger.debug('Codex app-server goal update publication failed', {
+          errorName: error instanceof Error ? error.name : typeof error,
+        });
+      });
+    });
+    nextClient.registerNotificationHandler('thread/goal/cleared', (notificationParams) => {
+      const notificationThreadId = readThreadId(notificationParams);
+      if (!params.observeGoal || !threadId || notificationThreadId !== threadId) return;
+      void Promise.resolve(params.observeGoal({ kind: 'absent' })).catch((error: unknown) => {
+        params.host.logger.debug('Codex app-server goal clear publication failed', {
+          errorName: error instanceof Error ? error.name : typeof error,
+        });
+      });
     });
     nextClient.registerNotificationHandler('turn/started', (notificationParams) => {
       adoptProviderTurnFromActivity(notificationParams, {
@@ -2093,15 +2072,12 @@ export function createCodexAppServerRuntime(
         if (method === 'item/started' || method === 'item/completed') {
           markCorrelatedProviderUserMessageAccepted(notificationParams);
         }
+        if (method === 'item/started') {
+          publishProviderNativeUserMessage(notificationParams);
+        }
         publishGeneratedMediaFromNotification(method, notificationParams);
-        if (publishToolEventsFromNotification(method, notificationParams)) {
-          activeTurnHadMeaningfulActivity = true;
-        }
-        if (observeAssistantReasoningNotification(method, notificationParams)) {
-          activeTurnHadMeaningfulActivity = true;
-          return;
-        }
-        markMeaningfulActivityFromNotification(method, notificationParams);
+        publishToolEventsFromNotification(method, notificationParams);
+        observeAssistantReasoningNotification(method, notificationParams);
       });
     }
   };
@@ -2114,13 +2090,16 @@ export function createCodexAppServerRuntime(
       clientPromise = params.host.createClient({
         cwd: params.directory,
         processEnv,
-        configOverrides: buildCodexAppServerConfigOverrides(normalizeMcpServers(params.mcpServers)),
+        configOverrides: buildCodexAppServerConfigOverrides(normalizeMcpServers(params.mcpServers), {
+          processEnv,
+        }),
         disableUserMcpServers: true,
       }).then((createdClient) => {
         if (disposed) {
           void createdClient.dispose().catch(() => undefined);
           throw new Error('Codex app-server runtime has been disposed.');
         }
+        collaborationModeSelectionCache.clear();
         client = createdClient;
         attachClientHandlers(createdClient);
         const operationIdentity = latestConnectedServiceRuntimeIdentity;
@@ -2134,6 +2113,64 @@ export function createCodexAppServerRuntime(
       });
     }
     return clientPromise;
+  };
+
+  const resolveCollaborationMode = async (modeId: string): Promise<void> => {
+    const normalizedModeId = trimStringValue(modeId);
+    if (normalizedModeId === 'default') {
+      currentCollaborationModeId = normalizedModeId;
+      currentCollaborationModePayload = null;
+      return;
+    }
+    if (!normalizedModeId) {
+      throw Object.assign(new Error('Codex collaboration mode is unavailable.'), {
+        code: 'codex_collaboration_mode_unavailable',
+      });
+    }
+    const appServerClient = await ensureClient();
+    const cacheKey = JSON.stringify([
+      normalizedModeId,
+      currentModelId,
+      currentReasoningEffort,
+      latestConnectedServiceRuntimeIdentity?.credentialFingerprint ?? null,
+    ]);
+    const cachedSelection = collaborationModeSelectionCache.get(cacheKey);
+    if (cachedSelection) {
+      currentCollaborationModeId = cachedSelection.modeId;
+      currentCollaborationModePayload = cachedSelection.payload;
+      return;
+    }
+
+    const modesResponse = await appServerClient.request('collaborationMode/list', {});
+    if (!hasCodexAppServerCollaborationMode(modesResponse, normalizedModeId)) {
+      throw Object.assign(new Error('Codex collaboration mode is unavailable.'), {
+        code: 'codex_collaboration_mode_unavailable',
+      });
+    }
+    let selection = resolveCodexAppServerCollaborationModeSelection({
+      modesResponse,
+      modeId: normalizedModeId,
+      currentModelId,
+      currentReasoningEffort,
+    });
+    if (!selection) {
+      const modelsResponse = await appServerClient.request('model/list', {});
+      selection = resolveCodexAppServerCollaborationModeSelection({
+        modesResponse,
+        modelsResponse,
+        modeId: normalizedModeId,
+        currentModelId,
+        currentReasoningEffort,
+      });
+    }
+    if (!selection) {
+      throw Object.assign(new Error('Codex collaboration mode is unavailable.'), {
+        code: 'codex_collaboration_mode_unavailable',
+      });
+    }
+    collaborationModeSelectionCache.set(cacheKey, selection);
+    currentCollaborationModeId = selection.modeId;
+    currentCollaborationModePayload = selection.payload;
   };
 
   const waitForConnectedServiceAuthApply = async (): Promise<void> => {
@@ -2333,7 +2370,7 @@ export function createCodexAppServerRuntime(
   };
 
   const ensureThreadId = async (requestedSessionId?: string | null): Promise<string> => {
-    const requested = trimSessionId(requestedSessionId);
+    const requested = readExactCodexProviderSessionId(requestedSessionId);
     if (threadId && (!requested || requested === threadId)) return threadId;
     return await openSession(requested ? { existingSessionId: requested, importHistory: false } : undefined);
   };
@@ -2368,8 +2405,6 @@ export function createCodexAppServerRuntime(
       latestConnectedServiceRuntimeIdentity,
     );
     pendingTurn = activeTurn;
-    activeTurnHadMeaningfulActivity = false;
-    deferredTemporaryRecoverableFailure = null;
     terminalPendingTurnFailure = null;
     void activeTurn.promise.catch(() => undefined);
     setActive(true);
@@ -2379,6 +2414,9 @@ export function createCodexAppServerRuntime(
       startedBy: 'user',
     });
     try {
+      if (currentCollaborationModeId && !currentCollaborationModePayload) {
+        await resolveCollaborationMode(currentCollaborationModeId);
+      }
       const policy = resolveCurrentPolicy();
       const effectiveReasoningEffort = providerDisablesReasoning ? 'none' : currentReasoningEffort;
       const turnInput = buildCodexAppServerTurnInput({
@@ -2397,6 +2435,18 @@ export function createCodexAppServerRuntime(
         ...(effectiveReasoningEffort ? { effort: effectiveReasoningEffort } : {}),
         ...(hasServiceTierOverride
           ? (currentServiceTier === 'fast' ? { serviceTier: 'fast' } : { serviceTier: null })
+          : {}),
+        ...(currentCollaborationModePayload
+          ? {
+              collaborationMode: {
+                ...currentCollaborationModePayload,
+                settings: {
+                  ...currentCollaborationModePayload.settings,
+                  ...(currentModelId ? { model: currentModelId } : {}),
+                  ...(currentReasoningEffort ? { reasoning_effort: currentReasoningEffort } : {}),
+                },
+              },
+            }
           : {}),
       };
       const requestTurnStart = async (params: Record<string, unknown>): Promise<unknown> =>
@@ -2448,8 +2498,7 @@ export function createCodexAppServerRuntime(
         preAckCancelledTurns.delete(activeTurn);
         return;
       }
-      if (agentTurnId && activeTurn.agentTurnId !== agentTurnId) {
-        activeTurn.agentTurnId = agentTurnId;
+      if (agentTurnId && observePendingTurnAgentTurnId(activeTurn, agentTurnId)) {
         publishRuntimeEvent({
           kind: 'turn-agent-id-observed',
           turnId: activeTurn.sessionTurnId,
@@ -2461,97 +2510,29 @@ export function createCodexAppServerRuntime(
     } catch (error) {
       preAckCancelledTurns.delete(activeTurn);
       const failure = error instanceof Error ? error : new Error(String(error));
-      const deferBackendError = shouldDeferTemporaryRecoverableFailure(failure);
-      failPendingTurn(failure, {
-        deferBackendError,
-        preserveProviderPromptForRetry: deferBackendError,
-      });
+      failPendingTurn(failure);
       throw failure;
     }
-  };
-
-  const resolveTemporaryRecoverableRetryInput = (failure: Error): CodexAppServerInput | null => {
-    if (!isCodexAppServerTemporaryRecoverableTurnFailureError(failure)) return null;
-    const originalInput = inputForTemporaryRecoverableRetry;
-    if (!originalInput?.text) return null;
-    const decision = resolveRecoverableTurnFailureRetryDecision({
-      attemptCount: temporaryRecoverableRetryAttemptCount,
-      maxRetries: 1,
-      providerWillRetry: false,
-      failureRetryAfterMs: null,
-      failedTurnHadMeaningfulActivity: activeTurnHadMeaningfulActivity,
-      promptMode: 'activity_aware',
-      originalPrompt: originalInput.text,
-      continuationPrompt: temporaryRecoverableTurnContinuationPrompt,
-    });
-    if (decision.action !== 'retry') return null;
-    if (!originalTemporaryRecoverableFailure) {
-      originalTemporaryRecoverableFailure = failure;
-    }
-    if (decision.consumeRetryBudget) {
-      temporaryRecoverableRetryAttemptCount += 1;
-    }
-    // A continuation prompt resumes work the provider already accepted, so it carries only text;
-    // resending the original prompt must carry its structured input again or the retried turn
-    // silently loses the user's mentions and attachments.
-    return decision.promptKind === 'continuation'
-      ? { text: decision.prompt }
-      : {
-        text: decision.prompt,
-        ...(originalInput.structuredInput === undefined
-          ? {}
-          : { structuredInput: originalInput.structuredInput }),
-      };
   };
 
   const sendTurnPrompt = async (
     input: CodexAppServerInput,
     options?: CodexAppServerSendOptions,
   ): Promise<void> => {
-    inputForTemporaryRecoverableRetry = input;
-    temporaryRecoverableRetryAttemptCount = 0;
-    originalTemporaryRecoverableFailure = null;
-    providerPromptForDeferredTemporaryRecoverableRetry = null;
     terminalPendingTurnFailure = null;
     await startTurnPromptAttempt(input, options);
   };
 
   const waitForTurnCompletion = async (): Promise<void> => {
-    while (true) {
-      const activeTurn = pendingTurn;
-      if (!activeTurn) {
-        const terminalFailure = terminalPendingTurnFailure;
-        if (terminalFailure) {
-          terminalPendingTurnFailure = null;
-          throw terminalFailure;
-        }
-        const deferredFailure = deferredTemporaryRecoverableFailure;
-        if (!deferredFailure) return;
-        deferredTemporaryRecoverableFailure = null;
-        const retryInput = resolveTemporaryRecoverableRetryInput(deferredFailure);
-        const retryProviderPrompt = providerPromptForDeferredTemporaryRecoverableRetry;
-        providerPromptForDeferredTemporaryRecoverableRetry = null;
-        if (!retryInput) throw resolveTerminalPendingTurnFailure(deferredFailure);
-        await startTurnPromptAttempt(
-          retryInput,
-          buildRuntimeSendOptionsForPendingProviderPrompt(retryProviderPrompt),
-        );
-        continue;
-      }
-      try {
-        await activeTurn.promise;
-        return;
-      } catch (error) {
-        const failure = error instanceof Error ? error : new Error(String(error));
-        const retryInput = resolveTemporaryRecoverableRetryInput(failure);
-        const retryProviderPrompt = providerPromptForDeferredTemporaryRecoverableRetry;
-        providerPromptForDeferredTemporaryRecoverableRetry = null;
-        if (!retryInput) throw resolveTerminalPendingTurnFailure(failure);
-        await startTurnPromptAttempt(
-          retryInput,
-          buildRuntimeSendOptionsForPendingProviderPrompt(retryProviderPrompt),
-        );
-      }
+    const activeTurn = pendingTurn;
+    if (activeTurn) {
+      await activeTurn.promise;
+      return;
+    }
+    const terminalFailure = terminalPendingTurnFailure;
+    if (terminalFailure) {
+      terminalPendingTurnFailure = null;
+      throw terminalFailure;
     }
   };
 
@@ -2566,18 +2547,7 @@ export function createCodexAppServerRuntime(
   };
 
   const waitForActiveProviderTurnId = async (activeTurn: PendingTurn): Promise<string | null> => {
-    let agentTurnId = activeTurn.agentTurnId;
-    if (agentTurnId) return agentTurnId;
-    const waitStartedAt = Date.now();
-    while (
-      !agentTurnId
-      && pendingTurn === activeTurn
-      && Date.now() - waitStartedAt < CODEX_APP_SERVER_PROVIDER_TURN_ID_WAIT_TIMEOUT_MS
-    ) {
-      await delay(CODEX_APP_SERVER_PROVIDER_TURN_ID_WAIT_POLL_MS);
-      agentTurnId = activeTurn.agentTurnId;
-    }
-    return agentTurnId ?? null;
+    return activeTurn.agentTurnId ?? await activeTurn.agentTurnIdObservation.promise;
   };
 
   const steerInFlightTurn = async (
@@ -2587,9 +2557,16 @@ export function createCodexAppServerRuntime(
     const message = input.text;
     const activeTurn = pendingTurn;
     if (!activeTurn) throw new Error('Codex app-server steer requires an active turn');
-    const agentTurnId = activeTurn.agentTurnId ?? await waitForActiveProviderTurnId(activeTurn);
+    const assertActiveTurnSteerable = (): void => {
+      if (pendingTurn !== activeTurn || turnCompletionSettling) {
+        throw new Error('Codex app-server steer requires an active provider turn');
+      }
+    };
+    const agentTurnId = await waitForActiveProviderTurnId(activeTurn);
+    assertActiveTurnSteerable();
     if (!agentTurnId) throw new Error('Codex app-server steer requires an active provider turn id');
     const appServerClient = await ensureClient();
+    assertActiveTurnSteerable();
     const userMessageSeq = readRuntimeUserMessageSeq(options);
     const pendingProviderPrompt = trackPendingProviderPrompt(message, options, true);
     const clientUserMessageId = pendingProviderPrompt.localInputIds.length === 1
@@ -2600,6 +2577,7 @@ export function createCodexAppServerRuntime(
       ...(input.structuredInput === undefined ? {} : { structuredInput: input.structuredInput }),
     });
     const requestSteer = async (turnInput: CodexAppServerTurnInputItem[]): Promise<void> => {
+      assertActiveTurnSteerable();
       await appServerClient.request('turn/steer', {
         threadId: activeTurn.threadId,
         input: turnInput,
@@ -2646,6 +2624,7 @@ export function createCodexAppServerRuntime(
       preAckCancelledTurns.add(activeTurn);
       clearPendingTurnCompletionTimer();
       flushAssistantReasoningProjection('abort');
+      settlePendingTurnAgentTurnIdObservation(activeTurn);
       pendingTurn = null;
       clearPendingHappierTitleToolNamesForTurn(activeTurn.sessionTurnId);
       clearPendingProviderPrompt(activeTurn.providerPrompt);
@@ -2687,80 +2666,6 @@ export function createCodexAppServerRuntime(
     await activeTurn.promise.catch(() => undefined);
   };
 
-  const rollbackConversation = async (
-    request: CodexAppServerRollbackConversationRequest,
-  ): Promise<CodexAppServerRollbackConversationResult> => {
-    const target = readRollbackTarget(request.target);
-    if (!target) {
-      return {
-        ok: false,
-        errorCode: 'invalid_parameters',
-        errorMessage: 'Codex app-server rollback target is invalid.',
-      };
-    }
-    const activeThreadId = threadId;
-    if (!activeThreadId) {
-      return {
-        ok: false,
-        errorCode: 'thread_not_started',
-        errorMessage: 'Codex app-server thread has not started.',
-      };
-    }
-    if (pendingTurn || turnCompletionSettling) {
-      return {
-        ok: false,
-        errorCode: 'turn_in_progress',
-        errorMessage: 'Codex app-server cannot roll back while a turn is in flight.',
-      };
-    }
-    const rollbackPlan = rollbackTracker.resolveRollbackPlan(target);
-    if (!rollbackPlan) {
-      return {
-        ok: false,
-        errorCode: 'invalid_parameters',
-        errorMessage: 'No completed Codex app-server turn is available for the rollback target.',
-      };
-    }
-    const appServerClient = await ensureClient();
-    try {
-      await appServerClient.request('thread/rollback', {
-        threadId: activeThreadId,
-        numTurns: rollbackPlan.numTurns,
-      });
-    } catch (error) {
-      const unsupportedMessage = readRollbackUnsupportedErrorMessage(error);
-      if (unsupportedMessage) {
-        return {
-          ok: false,
-          errorCode: 'unsupported_action',
-          errorMessage: unsupportedMessage,
-        };
-      }
-      return {
-        ok: false,
-        errorCode: 'provider_rollback_failed',
-        errorMessage: error instanceof Error ? error.message : String(error),
-      };
-    }
-
-    const restoredToTurnId = rollbackPlan.affectedTurnIds[0] ?? 'unknown';
-    for (const turnId of rollbackPlan.affectedTurnIds) {
-      const agentTurnId = rollbackProviderTurnIdsBySessionTurnId.get(turnId);
-      publishRuntimeEvent({
-        kind: 'turn-rollback-applied',
-        turnId,
-        restoredToTurnId,
-        ...(agentTurnId ? { agentTurnId } : {}),
-      });
-    }
-
-    return {
-      ok: true,
-      target,
-      threadId: activeThreadId,
-    };
-  };
-
   const rollbackNativeConversation = async (
     request: AgentSessionConversationRollbackRequest,
   ): Promise<AgentSessionConversationRollbackResult> => {
@@ -2771,7 +2676,9 @@ export function createCodexAppServerRuntime(
         diagnostic: { code: 'codex_rollback_session_unavailable', severity: 'error' },
       };
     }
-    if (request.affectedTurns.some((turn) => typeof turn.providerCheckpoint !== 'string')) {
+    const providerCheckpoints = request.affectedTurns.map((turn) => trimStringValue(turn.providerCheckpoint));
+    const beforeTurnId = providerCheckpoints[0] ?? null;
+    if (!beforeTurnId || providerCheckpoints.some((checkpoint) => !checkpoint)) {
       return {
         status: 'unavailable',
         retryable: false,
@@ -2780,10 +2687,15 @@ export function createCodexAppServerRuntime(
     }
     try {
       const appServerClient = await ensureClient();
-      await appServerClient.request('thread/rollback', {
-        threadId,
-        numTurns: request.affectedTurns.length,
-      });
+      try {
+        await appServerClient.request('thread/revert', { threadId, beforeTurnId });
+      } catch (error) {
+        if (!isCodexAppServerDefinitiveMethodNotFoundError(error, 'thread/revert')) throw error;
+        await appServerClient.request('thread/rollback', {
+          threadId,
+          numTurns: request.affectedTurns.length,
+        });
+      }
       return { status: 'applied' };
     } catch {
       return {
@@ -2803,8 +2715,8 @@ export function createCodexAppServerRuntime(
         diagnostic: { code: 'codex_rollback_session_unavailable', severity: 'error' },
       };
     }
-    const providerTurnIds = request.affectedTurns.map((turn) => turn.providerCheckpoint);
-    if (providerTurnIds.some((checkpoint) => typeof checkpoint !== 'string')) {
+    const providerTurnIds = request.affectedTurns.map((turn) => trimStringValue(turn.providerCheckpoint));
+    if (providerTurnIds.some((checkpoint) => !checkpoint)) {
       return {
         status: 'unavailable',
         retryable: false,
@@ -2812,19 +2724,26 @@ export function createCodexAppServerRuntime(
       };
     }
     try {
-      const response = readRecord(await (await ensureClient()).request('thread/read', {
-        threadId,
-        includeTurns: true,
-      }));
-      const responseThread = readRecord(response?.thread) ?? response;
-      const turns = Array.isArray(responseThread?.turns) ? responseThread.turns : [];
-      const remaining = new Set(turns.flatMap((turn) => {
-        const id = trimStringValue(readRecord(turn)?.id);
-        return id ? [id] : [];
-      }));
-      return providerTurnIds.every((checkpoint) => !remaining.has(checkpoint as string))
-        ? { status: 'applied' }
-        : { status: 'notApplied' };
+      const client = await ensureClient();
+      const affected = new Set(providerTurnIds as string[]);
+      const seenCursors = new Set<string>();
+      let cursor: string | null = null;
+      for (;;) {
+        const response = readRecord(await client.request('thread/turns/list', {
+          threadId,
+          limit: 100,
+          ...(cursor ? { cursor } : {}),
+        }));
+        for (const turn of Array.isArray(response?.data) ? response.data : []) {
+          const id = trimStringValue(readRecord(turn)?.id);
+          if (id && affected.has(id)) return { status: 'notApplied' };
+        }
+        const nextCursor = trimStringValue(response?.nextCursor);
+        if (!nextCursor) return { status: 'applied' };
+        if (seenCursors.has(nextCursor)) throw new Error('Codex thread turn pagination repeated a cursor');
+        seenCursors.add(nextCursor);
+        cursor = nextCursor;
+      }
     } catch {
       return {
         status: 'unavailable',
@@ -2841,13 +2760,11 @@ export function createCodexAppServerRuntime(
     const activeTurn = pendingTurn;
     clearPendingTurnCompletionTimer();
     flushAssistantReasoningProjection('abort');
+    if (activeTurn) settlePendingTurnAgentTurnIdObservation(activeTurn);
     pendingTurn = null;
     if (activeTurn) clearPendingHappierTitleToolNamesForTurn(activeTurn.sessionTurnId);
     activeTurn?.resolve();
     terminalPendingTurnFailure = null;
-    deferredTemporaryRecoverableFailure = null;
-    originalTemporaryRecoverableFailure = null;
-    providerPromptForDeferredTemporaryRecoverableRetry = null;
     publishedToolEventKeys.clear();
     terminatedProviderTurnIds.clear();
     preAckCancelledTurns.clear();
@@ -2863,6 +2780,7 @@ export function createCodexAppServerRuntime(
     const currentClient = client;
     client = null;
     clientPromise = null;
+    collaborationModeSelectionCache.clear();
     publishedThreadId = null;
     startedEmptyThreadPolicyKey = null;
     let disposeHost = Promise.resolve();
@@ -3116,7 +3034,6 @@ export function createCodexAppServerRuntime(
       await cancelTurn();
       return cancelledResult(hadActiveTurn ? 'cancelled' : 'not_running');
     },
-    rollbackConversation,
     rollbackNativeConversation,
     reconcileNativeConversationRollback,
     runtimeAuth: {
@@ -3126,6 +3043,7 @@ export function createCodexAppServerRuntime(
     permissions: { capability: 'inline' },
     async updateConfig(update) {
       const updateRecord = readRecord(update);
+      const collaborationModeId = trimStringValue(updateRecord?.collaborationModeId);
       const nextPermissionMode = trimStringValue(updateRecord?.permissionMode);
       if (nextPermissionMode) {
         const nextPolicy = resolveCodexTerminalPermissionPolicy(nextPermissionMode);
@@ -3171,6 +3089,10 @@ export function createCodexAppServerRuntime(
       ) {
         currentReasoningEffort = configOptionValue ?? currentReasoningEffort;
       }
+      // Collaboration-mode selection depends on the effective model and reasoning effort. Apply
+      // the rest of this atomic configuration update first so same-update values can satisfy the
+      // mode without an avoidable model catalog request on the session-start hot path.
+      if (collaborationModeId) await resolveCollaborationMode(collaborationModeId);
       const serviceTier = trimStringValue(updateRecord?.serviceTier)
         ?? (configOptionId === CODEX_APP_SERVER_SERVICE_TIER_CONFIG_OPTION_ID ? configOptionValue : null);
       if (serviceTier === 'fast' || serviceTier === 'standard') {

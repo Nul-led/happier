@@ -56,20 +56,29 @@ function isRepositoryListingUrl(url: string): boolean {
 
 function createHttpStub(
   replies: readonly Reply[],
-  repositoryListingReply: Reply = EMPTY_REPOSITORY_LISTING,
+  /** One answer for every listing page, or one answer per page in order (the last repeats). */
+  repositoryListingReply: Reply | readonly Reply[] = EMPTY_REPOSITORY_LISTING,
 ): {
   http: HttpService;
   requests: RecordedRequest[];
 } {
   const requests: RecordedRequest[] = [];
   let index = 0;
+  let listingIndex = 0;
+  const nextListingReply = (): Reply => {
+    if (!Array.isArray(repositoryListingReply)) return repositoryListingReply as Reply;
+    const queued = repositoryListingReply as readonly Reply[];
+    const reply = queued[Math.min(listingIndex, queued.length - 1)] ?? EMPTY_REPOSITORY_LISTING;
+    listingIndex += 1;
+    return reply;
+  };
   const http = {
     async request(input: Parameters<HttpService['request']>[0]) {
       requests.push({ url: input.url, headers: { ...input.headers } });
       // The repository enumeration runs for real in these cases; only the lane pages are queued,
       // so the listing is answered out of band rather than consuming a queued reply.
       const reply = isRepositoryListingUrl(input.url)
-        ? repositoryListingReply
+        ? nextListingReply()
         : replies[index++] ?? { status: 500 };
       return {
         status: reply.status ?? 200,
@@ -87,7 +96,7 @@ function createHttpStub(
 
 function createClient(replies: readonly Reply[], overrides?: Readonly<{
   nowMs?: number;
-  repositoryListingReply?: Reply;
+  repositoryListingReply?: Reply | readonly Reply[];
 }>) {
   const { http, requests } = createHttpStub(
     replies,
@@ -263,7 +272,13 @@ describe('Bitbucket triage API client', () => {
     const result = await client.requestJson({ url: `${BITBUCKET_CLOUD_API_ORIGIN}/2.0/a` });
 
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.failure).toMatchObject({ class: 'unsupportedContract', code: 'malformed-json' });
+    // For an ordinary read this stays a contract failure. The code names the success status the
+    // response carried, because a write settlement cannot conclude "no effect" from it.
+    if (!result.ok) {
+      expect(result.failure)
+        .toMatchObject({ class: 'unsupportedContract', code: 'malformed-success-response' });
+      expect(result.status).toBe(200);
+    }
   });
 });
 
@@ -704,6 +719,94 @@ describe('Bitbucket bounded pull-request scan', () => {
     expect(repositories.cursorUrl()).toBeNull();
   });
 
+  it('ends the whole scan on a repository-discovery throttle instead of a partial workspace', async () => {
+    // An account-level throttle is not "this workspace has fewer repositories"; reporting the walk
+    // as merely incomplete drops both the failure class and Bitbucket's own retry evidence, and the
+    // settling page then names its static unsupported-lane reason instead.
+    const { client } = createClient([], {
+      repositoryListingReply: { status: 429, headers: { 'Retry-After': '30' }, body: {} },
+    });
+
+    const outcome = await walkAuthored(client, SCAN_LIMIT, {
+      authored: { nextUrl: null, ended: true },
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) throw new Error('a throttled discovery must end the scan');
+    expect(outcome.failure).toMatchObject({ class: 'rateLimit', code: 'request-throttled' });
+    expect(outcome.failure.retryNotBeforeMs).toBeGreaterThan(1_000);
+  });
+
+  it('ends the scan when a later repository-listing page is throttled', async () => {
+    const firstUrl = withBitbucketPageLength(
+      buildBitbucketWorkspaceRepositoriesUrl({ workspaceUuid: WORKSPACE_UUID }),
+      100,
+    );
+    const { client } = createClient([], {
+      repositoryListingReply: [
+        {
+          body: {
+            pagelen: 100,
+            page: 1,
+            values: [{
+              type: 'repository',
+              uuid: REPOSITORY_UUID,
+              name: 'repo',
+              full_name: 'example-workspace/repo',
+            }],
+            next: `${firstUrl}&page=2`,
+          },
+        },
+        { status: 429, headers: { 'Retry-After': '30' }, body: {} },
+      ],
+    });
+    const repositories = createBitbucketRepositoryEnumerator({
+      client,
+      workspaceUuid: WORKSPACE_UUID,
+      resumeUrl: null,
+      enteredRepositoryUuid: null,
+      initial: true,
+    });
+
+    await expect(repositories.advance()).resolves.toMatchObject({
+      repositoryUuid: REPOSITORY_UUID,
+    });
+    await expect(repositories.advance()).resolves.toMatchObject({
+      kind: 'failed',
+      failure: { class: 'rateLimit', code: 'request-throttled' },
+    });
+  });
+
+  it('reports enumeration incomplete when a listing page carried a row it could not decode', async () => {
+    const { client } = createClient([], {
+      repositoryListingReply: {
+        body: {
+          pagelen: 100,
+          page: 1,
+          values: [
+            { type: 'repository', uuid: REPOSITORY_UUID, name: 'repo', full_name: 'example-workspace/repo' },
+            { type: 'repository', name: 'undecodable' },
+          ],
+        },
+      },
+    });
+    const repositories = createBitbucketRepositoryEnumerator({
+      client,
+      workspaceUuid: WORKSPACE_UUID,
+      resumeUrl: null,
+      enteredRepositoryUuid: null,
+      initial: true,
+    });
+
+    await expect(repositories.advance()).resolves.toEqual({
+      kind: 'repository',
+      repositoryUuid: REPOSITORY_UUID,
+    });
+    // The repository that survived is kept, and the page it came from is still not a whole
+    // workspace — `ended` here would claim the inventory was exhausted.
+    await expect(repositories.advance()).resolves.toEqual({ kind: 'incomplete' });
+  });
+
   it('settles a repository-listing A-B-A cycle across a resumed frontier', async () => {
     const firstUrl = withBitbucketPageLength(
       buildBitbucketWorkspaceRepositoriesUrl({ workspaceUuid: WORKSPACE_UUID }),
@@ -822,7 +925,6 @@ describe('Bitbucket authoritative get', () => {
     workspaceUuid: WORKSPACE_UUID,
     repositorySlug: 'deploy-tools',
     expectedRepositoryUuid: REPOSITORY_UUID,
-    expectedRepositoryKey: 'example-workspace/deploy-tools',
     entryId: '42',
   } as const;
 
@@ -847,6 +949,30 @@ describe('Bitbucket authoritative get', () => {
     if (outcome.kind !== 'unresolved') return;
     expect(outcome.failure).toMatchObject({ class: 'notFound' });
     expect(JSON.stringify(outcome)).not.toContain('absent');
+  });
+
+  it('accepts the same closed PR after a workspace rename without a fresh scan', async () => {
+    const renamed = {
+      ...pullRequestSelf,
+      state: 'DECLINED',
+      destination: {
+        ...pullRequestSelf.destination,
+        repository: {
+          ...pullRequestSelf.destination.repository,
+          full_name: 'renamed-workspace/deploy-tools',
+        },
+      },
+    };
+    const { client } = createClient([{ body: renamed }]);
+    const outcome = await getBitbucketPullRequest({ client, ...target });
+    expect(outcome).toMatchObject({
+      kind: 'present',
+      entry: {
+        entryId: '42',
+        repository: { uuid: REPOSITORY_UUID, repositoryKey: 'renamed-workspace/deploy-tools' },
+        state: { native: 'DECLINED' },
+      },
+    });
   });
 
   it('rejects a 200 whose body belongs to a different repository or id', async () => {

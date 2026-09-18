@@ -87,6 +87,46 @@ describe('createClaudeUnifiedTerminalTurnOperations', () => {
     vi.useRealTimers();
   });
 
+  it('injects goal controls without opening provider-acceptance custody for the next prompt', async () => {
+    const terminalHost = createTerminalHostFixture();
+    const events = createEventsFixture();
+    const ctx = createPluginContextFixture(terminalHost.service, events.service);
+    const operations = createClaudeUnifiedTerminalProviderOperations({
+      ctx,
+      directory: '/tmp/claude-project',
+      happierSessionId: 'happy-turn-neutral-goal',
+      hostPreference: 'zellij',
+      launchEnv: {},
+      permissionMode: 'default',
+    });
+
+    try {
+      await operations.startProviderSession();
+      await expect(operations.clearGoal()).resolves.toBeUndefined();
+      await operations.sendProviderTurnPrompt('the next real prompt');
+
+      expect(terminalHost.service.injectUserPrompt).toHaveBeenCalledTimes(2);
+      expect(terminalHost.service.injectUserPrompt).toHaveBeenNthCalledWith(
+        1,
+        terminalHost.handle,
+        expect.objectContaining({
+          text: '/goal clear',
+          origin: expect.objectContaining({ kind: 'rpc' }),
+        }),
+      );
+      expect(terminalHost.service.injectUserPrompt).toHaveBeenNthCalledWith(
+        2,
+        terminalHost.handle,
+        expect.objectContaining({
+          text: 'the next real prompt',
+          origin: expect.objectContaining({ kind: 'ui_pending' }),
+        }),
+      );
+    } finally {
+      await operations.disposeProviderSession();
+    }
+  });
+
   function readLaunchArgs(terminalHost: ReturnType<typeof createTerminalHostFixture>): string[] {
     return (terminalHost.service.createOrAttachHost as ReturnType<typeof vi.fn>)
       .mock.calls[0]?.[0]?.launch?.args as string[];
@@ -118,6 +158,141 @@ describe('createClaudeUnifiedTerminalTurnOperations', () => {
     expect('identity' in operations).toBe(false);
 
     await operations.disposeProviderSession();
+  });
+
+  it('keeps host turn identity through acceptance, completion, follow-up, and cancellation', async () => {
+    const terminalHost = createTerminalHostFixture();
+    const events = createEventsFixture();
+    const ctx = createPluginContextFixture(terminalHost.service, events.service);
+    const operations = createClaudeUnifiedTerminalProviderOperations({
+      ctx,
+      directory: '/tmp/claude-project',
+      happierSessionId: 'happy-host-turns',
+      hostPreference: 'zellij',
+      launchEnv: {},
+      permissionMode: 'default',
+    });
+    const session = createClaudeNativeSessionRuntimeFromOperations(operations, {
+      kind: 'create',
+      sessionId: 'happy-host-turns',
+      cwd: '/tmp/claude-project',
+    }, {
+      session: {
+        services: {
+          activeInput: { bind: () => ({ dispose() {} }) },
+          models: { bind: () => ({ dispose() {} }) },
+        },
+      },
+    } as unknown as AgentSessionRuntimeContext);
+    const observed: AgentSessionRuntimeEvent[] = [];
+    session.watch((event) => observed.push(event));
+
+    try {
+      await expect(session.send({
+        inputIds: ['input-1'],
+        input: { text: 'first prompt' },
+        delivery: { kind: 'newTurn', turnId: 'host-turn-1' },
+      })).resolves.toEqual({ status: 'admitted' });
+      await operations.observeTerminalLifecycle({
+        agentId: 'claude',
+        type: 'prompt_submitted',
+        promptText: 'first prompt',
+        observedAtMs: 100,
+        source: 'hook',
+      });
+      await operations.observeTerminalLifecycle({ agentId: 'claude', type: 'completion_candidate' });
+
+      await expect(session.send({
+        inputIds: ['input-2'],
+        input: { text: 'second prompt' },
+        delivery: { kind: 'followUp', turnId: 'host-turn-2' },
+      })).resolves.toEqual({ status: 'admitted' });
+      await operations.observeTerminalLifecycle({
+        agentId: 'claude',
+        type: 'prompt_submitted',
+        promptText: 'second prompt',
+        observedAtMs: 200,
+        source: 'hook',
+      });
+
+      expect(observed.filter((event) => event.kind === 'input-accepted' || event.kind === 'turn-start'))
+        .toEqual([
+          expect.objectContaining({ kind: 'input-accepted', delivery: { kind: 'newTurn', turnId: 'host-turn-1' } }),
+          expect.objectContaining({ kind: 'turn-start', turnId: 'host-turn-1', startedBy: 'host' }),
+          expect.objectContaining({ kind: 'input-accepted', delivery: { kind: 'followUp', turnId: 'host-turn-2' } }),
+          expect.objectContaining({ kind: 'turn-start', turnId: 'host-turn-2', startedBy: 'host' }),
+        ]);
+      await expect(session.cancel({ turnId: 'host-turn-2' })).resolves.toEqual({
+        status: 'requested',
+        turnId: 'host-turn-2',
+      });
+      expect(terminalHost.service.interruptTurn).toHaveBeenCalledOnce();
+    } finally {
+      await session.dispose();
+    }
+  });
+
+  it('settles a native steer when the provider accepts that exact prompt', async () => {
+    const terminalHost = createTerminalHostFixture();
+    const events = createEventsFixture();
+    const ctx = createPluginContextFixture(terminalHost.service, events.service);
+    const operations = createClaudeUnifiedTerminalProviderOperations({
+      ctx,
+      directory: '/tmp/claude-project',
+      happierSessionId: 'happy-steer-settlement',
+      hostPreference: 'zellij',
+      launchEnv: {},
+      permissionMode: 'default',
+    });
+    const session = createClaudeNativeSessionRuntimeFromOperations(operations, {
+      kind: 'create',
+      sessionId: 'happy-steer-settlement',
+      cwd: '/tmp/claude-project',
+    }, {
+      session: {
+        services: {
+          activeInput: { bind: () => ({ dispose() {} }) },
+          models: { bind: () => ({ dispose() {} }) },
+        },
+      },
+    } as unknown as AgentSessionRuntimeContext);
+
+    try {
+      await session.send({
+        inputIds: ['input-1'],
+        input: { text: 'start' },
+        delivery: { kind: 'newTurn', turnId: 'host-turn-1' },
+      });
+      await operations.observeTerminalLifecycle({
+        agentId: 'claude',
+        type: 'prompt_submitted',
+        promptText: 'start',
+        observedAtMs: 100,
+        source: 'hook',
+      });
+      let steerSettled = false;
+      const steer = session.send({
+        inputIds: ['steer-1'],
+        input: { text: 'steer now' },
+        delivery: { kind: 'steer', turnId: 'host-turn-1' },
+      }).then((result) => {
+        steerSettled = true;
+        return result;
+      });
+      await vi.waitFor(() => expect(terminalHost.service.injectUserPrompt).toHaveBeenCalledTimes(2));
+      await operations.observeTerminalLifecycle({
+        agentId: 'claude',
+        type: 'prompt_submitted',
+        promptText: 'steer now',
+        observedAtMs: 200,
+        source: 'hook',
+      });
+
+      await vi.waitFor(() => expect(steerSettled).toBe(true), { timeout: 250 });
+      await expect(steer).resolves.toEqual({ status: 'admitted' });
+    } finally {
+      await session.dispose();
+    }
   });
 
   function hasSplitFlagValue(args: readonly string[], flag: string, value: string): boolean {
@@ -475,6 +650,7 @@ describe('createClaudeUnifiedTerminalTurnOperations', () => {
 
       const launchArgs = readLaunchArgs(terminalHost);
       expect(countArg(launchArgs, '--allow-dangerously-skip-permissions')).toBe(1);
+      expect(launchArgs).not.toContain('--permission-mode');
       expect(hasSplitFlagValue(launchArgs, '--permission-mode', 'bypassPermissions')).toBe(false);
     } finally {
       await runtime.resetOrDisposeRuntime().catch(() => undefined);
@@ -4460,6 +4636,54 @@ describe('createClaudeUnifiedTerminalTurnOperations', () => {
       expect(runtimeEvents.filter((event) => event.kind === 'turn-cancelled')).toHaveLength(1);
     } finally {
       await runtime.resetOrDisposeRuntime().catch(() => undefined);
+    }
+  });
+
+  it('cancels an explicit-resume barrier when startup waits for a human before SessionStart', async () => {
+    const terminalHost = createTerminalHostFixture();
+    terminalHost.service.captureInputState = vi.fn(async () => ({
+      stable: true,
+      currentInput: SAFEGUARD_PAUSE_DIALOG,
+      observedAt: Date.now(),
+    }));
+    terminalHost.service.controlPort = vi.fn(async () => createFakeControlPort({
+      captures: [SAFEGUARD_PAUSE_DIALOG],
+    }));
+    const requestDecision = vi.fn((_request: unknown, options?: Readonly<{ signal?: AbortSignal }>) => new Promise((_, reject) => {
+      options?.signal?.addEventListener('abort', () => reject(new Error('startup decision aborted')));
+    }));
+    const events = createEventsFixture();
+    const ctx = createPluginContextFixture(terminalHost.service, events.service, {
+      sessionPermissions: {
+        requestDecision,
+        getMode: () => 'default',
+      },
+    });
+    const envelope = expectRuntimeEnvelope(createClaudeUnifiedTerminalTurnOperations({
+      ctx,
+      directory: '/tmp/claude-project',
+      happierSessionId: 'happy-session-resume-human-wait',
+      hostPreference: 'zellij',
+      launchEnv: {},
+      permissionMode: 'default',
+      launchIntent: {
+        kind: 'resume_native',
+        providerSessionId: 'claude-resume-human-wait',
+      },
+    }));
+    const runtimeEvents: Array<{ kind?: string; reason?: string }> = [];
+    envelope.operations.subscribeRuntimeEvents((event) => runtimeEvents.push(event));
+
+    try {
+      await envelope.operations.startProviderSession();
+
+      await vi.waitFor(() => expect(requestDecision).toHaveBeenCalledTimes(1));
+      expect(runtimeEvents.filter((event) => event.kind === 'turn-start')).toHaveLength(1);
+      expect(runtimeEvents.filter((event) => event.kind === 'turn-cancelled')).toEqual([
+        expect.objectContaining({ reason: 'startup_blocked_native_resume' }),
+      ]);
+    } finally {
+      await envelope.operations.resetOrDisposeRuntime().catch(() => undefined);
     }
   });
 

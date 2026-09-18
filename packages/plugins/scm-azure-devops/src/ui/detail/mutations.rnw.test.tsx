@@ -190,12 +190,8 @@ async function mountDetail(
   let fixture!: PluginUiTestkit;
   await act(async () => {
     fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: AZURE_DEVOPS_PLUGIN_ID,
-        pluginVersion: '0.0.0',
-        viewId: 'azure-devops-triage-detail',
-        generation: 'azure-devops-detail-mount',
-      },
+      identity: { instanceId: 'fixture-instance-160', mountNonce: 'fixture-mount-160' },
+      authorPlugin: { id: AZURE_DEVOPS_PLUGIN_ID, version: '0.0.0' },
       surface: (context) => (
         <TriagePostMutationCompletionProvider
           onComplete={async () => { completedMutations += 1; }}

@@ -56,6 +56,25 @@ describe('external-session candidate precedence', () => {
         ]);
     });
 
+    it('requires present opaque remote identity without rewriting it', () => {
+        const missing = /External-session candidate identity requires a remote session id/u;
+        for (const blank of ['', ' ', '\n \t']) {
+            expect(() => resolveExternalSessionCandidateIdentityKey({
+                remoteSessionId: blank,
+            })).toThrow(missing);
+        }
+
+        // Whitespace and base64 bytes are identity here, so two candidates that
+        // differ only in padding are two distinct candidates.
+        const padded = resolveExternalSessionCandidateIdentityKey({
+            remoteSessionId: '  provider\nses/AB+cd==  ',
+        });
+        expect(padded).toMatch(/^[a-f0-9]{64}$/u);
+        expect(padded).not.toBe(resolveExternalSessionCandidateIdentityKey({
+            remoteSessionId: 'provider\nses/AB+cd==',
+        }));
+    });
+
     it('includes an own __proto__ JSON field in private candidate identity', () => {
         const linkDataA = JSON.parse('{"__proto__":{"projectId":"project-a"}}') as Record<string, unknown>;
         const linkDataB = JSON.parse('{"__proto__":{"projectId":"project-b"}}') as Record<string, unknown>;

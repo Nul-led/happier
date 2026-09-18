@@ -6,6 +6,7 @@ export type { ApprovalQueueService } from '../interactions.js';
 export type { ApprovalQueueSnapshot } from '../interactions.js';
 export type { ApprovalRequest } from '../interactions.js';
 export type { ApprovalRequestStatus } from '../interactions.js';
+export type { CurrentSessionPresentationIntentV1 } from '../interactions.js';
 export type { InteractionOptions } from '../interactions.js';
 export type { InteractionSeverity } from '../interactions.js';
 export type { InteractionTerminalStatusV1 } from '../interactions.js';

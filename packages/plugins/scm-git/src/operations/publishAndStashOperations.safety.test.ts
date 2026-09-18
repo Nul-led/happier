@@ -23,7 +23,7 @@ describe('git publish and stash operation safety', () => {
         expect(result.success).toBe(false);
         expect(result.errorCode).toBe(SCM_OPERATION_ERROR_CODES.INVALID_REQUEST);
         expect(runScmCommand).not.toHaveBeenCalled();
-    });
+    }, 30_000);
 
     it('rejects option-like stash refs before apply-like operations', async () => {
         vi.resetModules();

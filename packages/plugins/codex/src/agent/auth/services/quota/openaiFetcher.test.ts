@@ -47,6 +47,26 @@ describe('createOpenAiCodexQuotaFetcher', () => {
     }
   });
 
+  it('preserves additional provider allowance identities from the HTTP usage payload', () => {
+    expect(parseOpenAiCodexConnectedAccountQuotaLimits({
+      rate_limit: {
+        primary_window: { used_percent: 12, reset_at: 1_700_000_000 },
+      },
+      additional_rate_limits: {
+        codex_spark: {
+          limit_name: 'Spark',
+          model_id: 'gpt-5.3-codex-spark',
+          rate_limit: {
+            primary_window: { used_percent: 81, reset_at: 1_700_000_100 },
+          },
+        },
+      },
+    })).toEqual(expect.arrayContaining([
+      { id: 'session', used: 12, remaining: 88, resetsAtMs: 1_700_000_000_000 },
+      { id: 'codex_spark:primary', used: 81, remaining: 19, resetsAtMs: 1_700_000_100_000 },
+    ]));
+  });
+
   it('returns a provider-neutral public usage observation from the private quota fetcher', async () => {
     const now = 1_000_000;
     const record = buildConnectedServiceCredentialRecord({

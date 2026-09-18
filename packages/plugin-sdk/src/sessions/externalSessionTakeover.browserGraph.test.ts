@@ -13,6 +13,10 @@ describe('External Session takeover browser graph', () => {
             import.meta.dirname,
             '../../../protocol/src/sessions/metadata/runtimeDescriptorV1.ts',
         );
+        const opaqueIdentifierLeaf = resolve(
+            import.meta.dirname,
+            '../../../protocol/src/strings/opaqueIdentifier.ts',
+        );
         const emittedModules = new Set<string>();
         const protocolPackage = JSON.parse(readFileSync(
             resolve(import.meta.dirname, '../../../protocol/package.json'),
@@ -24,6 +28,13 @@ describe('External Session takeover browser graph', () => {
             {
                 types: './dist/sessions/metadata/runtimeDescriptorV1.d.ts',
                 default: './dist/sessions/metadata/runtimeDescriptorV1.js',
+            },
+        );
+        expect(protocolPackage.exports).toHaveProperty(
+            './strings/opaqueIdentifier',
+            {
+                types: './dist/strings/opaqueIdentifier.d.ts',
+                default: './dist/strings/opaqueIdentifier.js',
             },
         );
 
@@ -39,6 +50,10 @@ describe('External Session takeover browser graph', () => {
                     {
                         find: '@happier-dev/protocol/sessions/metadata/runtime-descriptor',
                         replacement: runtimeDescriptorLeaf,
+                    },
+                    {
+                        find: '@happier-dev/protocol/strings/opaqueIdentifier',
+                        replacement: opaqueIdentifierLeaf,
                     },
                     { find: /^@happier-dev\/protocol$/, replacement: protocolRoot },
                 ],
@@ -70,6 +85,9 @@ describe('External Session takeover browser graph', () => {
         ))).toEqual([]);
         expect([...emittedModules].filter((id) => (
             id === runtimeDescriptorLeaf
+        ))).toHaveLength(1);
+        expect([...emittedModules].filter((id) => (
+            id === opaqueIdentifierLeaf
         ))).toHaveLength(1);
     }, 60_000);
 });

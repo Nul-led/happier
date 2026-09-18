@@ -21,9 +21,11 @@ import type {
     SessionRuntimeAuthServicesV1,
 } from '@happier-dev/agents';
 import type { AgentSessionAuthRefreshRequest } from '../agentRuntime/context.js';
-import type { PluginActionInputById } from '../actions/actionTypeMap.generated.js';
+import type {
+    PluginActionInputById,
+    PluginActionResultById,
+} from '../actions/actionTypeMap.generated.js';
 import type { ProtocolComposableSchema } from '../protocol/protocolFacade.js';
-import type { SubagentLaunchV1 } from '../sessions/subagents.js';
 import type { ExternalSessionsService } from './externalSessions.js';
 import {
     AgentPermissionIntentV1Schema as protocolAgentPermissionIntentV1Schema,
@@ -429,37 +431,40 @@ export type SessionSendAttachment = NonNullable<
     >['attachments']
 >[number];
 export type SessionSendRequest =
-  | Readonly<{
-      kind: 'sessionSubagentLaunch';
-      launch: SubagentLaunchV1;
-      idempotencyKey: string;
-  }>
-  | Readonly<{
+  | Readonly<Omit<Extract<
+      PluginActionInputById['session.message.send'],
+      Readonly<{ kind: 'sessionSubagentLaunch' }>
+    >, 'sessionId'>>
+  | Readonly<Omit<Exclude<
+      PluginActionInputById['session.message.send'],
+      Readonly<{ kind: 'sessionSubagentLaunch' }>
+    >, 'sessionId' | 'message'> & {
     kind: 'userText';
-    text: string;
-    idempotencyKey: string;
+    text: Exclude<
+        PluginActionInputById['session.message.send'],
+        Readonly<{ kind: 'sessionSubagentLaunch' }>
+    >['message'];
     /**
      * Declared attachment drafts delivered with this input. Resending under the
      * same `idempotencyKey` rejoins the existing durable input rather than
      * queueing a second Message, so an unknown outcome is safe to retry.
      */
-    attachments?: readonly SessionSendAttachment[];
-    source?: Readonly<{
-        sourceRef: string;
-        sourceRevisionOrEpoch: string;
-        remoteApprovalMaxScope: 'off' | 'request' | 'session';
-        requestedPermissionCeiling: AgentPermissionIntentV1;
-        externalActor?: Readonly<{
-            kind: 'human' | 'bot';
-            displayNameSnapshot?: string;
-        }>;
-        contentProvenance?: 'original' | 'forwarded' | 'viaBot';
-    }>;
+    attachments?: Exclude<
+        PluginActionInputById['session.message.send'],
+        Readonly<{ kind: 'sessionSubagentLaunch' }>
+    >['attachments'];
+    /** Exact participant target; omission sends to the main Session. */
+    recipient?: Exclude<
+        PluginActionInputById['session.message.send'],
+        Readonly<{ kind: 'sessionSubagentLaunch' }>
+    >['recipient'];
+    source?: Exclude<
+        PluginActionInputById['session.message.send'],
+        Readonly<{ kind: 'sessionSubagentLaunch' }>
+    >['source'];
   }>;
-export type SessionSendResult =
-    | Readonly<{ status: 'accepted' | 'alreadyAccepted'; localId: string }>
-    | Readonly<{ status: 'rejected'; code: string }>
-    | Readonly<{ status: 'outcomeUnknown'; localId: string; code: string }>;
+/** Canonical result of the shared Session message Action. */
+export type SessionSendResult = PluginActionResultById['session.message.send'];
 export type SessionMessagePart =
     | Readonly<{ kind: 'text'; text: string }>
     | Readonly<{ kind: 'structured'; mediaType: string; value: JsonValue }>;

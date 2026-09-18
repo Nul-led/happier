@@ -61,6 +61,10 @@ function scope(
 describe('Connected Accounts registration staging', () => {
     it('snapshots every named authentication mode and its reconciliation leaf', () => {
         const runtime = {
+            recoveryCredits: {
+                async read() { return { observedAtMs: 1, availableCount: 0, credits: [] }; },
+                async consume() { return { status: 'not_available' as const }; },
+            },
             authentication: {
                 modes: {
                     manual: {
@@ -78,7 +82,7 @@ describe('Connected Accounts registration staging', () => {
             },
             ...commonRuntime(),
         } satisfies PluginConnectedAccountRuntime;
-        const registrationScope = scope();
+        const registrationScope = scope({ ...declaredAccount, recoveryCredits: { supported: true } });
 
         registrationScope.api.connectedAccounts.register('forge', runtime);
 
@@ -104,6 +108,10 @@ describe('Connected Accounts registration staging', () => {
             revoke: expect.any(Function),
             status: expect.any(Function),
             materialize: expect.any(Function),
+            recoveryCredits: {
+                read: expect.any(Function),
+                consume: expect.any(Function),
+            },
         });
         expect(registration?.value).not.toBe(runtime);
         if (registration?.family !== 'connectedAccountDescriptors') {

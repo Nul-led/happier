@@ -85,10 +85,13 @@ describe('Claude provider task lifecycle', () => {
   });
 
   it('accepts the exact typed lifecycle status grammar', () => {
+    // Claude minted the session id, so its bytes survive verbatim and stay
+    // comparable to the live provider session; the task id is Happier's own
+    // identifier and keeps its canonicalization.
     expect(readClaudeProviderTaskActivity({
       type: 'system', subtype: 'task_started', session_id: ' s1 ', task_id: ' t1 ',
       task_type: 'local_workflow',
-    })).toEqual({ type: 'started', admission: 'launch', sessionId: 's1', taskId: 't1' });
+    })).toEqual({ type: 'started', admission: 'launch', sessionId: ' s1 ', taskId: 't1' });
     expect(readClaudeProviderTaskActivity({
       type: 'system', subtype: 'task_progress', session_id: 's1', task_id: 't1',
     })).toEqual({ type: 'progress', sessionId: 's1', taskId: 't1' });
@@ -116,7 +119,7 @@ describe('Claude provider task lifecycle', () => {
       tool_input: { description: 'defaults to background' },
       tool_response: { status: 'async_launched', agentId: ' local-1 ' },
     })).toEqual({
-      type: 'started', admission: 'launch', sessionId: 's1', taskId: 'local-1',
+      type: 'started', admission: 'launch', sessionId: ' s1 ', taskId: 'local-1',
     });
     expect(readClaudeProviderTaskActivity({
       hook_event_name: 'PostToolUse',

@@ -74,6 +74,7 @@ function createContext(
     caller: {
       kind: 'plugin',
       pluginId: 'happier.channels',
+      immutableGenerationId: 'channels-generation-1',
       contribution: { id: 'test', qualifiedId: 'happier.channels/actions/test' },
       materialization: {
         machineId: 'discord-automation-events-fixture-machine',

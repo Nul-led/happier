@@ -7,7 +7,7 @@ import type {
 } from '@happier-dev/plugin-sdk/interactions';
 
 import type { OpenCodeServerPermissionReply } from './openCodeServerClient.js';
-import { asRecord, normalizeString } from './openCodeParsing.js';
+import { asRecord, readNonBlankOpaqueIdentifier } from './openCodeParsing.js';
 
 export type OpenCodePermissionAsk = Readonly<{
   requestId: string;
@@ -17,13 +17,22 @@ export type OpenCodePermissionAsk = Readonly<{
   metadata?: Readonly<Record<string, unknown>>;
 }>;
 
+/**
+ * The one value every alias of a provider-authored field agrees on.
+ *
+ * Every field read through here -- the request id, the owning session id, the
+ * permission name and its patterns -- is authored by OpenCode and handed back
+ * to OpenCode, so agreement is decided on exact bytes and the accepted value is
+ * never re-minted. Two aliases that differ only in whitespace are a genuine
+ * disagreement, and the caller fails closed on it.
+ */
 function readUniqueNonBlankString(values: readonly unknown[]): string | null {
   const defined = values.filter((value) => value !== undefined);
   if (defined.length === 0) return null;
-  const normalized = defined.map((value) => normalizeString(value));
-  if (normalized.some((value) => value.length === 0)) return null;
-  const unique = [...new Set(normalized)];
-  return unique.length === 1 ? unique[0] : null;
+  const admitted = defined.map((value) => readNonBlankOpaqueIdentifier(value));
+  if (admitted.some((value) => value === null)) return null;
+  const unique = [...new Set(admitted)];
+  return unique.length === 1 ? unique[0] ?? null : null;
 }
 
 export function readOpenCodePermissionRequestId(
@@ -54,7 +63,7 @@ export function readOpenCodePermissionAsk(
   let patterns: readonly string[];
   if (properties.patterns !== undefined) {
     if (!Array.isArray(properties.patterns)) return null;
-    const normalized = properties.patterns.map((value) => normalizeString(value));
+    const normalized = properties.patterns.map((value) => readNonBlankOpaqueIdentifier(value) ?? '');
     if (normalized.some((value) => value.length === 0)) return null;
     const legacyPatternValues = [properties.pattern, action?.pattern]
       .filter((value) => value !== undefined);

@@ -40,6 +40,7 @@ describe('resolveCodexDaemonSpawnPrerequisites', () => {
       tools: { resolveManagedInstallable: vi.fn(), runSystemTool },
     })).resolves.toEqual({ decision: 'allow' });
     expect(runSystemTool).toHaveBeenCalledTimes(1);
+    expect(runSystemTool.mock.calls[0]?.[0]).not.toHaveProperty('timeoutMs');
   });
 
   it('checks the installed Codex version for a provider-bound app-server spawn', async () => {

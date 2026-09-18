@@ -1,5 +1,8 @@
 import type {
   AgentAcpRuntimeDefinition,
+  AgentExecutionRunOpenRequest,
+  AgentExecutionRunRuntime,
+  AgentExecutionRunRuntimeContextV1,
   AgentPermissionIntent,
   AgentSessionOpenRequest,
   AgentSessionRuntime,
@@ -35,7 +38,7 @@ function buildCursorPermissionIntentArgs(
 }
 
 function buildCursorAcpArgs(
-  request: AgentSessionOpenRequest,
+  request: Pick<AgentSessionOpenRequest, 'configuration'>,
   apiEndpoint: string,
 ): readonly string[] {
   return Object.freeze([
@@ -45,29 +48,50 @@ function buildCursorAcpArgs(
   ]);
 }
 
+async function resolveCursorAcpOptions(
+  request: Pick<AgentSessionOpenRequest, 'configuration'>,
+  context: Pick<AgentSessionRuntimeContext, 'services'>,
+) {
+  const settings = await readCursorRuntimeSettings(context.services.settings);
+  return {
+    settings,
+    options: {
+      transport: Object.freeze({
+        kind: 'stdio' as const,
+        executable: Object.freeze({
+          kind: 'systemTool' as const,
+          id: settings.agentFallbackEnabled
+            ? 'cursor-agent'
+            : 'cursor-agent-no-fallback',
+        }),
+        ...(settings.binaryPath ? { preferredPath: settings.binaryPath } : {}),
+        args: buildCursorAcpArgs(request, settings.apiEndpoint),
+      }),
+      definition: CURSOR_ACP_RUNTIME_DEFINITION,
+    },
+  };
+}
+
 export async function openCursorAcpSession(
   request: AgentSessionOpenRequest,
   context: AgentSessionRuntimeContext,
 ): Promise<AgentSessionRuntime> {
-  const settings = await readCursorRuntimeSettings(context.services.settings);
+  const { options } = await resolveCursorAcpOptions(request, context);
   const mediaSourceRoot = resolveCursorGeneratedMediaRoot({ directory: request.cwd });
   const runtime = await context.protocols.acp.open(request, {
-    transport: Object.freeze({
-      kind: 'stdio',
-      executable: Object.freeze({
-        kind: 'systemTool',
-        id: settings.agentFallbackEnabled
-          ? 'cursor-agent'
-          : 'cursor-agent-no-fallback',
-      }),
-      ...(settings.binaryPath ? { preferredPath: settings.binaryPath } : {}),
-      args: buildCursorAcpArgs(request, settings.apiEndpoint),
-    }),
-    definition: CURSOR_ACP_RUNTIME_DEFINITION,
+    ...options,
     extensions: createCursorAcpRuntimeExtensions({
       context,
       ...(mediaSourceRoot ? { mediaSourceRoot } : {}),
     }),
   });
   return withCursorEmptyResponseFailure(runtime);
+}
+
+export async function openCursorAcpExecutionRun(
+  request: AgentExecutionRunOpenRequest,
+  context: AgentExecutionRunRuntimeContextV1,
+): Promise<AgentExecutionRunRuntime> {
+  const { options } = await resolveCursorAcpOptions(request, context);
+  return await context.protocols.acp.openExecutionRunV1(request, options);
 }

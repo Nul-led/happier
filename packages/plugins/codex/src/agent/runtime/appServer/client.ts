@@ -21,8 +21,17 @@ import {
     CODEX_REALTIME_CONVERSATION_FEATURE,
     initializeCodexAppServerClient,
 } from './connection.js';
+import { connectCodexUnixWebSocketJsonRpc } from './client/unixWebSocket.js';
 
 type CodexAppServerEnv = Readonly<Record<string, string | undefined>>;
+
+export type CodexAppServerTransport =
+    | Readonly<{ kind: 'stdio' }>
+    | Readonly<{
+        kind: 'unixWebSocket';
+        socketPath: string;
+        realtimeConversationAdvertised: boolean;
+    }>;
 
 type JsonRpcRequestHandler = (params: unknown, message: Readonly<{ id?: unknown }>) => Promise<unknown> | unknown;
 type JsonRpcNotificationHandler = (params: unknown) => Promise<void> | void;
@@ -174,7 +183,7 @@ function resolveCodexAppServerBinaryOverride(env: CodexAppServerEnv): string | n
     return null;
 }
 
-function buildCodexAppServerEnv(env: CodexAppServerEnv): Record<string, string> {
+export function buildCodexAppServerEnv(env: CodexAppServerEnv): Record<string, string> {
     const output: Record<string, string> = {};
     for (const [key, value] of Object.entries(env)) {
         if (typeof value !== 'string') continue;
@@ -189,17 +198,20 @@ function buildCodexAppServerEnv(env: CodexAppServerEnv): Record<string, string> 
     return output;
 }
 
-function buildCodexAppServerArgs(params: Readonly<{
+export function buildCodexAppServerArgs(params: Readonly<{
     env: CodexAppServerEnv;
     configOverrides?: readonly string[];
     disableUserMcpServers?: boolean;
     enableRealtimeConversation?: boolean;
+    listenUrl?: string;
+    transport?: CodexAppServerTransport;
 }>): string[] {
     const userMcpOverrides = params.disableUserMcpServers === true
         ? readCodexMcpServerKeysFromConfigToml(params.env).map((key) => `mcp_servers.${key}.enabled=false`)
         : [];
     return appendConfigOverrides(buildCodexAppServerBaseArgs(
         params.enableRealtimeConversation === true,
+        params.listenUrl,
     ), [
         ...userMcpOverrides,
         ...(params.configOverrides ?? []),
@@ -224,7 +236,7 @@ function advertisesRealtimeConversation(result: PluginProcessResult): boolean {
         .some((line) => line.trimStart().startsWith(`${CODEX_REALTIME_CONVERSATION_FEATURE} `));
 }
 
-async function probeCodexRealtimeConversationFeature(params: Readonly<{
+export async function probeCodexRealtimeConversationFeature(params: Readonly<{
     exec: ExecService;
     executable: ManagedExecutableRef;
     env: CodexAppServerEnv;
@@ -277,7 +289,7 @@ function toNativeExit(result: PluginProcessResult): Readonly<{
 }
 
 function wrapNativeCodexAppServerClient(
-    handle: PluginProtocolClientHandle<'jsonRpc'>,
+    handle: Pick<PluginProtocolClientHandle<'jsonRpc'>, 'client' | 'wait' | 'dispose'>,
     env: CodexAppServerEnv,
     launchFeatures: DisposableCodexAppServerClient['launchFeatures'],
 ): DisposableCodexAppServerClient {
@@ -369,6 +381,7 @@ function buildNativeCodexAppServerClientSpec(params: Readonly<{
     configOverrides?: readonly string[];
     disableUserMcpServers?: boolean;
     enableRealtimeConversation?: boolean;
+    transport?: CodexAppServerTransport;
 }>) {
     return {
         kind: 'jsonRpc' as const,
@@ -392,28 +405,40 @@ export async function createCodexNativeAppServerClient(params: Readonly<{
     disableUserMcpServers?: boolean;
     signal?: AbortSignal;
     initializeRequestOptions?: CodexAppServerRequestOptions;
+    transport?: CodexAppServerTransport;
 }>): Promise<DisposableCodexAppServerClient> {
     const env = params.processEnv ?? process.env;
     const resolvedSystemTool = await params.exec.systemTools.resolve({
         toolId: 'codex-cli',
         purpose: 'Launch the Codex native app-server',
     });
-    const realtimeConversationAdvertised = await probeCodexRealtimeConversationFeature({
-        exec: params.exec,
-        executable: resolvedSystemTool.executable,
-        env,
-        ...(params.signal ? { signal: params.signal } : {}),
-    });
-    const enableRealtimeConversation = realtimeConversationAdvertised;
-    let handle: PluginProtocolClientHandle<'jsonRpc'>;
-    try {
-        handle = await params.exec.clients.spawn(buildNativeCodexAppServerClientSpec({
+    const realtimeConversationAdvertised = params.transport?.kind === 'unixWebSocket'
+        ? params.transport.realtimeConversationAdvertised
+        : await probeCodexRealtimeConversationFeature({
+            exec: params.exec,
             executable: resolvedSystemTool.executable,
             env,
-            configOverrides: params.configOverrides,
-            disableUserMcpServers: params.disableUserMcpServers,
-            enableRealtimeConversation,
-        }), params.signal ? { signal: params.signal } : undefined) as PluginProtocolClientHandle<'jsonRpc'>;
+            ...(params.signal ? { signal: params.signal } : {}),
+        });
+    const enableRealtimeConversation = params.transport?.kind !== 'unixWebSocket'
+        && realtimeConversationAdvertised;
+    let handle: Pick<PluginProtocolClientHandle<'jsonRpc'>, 'client' | 'wait' | 'dispose'>;
+    try {
+        handle = params.transport?.kind === 'unixWebSocket'
+            ? await connectCodexUnixWebSocketJsonRpc({
+                socketPath: params.transport.socketPath,
+                maxFrameBytes: readJsonLineMaxChars(env),
+                requestTimeoutMs: readCodexAppServerRpcTimeoutMs(env),
+                ...(params.signal ? { signal: params.signal } : {}),
+            })
+            : await params.exec.clients.spawn(buildNativeCodexAppServerClientSpec({
+                executable: resolvedSystemTool.executable,
+                env,
+                configOverrides: params.configOverrides,
+                disableUserMcpServers: params.disableUserMcpServers,
+                enableRealtimeConversation,
+                transport: params.transport,
+            }), params.signal ? { signal: params.signal } : undefined) as PluginProtocolClientHandle<'jsonRpc'>;
     } catch (error) {
         if (params.signal?.aborted || !enableRealtimeConversation) throw error;
         throw createCodexRealtimeEnabledAppServerLaunchUnavailableError();

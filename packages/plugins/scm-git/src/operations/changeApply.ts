@@ -7,6 +7,7 @@ import type { ScmBackendContext } from '../types.js';
 import { runScmCommand } from '../runtime.js';
 
 import { applyValidatedGitPatch } from './applyValidatedGitPatch.js';
+import { toLiteralPathspec } from '../literalPathspec.js';
 import { normalizePaths } from './normalizePaths.js';
 
 export async function gitChangeInclude(input: {
@@ -45,7 +46,7 @@ export async function gitChangeInclude(input: {
     const include = await runScmCommand({
         bin: 'git',
         cwd: context.cwd,
-        args: ['add', '--', ...normalized.normalizedPaths],
+        args: ['add', '--', ...normalized.normalizedPaths.map(toLiteralPathspec)],
         timeoutMs: 10_000,
     });
     return include.success
@@ -95,7 +96,7 @@ export async function gitChangeExclude(input: {
     const exclude = await runScmCommand({
         bin: 'git',
         cwd: context.cwd,
-        args: ['reset', '--', ...normalized.normalizedPaths],
+        args: ['reset', '--', ...normalized.normalizedPaths.map(toLiteralPathspec)],
         timeoutMs: 10_000,
     });
     return exclude.success

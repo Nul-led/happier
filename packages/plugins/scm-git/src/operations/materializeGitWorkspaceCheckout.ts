@@ -1,5 +1,5 @@
-import { lstat, mkdir, readdir, rename, rm } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { lstat, mkdir, readdir, realpath, rename, rm } from 'node:fs/promises';
+import { basename, dirname, join, resolve } from 'node:path';
 
 import type {
     ScmReviewWorkspaceCurrentness,
@@ -7,8 +7,11 @@ import type {
 } from '@happier-dev/plugin-sdk/scm';
 import {
     parseScmRemoteUrl,
+    hasForbiddenGitRefName,
+    normalizeWorktreeDisplayName,
     SCM_OPERATION_ERROR_CODES,
     type ScmOperationErrorCode,
+    type ScmTransportIdentityV1,
 } from '@happier-dev/plugin-sdk/scm';
 
 import { normalizeCommitRef, runScmCommand } from '../runtime.js';
@@ -16,11 +19,7 @@ import { inspectGitCheckoutIdentity, isGitLinkedWorktreeIdentity } from '../chec
 import { buildScmNonInteractiveEnv } from '../providers/shared/nonInteractiveEnv.js';
 import { parseGitWorktreeListPorcelain } from '../worktreeListParser.js';
 import { repairGitWorktreeAdminReference } from './repairGitWorktreeAdminReference.js';
-import {
-    buildWorktreeTargetPath,
-    hasForbiddenGitRefName,
-    normalizeWorktreeDisplayName,
-} from './worktreeName.js';
+import { buildWorktreeTargetPath } from './worktreeName.js';
 import {
     GIT_WORKTREE_NAME_ATTEMPT_LIMIT,
     gitWorktreeNameForAttempt,
@@ -129,12 +128,29 @@ export async function readGitRevision(input: Readonly<{
     }
 }
 
+/** The port each transport implies when a remote names none. */
+const IMPLIED_TRANSPORT_PORTS: Readonly<Record<'https:' | 'ssh:', number>> = Object.freeze({
+    'https:': 443,
+    'ssh:': 22,
+});
+
+/**
+ * The endpoint a remote actually reaches, with the transport's own default folded away so
+ * `ssh://git@forge.example:22/team/repo` and `git@forge.example:team/repo` stay one target.
+ * Any other port is a different deployment and must not compare equal.
+ */
+function readRemoteEndpointPort(identity: ScmTransportIdentityV1): number | null {
+    if (identity.syntax === 'scp') return null;
+    return identity.port === IMPLIED_TRANSPORT_PORTS[identity.protocol] ? null : identity.port;
+}
+
 function sameGitRemoteTarget(left: string, right: string): boolean {
     const leftParsed = parseScmRemoteUrl(left);
     const rightParsed = parseScmRemoteUrl(right);
     return leftParsed !== null
         && rightParsed !== null
         && leftParsed.host === rightParsed.host
+        && readRemoteEndpointPort(leftParsed) === readRemoteEndpointPort(rightParsed)
         && leftParsed.path === rightParsed.path;
 }
 
@@ -324,6 +340,7 @@ async function addGitWorktree(input: Readonly<{
     branchName: string;
     baseRef: string | null;
     branchMode: 'new' | 'existing';
+    force?: boolean;
 }>): Promise<void> {
     await mkdir(dirname(input.targetPath), { recursive: true });
 
@@ -333,6 +350,7 @@ async function addGitWorktree(input: Readonly<{
         branchName: input.branchName,
         branchMode: input.branchMode,
         baseRef: input.baseRef,
+        force: input.force,
     });
     if (result.success) {
         return;
@@ -431,10 +449,14 @@ async function tryReuseExistingGitWorktree(input: Readonly<{
     return await resolveGitMaterializedWorktreeTargetPath({ targetPath: input.targetPath });
 }
 
-async function tryReuseGitWorktreeByBranch(input: Readonly<{
+async function inspectGitWorktreeBranchRegistration(input: Readonly<{
     repoRoot: string;
+    targetPath: string;
     branchName: string;
-}>): Promise<string | null> {
+}>): Promise<Readonly<{
+    existingPath: string | null;
+    missingAtTarget: boolean;
+}>> {
     const listed = await runScmCommand({
         bin: 'git',
         cwd: input.repoRoot,
@@ -442,13 +464,31 @@ async function tryReuseGitWorktreeByBranch(input: Readonly<{
         timeoutMs: 15_000,
         env: buildScmNonInteractiveEnv(),
     });
-    if (!listed.success) return null;
+    if (!listed.success) return { existingPath: null, missingAtTarget: false };
 
-    return parseGitWorktreeListPorcelain({
+    const matched = parseGitWorktreeListPorcelain({
         worktreesOutput: listed.stdout,
         currentWorktreePath: input.repoRoot,
         mainWorktreePath: input.repoRoot,
     }).find((worktree) => worktree.branch === input.branchName)?.path ?? null;
+    if (!matched) return { existingPath: null, missingAtTarget: false };
+    if (await pathExists(matched)) return { existingPath: matched, missingAtTarget: false };
+
+    const canonicalizeMissingTarget = async (path: string): Promise<string> => {
+        try {
+            return await realpath(path);
+        } catch {
+            try {
+                return join(await realpath(dirname(path)), basename(path));
+            } catch {
+                return resolve(path);
+            }
+        }
+    };
+    return {
+        existingPath: null,
+        missingAtTarget: await canonicalizeMissingTarget(matched) === await canonicalizeMissingTarget(input.targetPath),
+    };
 }
 
 export async function materializeGitWorkspaceCheckoutAtPath(input: Readonly<{
@@ -477,18 +517,19 @@ export async function materializeGitWorkspaceCheckoutAtPath(input: Readonly<{
         };
     }
 
-    if (input.branchMode === 'existing') {
-        const existingBranchPath = await tryReuseGitWorktreeByBranch({
+    const branchRegistration = input.branchMode === 'existing'
+        ? await inspectGitWorktreeBranchRegistration({
             repoRoot: input.repoRoot,
+            targetPath: input.targetPath,
             branchName,
-        });
-        if (existingBranchPath) {
+        })
+        : null;
+    if (branchRegistration?.existingPath) {
             return {
-                targetPath: existingBranchPath,
+                targetPath: branchRegistration.existingPath,
                 branchName,
                 reused: true,
             };
-        }
     }
 
     const normalizedBaseRef = input.branchMode === 'existing'
@@ -514,6 +555,7 @@ export async function materializeGitWorkspaceCheckoutAtPath(input: Readonly<{
         branchName,
         baseRef: normalizedBaseRef,
         branchMode: input.branchMode,
+        force: branchRegistration?.missingAtTarget === true,
     });
 
     return {
@@ -671,6 +713,21 @@ export async function createGitWorkspaceCheckoutAtDefaultPath(
                 && attempt < GIT_WORKTREE_NAME_ATTEMPT_LIMIT
                 && isGitWorktreeAlreadyExistsFailure(error)
             ) {
+                // An identical caller may have won creation after our initial
+                // reuse check. Rejoin that exact candidate before treating the
+                // collision as an unrelated name and allocating a suffix.
+                const concurrentlyCreated = await tryReuseExistingGitWorktree({
+                    repoRoot: input.repoRoot,
+                    targetPath: candidateTargetPath,
+                    branchName: candidateBranchName,
+                });
+                if (concurrentlyCreated) {
+                    return {
+                        targetPath: concurrentlyCreated,
+                        branchName: candidateBranchName,
+                        reused: true,
+                    };
+                }
                 continue;
             }
             throw error;

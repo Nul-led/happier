@@ -286,6 +286,11 @@ function useAzurePagedWalk<TRow>(
       if (requestSignal.aborted) return;
       if (inFlight.current === superseded) inFlight.current = null;
       if (outcome.kind === 'failed') {
+        // Only a position this walk actually consumed may be refused a second
+        // time — which is also what keeps the repeat guard below honest. A page
+        // that failed was never served, so a later page pointing back at it is
+        // not non-progress, and the reader's Show more must reach it.
+        if (cursor !== null) requested.current.delete(cursor);
         dispatch({ kind: 'pageFailed', token, failure: outcome.failure });
         return;
       }

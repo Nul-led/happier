@@ -478,6 +478,7 @@ describe('Conversation Automation result delivery admission', () => {
         id: 'automation/result-deliver-v1',
         qualifiedId: 'happier.channels/actions/automation/result-deliver-v1',
       },
+      immutableGenerationId: 'channels-automation-result-fixture-generation',
       materialization: {
         pluginId: 'happier.channels',
         machineId: 'machine-1',

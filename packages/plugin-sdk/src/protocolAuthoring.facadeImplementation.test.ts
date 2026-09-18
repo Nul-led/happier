@@ -31,6 +31,12 @@ const retiredProtocolSchemaSource = fileURLToPath(
 );
 
 describe('protocol-authoring composition algebra', () => {
+    it('keeps ordinary regex authoring non-normalizing through the public SDK facade', () => {
+        const string = defineProtocolString({ pattern: '^\\s*\\S\\s*$' });
+        expect(string.parse('  a  ')).toBe('  a  ');
+        expect(compilePluginJsonSchema(string.jsonSchema)('  a  ')).toBe(true);
+    });
+
     it('owns parser-first data construction and one frozen structural projection', () => {
         expect(canonicalDefineProtocolLiteral).toBeTypeOf('function');
         expect(defineProtocolLiteral).toBe(canonicalDefineProtocolLiteral);

@@ -39,13 +39,14 @@ type AuthEntry struct {
 }
 
 type Config struct {
-	Host             string             `json:"host"`
-	Port             int                `json:"port"`
-	DownstreamBearer string             `json:"downstreamBearer"`
-	RuntimeDir       string             `json:"runtimeDir"`
-	AuthEntries      []AuthEntry        `json:"authEntries"`
-	Protocols        []ProviderProtocol `json:"protocols"`
-	ModelListEnabled bool               `json:"modelListEnabled"`
+	Host               string                                      `json:"host"`
+	Port               int                                         `json:"port"`
+	DownstreamBearer   string                                      `json:"downstreamBearer"`
+	RuntimeDir         string                                      `json:"runtimeDir"`
+	AuthEntries        []AuthEntry                                 `json:"authEntries"`
+	Protocols          []ProviderProtocol                          `json:"protocols"`
+	ModelListEnabled   bool                                        `json:"modelListEnabled"`
+	ProviderConnection *ProviderConnectionPassThroughConfiguration `json:"providerConnection,omitempty"`
 }
 
 var (
@@ -71,8 +72,8 @@ func (c Config) Validate() error {
 	if !filepath.IsAbs(c.RuntimeDir) {
 		return fmt.Errorf("runtime directory must be absolute")
 	}
-	if len(c.AuthEntries) == 0 {
-		return fmt.Errorf("at least one authorized auth entry is required")
+	if (c.ProviderConnection == nil) == (len(c.AuthEntries) == 0) {
+		return fmt.Errorf("exactly one managed upstream source is required")
 	}
 
 	ids := make(map[string]struct{}, len(c.AuthEntries))
@@ -90,6 +91,12 @@ func (c Config) Validate() error {
 			return fmt.Errorf("provider %q has more than one eligible managed auth entry", entry.Provider)
 		}
 		providers[entry.Provider] = struct{}{}
+	}
+	if c.ProviderConnection != nil {
+		if c.ModelListEnabled || c.ProviderConnection.validate() != nil ||
+			len(c.Protocols) != 1 || c.Protocols[0] != c.ProviderConnection.Protocol {
+			return fmt.Errorf("provider connection pass-through is invalid")
+		}
 	}
 
 	if len(c.Protocols) == 0 {

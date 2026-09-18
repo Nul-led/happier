@@ -22,7 +22,6 @@ export * from './agent/diff/files.js';
 export * from './agent/identity/affinity.js';
 export * from './agent/identity/runtimeDescriptor.js';
 export * from './agent/identity/session.js';
-export * from './agent/install/runtime.js';
 export * from './agent/install/spawnHooks.js';
 export * from './agent/permissions/policy.js';
 export * from './agent/preferences/session.js';

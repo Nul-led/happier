@@ -25,6 +25,7 @@ import {
   createConversationOutwardDeliveryCollectionStore,
   deliverConversationSessionProjectionOutwardDelivery,
   deliverConversationOutwardDelivery,
+  isConversationPermissionMediationSourceCurrent,
   readConversationOutwardDeliveryConnectionAttention,
   readConversationOutwardDeliveryResolutionPage,
   redriveConversationOutwardDeliveryThroughProviderAction,
@@ -403,6 +404,47 @@ function currentAuthority() {
 }
 
 describe('Channels control-response outward custody', () => {
+  it('invalidates an accepted mediated source when its binding authority rotates', async () => {
+    const state = new MemoryAccountCollection();
+    await state.put(providerConnectionRow(), { expectedRevision: 'absent' });
+    const binding = await state.put({
+      id: 'binding-1',
+      'record-kind': 'binding',
+      'connection-id': 'connection-1',
+      'binding-id': 'binding-1',
+      payload: {
+        authorityEpoch: 7,
+        enabled: true,
+        deletionState: 'none',
+        endpoint,
+        target: sessionTarget,
+        linkPreviewPolicy: 'suppress',
+      },
+    }, { expectedRevision: 'absent' });
+    const accepted = {
+      sourceRef: 'channels:binding:binding-1',
+      sourceRevisionOrEpoch: '4:7',
+      remoteApprovalMaxScope: 'off',
+    } as const;
+    const signal = new AbortController().signal;
+
+    await expect(isConversationPermissionMediationSourceCurrent({
+      stateCollection: state as never,
+      accepted,
+      signal,
+    })).resolves.toBe(true);
+
+    await state.put({
+      ...binding.value,
+      payload: { ...binding.value.payload as Record<string, JsonValue>, authorityEpoch: 8 },
+    }, { expectedRevision: binding.revision });
+    await expect(isConversationPermissionMediationSourceCurrent({
+      stateCollection: state as never,
+      accepted,
+      signal,
+    })).resolves.toBe(false);
+  });
+
   it('projects only the selected binding\'s persisted delivery lifecycle into safe transcript Activity rows', async () => {
     const state = new MemoryAccountCollection();
     const deliveries = new BindingIndexedAccountCollection();

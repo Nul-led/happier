@@ -38,12 +38,8 @@ describe('public authoring Project Companion activity surface', () => {
     });
 
     const normal = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'examples.public-sdk-review-assistant',
-        pluginVersion: '0.1.0',
-        viewId: 'review-panel',
-        generation: 'public-authoring-normal-review-panel-test',
-      },
+      identity: { instanceId: 'fixture-instance-45', mountNonce: 'fixture-mount-45' },
+      authorPlugin: { id: 'examples.public-sdk-review-assistant', version: '0.1.0' },
       surface: renderSurface,
       surfaceContext,
       launchInput,
@@ -63,13 +59,8 @@ describe('public authoring Project Companion activity surface', () => {
     }
 
     const openable = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'examples.public-sdk-review-assistant',
-        pluginVersion: '0.1.0',
-        viewId: 'review-openable-content',
-        generation: 'public-authoring-openable-review-panel-test',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-46', mountNonce: 'fixture-mount-46' },
+      authorPlugin: { id: 'examples.public-sdk-review-assistant', version: '0.1.0' },
       surface: renderSurface,
       surfaceContext: createSurfaceContextFixture({
         mount: {
@@ -106,13 +97,8 @@ describe('public authoring Project Companion activity surface', () => {
     }
 
     const missingReference = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'examples.public-sdk-review-assistant',
-        pluginVersion: '0.1.0',
-        viewId: 'review-openable-content',
-        generation: 'public-authoring-openable-missing-reference-test',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-47', mountNonce: 'fixture-mount-47' },
+      authorPlugin: { id: 'examples.public-sdk-review-assistant', version: '0.1.0' },
       surface: renderSurface,
       surfaceContext: createSurfaceContextFixture({
         mount: {
@@ -158,13 +144,8 @@ describe('public authoring Project Companion activity surface', () => {
     });
     const openSurface = vi.fn(async () => undefined);
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'examples.public-sdk-review-assistant',
-        pluginVersion: '0.1.0',
-        viewId: 'project-companion-activity-log',
-        generation: 'public-authoring-project-companion-test',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'fixture-instance-48', mountNonce: 'fixture-mount-48' },
+      authorPlugin: { id: 'examples.public-sdk-review-assistant', version: '0.1.0' },
       surface: renderSurface,
       surfaceContext: createSurfaceContextFixture({
         mount: {

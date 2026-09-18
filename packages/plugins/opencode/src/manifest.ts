@@ -25,7 +25,7 @@ import {
 import { resolveOpenCodeSessionRuntimePreferences } from './agent/preferences/session.js';
 import { createOpenCodeAgentRuntime } from './agent/runtime/nativeRuntime.js';
 import {
-  buildOpenCodeAttachHealthUrl,
+  resolveOpenCodeAttachReachability,
   createOpenCodeAttachArgs,
   resolveOpenCodeAttachTarget,
 } from './agent/surfaces/sessions/attach/descriptor.js';
@@ -169,6 +169,7 @@ export const OPENCODE_PLUGIN = definePlugin({
           surfaces: ['externalSessions'],
           sessions: {
             open: ['create', 'resume'],
+            executionRunContext: { versions: [1] },
             delivery: ['newTurn', 'steer', 'followUp'],
             cancel: true,
             configuration: true,
@@ -288,7 +289,7 @@ export const OPENCODE_PLUGIN = definePlugin({
       providerCliAttach: {
         resolveTarget: resolveOpenCodeAttachTarget,
         createArgs: createOpenCodeAttachArgs,
-        buildHealthUrl: buildOpenCodeAttachHealthUrl,
+        resolveReachability: resolveOpenCodeAttachReachability,
       },
       sessionRunnerFactory: {
         module: './agent/runtime/nativeRuntime',
@@ -329,7 +330,18 @@ export const OPENCODE_PLUGIN = definePlugin({
   systemTools: {
     [OPEN_CODE_SYSTEM_TOOL_ID]: {
       title: 'OpenCode CLI',
-      executableNames: ['opencode'],
+      // `opencode2` is the official name of the OpenCode V2 beta executable
+      // (OpenCode `1.18.25`, `packages/opencode/src/config/v2-compat.ts:111`
+      // tells a user with V2-only configuration to "run opencode2"). Listing it
+      // as an alternate lookup name is what makes a beta-only install usable;
+      // the transport dialect is decided separately by probing the reachable
+      // server, not by the executable name.
+      //
+      // Lookup order is first-found, so a machine with both installed keeps
+      // resolving the stable `opencode`. That ceiling is deliberate: the beta
+      // must not silently displace the proven executable, and choosing between
+      // two present installations is a product decision, not a resolver default.
+      executableNames: ['opencode', 'opencode2'],
     },
   },
   settings: {

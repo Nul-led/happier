@@ -12,17 +12,13 @@ describe('Copilot plugin manifest', () => {
     expect(PLUGIN_MANIFEST).not.toHaveProperty('activationEvents');
     expect(PLUGIN_MANIFEST).toMatchObject({ entrypoints: { daemon: './.happier-plugin/daemon.js' } });
     expect(PLUGIN_MANIFEST).not.toHaveProperty('activation');
-    expect(PLUGIN_MANIFEST.contributes.agents[0]?.cli.auth.nonInteractiveStatusProbe).toBe(true);
     expect(PLUGIN_MANIFEST).toMatchObject({
       hostAccess: {
         required: [{
           id: 'copilot-process',
           capability: 'process',
           scope: {
-            executables: [
-              { kind: 'systemTool', id: 'copilot-cli' },
-              { kind: 'systemTool', id: 'github-cli' },
-            ],
+            executables: [{ kind: 'systemTool', id: 'copilot-cli' }],
             envKeys: ['COPILOT_GITHUB_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN'],
           },
         }],
@@ -32,47 +28,29 @@ describe('Copilot plugin manifest', () => {
         agents: [{
           id: 'copilot', title: 'GitHub Copilot', primary: 'sessions',
           runtime: { kind: 'custom' },
-          capabilities: { sessions: { open: ['create', 'resume'], delivery: ['newTurn', 'steer', 'followUp'], cancel: true } },
+          cli: {
+            auth: {
+              support: 'login_terminal',
+              environmentVariables: ['COPILOT_GITHUB_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN'],
+              credentialPaths: ['~/.copilot/config.json'],
+              missingCredentialState: 'unknown',
+              loginLaunches: [{ kind: 'primary', args: ['login'] }],
+            },
+          },
+          capabilities: { sessions: { open: ['create', 'resume'], delivery: ['newTurn', 'followUp'], cancel: true } },
         }],
-        systemTools: [
-          { id: 'copilot-cli', executableNames: ['copilot'] },
-          { id: 'github-cli', executableNames: ['gh'] },
-        ],
+        systemTools: [{ id: 'copilot-cli', executableNames: ['copilot'] }],
         settings: [COPILOT_AGENT_SETTINGS_CONTRIBUTION],
       },
     });
   });
 
-  it('registers the Copilot GitHub CLI auth probe in the canonical Agent transaction', async () => {
+  it('does not register an unrelated GitHub CLI auth probe', async () => {
     const register = vi.fn();
     await COPILOT_PLUGIN.activate({ agents: { register } } as never);
 
-    expect(register).toHaveBeenCalledWith(
-      'copilot',
-      expect.any(Function),
-      expect.objectContaining({ cliAuth: expect.objectContaining({ detectAuthStatus: expect.any(Function) }) }),
-    );
-
-    const contribution = register.mock.calls[0]?.[2]?.cliAuth as {
-      detectAuthStatus(input: {
-        runDeclaredSystemToolCommand: ReturnType<typeof vi.fn>;
-      }): Promise<unknown>;
-    };
-    const runDeclaredSystemToolCommand = vi.fn().mockResolvedValue({
-      ok: true,
-      stdout: 'github-token',
-      stderr: '',
-      exitCode: 0,
-    });
-
-    await expect(contribution.detectAuthStatus({
-      runDeclaredSystemToolCommand,
-    })).resolves.toEqual({ state: 'logged_in', method: 'oauth_cli', source: 'command' });
-
-    expect(runDeclaredSystemToolCommand).toHaveBeenCalledWith({
-      toolId: 'github-cli',
-      args: ['auth', 'status'],
-      timeoutMs: 1_500,
-    });
+    expect(register).toHaveBeenCalledWith('copilot', expect.any(Function), expect.not.objectContaining({
+      cliAuth: expect.anything(),
+    }));
   });
 });

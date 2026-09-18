@@ -64,8 +64,9 @@ export const KIRO_PLUGIN = definePlugin({
         capabilities: projectAgentCapabilitiesV2FromDefinition(AGENT_DEFINITION.core, {
           sessions: {
             open: ['create', 'resume'],
-            delivery: ['newTurn', 'steer', 'followUp'],
+            delivery: ['newTurn', 'followUp'],
             cancel: true,
+            executionRunContext: { versions: [1] },
           },
         }),
       },

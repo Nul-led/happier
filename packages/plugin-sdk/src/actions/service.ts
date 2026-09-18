@@ -1,3 +1,4 @@
+import { ActionApprovalRequestCreatedResultSchema } from '@happier-dev/protocol/actions/actionExecutionResult';
 import { getActionSpec as canonicalGetActionSpec } from '@happier-dev/protocol/actions/actionSpecs';
 
 import type { JsonValue, PluginContributionRef } from '../identity.js';
@@ -13,6 +14,7 @@ import {
 import { PluginMachineExecutionOriginV1Schema } from './executionOrigin.js';
 import type {
   ActionExecuteResult,
+  ActionApprovalRequestCreatedResult,
   ActionInputFieldHint,
   ActionInputHints,
   ActionInputOption,
@@ -65,6 +67,7 @@ export type {
 export { PluginMachineExecutionOriginV1Schema };
 /** Exact Protocol execution-origin fact used for contributed Action currentness. */
 export type {
+  ActionApprovalRequestCreatedResult,
   ActionExecuteResult,
   ActionInputFieldHint,
   ActionInputHints,
@@ -140,6 +143,23 @@ export type AdmittedTargetedOperationExecutionWithOriginOptions =
   AdmittedTargetedOperationExecutionOptions & ContributedActionExecutionWithOriginOptions;
 
 /**
+ * Narrows a host Action result to the canonical policy-deferral result.
+ *
+ * `execute` returns the deferral beside every domain arm, and a plugin has no
+ * present-user host to satisfy it, so each caller must separate the two before
+ * reading a domain field. A type predicate is required rather than an inline
+ * `'kind' in value && value.kind === '…'` test: that compound condition does
+ * not narrow the negative branch when the domain arms also carry `kind`, or
+ * when they carry none at all. Classification stays with the canonical
+ * Protocol schema so no second deferral shape is defined here.
+ */
+export function isPluginActionApprovalRequestCreated(
+  value: unknown,
+): value is ActionApprovalRequestCreatedResult {
+  return ActionApprovalRequestCreatedResultSchema.safeParse(value).success;
+}
+
+/**
  * Canonical host and contributed-action invocation for one bound plugin caller.
  * @realm daemon
  */
@@ -148,7 +168,7 @@ export interface ActionsService {
     actionId: K,
     input: PluginActionInputById[K],
     options?: PluginCancellationOptions,
-  ): Promise<PluginActionResultById[K]>;
+  ): Promise<PluginActionResultById[K] | ActionApprovalRequestCreatedResult>;
 
   execute<TRef extends PluginContributionRef>(
     action: TRef,

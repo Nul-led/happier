@@ -165,6 +165,11 @@ describe('External Session takeover public contract', () => {
             { ...request, linkedSessionId: 's'.repeat(2_001) },
             { ...request, remoteSessionId: '' },
             { ...request, remoteSessionId: 'r'.repeat(2_001) },
+            // An all-whitespace remote id is absent identity, not a takeover
+            // target: forwarding it hands the Agent a session it cannot resolve.
+            { ...request, remoteSessionId: ' ' },
+            { ...request, remoteSessionId: '\n \t' },
+            { ...request, remoteSessionId: ' '.repeat(2_000) },
             { ...request, targetDirectory: '' },
             { ...request, targetDirectory: 'd'.repeat(10_001) },
             { ...request, linkedDirectory: '' },
@@ -192,6 +197,19 @@ describe('External Session takeover public contract', () => {
             targetDirectory: 'd'.repeat(10_000),
             linkedDirectory: 'd'.repeat(10_000),
         });
+
+        // The Agent's own bytes reach its resolveLaunch unchanged, including
+        // surrounding whitespace, newlines and base64 characters.
+        const opaqueRemoteSessionId = '  provider\nses/AB+cd==  ';
+        expect(validateAgentExternalSessionTakeoverResolveLaunchRequest({
+            ...request,
+            remoteSessionId: opaqueRemoteSessionId,
+        })).toMatchObject({ remoteSessionId: opaqueRemoteSessionId });
+        const nulBearingRemoteSessionId = `native${String.fromCharCode(0)}1`;
+        expect(validateAgentExternalSessionTakeoverResolveLaunchRequest({
+            ...request,
+            remoteSessionId: nulBearingRemoteSessionId,
+        })).toMatchObject({ remoteSessionId: nulBearingRemoteSessionId });
     });
 
     it('accepts only the exact bounded launch-plan fields', () => {

@@ -30,7 +30,14 @@ export type AgentDefinition = Readonly<{
   core: AgentCore;
   sessionModeDescriptor: AgentSessionModeDescriptor;
   sessionModesKind: AgentSessionModesKind;
-  modelConfig: AgentModelConfig;
+  /**
+   * Optional static model facts for catalog and preflight fallback use.
+   *
+   * ACP Agents may intentionally omit this when their model catalog is owned by
+   * live session negotiation. Omission must not be interpreted as another
+   * Agent's defaults or as proof that the runtime cannot select a model.
+   */
+  modelConfig?: AgentModelConfig | null;
   cli: AgentDefinitionCliMetadata;
   /**
    * Read-forward only for flat Session identity metadata written by released

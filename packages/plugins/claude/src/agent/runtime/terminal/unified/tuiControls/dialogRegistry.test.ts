@@ -17,6 +17,18 @@ const EFFORT_DIALOG = [
   '     2. No, go back',
 ].join('\n');
 
+const EFFORT_DEFAULT_NUDGE_DIALOG = [
+  '────────────────────────────────────────',
+  ' Use Fable 5.1 at high effort by default?',
+  '',
+  '   high is the default effort for Fable 5.1 and is recommended for most',
+  '   coding tasks; xhigh spends more tokens per task.',
+  '',
+  '   ❯ Keep xhigh',
+  '     Switch Fable 5.1 to high effort',
+  '',
+].join('\n');
+
 const SAFEGUARD_DIALOG = [
   'Session paused',
   "Fable 5's safeguards flagged this message.",
@@ -107,6 +119,19 @@ describe('Claude unified recognized dialog registry', () => {
       ],
     });
     expect(resolveClaudeUnifiedDialogBlockedReason(parseClaudeScreenState(EFFORT_DIALOG))).toBe('effort_change_dialog');
+  });
+
+  it('answers the footer-less startup effort nudge (2.1.274) through the same effort entry by selection', () => {
+    const visible = resolveClaudeUnifiedVisibleDialog(parseClaudeScreenState(EFFORT_DEFAULT_NUDGE_DIALOG));
+
+    expect(visible).toMatchObject({
+      kind: 'recognized',
+      dialogId: 'effort_change',
+      options: [
+        { choice: 'confirm', label: 'Switch to high', answer: { kind: 'selection', targetLabel: 'Switch Fable 5.1 to high effort' } },
+        { choice: 'cancel', label: 'Keep current effort', answer: { kind: 'selection', targetLabel: 'Keep xhigh' } },
+      ],
+    });
   });
 
   it('uses the same registry entry for the safeguard chooser', () => {

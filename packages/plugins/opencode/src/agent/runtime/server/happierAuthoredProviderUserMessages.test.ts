@@ -7,6 +7,13 @@ function createContextFixture(): OpenCodeRuntimeContext {
   const storage = new Map<string, unknown>();
   const abortController = new AbortController();
   return {
+    exec: {
+      systemTools: {
+        resolve: async () => {
+          throw new Error('executable resolution is outside this storage test');
+        },
+      },
+    },
     logger: {
       debug() {},
       info() {},
@@ -151,5 +158,53 @@ describe('createOpenCodeHappierAuthoredProviderUserMessageIds', () => {
       text: 'Happier-authored prompt',
       createdAtMs: 2_001,
     })).toBe(false);
+  });
+
+  /**
+   * Bytes OpenCode minted. The anchor store hands these ids straight back to
+   * transcript projection, so presence is the only decision allowed here.
+   */
+  const PROVIDER_MINTED_SESSION_ID = '  provider\nses/AB+cd==  ';
+  const PROVIDER_MINTED_MESSAGE_ID = '  provider\nmsg/AB+cd==  ';
+
+  it('keeps an authored provider message id byte-exact through mark, has and hydrate', async () => {
+    const ctx = createContextFixture();
+    const tracker = createOpenCodeHappierAuthoredProviderUserMessageIds({
+      ctx,
+      readProviderSessionId: () => PROVIDER_MINTED_SESSION_ID,
+    });
+
+    tracker.recordPendingPromptAnchor({
+      text: 'Happier-authored prompt',
+      submittedAtMs: 1_000,
+    });
+    expect(await tracker.markIfHappierAuthoredProviderUserMessage({
+      messageId: PROVIDER_MINTED_MESSAGE_ID,
+      text: 'Happier-authored prompt',
+      createdAtMs: 1_500,
+    })).toBe(true);
+
+    expect(tracker.has(PROVIDER_MINTED_MESSAGE_ID)).toBe(true);
+
+    tracker.clearMemory();
+    await tracker.hydrate();
+    expect(tracker.has(PROVIDER_MINTED_MESSAGE_ID)).toBe(true);
+  });
+
+  it('does not share authored-message state between sessions differing only in whitespace', async () => {
+    const ctx = createContextFixture();
+    let providerSessionId = PROVIDER_MINTED_SESSION_ID;
+    const tracker = createOpenCodeHappierAuthoredProviderUserMessageIds({
+      ctx,
+      readProviderSessionId: () => providerSessionId,
+    });
+
+    await tracker.add(PROVIDER_MINTED_MESSAGE_ID);
+    expect(tracker.has(PROVIDER_MINTED_MESSAGE_ID)).toBe(true);
+
+    providerSessionId = PROVIDER_MINTED_SESSION_ID.trim();
+    await tracker.hydrate();
+
+    expect(tracker.has(PROVIDER_MINTED_MESSAGE_ID)).toBe(false);
   });
 });

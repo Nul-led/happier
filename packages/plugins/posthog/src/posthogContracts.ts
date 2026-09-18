@@ -73,6 +73,8 @@ export const POSTHOG_ACTION_IDS = {
     listInstances: 'posthog/list-instances',
     scan: 'posthog/scan',
     get: 'posthog/get',
+    /** Native Overview facts and enrichment status from the canonical CRUD-first join. */
+    nativeOverview: 'posthog/native-overview',
     /**
      * The source-native sampled-occurrence read. It carries no Triage role: a sampled
      * exception event is PostHog-native content the detail body reads, not a Triage

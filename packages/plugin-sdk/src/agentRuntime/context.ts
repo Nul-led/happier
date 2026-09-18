@@ -106,6 +106,12 @@ export interface AgentSessionHooksService {
   ): Promise<void>;
 }
 
+/** Hook assets and local hook-server lifecycle that do not publish Session transcript rows. */
+export type AgentExecutionRunHooksServiceV1 = Omit<
+  AgentSessionHooksService,
+  'publishProviderTranscript'
+>;
+
 export type AgentTranscriptFileFollowLine = Readonly<{
   line: string;
   sourcePath: string;
@@ -550,6 +556,20 @@ export type AgentSessionHostServices = Readonly<{
   subagents: AgentSessionSubagentObservationPublisher;
   nativeHome?: AgentSessionNativeHomeService;
   happierTools?: AgentSessionHappierToolsService;
+}>;
+
+/**
+ * Host services whose authority is meaningful without a Happier Session.
+ * Session transcript, work-state, Account usage, terminal, and subagent
+ * projections deliberately remain absent.
+ */
+export type AgentExecutionRunHostServicesV1 = Readonly<{
+  features: AgentFeatureDecisionService;
+  hooks: AgentExecutionRunHooksServiceV1;
+  fileFollow: AgentTranscriptFileFollowService;
+  mcp: AgentSessionMcpService;
+  toolExecution: AgentToolExecutionService;
+  nativeHome?: AgentSessionNativeHomeService;
 }>;
 
 export type AgentSessionRuntimeContext = AgentRuntimeContext & Readonly<{

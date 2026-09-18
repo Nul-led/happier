@@ -223,6 +223,45 @@ describe('Sentry Triage source operations', () => {
       .toBe(`https://us.sentry.io${SENTRY_SCOPE_SEPARATOR}${ORGANIZATION_ID}`);
   });
 
+  /**
+   * Discovery reports `complete` only when the provider itself stated that its
+   * organization listing ended. A `Link` header whose pagination metadata this
+   * source cannot read leaves organizations unreachable, and reporting that as
+   * complete discovery is how a Settings page offers a partial account list as
+   * the whole one.
+   */
+  it('never reports unreadable organization pagination as complete discovery', async () => {
+    const recorded = onOrigin(organizationsCloudPage, 'https://de.sentry.io');
+    for (const link of [
+      'not a link',
+      '<https://de.sentry.io/api/0/organizations/?&cursor=a>; rel="previous"; results="false"',
+      '<https://de.sentry.io/api/0/organizations/?&cursor=a>; rel="next"',
+      '<https://de.sentry.io/api/0/organizations/?&cursor=a>; rel="next"; results="maybe"',
+    ]) {
+      const harness = host({
+        origins: ['https://de.sentry.io'],
+        responses: [{ ...recorded, headers: { ...recorded.headers, link } }],
+      });
+
+      const result = await listSentryInstances({ v: 1 }, harness.context);
+
+      expect(() => TriageListInstancesResultV1Schema.parse(result)).not.toThrow();
+      expect(result.kind, link).toBe('incomplete');
+      if (result.kind !== 'incomplete') continue;
+      // Every organization the page did carry is still an offerable candidate.
+      expect(result.candidates, link).toHaveLength(1);
+      expect(result.failures, link).toContainEqual({
+        binding: { purpose: SENTRY_CONNECTED_ACCOUNT_PURPOSE, account: ACCOUNT },
+        failure: {
+          class: 'unsupportedContract',
+          code: SENTRY_FAILURE_CODES.paginationCursorMalformed,
+        },
+      });
+      // One page was read: an unreadable next relation is not a position to request.
+      expect(harness.request, link).toHaveBeenCalledTimes(1);
+    }
+  });
+
   it('keeps valid organization siblings but never reports a skipped malformed sibling as complete discovery', async () => {
     const recorded = onOrigin(organizationsCloudPage, 'https://de.sentry.io');
     const harness = host({

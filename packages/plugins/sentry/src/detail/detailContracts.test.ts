@@ -47,6 +47,7 @@ describe('Sentry detail continuation', () => {
       v: 1,
       cursor: '0:100:0',
       limit: 100,
+      sample: false,
       probe,
     });
     expect(token).not.toBeNull();
@@ -54,8 +55,21 @@ describe('Sentry detail continuation', () => {
       v: 1,
       cursor: '0:100:0',
       limit: 100,
+      sample: false,
       probe,
     });
+
+    // A walk the reader asked to spread carries that ordering with its position:
+    // the same cursor means a different place in a differently ordered
+    // collection (`SENTRY.md` §7.4).
+    const spread = encodeSentryDetailContinuation({
+      v: 1,
+      cursor: '0:100:0',
+      limit: 100,
+      sample: true,
+      probe,
+    });
+    expect(decodeSentryDetailContinuation(spread ?? '')?.sample).toBe(true);
   });
 
   it('stays one constant width however many pages the walk has read', () => {
@@ -67,6 +81,7 @@ describe('Sentry detail continuation', () => {
         v: 1,
         cursor: '1754000000000:0:0',
         limit: 100,
+        sample: false,
         probe: { cursor: '1755000000000:0:0', stepsSince: 0, interval },
       });
       expect(token).not.toBeNull();
@@ -82,24 +97,29 @@ describe('Sentry detail continuation', () => {
     const probe = '{"cursor":"c","stepsSince":0,"interval":2}';
     // The unmodified record is admitted, so each refusal below is caused by the
     // one thing it changed rather than by a base this decoder never accepts.
-    expect(decodeSentryDetailContinuation(`{"v":1,"cursor":"c","limit":100,"probe":${probe}}`))
-      .not.toBeNull();
+    expect(decodeSentryDetailContinuation(
+      `{"v":1,"cursor":"c","limit":100,"sample":false,"probe":${probe}}`,
+    )).not.toBeNull();
     for (const token of [
       '{}',
-      `{"v":1,"cursor":"c","limit":100,"probe":${probe},"unexpected":true}`,
-      `{"v":2,"cursor":"c","limit":100,"probe":${probe}}`,
-      `{"v":1,"cursor":"","limit":100,"probe":${probe}}`,
-      `{"v":1,"cursor":"c","limit":0,"probe":${probe}}`,
-      `{"v":1,"cursor":"c","limit":101,"probe":${probe}}`,
+      `{"v":1,"cursor":"c","limit":100,"sample":false,"probe":${probe},"unexpected":true}`,
+      `{"v":2,"cursor":"c","limit":100,"sample":false,"probe":${probe}}`,
+      `{"v":1,"cursor":"","limit":100,"sample":false,"probe":${probe}}`,
+      `{"v":1,"cursor":"c","limit":0,"sample":false,"probe":${probe}}`,
+      `{"v":1,"cursor":"c","limit":101,"sample":false,"probe":${probe}}`,
+      // The ordering a walk started under is part of its position, so a token
+      // that states none is not one this source minted.
+      `{"v":1,"cursor":"c","limit":100,"probe":${probe}}`,
+      `{"v":1,"cursor":"c","limit":100,"sample":"true","probe":${probe}}`,
       // A frontier with no cycle evidence behind it, and evidence whose schedule
       // this side could not have produced, are both positions this source never
       // handed out.
-      '{"v":1,"cursor":"c","limit":100}',
-      '{"v":1,"cursor":"c","limit":100,"probe":{"cursor":"c","stepsSince":2,"interval":2}}',
-      '{"v":1,"cursor":"c","limit":100,"probe":{"cursor":"c","stepsSince":0,"interval":3}}',
-      '{"v":1,"cursor":"c","limit":100,"probe":{"cursor":"c","stepsSince":0,"interval":1}}',
-      '{"v":1,"cursor":"c","limit":100,"probe":{"cursor":"","stepsSince":0,"interval":2}}',
-      '{"v":1,"cursor":"c","limit":100,"probe":"c"}',
+      '{"v":1,"cursor":"c","limit":100,"sample":false}',
+      '{"v":1,"cursor":"c","limit":100,"sample":false,"probe":{"cursor":"c","stepsSince":2,"interval":2}}',
+      '{"v":1,"cursor":"c","limit":100,"sample":false,"probe":{"cursor":"c","stepsSince":0,"interval":3}}',
+      '{"v":1,"cursor":"c","limit":100,"sample":false,"probe":{"cursor":"c","stepsSince":0,"interval":1}}',
+      '{"v":1,"cursor":"c","limit":100,"sample":false,"probe":{"cursor":"","stepsSince":0,"interval":2}}',
+      '{"v":1,"cursor":"c","limit":100,"sample":false,"probe":"c"}',
       'https://us.sentry.io/api/0/organizations/42/issues/1/events/?cursor=c',
       'not json',
     ]) {
@@ -113,6 +133,7 @@ describe('Sentry detail continuation', () => {
       v: 1,
       cursor,
       limit: 100,
+      sample: false,
       probe: { cursor: '0:0:0', stepsSince: 0, interval: 2 },
     });
     expect(token).not.toBeNull();
@@ -127,12 +148,14 @@ describe('Sentry detail continuation', () => {
       v: 1,
       cursor: '0:100:0',
       limit: 100,
+      sample: false,
       probe: { cursor: '0:0:0', stepsSince: 2, interval: 2 },
     })).toBeNull();
     expect(encodeSentryDetailContinuation({
       v: 1,
       cursor: '0:100:0',
       limit: 100,
+      sample: false,
       probe: { cursor: '', stepsSince: 0, interval: 2 },
     })).toBeNull();
   });

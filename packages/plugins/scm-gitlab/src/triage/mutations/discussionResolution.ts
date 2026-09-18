@@ -3,6 +3,7 @@ import type { TriageSourceFailureV1 } from '@happier-dev/triage-protocol/v1';
 
 import { buildGitlabItemUrl } from '../detail/routes.js';
 import { requestGitlabJson } from '../http/gitlabClient.js';
+import { readGitlabDiscussionResolution } from '../mapping/discussionResolution.js';
 import { projectGitlabSourceFailure } from '../sourceFailure.js';
 import {
   GitlabMergeRequestDiscussionResolutionInputV1Schema,
@@ -21,12 +22,19 @@ const DISCUSSION_UNAVAILABLE_FAILURE: TriageSourceFailureV1 = Object.freeze({
   code: 'gitlab-discussion-unavailable',
 });
 
+/**
+ * One discussion item, with the resolution facts GitLab carries on its notes.
+ *
+ * A response without a `notes` array is not the documented discussion resource,
+ * and it is refused rather than read as an unresolvable thread: the difference
+ * between "GitLab says this cannot be resolved" and "this is not a discussion"
+ * is the difference between a correct refusal and a silent one.
+ */
 function readDiscussion(value: unknown): Readonly<{ id: string; resolved: boolean; resolvable: boolean }> | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
   const row = value as Readonly<Record<string, unknown>>;
-  return typeof row.id === 'string' && typeof row.resolved === 'boolean'
-    ? { id: row.id, resolved: row.resolved, resolvable: row.resolvable === true }
-    : null;
+  if (typeof row.id !== 'string' || !Array.isArray(row.notes)) return null;
+  return { id: row.id, ...readGitlabDiscussionResolution(row.notes) };
 }
 
 function discussionUrl(itemUrl: string, discussionId: string): string {

@@ -25,10 +25,16 @@ describe('AGENT_DEFINITION', () => {
                 sessionRollback: { conversation: 'unsupported' },
                 usageLimitRecovery: { checkNow: 'unsupported' },
               },
+              localControl: null,
             },
           },
           appServer: { kind: 'appServer' },
         },
+      },
+      localControl: {
+        supported: true,
+        topology: 'shared',
+        attachStrategy: 'provider_attach',
       },
     });
   });

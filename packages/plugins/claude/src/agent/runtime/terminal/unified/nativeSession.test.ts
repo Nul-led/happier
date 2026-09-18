@@ -63,6 +63,43 @@ describe('openClaudeNativeUnifiedTerminalSession', () => {
     expect(acknowledgeDecisionApplication).toHaveBeenCalledWith(result);
   });
 
+  it('projects native question answers onto the canonical permission result', async () => {
+    const context = createContext();
+    vi.mocked(context.services.interactions.askQuestions).mockResolvedValue({
+      requestId: 'questions-1',
+      kind: 'questions',
+      status: 'answered',
+      answers: {
+        'resume-how': {
+          kind: 'singleChoice',
+          answer: { kind: 'choice', choiceId: 'full' },
+        },
+      },
+    });
+    const requestDecision = createNativePermissionDecisionAdapter(context)
+      .requestDecision as SessionPermissionsService['requestDecision'];
+
+    const result = await requestDecision({
+      provider: 'claude',
+      requestId: 'dialog-1',
+      toolCallId: 'dialog-1',
+      toolName: 'AskUserQuestion',
+      input: {
+        questions: [{
+          question: 'Resume how?',
+          header: 'Resume how',
+          options: [{ label: 'Full', value: 'full' }],
+        }],
+      },
+    });
+
+    expect(result).toMatchObject({
+      decision: 'approved',
+      answers: { 'Resume how?': ['Full'] },
+      updatedInput: { answers: { 'Resume how?': 'Full' } },
+    });
+  });
+
   it('preserves the requested provider identity and canonical transcript path for native resume', async () => {
     const cwd = '/tmp/claude-native-resume';
     const providerSessionId = 'provider-session-resume';

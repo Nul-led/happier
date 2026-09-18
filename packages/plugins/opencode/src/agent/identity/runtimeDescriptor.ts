@@ -1,3 +1,4 @@
+import { readNonBlankOpaqueIdentifier } from '../../protocol/opaqueIdentifier.js';
 import {
   normalizeOpenCodeServerBaseUrl,
   normalizeOpenCodeServerBaseUrlExplicit,
@@ -54,8 +55,13 @@ function readLegacyOpenCodeBackendMode(metadata: Readonly<Record<string, unknown
   return backendMode === 'server' || backendMode === 'acp' ? backendMode : null;
 }
 
+/**
+ * OpenCode minted this id and the transport hands it straight back, so the
+ * legacy-metadata reader decides presence only and never re-canonicalizes the
+ * bytes. `opencodeBackendMode` and `serverBaseUrl` stay Happier-owned.
+ */
 function readLegacyOpenCodeProviderSessionId(metadata: Readonly<Record<string, unknown>>): string | null {
-  return normalizeTrimmedString(metadata.opencodeSessionId);
+  return readNonBlankOpaqueIdentifier(metadata.opencodeSessionId);
 }
 
 function assignRuntimeHandleValue(target: Record<string, unknown>, key: string, value: unknown): void {

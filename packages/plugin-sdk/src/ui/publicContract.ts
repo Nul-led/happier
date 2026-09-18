@@ -174,7 +174,8 @@ export type PluginUiContainerV1 =
     | 'servicesPanel'
     | 'sessionSubagentLaunch'
     | 'sessionSubagentDetails'
-    | 'sessionInfoSection';
+    | 'sessionInfoSection'
+    | 'sessionWidget';
 
 export type PluginUiMountContextV1 =
     | Readonly<{
@@ -185,6 +186,7 @@ export type PluginUiMountContextV1 =
             | 'sessionSubagentLaunch'
             | 'sessionSubagentDetails'
             | 'sessionInfoSection'
+            | 'sessionWidget'
         >;
     }>
     | Readonly<{
@@ -528,11 +530,8 @@ export type ComposerUnavailableReasonV1 = Extract<
 >['reason'];
 
 export type PluginUiHostApiWireIdentityV1 = {
-    pluginId: string;
-    pluginVersion: string;
-    viewId: string;
-    generation: string;
-    sessionId?: string;
+    instanceId: string;
+    mountNonce: string;
 };
 
 export type PluginUiTestkitMountAvailability = {
@@ -543,13 +542,9 @@ export type PluginUiTestkitMountAvailability = {
 
 export type PluginHostedWebBridgeEnvelopeV1 = {
     version: 1;
-    pluginId: string;
-    contributionId: string;
-    surfaceId: string;
-    sessionId?: string;
-    nonce: string;
+    identity: PluginUiHostApiWireIdentityV1;
     sequence: number;
-    kind: 'ready' | 'error' | 'heightChanged' | 'hostApi' | 'accountData';
+    kind: 'ready' | 'error' | 'heightChanged' | 'hostApi' | 'openExternal' | 'accountData';
     payload: PluginUiJsonValueV1;
 };
 
@@ -624,6 +619,22 @@ export type PluginDeclarativeDocumentV1 = Readonly<{
 }>;
 
 export type PluginUiRendererV2 =
+    | {
+        id: string;
+        kind: 'hostedHtml';
+        source: { kind: 'html'; html: string };
+        requiredHostMethods?: PluginUiHostMethodV1[];
+        /**
+         * The reach a self-contained document asks for beyond its host methods.
+         * Requesting is not receiving: the host still admits each Resource and
+         * Action, and egress is limited to these exact approved HTTPS origins.
+         */
+        requestedCapabilities?: {
+            resources?: { pluginId: string; localId: string }[];
+            actions?: (string | { pluginId: string; localId: string })[];
+            networkOrigins?: string[];
+        };
+    }
     | {
         id: string;
         kind: 'reactNative';

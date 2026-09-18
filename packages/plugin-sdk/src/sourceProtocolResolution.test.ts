@@ -29,6 +29,13 @@ const protocolSourceCases = [
             '../../protocol/src/connect/providerAccountUsagePrimitives.ts',
         ),
     },
+    {
+        specifier: '@happier-dev/protocol/strings/opaqueIdentifier',
+        source: resolve(
+            import.meta.dirname,
+            '../../protocol/src/strings/opaqueIdentifier.ts',
+        ),
+    },
 ] as const;
 
 const pluginSdkSourceCases = [

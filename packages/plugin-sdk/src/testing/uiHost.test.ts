@@ -41,11 +41,8 @@ type SemanticContext = SemanticMountInput['context'];
 type SemanticInvokeInput = Parameters<PluginUiSemanticSurfaceMount['invoke']>[0];
 
 const identity = {
-    pluginId: 'com.acme.fixture',
-    pluginVersion: '1.0.0',
-    viewId: 'review',
-    generation: 'generation-1',
-    sessionId: 'session-1',
+    instanceId: 'fixture-instance',
+    mountNonce: 'fixture-mount',
 } as const;
 
 const initialSurface = createSurfaceContextFixture();
@@ -458,7 +455,8 @@ describe('createPluginUiTestkit', () => {
     it('accepts every Protocol-compatible host API range and refuses an incompatible major', async () => {
         for (const apiRange of ['^1', '>=1.0.0 <2.0.0']) {
             const fixture = await createPluginUiTestkit({
-                identity,
+                identity: { instanceId: 'fixture-instance-5', mountNonce: 'fixture-mount-5' },
+                authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
                 surface: { kind: 'author-surface' },
                 surfaceContext: initialSurface,
                 adapter: createSemanticAdapter().adapter,
@@ -469,7 +467,8 @@ describe('createPluginUiTestkit', () => {
         }
 
         await expect(createPluginUiTestkit({
-            identity,
+            identity: { instanceId: 'fixture-instance-6', mountNonce: 'fixture-mount-6' },
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             surface: { kind: 'author-surface' },
             surfaceContext: initialSurface,
             adapter: createSemanticAdapter().adapter,
@@ -489,7 +488,8 @@ describe('createPluginUiTestkit', () => {
     it('carries one strict ephemeral-input completion through the real SDK client boundary', async () => {
         const settleEphemeralInput = vi.fn(async () => undefined);
         const fixture = await createPluginUiTestkit({
-            identity,
+            identity: { instanceId: 'fixture-instance-7', mountNonce: 'fixture-mount-7' },
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             surface: { kind: 'author-surface' },
             surfaceContext: initialSurface,
             adapter: createSemanticAdapter().adapter,
@@ -537,7 +537,8 @@ describe('createPluginUiTestkit', () => {
         for (const availability of refusals) {
             const semantic = createSemanticAdapter();
             const result = await createPluginUiTestkit({
-                identity,
+                identity: { instanceId: 'fixture-instance-8', mountNonce: 'fixture-mount-8' },
+                authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
                 surface: { kind: 'author-surface' },
                 surfaceContext: initialSurface,
                 adapter: semantic.adapter,
@@ -552,7 +553,8 @@ describe('createPluginUiTestkit', () => {
     it('returns a mounted result only when the supplied host availability permits it', async () => {
         const semantic = createSemanticAdapter();
         const result = await createPluginUiTestkit({
-            identity,
+            identity: { instanceId: 'fixture-instance-9', mountNonce: 'fixture-mount-9' },
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             surface: { kind: 'author-surface' },
             surfaceContext: initialSurface,
             adapter: semantic.adapter,
@@ -576,7 +578,8 @@ describe('createPluginUiTestkit', () => {
         const semantic = createSemanticAdapter();
 
         await expect(createPluginUiTestkit({
-            identity,
+            identity: { instanceId: 'fixture-instance-10', mountNonce: 'fixture-mount-10' },
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             surface: { kind: 'author-surface' },
             surfaceContext: initialSurface,
             adapter: semantic.adapter,
@@ -594,7 +597,8 @@ describe('createPluginUiTestkit', () => {
 
     it('projects the one initial Host API 1.0.0 fixture with an exact empty target snapshot', async () => {
         const fixture = await createPluginUiTestkit({
-            identity,
+            identity: { instanceId: 'fixture-instance-11', mountNonce: 'fixture-mount-11' },
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             surface: { kind: 'author-surface' },
             surfaceContext: initialSurface,
             adapter: createSemanticAdapter().adapter,
@@ -638,7 +642,8 @@ describe('createPluginUiTestkit', () => {
         };
         const calls: string[] = [];
         const fixture = await createPluginUiTestkit({
-            identity,
+            identity: { instanceId: 'fixture-instance-12', mountNonce: 'fixture-mount-12' },
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             surface: { kind: 'author-surface' },
             surfaceContext: initialSurface,
             adapter: createSemanticAdapter().adapter,
@@ -788,7 +793,8 @@ describe('createPluginUiTestkit', () => {
         let watchSignal: AbortSignal | undefined;
         let lockSignal: AbortSignal | undefined;
         const fixture = await createPluginUiTestkit({
-            identity,
+            identity: { instanceId: 'fixture-instance-13', mountNonce: 'fixture-mount-13' },
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             surface: { kind: 'author-surface' },
             surfaceContext: initialSurface,
             adapter: createSemanticAdapter().adapter,
@@ -842,7 +848,8 @@ describe('createPluginUiTestkit', () => {
         const released = new Promise<void>((resolve) => { releaseObserved = resolve; });
         let observedSignal: AbortSignal | undefined;
         const fixture = await createPluginUiTestkit({
-            identity,
+            identity: { instanceId: 'fixture-instance-14', mountNonce: 'fixture-mount-14' },
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             surface: { kind: 'author-surface' },
             surfaceContext: initialSurface,
             adapter: createSemanticAdapter().adapter,
@@ -899,7 +906,8 @@ describe('createPluginUiTestkit', () => {
             },
         };
         const fixture = await createPluginUiTestkit({
-            identity,
+            identity: { instanceId: 'fixture-instance-15', mountNonce: 'fixture-mount-15' },
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             surface: { kind: 'author-surface' },
             surfaceContext: initialSurface,
             adapter: createSemanticAdapter().adapter,
@@ -922,7 +930,8 @@ describe('createPluginUiTestkit', () => {
             },
         };
         const fixture = await createPluginUiTestkit({
-            identity,
+            identity: { instanceId: 'fixture-instance-16', mountNonce: 'fixture-mount-16' },
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             surface: { kind: 'author-surface' },
             surfaceContext: initialSurface,
             adapter: createSemanticAdapter().adapter,
@@ -950,7 +959,8 @@ describe('createPluginUiTestkit', () => {
             expect(signal.aborted).toBe(false);
         });
         const fixture = await createPluginUiTestkit({
-            identity,
+            identity: { instanceId: 'fixture-instance-17', mountNonce: 'fixture-mount-17' },
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             surface: { kind: 'author-surface' },
             surfaceContext: initialSurface,
             adapter: createSemanticAdapter().adapter,
@@ -975,7 +985,8 @@ describe('createPluginUiTestkit', () => {
             expect(signal.aborted).toBe(false);
         });
         const fixture = await createPluginUiTestkit({
-            identity,
+            identity: { instanceId: 'fixture-instance-18', mountNonce: 'fixture-mount-18' },
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             surface: { kind: 'author-surface' },
             surfaceContext: initialSurface,
             adapter: createSemanticAdapter().adapter,
@@ -1019,7 +1030,8 @@ describe('createPluginUiTestkit', () => {
         };
         const opened = vi.fn(async () => undefined);
         const fixture = await createPluginUiTestkit({
-            identity,
+            identity: { instanceId: 'fixture-instance-19', mountNonce: 'fixture-mount-19' },
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             surface: { kind: 'author-surface' },
             surfaceContext: initialSurface,
             adapter: createSemanticAdapter().adapter,
@@ -1099,7 +1111,8 @@ describe('createPluginUiTestkit', () => {
         const secondDelivered = new Promise<void>((resolve) => { resolveSecond = resolve; });
 
         const fixture = await createPluginUiTestkit({
-            identity,
+            identity: { instanceId: 'fixture-instance-20', mountNonce: 'fixture-mount-20' },
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             surface: { kind: 'author-surface' },
             surfaceContext: initialSurface,
             adapter: semantic.adapter,
@@ -1149,7 +1162,8 @@ describe('createPluginUiTestkit', () => {
         const diagnosticDelivered = new Promise<void>((resolve) => { resolveDiagnostic = resolve; });
 
         const fixture = await createPluginUiTestkit({
-            identity,
+            identity: { instanceId: 'fixture-instance-21', mountNonce: 'fixture-mount-21' },
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             surface: { kind: 'author-surface' },
             surfaceContext: initialSurface,
             launchInput: { reviewId: 'review-7' },
@@ -1201,7 +1215,7 @@ describe('createPluginUiTestkit', () => {
             },
         });
 
-        expect(fixture.context.plugin).toEqual({ id: identity.pluginId, version: identity.pluginVersion });
+        expect(fixture.context.plugin).toEqual({ id: 'com.acme.fixture', version: '1.0.0' });
         expect(fixture.context.surface).toEqual(initialSurface);
         expect(fixture.context).not.toHaveProperty('view');
         expect(fixture.context.launchInput).toEqual({ reviewId: 'review-7' });
@@ -1314,7 +1328,8 @@ describe('createPluginUiTestkit', () => {
             bytes: realmBytes,
         };
         const fixture = await createPluginUiTestkit({
-            identity,
+            identity: { instanceId: 'fixture-instance-22', mountNonce: 'fixture-mount-22' },
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             surface: { kind: 'author-surface' },
             surfaceContext: initialSurface,
             adapter: createSemanticAdapter().adapter,
@@ -1343,7 +1358,8 @@ describe('createPluginUiTestkit', () => {
         // location and never move it, so no author test could close that loop.
         const semantic = createSemanticAdapter();
         const fixture = await createPluginUiTestkit({
-            identity,
+            identity: { instanceId: 'fixture-instance-23', mountNonce: 'fixture-mount-23' },
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             surface: { kind: 'author-surface' },
             surfaceContext: initialSurface,
             subPath: 'reviews/current',
@@ -1371,7 +1387,8 @@ describe('createPluginUiTestkit', () => {
 
     it('returns the exact Resource watch establishment digest through the public testkit', async () => {
         const fixture = await createPluginUiTestkit({
-            identity,
+            identity: { instanceId: 'fixture-instance-24', mountNonce: 'fixture-mount-24' },
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             surface: { kind: 'author-surface' },
             surfaceContext: initialSurface,
             adapter: createSemanticAdapter().adapter,
@@ -1394,7 +1411,8 @@ describe('createPluginUiTestkit', () => {
     it('preserves a supplied host-boundary refusal without pretending the fixture owns surface admission', async () => {
         let calls = 0;
         const fixture = await createPluginUiTestkit({
-            identity,
+            identity: { instanceId: 'fixture-instance-25', mountNonce: 'fixture-mount-25' },
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             surface: { kind: 'author-surface' },
             surfaceContext: initialSurface,
             adapter: createSemanticAdapter().adapter,
@@ -1434,7 +1452,8 @@ describe('createPluginUiTestkit', () => {
             { handle: 'row-2', role: 'listitem', name: 'Second review' },
         ]);
         const fixture = await createPluginUiTestkit({
-            identity,
+            identity: { instanceId: 'fixture-instance-26', mountNonce: 'fixture-mount-26' },
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             surface: { kind: 'author-surface' },
             surfaceContext: initialSurface,
             adapter: semantic.adapter,
@@ -1458,7 +1477,8 @@ describe('createPluginUiTestkit', () => {
     it('retires an awaiting semantic query with its surface generation', async () => {
         const semantic = createMutableSemanticAdapter([]);
         const fixture = await createPluginUiTestkit({
-            identity,
+            identity: { instanceId: 'fixture-instance-27', mountNonce: 'fixture-mount-27' },
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             surface: { kind: 'author-surface' },
             surfaceContext: initialSurface,
             adapter: semantic.adapter,
@@ -1491,7 +1511,8 @@ describe('createPluginUiTestkit', () => {
             },
         };
         const fixture = await createPluginUiTestkit({
-            identity,
+            identity: { instanceId: 'fixture-instance-28', mountNonce: 'fixture-mount-28' },
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             surface: { kind: 'author-surface' },
             surfaceContext: initialSurface,
             adapter,
@@ -1513,7 +1534,8 @@ describe('createPluginUiTestkit', () => {
             { handle: 'reused-handle', role: 'button', name: 'Retry review', actions: ['press'] },
         ]);
         const fixture = await createPluginUiTestkit({
-            identity,
+            identity: { instanceId: 'fixture-instance-29', mountNonce: 'fixture-mount-29' },
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             surface: { kind: 'author-surface' },
             surfaceContext: initialSurface,
             adapter: semantic.adapter,
@@ -1538,7 +1560,8 @@ describe('createPluginUiTestkit', () => {
         const readCancellationStarted = new Promise<void>((resolve) => { resolveReadCancellation = resolve; });
         let readCancellationObserved = false;
         const fixture = await createPluginUiTestkit({
-            identity,
+            identity: { instanceId: 'fixture-instance-30', mountNonce: 'fixture-mount-30' },
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             surface: { kind: 'author-surface' },
             surfaceContext: initialSurface,
             adapter: semantic.adapter,
@@ -1633,7 +1656,8 @@ describe('createPluginUiTestkit', () => {
         await fixture.dispose();
 
         const absent = await createPluginUiTestkit({
-            identity,
+            identity: { instanceId: 'fixture-instance-31', mountNonce: 'fixture-mount-31' },
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             surface: { kind: 'author-surface' },
             surfaceContext: initialSurface,
             adapter: createSemanticAdapter().adapter,
@@ -1656,7 +1680,8 @@ describe('createPluginUiTestkit', () => {
         const started = new Promise<void>((resolve) => { resolveStarted = resolve; });
 
         const fixture = await createPluginUiTestkit({
-            identity,
+            identity: { instanceId: 'fixture-instance-32', mountNonce: 'fixture-mount-32' },
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             surface: { kind: 'author-surface' },
             surfaceContext: initialSurface,
             adapter: semantic.adapter,
@@ -1684,7 +1709,8 @@ describe('createPluginUiTestkit', () => {
     it('rejects a semantic target when the adapter advances its own revision', async () => {
         const semantic = createSemanticAdapter();
         const fixture = await createPluginUiTestkit({
-            identity,
+            identity: { instanceId: 'fixture-instance-33', mountNonce: 'fixture-mount-33' },
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             surface: { kind: 'author-surface' },
             surfaceContext: initialSurface,
             adapter: semantic.adapter,
@@ -1701,14 +1727,16 @@ describe('createPluginUiTestkit', () => {
     it('rejects malformed mount contexts through the actual public client and exposes no renderer or host-private state', async () => {
         const semantic = createSemanticAdapter();
         await expect(createPluginUiTestkit({
-            identity,
+            identity: { instanceId: 'fixture-instance-34', mountNonce: 'fixture-mount-34' },
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             surface: { kind: 'author-surface' },
             surfaceContext: { ...initialSurface, locale: '' },
             adapter: semantic.adapter,
         })).rejects.toMatchObject({ code: 'invalid_payload' });
 
         const fixture = await createPluginUiTestkit({
-            identity,
+            identity: { instanceId: 'fixture-instance-35', mountNonce: 'fixture-mount-35' },
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },
             surface: { kind: 'author-surface' },
             surfaceContext: initialSurface,
             adapter: semantic.adapter,

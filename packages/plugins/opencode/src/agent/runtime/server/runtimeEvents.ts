@@ -15,10 +15,26 @@ export type OpenCodeRuntimeIssue = Readonly<{
   }>;
 }>;
 
-type EventBase = Readonly<{
-  sessionId: string;
-  emittedAtMs: number;
-}>;
+export type OpenCodeRuntimeScope =
+  | Readonly<{ kind: 'session'; sessionId: string }>
+  | Readonly<{ kind: 'execution_run'; executionRunId: string }>;
+
+export type OpenCodeHostRuntimeIdentity =
+  | Readonly<{ happierSessionId: string; executionRunId?: never }>
+  | Readonly<{ executionRunId: string; happierSessionId?: never }>;
+
+export function resolveOpenCodeRuntimeScope(
+  identity: OpenCodeHostRuntimeIdentity,
+): OpenCodeRuntimeScope {
+  return identity.executionRunId === undefined
+    ? { kind: 'session', sessionId: identity.happierSessionId }
+    : { kind: 'execution_run', executionRunId: identity.executionRunId };
+}
+
+type EventBase = Readonly<{ emittedAtMs: number }> & (
+  | Readonly<{ sessionId: string; executionRunId?: never }>
+  | Readonly<{ executionRunId: string; sessionId?: never }>
+);
 
 type TurnEventBase = EventBase & Readonly<{ turnId: string }>;
 

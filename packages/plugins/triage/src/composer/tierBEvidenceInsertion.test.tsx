@@ -68,12 +68,8 @@ async function mountInsertion(): Promise<Readonly<{
     let fixture!: PluginUiTestkit;
     await act(async () => {
         fixture = await createPluginUiTestkit({
-            identity: {
-                pluginId: 'happier.triage',
-                pluginVersion: '0.0.0',
-                viewId: 'triage-tier-b-insertion',
-                generation: 'tier-b-insertion',
-            },
+            identity: { instanceId: 'fixture-instance-166', mountNonce: 'fixture-mount-166' },
+            authorPlugin: { id: 'happier.triage', version: '0.0.0' },
             surface: defineUiSurface(Surface),
             surfaceContext: createSurfaceContextFixture({}),
             adapter: createPluginUiRnwSemanticSurfaceAdapter(),
@@ -228,12 +224,8 @@ describe('useTriageTierBEvidenceInsertion', () => {
         let fixture!: PluginUiTestkit;
         await act(async () => {
             fixture = await createPluginUiTestkit({
-                identity: {
-                    pluginId: 'happier.triage',
-                    pluginVersion: '0.0.0',
-                    viewId: 'triage-tier-b-bridge',
-                    generation: 'tier-b-bridge',
-                },
+                identity: { instanceId: 'fixture-instance-167', mountNonce: 'fixture-mount-167' },
+                authorPlugin: { id: 'happier.triage', version: '0.0.0' },
                 surface: defineUiSurface(Surface),
                 surfaceContext: createSurfaceContextFixture({}),
                 adapter: createPluginUiRnwSemanticSurfaceAdapter(),

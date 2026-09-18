@@ -343,6 +343,7 @@ export function readOpenCodeTranscriptBackwardWindow<TItem>(params: Readonly<{
       truncated = true;
       break;
     }
+    if (fittingBytes > remainingBytes) truncated = true;
     reversedItems.push(...[...fitting].reverse());
     remainingBytes = Math.max(0, remainingBytes - fittingBytes);
     if (fit < availableItems.length) {

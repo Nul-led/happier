@@ -1,4 +1,6 @@
 import type {
+    AgentExecutionRunRuntimeContextV1,
+    AgentRuntimeContext,
     AgentSessionRuntimeContext,
 } from '@happier-dev/plugin-sdk/agents/runtime';
 import type { JsonValue } from '@happier-dev/plugin-sdk';
@@ -12,7 +14,11 @@ import { createClaudeNativeSdkQueryContext } from '../sdk/nativeExec.js';
 import {
   createClaudeWorkflowSystemRecordBridge,
 } from '../workflowRecords/workflowRuntime.js';
-import type { ClaudeAgentSdkContext } from './remote/sdk/session.js';
+import type {
+  ClaudeAgentSdkContext,
+  ClaudeAgentSdkExecutionRunContext,
+  ClaudeAgentSdkSessionContext,
+} from './remote/sdk/session.js';
 
 function jsonFields(
   fields: Readonly<Record<string, unknown>> | undefined,
@@ -27,6 +33,15 @@ function jsonFields(
     ) return [key, value];
     return [key, value instanceof Error ? value.message : String(value)];
   }));
+}
+
+function createClaudeRuntimeLogger(context: AgentRuntimeContext): ClaudeAgentSdkContext['logger'] {
+  return {
+    debug(message, fields) { context.services.logger.debug(message, jsonFields(fields)); },
+    info(message, fields) { context.services.logger.info(message, jsonFields(fields)); },
+    warn(message, fields) { context.services.logger.warn(message, jsonFields(fields)); },
+    error(message, fields) { context.services.logger.error(message, jsonFields(fields)); },
+  };
 }
 
 function unavailable(name: string): never {
@@ -99,7 +114,7 @@ export function createClaudeNativeGoalWorkStatePublisher(
 
 export function createClaudeNativeAgentSdkContext(
   context: AgentSessionRuntimeContext,
-): ClaudeAgentSdkContext {
+): ClaudeAgentSdkSessionContext {
   const services = context.session.services;
   const currentSession = context.services.sessions?.current;
   const workflowSystemRecords = createClaudeWorkflowSystemRecordBridge(
@@ -107,12 +122,7 @@ export function createClaudeNativeAgentSdkContext(
   );
   const sessionAuth = currentSession?.auth;
   return {
-    logger: {
-      debug(message, fields) { context.services.logger.debug(message, jsonFields(fields)); },
-      info(message, fields) { context.services.logger.info(message, jsonFields(fields)); },
-      warn(message, fields) { context.services.logger.warn(message, jsonFields(fields)); },
-      error(message, fields) { context.services.logger.error(message, jsonFields(fields)); },
-    },
+    logger: createClaudeRuntimeLogger(context),
     agentRuntime: {
       exec: createClaudeNativeSdkQueryContext(context.services.exec),
       sessionHooks: {
@@ -200,6 +210,22 @@ export function createClaudeNativeAgentSdkContext(
           return unavailable('legacy state-field writes');
         },
       },
+    },
+  };
+}
+
+/** Claude Agent SDK services that are truthful for a detached Execution Run. */
+export function createClaudeNativeExecutionRunAgentSdkContext(
+  context: AgentExecutionRunRuntimeContextV1,
+): ClaudeAgentSdkExecutionRunContext {
+  const services = context.executionRun.services;
+  return {
+    logger: createClaudeRuntimeLogger(context),
+    agentRuntime: {
+      exec: createClaudeNativeSdkQueryContext(context.services.exec),
+      fileFollow: services.fileFollow,
+      toolExecution: services.toolExecution,
+      ...(services.nativeHome ? { nativeHome: services.nativeHome } : {}),
     },
   };
 }

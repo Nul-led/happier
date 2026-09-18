@@ -1,7 +1,9 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 
 import {
+  createExecutionRunHostBackendFromConversationRuntime,
   createExecutionRunHostBackendFromSessionRuntime as createSessionRunAdapter,
+  type AgentExecutionRunConversationRuntimeV1,
   type AgentExecutionRunEvent,
   type AgentExecutionRunOpenRequest,
   type AgentExecutionRunSessionAdapterOptions,
@@ -11,6 +13,11 @@ import type { AgentSessionRuntime, AgentSessionRuntimeEvent } from './session.js
 type SessionSend = AgentSessionRuntime['send'];
 type SessionCancel = NonNullable<AgentSessionRuntime['cancel']>;
 type SessionWatch = AgentSessionRuntime['watch'];
+type ConversationSendOptions = NonNullable<Parameters<AgentExecutionRunConversationRuntimeV1['send']>[1]>;
+
+expectTypeOf<ConversationSendOptions>().toHaveProperty('localInputId').toEqualTypeOf<string | undefined>();
+expectTypeOf<ConversationSendOptions>().toHaveProperty('resultContract');
+expectTypeOf<ConversationSendOptions>().toHaveProperty('causalPermissionAuthority');
 
 function createExecutionRunHostBackendFromSessionRuntime(
   options: Omit<AgentExecutionRunSessionAdapterOptions, 'sessionId'>,
@@ -31,6 +38,89 @@ function createRequest(runId = 'run-1'): Extract<AgentExecutionRunOpenRequest, {
 const causalPermissionAuthority = Object.freeze({
   kind: 'admittedSessionInputV1' as const,
   admittedPermissionCeiling: 'read-only' as const,
+});
+
+it('adapts a scope-neutral provider conversation without manufacturing a Session identity', async () => {
+  const send = vi.fn<AgentExecutionRunConversationRuntimeV1['send']>(async () => {
+    queueMicrotask(() => {
+      for (const listener of listeners) {
+        listener({ kind: 'turn-complete', turnId: 'run-1-turn-1' });
+      }
+    });
+    return { status: 'admitted' };
+  });
+  const listeners = new Set<(event: Parameters<AgentExecutionRunConversationRuntimeV1['watch']>[0] extends (event: infer Event) => void ? Event : never) => void>();
+  const conversation: AgentExecutionRunConversationRuntimeV1 = {
+    send,
+    async cancel(request) {
+      return { status: 'requested', turnId: request.turnId };
+    },
+    watch(listener) {
+      listeners.add(listener);
+      return { dispose: () => { listeners.delete(listener); } };
+    },
+    async dispose() {},
+  };
+
+  const request = {
+    ...createRequest(),
+    localInputId: 'authored-input-1',
+    resultContract: { kind: 'json' as const, schema: { type: 'object' as const } },
+    causalPermissionAuthority,
+  };
+  const runtime = await createExecutionRunHostBackendFromConversationRuntime({
+    request,
+    openConversation: async () => conversation,
+  });
+  const events: AgentExecutionRunEvent[] = [];
+  runtime.watch((event) => { events.push(event); });
+  await vi.waitFor(() => expect(events.some((event) => event.kind === 'run-complete')).toBe(true));
+
+  expect(events.every((event) => !('sessionId' in event))).toBe(true);
+  expect(events.map((event) => event.runId)).toEqual(['run-1', 'run-1']);
+  expect(send).toHaveBeenCalledWith({
+    inputIds: ['authored-input-1'],
+    input: request.input,
+    delivery: { kind: 'newTurn', turnId: 'run-1-turn-1' },
+    causalPermissionAuthority,
+  }, {
+    localInputId: 'authored-input-1',
+    resultContract: request.resultContract,
+    causalPermissionAuthority,
+  });
+  await runtime.dispose();
+});
+
+it('passes the exact resumed-turn input contract through the neutral conversation seam', async () => {
+  const send = vi.fn<AgentExecutionRunConversationRuntimeV1['send']>(async () => ({ status: 'admitted' }));
+  const conversation: AgentExecutionRunConversationRuntimeV1 = {
+    send,
+    watch: () => ({ dispose() {} }),
+    async dispose() {},
+  };
+  const runtime = await createExecutionRunHostBackendFromConversationRuntime({
+    request: createResumeRequest(),
+    openConversation: async () => conversation,
+  });
+  const resultContract = { kind: 'decision' as const, decisions: ['accept', 'reject'] };
+
+  await runtime.send({ text: 'Continue.' }, {
+    localInputId: 'resumed-input-1',
+    resultContract,
+    causalPermissionAuthority,
+  });
+
+  expect(send).toHaveBeenCalledWith({
+    inputIds: ['resumed-input-1'],
+    input: { text: 'Continue.' },
+    delivery: { kind: 'newTurn', turnId: 'run-resume-turn-1' },
+    causalPermissionAuthority,
+  }, {
+    localInputId: 'resumed-input-1',
+    resultContract,
+    causalPermissionAuthority,
+  });
+  await runtime.dispose();
 });
 
 function createResumeRequest(runId = 'run-resume'): Extract<AgentExecutionRunOpenRequest, { kind: 'resume' }> {
@@ -144,6 +234,38 @@ function failedEvent(turnId: string): AgentSessionRuntimeEvent {
 }
 
 describe('createExecutionRunHostBackendFromSessionRuntime', () => {
+  it('forwards the provider-owned usage observation without creating a competing Run event', async () => {
+    const harness = createSessionHarness();
+    const observeSessionUsage = vi.fn();
+    const execution = await createExecutionRunHostBackendFromSessionRuntime({
+      request: createRequest(),
+      openSession: async () => harness.session,
+      observeSessionUsage,
+    });
+    const runEvents: AgentExecutionRunEvent[] = [];
+    execution.watch((event) => runEvents.push(event));
+
+    const usage = {
+      sequence: 2,
+      sessionId: 'session-1',
+      emittedAtMs: 11,
+      turnId: 'run-1-turn-1',
+      kind: 'usage-observed',
+      observationId: 'usage-1',
+      source: 'provider',
+      scope: 'turn_delta',
+      modelId: 'model-a',
+      tokens: { input: 8, output: 4, reasoning: 0, cacheRead: 0, cacheWrite: 0, total: 12 },
+    } as const satisfies AgentSessionRuntimeEvent;
+    harness.publish(usage);
+    harness.publish({ ...usage, observationId: 'usage-other-turn', turnId: 'other-turn' });
+
+    expect(observeSessionUsage).toHaveBeenCalledOnce();
+    expect(observeSessionUsage).toHaveBeenCalledWith(usage);
+    expect(runEvents.map((event) => event.kind)).toEqual(['run-start']);
+    await execution.dispose();
+  });
+
   it('preserves the admitted causal permission authority on the derived Session turn', async () => {
     const harness = createSessionHarness();
     const execution = await createExecutionRunHostBackendFromSessionRuntime({
@@ -271,6 +393,32 @@ describe('createExecutionRunHostBackendFromSessionRuntime', () => {
     await execution.dispose();
   });
 
+  it.each([
+    ['create', createRequest('run-mcp-create')],
+    ['resume', createResumeRequest('run-mcp-resume')],
+  ] as const)('carries the exact per-open MCP binding into a %s Session-backed Run', async (_kind, request) => {
+    const harness = createSessionHarness();
+    const mcpServers = Object.freeze({
+      workspace: Object.freeze({
+        command: '/opt/happier/mcp-workspace',
+        args: Object.freeze(['--stdio']),
+        env: Object.freeze({ HAPPIER_MCP_PROFILE: 'run-bound' }),
+      }),
+    });
+    let openedRequest: Parameters<AgentExecutionRunSessionAdapterOptions['openSession']>[0] | null = null;
+
+    const execution = await createExecutionRunHostBackendFromSessionRuntime({
+      request: { ...request, mcpServers },
+      openSession: async (sessionRequest) => {
+        openedRequest = sessionRequest;
+        return harness.session;
+      },
+    });
+
+    expect(openedRequest).toMatchObject({ mcpServers });
+    await execution.dispose();
+  });
+
   it('subscribes before initial send, replays early mapped output, and ignores a second terminal', async () => {
     const harness = createSessionHarness();
     const request = createRequest('run-replay');
@@ -306,6 +454,30 @@ describe('createExecutionRunHostBackendFromSessionRuntime', () => {
     expect(events.filter((event) => (
       event.kind === 'run-complete' || event.kind === 'run-failed' || event.kind === 'run-cancelled'
     ))).toHaveLength(1);
+
+    const lateEvents: AgentExecutionRunEvent[] = [];
+    execution.watch((event) => lateEvents.push(event));
+    expect(lateEvents.map((event) => event.kind)).toEqual(['run-complete']);
+  });
+
+  it('preserves the host-authored local input id across the Execution Run to Session adapter', async () => {
+    const harness = createSessionHarness();
+    harness.setSend(async (request) => {
+      harness.publish(completeEvent(request.delivery.turnId));
+      return { status: 'admitted' };
+    });
+
+    const execution = await createExecutionRunHostBackendFromSessionRuntime({
+      request: {
+        ...createRequest('run-exact-input'),
+        localInputId: 'workflow-input-1',
+        resultContract: { kind: 'text' },
+      },
+      openSession: async () => harness.session,
+    });
+
+    expect(harness.sendCalls[0]?.[0].inputIds).toEqual(['workflow-input-1']);
+    await execution.dispose();
   });
 
   it('disposes an opened Session when subscription setup throws', async () => {
@@ -381,8 +553,8 @@ describe('createExecutionRunHostBackendFromSessionRuntime', () => {
     await expect(execution.send({ text: 'Continue.' })).resolves.toEqual({ status: 'admitted' });
     await vi.waitFor(() => expect(harness.sessionDisposeCalls).toBe(1));
 
-    expect(events.map((event) => event.kind)).toEqual(['run-start', 'run-complete']);
-    expect(events.map((event) => event.sequence)).toEqual([1, 2]);
+    expect(events.map((event) => event.kind)).toEqual(['run-complete']);
+    expect(events.map((event) => event.sequence)).toEqual([2]);
     expect(harness.subscriptionDisposeCalls).toBe(1);
   });
 

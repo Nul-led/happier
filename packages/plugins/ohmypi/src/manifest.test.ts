@@ -48,6 +48,9 @@ describe('OhMyPi plugin manifest', () => {
       }],
       capabilities: {
         surfaces: ['externalSessions'],
+        sessions: {
+          executionRunContext: { versions: [1] },
+        },
       },
       surfaces: {
         externalSession: {

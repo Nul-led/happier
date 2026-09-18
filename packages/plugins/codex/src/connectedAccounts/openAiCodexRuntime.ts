@@ -18,6 +18,11 @@ import {
   OPENAI_CODEX_DEFAULT_USAGE_URL,
   parseOpenAiCodexConnectedAccountQuotaLimits,
 } from '../agent/auth/services/quota/openaiFetcher.js';
+import { mapCodexRateLimitResetCredits } from '../agent/auth/services/quota/rateLimitResetCredits.js';
+import {
+  consumeCodexRateLimitResetCredit,
+  fetchCodexRateLimitResetCredits,
+} from '../agent/auth/services/quota/rateLimitResetCreditsClient.js';
 
 const ACCESS_TOKEN_KEY = 'accessToken';
 const REFRESH_TOKEN_KEY = 'refreshToken';
@@ -445,6 +450,43 @@ const openAiCodexRuntimeDefinition: PluginConnectedAccountRuntime = {
         parseResponseBody(response.body),
       ),
     };
+  },
+  recoveryCredits: {
+    async read(context, options) {
+      const rawResetCredits = await fetchCodexRateLimitResetCredits({
+        accessToken: await readCurrentAccessToken(context.credentials, options),
+        accountId: await readCredential(context.credentials, PROVIDER_ACCOUNT_ID_KEY, options),
+        runtimeFetch: context.services.http,
+        signal: options?.signal ?? context.signal,
+      });
+      const mapped = mapCodexRateLimitResetCredits({ rawResetCredits });
+      if (!mapped) throw new Error('OpenAI reset-credit fetch returned an invalid response');
+      return {
+        observedAtMs: Date.now(),
+        availableCount: mapped.availableCount,
+        credits: mapped.credits.map((credit) => ({
+          providerCreditId: credit.id,
+          status: credit.status === 'available' ? 'available' as const : 'unavailable' as const,
+          ...(credit.expiresAtMs !== undefined ? { expiresAtMs: credit.expiresAtMs } : {}),
+        })),
+      };
+    },
+    async consume(request, context, options) {
+      const outcome = await consumeCodexRateLimitResetCredit({
+        accessToken: await readCurrentAccessToken(context.credentials, options),
+        accountId: await readCredential(context.credentials, PROVIDER_ACCOUNT_ID_KEY, options),
+        runtimeFetch: context.services.http,
+        signal: options?.signal ?? context.signal,
+        idempotencyKey: request.idempotencyKey,
+        providerCreditId: request.providerCreditId,
+      });
+      switch (outcome.code) {
+        case 'reset': return { status: 'consumed' };
+        case 'already_redeemed': return { status: 'already_consumed' };
+        case 'no_credit': return { status: 'not_available' };
+        case 'nothing_to_reset': return { status: 'nothing_to_reset' };
+      }
+    },
   },
   async materialize(request, context, options) {
     if (request.kind === 'environment') {

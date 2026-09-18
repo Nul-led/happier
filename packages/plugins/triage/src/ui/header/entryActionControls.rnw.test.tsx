@@ -62,12 +62,8 @@ describe('the mounted configured entry action controls', () => {
       />
     ));
     const fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: 'happier.triage',
-        pluginVersion: '0.0.0',
-        viewId: 'configured-entry-actions',
-        generation: 'configured-entry-actions-test',
-      },
+      identity: { instanceId: 'fixture-instance-192', mountNonce: 'fixture-mount-192' },
+      authorPlugin: { id: 'happier.triage', version: '0.0.0' },
       surface,
       surfaceContext: createSurfaceContextFixture(),
       adapter: createPluginUiRnwSemanticSurfaceAdapter(),

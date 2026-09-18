@@ -6,7 +6,7 @@ import type {
 } from '@happier-dev/plugin-sdk/agents/runtime';
 
 import {
-  normalizeCodexVendorResumeId,
+  readExactCodexVendorResumeId,
   resolveCodexMaterializedSessionsRoot,
 } from '../../auth/services/home/sync/sessionFiles.js';
 import { readCanonicalCodexAgentRuntimeDescriptorV1 } from '../../../protocol/runtimeDescriptorV1.js';
@@ -38,7 +38,7 @@ async function findCodexNativeSessionLogPath(params: Readonly<{
 export async function resolveCodexNativeTranscriptPathCandidate(
   input: HandoffNativeTranscriptPathCandidateRequestV1,
 ): Promise<HandoffNativeTranscriptPathCandidateV1 | null> {
-  const vendorResumeId = normalizeCodexVendorResumeId(input.identity.vendorResumeId);
+  const vendorResumeId = readExactCodexVendorResumeId(input.identity.vendorResumeId);
   const runtimeDescriptor = readCanonicalCodexAgentRuntimeDescriptorV1(input.runtimeDescriptorV1);
   const codexHome = runtimeDescriptor?.homePath;
   if (!vendorResumeId || !codexHome) return null;
@@ -60,7 +60,7 @@ export async function resolveCodexNativeTranscriptPathCandidate(
  *
  * The search is id-targeted and name-only (see `findCodexRolloutFileById`): a
  * real home holds tens of thousands of rollouts, and the newest-first descent
- * short-circuits on the first exact suffix match. The id is normalized first
+ * short-circuits on the first exact suffix match. The id is read byte-for-byte
  * because it becomes a file-name suffix; one carrying a path separator is not a
  * Codex thread id and is refused rather than searched for.
  *
@@ -75,7 +75,7 @@ export async function resolveCodexNativeSessionLogPath(input: Readonly<{
   vendorResumeId: string;
   env?: NodeJS.ProcessEnv;
 }>): Promise<string | null> {
-  const vendorResumeId = normalizeCodexVendorResumeId(input.vendorResumeId);
+  const vendorResumeId = readExactCodexVendorResumeId(input.vendorResumeId);
   if (!vendorResumeId) return null;
   const codexHome = resolveConfiguredCodexHomePath(input.env ?? process.env);
   return await findCodexNativeSessionLogPath({ vendorResumeId, codexHome });

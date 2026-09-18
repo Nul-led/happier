@@ -4,6 +4,7 @@ import {
   unsupportedCapability,
   type ScmBackendCapabilities,
 } from '@happier-dev/plugin-sdk/scm/backend';
+import type { ScmCapabilities } from '@happier-dev/plugin-sdk/scm';
 
 export const GIT_SCM_BACKEND_CAPABILITIES = {
     detection: {
@@ -109,6 +110,6 @@ export const GIT_SCM_BACKEND_CAPABILITIES = {
     },
 } satisfies ScmBackendCapabilities;
 
-export function createGitCapabilities() {
+export function createGitCapabilities(): ScmCapabilities {
     return createScmCapabilitiesFromBackendCapabilities(GIT_SCM_BACKEND_CAPABILITIES);
 }

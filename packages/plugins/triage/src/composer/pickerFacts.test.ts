@@ -97,6 +97,8 @@ describe('projectTriagePickerCorpusFacts', () => {
             entryRef: row().entryRef,
             title: 'Fix the parser',
             scopeLabel: 'forge/repo',
+            identifierLabel: row().content!.outcome.locator.displayPath,
+            lifecycleLabel: 'Open',
             // Projected by the one search owner rather than folded again here, so
             // the picker answers a query exactly as the list does.
             search: projectTriageEntrySearchText(row().observations),

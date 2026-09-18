@@ -1,3 +1,4 @@
+import { isPluginActionApprovalRequestCreated } from '@happier-dev/plugin-sdk/actions';
 import type {
   ActionsService,
   PluginActionResultById,
@@ -45,7 +46,7 @@ export async function readConversationPendingPermissions(input: Readonly<{
   let truncated = false;
   let cursor: string | null = null;
   for (;;) {
-    const page: PendingPermissionList = await input.actions.execute(
+    const listed = await input.actions.execute(
       'session.permission.remote.pending.list',
       {
         ...input.source,
@@ -53,6 +54,11 @@ export async function readConversationPendingPermissions(input: Readonly<{
       },
       { signal: input.signal },
     );
+    // A policy deferral means this page was never read. The projection keeps
+    // what it already has and reports itself incomplete rather than presenting
+    // a short list as the whole pending set.
+    if (isPluginActionApprovalRequestCreated(listed)) return { requests, truncated: true };
+    const page: PendingPermissionList = listed;
     requests.push(...page.requests);
     truncated = truncated || page.truncated;
     const next = page.nextCursor;

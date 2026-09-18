@@ -323,6 +323,10 @@ function useGithubPagedWalk<TRow>(
     const outcome = await readPage(continuation, pageSignal);
     if (pageSignal.aborted) return;
     if (outcome.kind === 'failed') {
+      // Only a position this walk actually consumed may be refused a second
+      // time. A page that failed was never read, and the reader is looking at
+      // an enabled Load more for it — so the guard must let that press through.
+      if (continuation !== null) requested.current.delete(continuation);
       dispatch({ kind: 'pageFailed', token, failure: outcome.failure });
       return;
     }

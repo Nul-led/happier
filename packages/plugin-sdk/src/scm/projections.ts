@@ -1,4 +1,7 @@
 import {
+    buildWorktreeRelativePath as canonicalBuildWorktreeRelativePath,
+    hasForbiddenGitRefName as canonicalHasForbiddenGitRefName,
+    normalizeWorktreeDisplayName as canonicalNormalizeWorktreeDisplayName,
     createScmCapabilities as canonicalCreateScmCapabilities,
     evaluateScmRemoteMutationPolicy as canonicalEvaluateScmRemoteMutationPolicy,
     isScmPatchBoundToPath as canonicalIsScmPatchBoundToPath,
@@ -20,6 +23,10 @@ import {
     ScmWorkingSnapshotSchema as canonicalScmWorkingSnapshotSchema,
     SourceControlCloneProtocolSchema as canonicalScmCloneProtocolSchema,
 } from '@happier-dev/protocol/scm';
+
+export const buildWorktreeRelativePath: (branchName: string) => string = canonicalBuildWorktreeRelativePath;
+export const hasForbiddenGitRefName: (value: string) => boolean = canonicalHasForbiddenGitRefName;
+export const normalizeWorktreeDisplayName: (value: string) => string = canonicalNormalizeWorktreeDisplayName;
 import type {
     ScmHostingProviderKind,
     ScmHostingProviderRef,
@@ -178,6 +185,7 @@ export type ScmWorkingEntry = {
         pendingAdded: number;
         pendingRemoved: number;
         isBinary: boolean;
+        isComplete?: boolean;
     };
 };
 
@@ -304,6 +312,7 @@ export type ScmWorkingSnapshot = {
         includedRemoved: number;
         pendingAdded: number;
         pendingRemoved: number;
+        isComplete?: boolean;
     };
 };
 
@@ -1208,8 +1217,8 @@ export {
 } from './remoteUrl.js';
 
 export type {
-    ParsedScmRemoteUrl,
     ScmRemoteUrlScheme,
+    ScmTransportIdentityV1,
 } from './remoteUrl.js';
 
 /** @realm daemon */

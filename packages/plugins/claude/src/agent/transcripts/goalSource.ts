@@ -1,3 +1,4 @@
+import { readClaudeProviderIdentityValue } from '../../protocol/providerIdentity.js';
 import { isSlashCommandSupported } from '@happier-dev/plugin-sdk/sessions';
 import type { SessionWorkStateV1 } from '@happier-dev/plugin-sdk/sessions/work-state';
 
@@ -98,8 +99,7 @@ function readEstablishingClaudeSessionIdFromMessage(message: unknown): string | 
   if (!record) return null;
   const attachment = asRecord(record.attachment);
   if (attachment && attachment.type === 'goal_status') return null;
-  const value = typeof record.sessionId === 'string' ? record.sessionId.trim() : '';
-  return value.length > 0 ? value : null;
+  return readClaudeProviderIdentityValue(record.sessionId);
 }
 
 const SYNTHETIC_NO_RESPONSE_TEXT = 'No response requested.';

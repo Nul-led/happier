@@ -17,7 +17,7 @@ import { buildClaudeGoalCommand } from '../../goalControl/command.js';
  *    the system-init `slash_commands` into a published `kind:'goal'` work-state
  *    item. Publishes through a merge-safe metadata update so it coexists with the
  *    todo/task families the outbound dispatch facet derives.
- *  - EFFECTOR: `setGoal`/`clearGoal` inject a literal `/goal …` user turn into the
+ *  - EFFECTOR: `setGoal`/`clearGoal` inject a terminal-local `/goal …` control into the
  *    running TUI (via the supplied `injectGoalCommand`). The `goal_status`
  *    attachment Claude then emits is the single SOURCE OF TRUTH — the effector
  *    never writes goal state into metadata itself.
@@ -31,17 +31,16 @@ function stableError(errorCode: string): GoalControlError {
 
 export type ClaudeGoalCommandDelivery =
   | Readonly<{ kind: 'queued' }>
-  | Readonly<{ kind: 'sent-to-terminal' }>
-  | Readonly<{ kind: 'provider-turn-started' }>;
+  | Readonly<{ kind: 'sent-to-terminal' }>;
 
-/** Injects a `/goal …` command into the unified terminal as a user turn. */
+/** Injects a turn-neutral `/goal …` command into the unified terminal. */
 export type ClaudeGoalCommandInjector = (message: string) => Promise<void | ClaudeGoalCommandDelivery>;
 
 export type ClaudeUnifiedGoalRuntime = Readonly<{
   /** The transcript goal source — wire `observeTranscriptMessage` into `onObserveRow`. */
   source: ClaudeGoalWorkStateSource;
   /**
-   * ACTIVE-session goal effector. Injects `/goal <objective>` as a user turn.
+   * ACTIVE-session goal effector. Injects `/goal <objective>` as a terminal-local control.
    * Returns a typed non-fallback error on empty objective / inject failure so the
    * live RPC reports cleanly instead of throwing (which the goal router would
    * treat as a fallback trigger and seed a decorative metadata goal).
@@ -56,7 +55,6 @@ export type ClaudeUnifiedGoalRuntime = Readonly<{
 const DELIVERY_RANK: Record<ClaudeGoalCommandDelivery['kind'], number> = {
   queued: 0,
   'sent-to-terminal': 1,
-  'provider-turn-started': 2,
 };
 
 const ACCEPTED_DELIVERY_THRESHOLD = DELIVERY_RANK['sent-to-terminal'];

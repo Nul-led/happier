@@ -133,6 +133,7 @@ function supervisorBackgroundHarness(input: Readonly<{
             caller: {
               kind: 'plugin',
               pluginId: background.plugin.id,
+              immutableGenerationId: 'discord-generation-1',
               contribution: background.contribution,
               materialization: {
                 machineId: 'discord-supervisor-fixture-machine',
@@ -189,6 +190,7 @@ function channelsCoreContext(): PluginInvocationContext {
     caller: {
       kind: 'plugin',
       pluginId: 'happier.channels',
+      immutableGenerationId: 'channels-generation-1',
       contribution: {
         id: 'connection-delete-v1',
         qualifiedId: 'happier.channels/actions/connection-delete-v1',
@@ -725,7 +727,9 @@ describe('Discord Gateway supervisor', () => {
 
   it('reports unproven continuity against the successor authority before a fingerprint replacement starts', async () => {
     let current = snapshot({ authorityEpoch: 7, requiresFullSharedMessageContent: false });
+    let connectionHasHistoryGap = false;
     const lifecycle: string[] = [];
+    const automationReports: unknown[] = [];
     let resolveFirst!: (result: DiscordGatewayWorkerResult) => void;
     const firstWorker = {
       result: new Promise<DiscordGatewayWorkerResult>((resolve) => { resolveFirst = resolve; }),
@@ -736,12 +740,21 @@ describe('Discord Gateway supervisor', () => {
       result: new Promise<DiscordGatewayWorkerResult>((resolve) => { resolveSecond = resolve; }),
       stop: vi.fn(() => resolveSecond({ kind: 'stopped' })),
     };
-    const workerFactory = vi.fn(() => {
+    const workerFactory = vi.fn((input: Readonly<{
+      reportConnectionStatus?: (status: 'ready' | 'reconnecting') => void | Promise<void>;
+    }>) => {
       lifecycle.push('worker');
-      return workerFactory.mock.calls.length === 1 ? firstWorker : secondWorker;
+      if (workerFactory.mock.calls.length === 1) return firstWorker;
+      return {
+        ...secondWorker,
+        result: (async () => {
+          await input.reportConnectionStatus?.('ready');
+          return await secondWorker.result;
+        })(),
+      };
     });
     const supervisor = createDiscordGatewaySupervisor({ workerFactory });
-    const { background } = supervisorBackgroundHarness({
+    const { actions, background } = supervisorBackgroundHarness({
       supervisor,
       connectedAccounts: {
         materialize: vi.fn(async () => ({ kind: 'environment' as const, env: { DISCORD_BOT_TOKEN: 'bot-token' } })),
@@ -756,15 +769,58 @@ describe('Discord Gateway supervisor', () => {
       },
       executeCore: async (action, actionInput) => {
         if (action.localId === CONVERSATION_CORE_PROVIDER_ACTION_IDS_V1.connectionsList) {
-          return { [current.connectionId]: current };
+          return connectionHasHistoryGap ? {} : { [current.connectionId]: current };
         }
         if (action.localId === CONVERSATION_CORE_PROVIDER_ACTION_IDS_V1.transportFactReport) {
           lifecycle.push(`fact:${JSON.stringify(actionInput)}`);
+          connectionHasHistoryGap = true;
           return { kind: 'recorded' };
         }
         throw new Error(`Unexpected core Action ${action.localId}`);
       },
+      executeAutomation: async (action, input) => {
+        if (action === 'automation.event.sources.list') {
+          return {
+            kind: 'page',
+            revision: '24',
+            definitions: [{
+              automationId: '11111111-1111-4111-8111-111111111111',
+              triggerId: 'discord-current',
+              triggerRevision: 4,
+              eventRef: {
+                pluginId: 'happier.channel.discord',
+                localId: 'automation/channel-message-observed-v1',
+              },
+              sourceInstanceId: 'discord:application:application-1:channel:123',
+              sourceSelectorId: '22222222-2222-4222-8222-222222222222',
+              sourceContractVersion: 1,
+              sourceConfig: { v: 1 },
+              observationTransport: {
+                kind: 'socket',
+                watcherMaterializationRef: {
+                  pluginId: 'happier.channel.discord',
+                  machineId: 'machine-1',
+                  materializationId: 'materialization-1',
+                },
+              },
+              filter: null,
+              maximumObservationAgeMs: null,
+            }],
+            nextCursor: null,
+          };
+        }
+        if (action === 'automation.event.source.status.report') {
+          automationReports.push(input);
+          return {};
+        }
+        throw new Error(`Unexpected Automation Action ${action}`);
+      },
     });
+    const workerAttemptCount = (): number => actions.execute.mock.calls.filter(
+      ([action]) => typeof action !== 'string'
+        && action.pluginId === 'happier.channel.discord'
+        && action.localId === DISCORD_GATEWAY_WORKER_ATTEMPT_ACTION_ID,
+    ).length;
 
     await supervisor.reconcile(background);
     await vi.waitFor(() => expect(workerFactory).toHaveBeenCalledTimes(1));
@@ -775,8 +831,43 @@ describe('Discord Gateway supervisor', () => {
     expect(workerFactory).toHaveBeenCalledTimes(1);
 
     await supervisor.reconcile(background);
-    await vi.waitFor(() => expect(workerFactory).toHaveBeenCalledTimes(2));
+    expect(workerFactory).toHaveBeenCalledTimes(1);
+    expect(workerAttemptCount()).toBe(1);
 
+    expect(lifecycle).toEqual([
+      'worker',
+      `fact:${JSON.stringify({
+        connectionId: 'connection-1',
+        authorityEpoch: 8,
+        fact: { kind: 'historyGap', reason: 'providerHistoryUnavailable' },
+      })}`,
+    ]);
+    expect(automationReports).toEqual([
+      expect.objectContaining({
+        kind: 'catalogReconciliation',
+        scope: { kind: 'socket' },
+        observedRevision: '24',
+      }),
+      expect.objectContaining({
+        kind: 'source',
+        triggerId: 'discord-current',
+        state: 'attention',
+        code: 'historyGap',
+      }),
+    ]);
+
+    // Channels excludes the gapped connection until the user accepts a new
+    // baseline. The stale reconciliation snapshot that reported the gap must
+    // not start a successor, and clearing that existing fact is the only
+    // recovery signal needed to resume ordinary worker readiness.
+    await supervisor.reconcile(background);
+    expect(workerFactory).toHaveBeenCalledTimes(1);
+    expect(workerAttemptCount()).toBe(1);
+    connectionHasHistoryGap = false;
+    await supervisor.reconcile(background);
+    await vi.waitFor(() => expect(workerFactory).toHaveBeenCalledTimes(2));
+    expect(workerFactory).toHaveBeenCalledTimes(2);
+    expect(workerAttemptCount()).toBe(2);
     expect(lifecycle).toEqual([
       'worker',
       `fact:${JSON.stringify({
@@ -786,7 +877,22 @@ describe('Discord Gateway supervisor', () => {
       })}`,
       'worker',
     ]);
-    expect(workerFactory).toHaveBeenCalledTimes(2);
+    expect(automationReports).toEqual([
+      expect.objectContaining({ kind: 'catalogReconciliation', scope: { kind: 'socket' } }),
+      expect.objectContaining({
+        kind: 'source',
+        triggerId: 'discord-current',
+        state: 'attention',
+        code: 'historyGap',
+      }),
+      expect.objectContaining({ kind: 'catalogReconciliation', scope: { kind: 'socket' } }),
+      expect.objectContaining({
+        kind: 'source',
+        triggerId: 'discord-current',
+        state: 'observing',
+        code: 'none',
+      }),
+    ]);
     await supervisor.dispose();
   });
 
@@ -1305,6 +1411,7 @@ describe('Discord Gateway supervisor', () => {
   it('reports the continuity gap of a resumable worker stopped by an unavailable reconciliation authority before recovery', async () => {
     const current = snapshot();
     let listAvailable = true;
+    let connectionHasHistoryGap = false;
     const reportedFacts: unknown[] = [];
     const events: string[] = [];
     const workerResults: DiscordGatewayWorkerResult[] = [];
@@ -1322,11 +1429,12 @@ describe('Discord Gateway supervisor', () => {
     const executeCore = async (action: Readonly<{ localId: string }>, actionInput: unknown) => {
       if (action.localId === CONVERSATION_CORE_PROVIDER_ACTION_IDS_V1.connectionsList) {
         if (!listAvailable) throw new Error('Channels connections list is unavailable.');
-        return { [current.connectionId]: current };
+        return connectionHasHistoryGap ? {} : { [current.connectionId]: current };
       }
       if (action.localId === CONVERSATION_CORE_PROVIDER_ACTION_IDS_V1.transportFactReport) {
         events.push('fact');
         reportedFacts.push(actionInput);
+        connectionHasHistoryGap = true;
         return { kind: 'recorded' };
       }
       throw new Error(`Unexpected core Action ${action.localId}`);
@@ -1363,6 +1471,12 @@ describe('Discord Gateway supervisor', () => {
 
     listAvailable = true;
     await supervisor.reconcile(background);
+    expect(workerFactory).toHaveBeenCalledTimes(1);
+
+    // Channels owns the retained gap and excludes it from reconciliation until
+    // an explicit baseline repair clears that canonical admission block.
+    connectionHasHistoryGap = false;
+    await supervisor.reconcile(background);
     await vi.waitFor(() => expect(workerFactory).toHaveBeenCalledTimes(2));
 
     expect(reportedFacts).toEqual([
@@ -1379,6 +1493,7 @@ describe('Discord Gateway supervisor', () => {
   it('reports the continuity gap of a resumable worker whose authoritative connection read fails before recovery', async () => {
     const current = snapshot();
     let readAvailable = true;
+    let connectionHasHistoryGap = false;
     const reportedFacts: unknown[] = [];
     const workerResults: DiscordGatewayWorkerResult[] = [];
     const workerStops: Array<() => void> = [];
@@ -1391,10 +1506,11 @@ describe('Discord Gateway supervisor', () => {
     const supervisor = createDiscordGatewaySupervisor({ workerFactory });
     const executeCore = async (action: Readonly<{ localId: string }>, actionInput: unknown) => {
       if (action.localId === CONVERSATION_CORE_PROVIDER_ACTION_IDS_V1.connectionsList) {
-        return { [current.connectionId]: current };
+        return connectionHasHistoryGap ? {} : { [current.connectionId]: current };
       }
       if (action.localId === CONVERSATION_CORE_PROVIDER_ACTION_IDS_V1.transportFactReport) {
         reportedFacts.push(actionInput);
+        connectionHasHistoryGap = true;
         return { kind: 'recorded' };
       }
       throw new Error(`Unexpected core Action ${action.localId}`);
@@ -1427,6 +1543,10 @@ describe('Discord Gateway supervisor', () => {
     await supervisor.reconcile(background);
 
     readAvailable = true;
+    await supervisor.reconcile(background);
+    expect(workerFactory).toHaveBeenCalledTimes(1);
+
+    connectionHasHistoryGap = false;
     await supervisor.reconcile(background);
     await vi.waitFor(() => expect(workerFactory).toHaveBeenCalledTimes(2));
 
@@ -1508,6 +1628,7 @@ describe('Discord Gateway supervisor', () => {
 
   it('reports the continuity gap of a resumable worker whose runner generation retired before the replacement runner admits', async () => {
     const current = snapshot();
+    let connectionHasHistoryGap = false;
     const reportedFacts: unknown[] = [];
     const events: string[] = [];
     const workerResults: DiscordGatewayWorkerResult[] = [];
@@ -1524,11 +1645,12 @@ describe('Discord Gateway supervisor', () => {
     const supervisor = createDiscordGatewaySupervisor({ workerFactory });
     const executeCore = async (action: Readonly<{ localId: string }>, actionInput: unknown) => {
       if (action.localId === CONVERSATION_CORE_PROVIDER_ACTION_IDS_V1.connectionsList) {
-        return { [current.connectionId]: current };
+        return connectionHasHistoryGap ? {} : { [current.connectionId]: current };
       }
       if (action.localId === CONVERSATION_CORE_PROVIDER_ACTION_IDS_V1.transportFactReport) {
         events.push('fact');
         reportedFacts.push(actionInput);
+        connectionHasHistoryGap = true;
         return { kind: 'recorded' };
       }
       throw new Error(`Unexpected core Action ${action.localId}`);
@@ -1577,6 +1699,11 @@ describe('Discord Gateway supervisor', () => {
       signal: replacementSignal.signal,
     });
     const replacementRun = supervisor.run(replacementBackground);
+    await vi.waitFor(() => expect(reportedFacts).toHaveLength(1));
+    expect(workerFactory).toHaveBeenCalledTimes(1);
+
+    connectionHasHistoryGap = false;
+    await supervisor.reconcile(replacementBackground);
     await vi.waitFor(() => expect(workerFactory).toHaveBeenCalledTimes(2));
 
     expect(reportedFacts).toEqual([

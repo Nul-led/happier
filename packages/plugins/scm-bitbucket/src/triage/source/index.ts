@@ -21,7 +21,6 @@ export {
 export { toTriageSourceFailure } from './failures.js';
 export {
   buildBitbucketLocalRef,
-  matchesBitbucketEntryLocator,
   toBitbucketPresentObservation,
 } from './observations.js';
 export { listBitbucketSourceInstances } from './listInstances.js';

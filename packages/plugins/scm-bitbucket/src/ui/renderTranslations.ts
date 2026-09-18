@@ -1,5 +1,7 @@
 export const BITBUCKET_RENDER_UI_TRANSLATIONS = Object.freeze({
   "en": Object.freeze({
+    "plugins.bitbucket.ui.showReturnedReplies": "Show returned replies",
+    "plugins.bitbucket.ui.replyToComment": "Reply to comment {id}",
     "plugins.bitbucket.ui.readFailed": "Bitbucket could not complete this read.",
     "plugins.bitbucket.ui.openResults": "Open results for {item}",
     "plugins.bitbucket.ui.entriesRead": "{count} entry/entries read.",
@@ -38,6 +40,8 @@ export const BITBUCKET_RENDER_UI_TRANSLATIONS = Object.freeze({
     "plugins.bitbucket.ui.invalidInput.description": "Triage supplied a detail input this Bitbucket build does not accept.",
   }),
   "de": Object.freeze({
+    "plugins.bitbucket.ui.showReturnedReplies": "Geladene Antworten anzeigen",
+    "plugins.bitbucket.ui.replyToComment": "Antwort auf Kommentar {id}",
     "plugins.bitbucket.ui.readFailed": "Bitbucket konnte diesen Lesevorgang nicht abschließen.",
     "plugins.bitbucket.ui.openResults": "Ergebnisse für {item} öffnen",
     "plugins.bitbucket.ui.entriesRead": "{count} Einträge gelesen.",
@@ -76,6 +80,8 @@ export const BITBUCKET_RENDER_UI_TRANSLATIONS = Object.freeze({
     "plugins.bitbucket.ui.invalidInput.description": "Triage hat Detaildaten bereitgestellt, die diese Bitbucket-Version nicht akzeptiert.",
   }),
   "ru": Object.freeze({
+    "plugins.bitbucket.ui.showReturnedReplies": "Показать загруженные ответы",
+    "plugins.bitbucket.ui.replyToComment": "Ответ на комментарий {id}",
     "plugins.bitbucket.ui.readFailed": "Bitbucket не удалось завершить чтение.",
     "plugins.bitbucket.ui.openResults": "Открыть результаты для {item}",
     "plugins.bitbucket.ui.entriesRead": "Прочитано записей: {count}.",
@@ -114,6 +120,8 @@ export const BITBUCKET_RENDER_UI_TRANSLATIONS = Object.freeze({
     "plugins.bitbucket.ui.invalidInput.description": "Triage предоставил подробный ввод, который Bitbucket не принимает.",
   }),
   "pl": Object.freeze({
+    "plugins.bitbucket.ui.showReturnedReplies": "Pokaż pobrane odpowiedzi",
+    "plugins.bitbucket.ui.replyToComment": "Odpowiedź na komentarz {id}",
     "plugins.bitbucket.ui.readFailed": "Bitbucket nie zdołał ukończyć odczytu.",
     "plugins.bitbucket.ui.openResults": "Otwórz wyniki dla {item}",
     "plugins.bitbucket.ui.entriesRead": "Odczytane wpisy: {count}.",
@@ -152,6 +160,8 @@ export const BITBUCKET_RENDER_UI_TRANSLATIONS = Object.freeze({
     "plugins.bitbucket.ui.invalidInput.description": "Triage dostarczył szczegółowe informacje, które Bitbucket nie akceptuje dla tej kompilacji.",
   }),
   "es": Object.freeze({
+    "plugins.bitbucket.ui.showReturnedReplies": "Mostrar respuestas recibidas",
+    "plugins.bitbucket.ui.replyToComment": "Respuesta al comentario {id}",
     "plugins.bitbucket.ui.readFailed": "Bitbucket no pudo completar esta lectura.",
     "plugins.bitbucket.ui.openResults": "Abrir los resultados de {item}",
     "plugins.bitbucket.ui.entriesRead": "Entradas leídas: {count}.",
@@ -190,6 +200,8 @@ export const BITBUCKET_RENDER_UI_TRANSLATIONS = Object.freeze({
     "plugins.bitbucket.ui.invalidInput.description": "Triage proporcionó una entrada de detalle que este build de Bitbucket no acepta.",
   }),
   "fr": Object.freeze({
+    "plugins.bitbucket.ui.showReturnedReplies": "Afficher les réponses reçues",
+    "plugins.bitbucket.ui.replyToComment": "Réponse au commentaire {id}",
     "plugins.bitbucket.ui.readFailed": "Bitbucket n’a pas pu terminer cette lecture.",
     "plugins.bitbucket.ui.openResults": "Ouvrir les résultats de {item}",
     "plugins.bitbucket.ui.entriesRead": "Entrées lues : {count}.",
@@ -228,6 +240,8 @@ export const BITBUCKET_RENDER_UI_TRANSLATIONS = Object.freeze({
     "plugins.bitbucket.ui.invalidInput.description": "Triage a fourni une entrée de détail que cette build Bitbucket ne accepte pas",
   }),
   "it": Object.freeze({
+    "plugins.bitbucket.ui.showReturnedReplies": "Mostra le risposte ricevute",
+    "plugins.bitbucket.ui.replyToComment": "Risposta al commento {id}",
     "plugins.bitbucket.ui.readFailed": "Bitbucket non ha potuto completare questa lettura.",
     "plugins.bitbucket.ui.openResults": "Apri i risultati di {item}",
     "plugins.bitbucket.ui.entriesRead": "Voci lette: {count}.",
@@ -266,6 +280,8 @@ export const BITBUCKET_RENDER_UI_TRANSLATIONS = Object.freeze({
     "plugins.bitbucket.ui.invalidInput.description": "Triage ha fornito un input dettagliato che questo build di Bitbucket non accetta.",
   }),
   "pt": Object.freeze({
+    "plugins.bitbucket.ui.showReturnedReplies": "Mostrar respostas recebidas",
+    "plugins.bitbucket.ui.replyToComment": "Resposta ao comentário {id}",
     "plugins.bitbucket.ui.readFailed": "O Bitbucket não conseguiu concluir esta leitura.",
     "plugins.bitbucket.ui.openResults": "Abrir os resultados de {item}",
     "plugins.bitbucket.ui.entriesRead": "Entradas lidas: {count}.",
@@ -304,6 +320,8 @@ export const BITBUCKET_RENDER_UI_TRANSLATIONS = Object.freeze({
     "plugins.bitbucket.ui.invalidInput.description": "A Triage forneceu uma entrada de detalhes que esta construção do Bitbucket não aceita.",
   }),
   "ca": Object.freeze({
+    "plugins.bitbucket.ui.showReturnedReplies": "Mostra les respostes rebudes",
+    "plugins.bitbucket.ui.replyToComment": "Resposta al comentari {id}",
     "plugins.bitbucket.ui.readFailed": "Bitbucket no ha pogut completar aquesta lectura.",
     "plugins.bitbucket.ui.openResults": "Obre els resultats de {item}",
     "plugins.bitbucket.ui.entriesRead": "Entrades llegides: {count}.",
@@ -342,6 +360,8 @@ export const BITBUCKET_RENDER_UI_TRANSLATIONS = Object.freeze({
     "plugins.bitbucket.ui.invalidInput.description": "Triage ha proporcionat una entrada detallada que aquesta construcció Bitbucket no accepta.",
   }),
   "zh-Hans": Object.freeze({
+    "plugins.bitbucket.ui.showReturnedReplies": "显示已返回的回复",
+    "plugins.bitbucket.ui.replyToComment": "回复评论 {id}",
     "plugins.bitbucket.ui.readFailed": "Bitbucket 无法完成此次读取。",
     "plugins.bitbucket.ui.openResults": "打开 {item} 的结果",
     "plugins.bitbucket.ui.entriesRead": "已读取 {count} 条条目。",
@@ -380,6 +400,8 @@ export const BITBUCKET_RENDER_UI_TRANSLATIONS = Object.freeze({
     "plugins.bitbucket.ui.invalidInput.description": "Triage 提供的详细输入不被这个 Bitbucket 构建接受。",
   }),
   "zh-Hant": Object.freeze({
+    "plugins.bitbucket.ui.showReturnedReplies": "顯示已傳回的回覆",
+    "plugins.bitbucket.ui.replyToComment": "回覆留言 {id}",
     "plugins.bitbucket.ui.readFailed": "Bitbucket 無法完成此次讀取。",
     "plugins.bitbucket.ui.openResults": "開啟 {item} 的結果",
     "plugins.bitbucket.ui.entriesRead": "已讀取 {count} 筆項目。",
@@ -418,6 +440,8 @@ export const BITBUCKET_RENDER_UI_TRANSLATIONS = Object.freeze({
     "plugins.bitbucket.ui.invalidInput.description": "Triage 提供的細節，這個 Bitbucket 建建不接受。",
   }),
   "ja": Object.freeze({
+    "plugins.bitbucket.ui.showReturnedReplies": "取得済みの返信を表示",
+    "plugins.bitbucket.ui.replyToComment": "コメント {id} への返信",
     "plugins.bitbucket.ui.readFailed": "Bitbucket はこの読み取りを完了できませんでした。",
     "plugins.bitbucket.ui.openResults": "{item} の結果を開く",
     "plugins.bitbucket.ui.entriesRead": "{count} 件の項目を読み取りました。",

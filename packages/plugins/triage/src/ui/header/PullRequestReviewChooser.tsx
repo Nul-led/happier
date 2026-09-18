@@ -23,7 +23,13 @@ import {
 } from '../../sessions/reviewEngineOptions.js';
 import type { TriagePendingPullRequestReviewV1 } from './useEntrySessionStart.js';
 
-type ReviewChooserFailureV1 = 'engineList' | 'reviewRefused' | 'reviewUnknown' | 'open';
+type ReviewChooserFailureV1 =
+  | 'engineList'
+  | 'reviewRefused'
+  /** Some chosen engines started and some did not; only the latter may repeat. */
+  | 'reviewPartial'
+  | 'reviewUnknown'
+  | 'open';
 
 type ReviewChooserPhaseV1 =
   | Readonly<{ kind: 'idle' }>
@@ -158,6 +164,18 @@ export function TriagePullRequestReviewChooser(
       setPhase({ kind: 'failed', failure: 'reviewRefused', options, selected });
       return;
     }
+    // The fan-out answers per engine. A run that never started must be visible
+    // and repeatable, and the runs that DID start must not be repeated with it,
+    // so the retry selection narrows to exactly the refused engines.
+    if (result.data.failedEngineIds.length > 0) {
+      setPhase({
+        kind: 'failed',
+        failure: 'reviewPartial',
+        options,
+        selected: [...result.data.failedEngineIds],
+      });
+      return;
+    }
     await openSession();
   }, [host, openSession, props.pending]);
 
@@ -165,7 +183,7 @@ export function TriagePullRequestReviewChooser(
   const failed = phase.kind === 'failed' ? phase : null;
   const options = choosing?.options ?? failed?.options ?? [];
   const selected = choosing?.selected ?? failed?.selected ?? [];
-  const canRetryReview = failed?.failure === 'reviewRefused';
+  const canRetryReview = failed?.failure === 'reviewRefused' || failed?.failure === 'reviewPartial';
   const mustOnlyOpen = failed?.failure === 'reviewUnknown' || failed?.failure === 'open';
 
   return (
@@ -241,16 +259,20 @@ export function TriagePullRequestReviewChooser(
             ? 'plugins.triage.surface.reviewChooser.listFailed'
             : failed.failure === 'reviewRefused'
               ? 'plugins.triage.surface.reviewChooser.refused'
-              : failed.failure === 'reviewUnknown'
-                ? 'plugins.triage.surface.reviewChooser.unknown'
-                : 'plugins.triage.surface.reviewChooser.openFailed'}
+              : failed.failure === 'reviewPartial'
+                ? 'plugins.triage.surface.reviewChooser.partial'
+                : failed.failure === 'reviewUnknown'
+                  ? 'plugins.triage.surface.reviewChooser.unknown'
+                  : 'plugins.triage.surface.reviewChooser.openFailed'}
           label={failed.failure === 'engineList'
             ? 'The available review engines could not be read.'
             : failed.failure === 'reviewRefused'
               ? 'The pull request changed or the review could not be started. The linked session is still available.'
-              : failed.failure === 'reviewUnknown'
-                ? 'Happier could not confirm whether the review started. It will not be started a second time.'
-                : 'The linked session could not be opened.'}
+              : failed.failure === 'reviewPartial'
+                ? 'Some of the review engines you chose did not start. Trying again starts only those, and the reviews already running are left alone.'
+                : failed.failure === 'reviewUnknown'
+                  ? 'Happier could not confirm whether the review started. It will not be started a second time.'
+                  : 'The linked session could not be opened.'}
         />
       ) : null}
 

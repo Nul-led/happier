@@ -1,4 +1,4 @@
-import type { AgentId, BundledAgentId, CanonicalAgentId } from './types.js';
+import type { AgentId, CanonicalAgentId } from './types.js';
 import { mergeAuthoredWithGeneratedAgentFacts, readBundledAgentFact } from './definitions/generatedFacts.js';
 import type { AgentModelDescriptor } from '@happier-dev/protocol';
 
@@ -67,20 +67,20 @@ export type AgentModelConfig = Readonly<{
   staticModels?: readonly AgentModelDescriptor[];
 }>;
 
-const AUTHORED_AGENT_MODEL_CONFIG = Object.freeze({
-} satisfies Partial<Record<CanonicalAgentId, AgentModelConfig>>);
+const AUTHORED_AGENT_MODEL_CONFIG: Readonly<Partial<Record<CanonicalAgentId, AgentModelConfig>>> = Object.freeze({});
 
-export const CANONICAL_AGENT_MODEL_CONFIG: Readonly<Record<CanonicalAgentId, AgentModelConfig>> =
-  mergeAuthoredWithGeneratedAgentFacts<AgentModelConfig>({
+export type AgentModelConfigFact = AgentModelConfig | null;
+
+export const CANONICAL_AGENT_MODEL_CONFIG: Readonly<Record<CanonicalAgentId, AgentModelConfigFact>> =
+  mergeAuthoredWithGeneratedAgentFacts<AgentModelConfig, null>({
     authored: AUTHORED_AGENT_MODEL_CONFIG,
     label: 'model config',
-    readGenerated: (definition) => definition.modelConfig,
+    readGenerated: (definition) => 'modelConfig' in definition ? definition.modelConfig : undefined,
+    resolveMissing: () => null,
   });
 
-export const AGENT_MODEL_CONFIG: Readonly<Record<CanonicalAgentId, AgentModelConfig>> = CANONICAL_AGENT_MODEL_CONFIG;
+export const AGENT_MODEL_CONFIG: Readonly<Record<CanonicalAgentId, AgentModelConfigFact>> = CANONICAL_AGENT_MODEL_CONFIG;
 
-export function getAgentModelConfig(agentId: BundledAgentId): AgentModelConfig;
-export function getAgentModelConfig(agentId: AgentId): AgentModelConfig | null;
 export function getAgentModelConfig(agentId: AgentId): AgentModelConfig | null {
   return readBundledAgentFact(AGENT_MODEL_CONFIG, agentId);
 }

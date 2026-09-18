@@ -10,6 +10,7 @@ import {
     assertPortableGitWorkspaceEntries,
     classifyGitPortableWorkspacePath,
     createGitWorkspaceCheckout,
+    inspectGitWorkspaceLocation,
     materializeGitWorkspaceSourceCheckout,
     verifyGitPreparedReviewWorkspace,
     reconcileGitWorkspacePostMaterialization,
@@ -26,7 +27,7 @@ async function makeTempDir(prefix: string): Promise<string> {
 
 async function runGit(cwd: string, args: readonly string[]): Promise<string> {
     const { stdout } = await execFile('git', [...args], { cwd });
-    return stdout.trim();
+    return stdout.trimEnd();
 }
 
 async function configureGitRepo(cwd: string): Promise<void> {
@@ -39,7 +40,36 @@ async function writeTrackedFile(cwd: string, relativePath: string, contents: str
     await runGit(cwd, ['add', relativePath]);
 }
 
-describe('git workspace integration', () => {
+describe('git workspace integration', { timeout: 20_000 }, () => {
+    it('reports the exact committed revision without including dirty workspace state', async () => {
+        const repoRoot = await makeTempDir('git-workspace-inspection-revision-');
+        try {
+            await runGit(repoRoot, ['init']);
+            await configureGitRepo(repoRoot);
+            await writeTrackedFile(repoRoot, 'README.md', 'committed\n');
+            await runGit(repoRoot, ['commit', '-m', 'initial']);
+            const committedRevision = await runGit(repoRoot, ['rev-parse', 'HEAD']);
+            await writeTrackedFile(repoRoot, 'staged.txt', 'staged\n');
+            await writeFile(join(repoRoot, 'README.md'), 'dirty\n', 'utf8');
+            await writeFile(join(repoRoot, 'untracked.txt'), 'untracked\n', 'utf8');
+            const statusBefore = await runGit(repoRoot, ['status', '--porcelain']);
+
+            await expect(runWithRealGitScmRuntime(() => inspectGitWorkspaceLocation({
+                context: {
+                    cwd: repoRoot,
+                    projectKey: `test:${repoRoot}`,
+                    detection: { isRepo: true, rootPath: repoRoot, mode: '.git' },
+                },
+            }))).resolves.toMatchObject({ committedRevision });
+            expect(statusBefore).toContain(' M README.md');
+            expect(statusBefore).toContain('A  staged.txt');
+            expect(statusBefore).toContain('?? untracked.txt');
+            await expect(runGit(repoRoot, ['status', '--porcelain'])).resolves.toBe(statusBefore);
+        } finally {
+            await rm(repoRoot, { recursive: true, force: true });
+        }
+    });
+
     it('reports the already-prepared checkout local HEAD without mutating it', async () => {
         const repoRoot = await makeTempDir('git-review-workspace-verify-');
         try {

@@ -3,6 +3,7 @@ import {
   CONVERSATION_CORE_PLUGIN_ID_V1,
 } from '@happier-dev/channels-protocol/v1';
 import { definePlugin } from '@happier-dev/plugin-sdk';
+import { CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1 } from '@happier-dev/plugin-sdk/connected-accounts';
 import type { PluginJsonSchema } from '@happier-dev/plugin-sdk/protocol';
 
 import { telegramConnectedAccountRuntime } from './auth/connectedAccountRuntime.js';
@@ -95,6 +96,7 @@ export const { manifest: PLUGIN_MANIFEST, activate } = definePlugin({
             {
               id: 'bot-token',
               kind: 'manual',
+              directExport: { contractVersion: CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1 },
               title: 'Bot token',
               outcomeReconciliation: 'none',
               fields: [

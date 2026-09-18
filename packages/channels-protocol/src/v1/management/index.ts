@@ -106,6 +106,16 @@ export type {
     ConversationBindingUpdateResultV1,
 } from './bindings.js';
 export {
+    ConversationPermissionMediationSourceCurrentnessInputV1JsonSchema,
+    ConversationPermissionMediationSourceCurrentnessInputV1Schema,
+    ConversationPermissionMediationSourceCurrentnessResultV1JsonSchema,
+    ConversationPermissionMediationSourceCurrentnessResultV1Schema,
+} from './permissionMediationSourceCurrentness.js';
+export type {
+    ConversationPermissionMediationSourceCurrentnessInputV1,
+    ConversationPermissionMediationSourceCurrentnessResultV1,
+} from './permissionMediationSourceCurrentness.js';
+export {
     CONVERSATION_CONNECTION_CREATE_SELECTABLE_TRANSPORTS_V1,
     CONVERSATION_CONNECTION_SELECTABLE_TRANSPORTS_V1,
     CONVERSATION_CONNECTION_WEBHOOK_SOURCE_INSTANCE_ID_PREFIX_V1,

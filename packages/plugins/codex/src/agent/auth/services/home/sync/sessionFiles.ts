@@ -1,5 +1,6 @@
 import { basename, isAbsolute, join } from 'node:path';
 
+import { readExactCodexProviderSessionId } from '../../../../../protocol/runtimeDescriptorV1.js';
 import { isMatchingCodexRolloutFileName } from '../../../../rollout/discovery/sessionFileSearch.js';
 
 export type CodexSessionImportRoot = Readonly<{
@@ -55,11 +56,18 @@ export function resolveCodexVendorResumeIdFromImportedSessionFile(
   return null;
 }
 
-export function normalizeCodexVendorResumeId(value: unknown): string | null {
-  const trimmed = readNonEmptyString(value);
-  if (!trimmed) return null;
-  if (trimmed.includes('/') || trimmed.includes('\\')) return null;
-  return trimmed;
+/**
+ * The vendor resume id is the provider session id that becomes a rollout
+ * file-name suffix and a `threads.id` row key, so presence is decided by the
+ * package's exact provider-session reader and the bytes are never rewritten.
+ * A value carrying a path separator can never be a rollout file-name suffix,
+ * so it is refused here rather than searched for.
+ */
+export function readExactCodexVendorResumeId(value: unknown): string | null {
+  const vendorResumeId = readExactCodexProviderSessionId(value);
+  if (!vendorResumeId) return null;
+  if (vendorResumeId.includes('/') || vendorResumeId.includes('\\')) return null;
+  return vendorResumeId;
 }
 
 export function resolveCodexMaterializedSessionsRoot(targetMaterializedRoot: string): string {

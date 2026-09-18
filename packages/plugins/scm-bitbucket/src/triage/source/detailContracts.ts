@@ -243,6 +243,9 @@ export const BitbucketOverviewResultV1Schema = defineProtocolUnion([
     kind: defineProtocolLiteral('overview'),
     observedAtMs: TimestampSchema,
     observation: TriageGetResultV1Schema,
+    /** Native Markdown fitted together with the observation against the Action envelope. */
+    description: defineProtocolUtf8String({ maxUtf8Bytes: EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES }).nullable(),
+    descriptionTruncated: BitbucketBooleanSchema,
   }, { policy: 'closed' }),
   BitbucketDetailUnavailableSchema,
 ]);

@@ -207,7 +207,11 @@ export const azureDevopsHostingProviderAdapter: AzureDevopsScmHostingProviderAda
   detectRemote(input) {
     const parsed = parseScmRemoteUrl(input.remoteUrl);
     if (!parsed) return null;
-    const project = readAzureRemoteProject(parsed.scheme, parsed.host, parsed.path);
+    // Every Azure DevOps base this adapter builds is `https://<host>` plus a path; a ported
+    // remote would be silently re-spelled without its port, so it is not this provider's.
+    if (parsed.syntax === 'url' && parsed.port !== null) return null;
+    const scheme = parsed.syntax === 'scp' ? ('scp:' as const) : parsed.protocol;
+    const project = readAzureRemoteProject(scheme, parsed.host, parsed.path);
     if (!project) return null;
     return {
       id: AZURE_DEVOPS_SCM_HOSTING_PROVIDER_ID,

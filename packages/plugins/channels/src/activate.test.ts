@@ -720,7 +720,7 @@ describe('Channels core activation', () => {
       // whole family disappeared from the manifest. Five are Session-scoped:
       // transcript activity plus the four producers behind the Session
       // destination, Session info, and its two Composer chips.
-      expect(expected.filter((entry) => entry.family === 'actions')).toHaveLength(26);
+      expect(expected.filter((entry) => entry.family === 'actions')).toHaveLength(27);
       expect(expected.filter((entry) => entry.family === 'resources')).toHaveLength(8);
       expect(expected.filter((entry) => entry.family === 'backgroundServices')).toHaveLength(2);
       expect(activation.registrations()).toEqual(expected);
@@ -3384,6 +3384,7 @@ describe('Channels core activation', () => {
           id: 'channel-background',
           qualifiedId: 'happier.channel.discord/background/channel-background',
         },
+        immutableGenerationId: 'channels-activate-fixture-generation',
         materialization: exactConnection.payload.transportOrigin.materializationRef,
       },
       signal: new AbortController().signal,

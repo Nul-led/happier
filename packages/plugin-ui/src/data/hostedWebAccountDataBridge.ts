@@ -95,17 +95,11 @@ function optionsWithoutSignal<TOptions extends Readonly<Record<string, unknown>>
   return Object.freeze(rest as Record<string, JsonValue>);
 }
 
-async function requestTransactionMethod<TValue>(
-  request: (options?: Readonly<{ signal?: AbortSignal }>) => Promise<TValue>,
-  outer: Readonly<{ signal?: AbortSignal }> | undefined,
-  inner: Readonly<{ signal?: AbortSignal }> | undefined,
-): Promise<TValue> {
-  const merged = mergeAbortSignals([outer?.signal, inner?.signal]);
-  try {
-    return await request(merged.signal ? { signal: merged.signal } : undefined);
-  } finally {
-    merged.dispose();
-  }
+function cancelledError(): PluginError {
+  return new PluginError({
+    code: 'plugin_collection_cancelled',
+    message: 'Plugin Account KV operation was cancelled',
+  });
 }
 
 /**
@@ -228,6 +222,21 @@ export function createHostedWebPluginUiDataClient(input: Readonly<{
         [],
         options,
       );
+      // Participant cancellation belongs to the whole transaction, exactly as it
+      // does in the direct UI and daemon realms: a method-scoped merge disposed
+      // when its own request settled would detach the caller's signal from the
+      // host before the commit that signal is supposed to be able to cancel.
+      const participants = new Set<AbortSignal>();
+      const composed: Array<Readonly<{ dispose(): void }>> = [];
+      const requestTransactionMethod = async <TValue>(
+        request: (requestOptions?: Readonly<{ signal?: AbortSignal }>) => Promise<TValue>,
+        inner: Readonly<{ signal?: AbortSignal }> | undefined,
+      ): Promise<TValue> => {
+        if (inner?.signal) participants.add(inner.signal);
+        const merged = mergeAbortSignals([options?.signal, inner?.signal]);
+        composed.push(merged);
+        return await request(merged.signal ? { signal: merged.signal } : undefined);
+      };
       const transaction = Object.freeze({
         get: async <TValue extends JsonValue = JsonValue>(
           key: string,
@@ -239,7 +248,6 @@ export function createHostedWebPluginUiDataClient(input: Readonly<{
               [transactionId, key],
               requestOptions,
             ),
-            options,
             getOptions,
           )
         ),
@@ -252,7 +260,6 @@ export function createHostedWebPluginUiDataClient(input: Readonly<{
             [transactionId, key, { value, expectedVersion: setOptions.expectedVersion }],
             requestOptions,
           ),
-          options,
           setOptions,
         ) as Awaited<ReturnType<PluginUiDataClient['accountKv']['set']>>,
         delete: async (key: string, deleteOptions: Readonly<{
@@ -264,17 +271,27 @@ export function createHostedWebPluginUiDataClient(input: Readonly<{
             [transactionId, key, { expectedVersion: deleteOptions.expectedVersion }],
             requestOptions,
           ),
-          options,
           deleteOptions,
         ) as Awaited<ReturnType<PluginUiDataClient['accountKv']['delete']>>,
       });
       try {
         const result = await operation(transaction);
-        await requestData('accountKv.transaction.commit', [transactionId], options);
+        const settlement = mergeAbortSignals([options?.signal, ...participants]);
+        composed.push(settlement);
+        // A transaction cancelled before its commit reaches the host must not
+        // write. The host rolls the transaction back through the catch below.
+        if (settlement.signal?.aborted) throw cancelledError();
+        await requestData(
+          'accountKv.transaction.commit',
+          [transactionId],
+          settlement.signal ? { signal: settlement.signal } : undefined,
+        );
         return result;
       } catch (error) {
         await requestData('accountKv.transaction.rollback', [transactionId]).catch(() => undefined);
         throw error;
+      } finally {
+        for (const merged of composed) merged.dispose();
       }
     },
   };

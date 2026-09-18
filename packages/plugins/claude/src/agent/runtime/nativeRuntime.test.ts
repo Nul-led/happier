@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import type {
+  AgentExecutionRunConversationRuntimeV1,
+  AgentExecutionRunEvent,
+  AgentExecutionRunRuntimeContextV1,
   AgentSessionOpenRequest,
   AgentSessionProviderBinding,
   AgentSessionRuntimeContext,
@@ -144,6 +147,91 @@ const context = {
 } as unknown as AgentSessionRuntimeContext;
 
 describe('createClaudeNativeRuntime', () => {
+  it('opens detached execution through the Claude conversation facet without fabricating a Session', async () => {
+    const openSession = vi.fn<ClaudeNativeSessionFactory>();
+    const openExecutionRunConversation = vi.fn(async () => {
+      const listeners = new Set<Parameters<AgentExecutionRunConversationRuntimeV1['watch']>[0]>();
+      return {
+        async send(request) {
+          for (const listener of listeners) {
+            listener({ kind: 'provider-session-id', providerSessionId: 'claude-checkpoint-1' });
+            listener({ kind: 'message-delta', turnId: request.delivery.turnId, channel: 'assistant', text: 'done' });
+            listener({ kind: 'turn-complete', turnId: request.delivery.turnId });
+          }
+          return { status: 'admitted' as const };
+        },
+        watch(listener) {
+          listeners.add(listener);
+          return { dispose: () => { listeners.delete(listener); } };
+        },
+        async dispose() {},
+      } satisfies AgentExecutionRunConversationRuntimeV1;
+    });
+    const runtime = createTestClaudeNativeRuntime({
+      openSession,
+      openExecutionRunConversation,
+    });
+    const request = {
+      kind: 'create' as const,
+      runId: 'claude-run-1',
+      cwd: '/repo',
+      profile: { pluginId: 'happier.agent.claude', localId: 'default' },
+      input: { text: 'Implement it.' },
+      localInputId: 'workflow-input-1',
+    };
+    const runContext = {
+      scope: { kind: 'execution_run', executionRunId: request.runId },
+      executionRun: {
+        id: request.runId,
+        services: {
+          features: { isEnabled: () => true },
+          hooks: {},
+          fileFollow: {},
+          mcp: {},
+          toolExecution: {},
+        },
+      },
+      services: {},
+      protocols: {},
+      signal: new AbortController().signal,
+    } as unknown as AgentExecutionRunRuntimeContextV1;
+
+    const execution = await runtime.sessions!.executionRunContextV1!.open(request, runContext);
+    const events: AgentExecutionRunEvent[] = [];
+    execution.watch((event) => { events.push(event); });
+
+    expect(openSession).not.toHaveBeenCalled();
+    expect(openExecutionRunConversation).toHaveBeenCalledWith({ request, context: runContext });
+    expect(events.map((event) => event.kind)).toEqual([
+      'run-start',
+      'checkpoint',
+      'output-delta',
+      'run-complete',
+    ]);
+    expect(events.every((event) => event.runId === request.runId && !('sessionId' in event))).toBe(true);
+  });
+
+  it('rejects a detached fork before opening a Claude conversation', async () => {
+    const openExecutionRunConversation = vi.fn(async () => {
+      throw new Error('conversation must not open');
+    });
+    const runtime = createTestClaudeNativeRuntime({
+      openSession: vi.fn<ClaudeNativeSessionFactory>(),
+      openExecutionRunConversation,
+    });
+
+    await expect(runtime.sessions!.executionRunContextV1!.open({
+      kind: 'fork',
+      runId: 'claude-run-fork',
+      cwd: '/repo',
+      profile: { pluginId: 'happier.agent.claude', localId: 'default' },
+      sourceRunId: 'source-run',
+    }, {} as AgentExecutionRunRuntimeContextV1)).rejects.toThrow(
+      'Claude does not support native execution-run fork',
+    );
+    expect(openExecutionRunConversation).not.toHaveBeenCalled();
+  });
+
   it('publishes provider handoff through the AgentRuntime surface', () => {
     const runtime = createClaudeAgentRuntime({} as never);
 
@@ -1686,7 +1774,7 @@ describe('createClaudeNativeRuntime', () => {
     ]);
   });
 
-  it('does not launch a model when the host has no active selection', async () => {
+  it('does not override the configured Claude default when the host has no active selection', async () => {
     const runtime = createTestClaudeNativeRuntime({
       openSession: ({ request }) => createNativeOperations(request.sessionId).runtime,
     });
@@ -1702,12 +1790,7 @@ describe('createClaudeNativeRuntime', () => {
         options: {},
       },
       modelSelection: null,
-    }))).resolves.toMatchObject({
-      argv: [
-        '--permission-mode',
-        'default',
-      ],
-    });
+    }))).resolves.toMatchObject({ argv: [] });
   });
 
   it('publishes input rejection when Claude proves spawn failed before prompt transport', async () => {

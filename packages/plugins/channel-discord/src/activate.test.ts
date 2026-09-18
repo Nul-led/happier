@@ -73,6 +73,7 @@ function providerActionContext(input: Readonly<{
     caller: {
       kind: 'plugin',
       pluginId: input.callerPluginId,
+      immutableGenerationId: 'caller-generation-1',
       contribution: {
         id: 'connection-setup-v1',
         qualifiedId: `${input.callerPluginId}/actions/connection-setup-v1`,

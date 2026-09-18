@@ -50,7 +50,7 @@
                             "accountId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                              "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                               "type": "string"
                             },
                             "service": {
@@ -59,13 +59,13 @@
                                 "localId": {
                                   "maxLength": 256,
                                   "minLength": 1,
-                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                   "type": "string"
                                 },
                                 "pluginId": {
                                   "maxLength": 256,
                                   "minLength": 3,
-                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                   "type": "string"
                                 }
                               },
@@ -161,7 +161,7 @@
                             "accountId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                              "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                               "type": "string"
                             },
                             "service": {
@@ -170,13 +170,13 @@
                                 "localId": {
                                   "maxLength": 256,
                                   "minLength": 1,
-                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                   "type": "string"
                                 },
                                 "pluginId": {
                                   "maxLength": 256,
                                   "minLength": 3,
-                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                   "type": "string"
                                 }
                               },
@@ -263,7 +263,7 @@
                     "accountId": {
                       "maxLength": 256,
                       "minLength": 1,
-                      "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                      "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                       "type": "string"
                     },
                     "service": {
@@ -272,13 +272,13 @@
                         "localId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                           "type": "string"
                         },
                         "pluginId": {
                           "maxLength": 256,
                           "minLength": 3,
-                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                           "type": "string"
                         }
                       },
@@ -392,7 +392,7 @@
                 "accountId": {
                   "maxLength": 256,
                   "minLength": 1,
-                  "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                  "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                   "type": "string"
                 },
                 "service": {
@@ -401,13 +401,13 @@
                     "localId": {
                       "maxLength": 256,
                       "minLength": 1,
-                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                       "type": "string"
                     },
                     "pluginId": {
                       "maxLength": 256,
                       "minLength": 3,
-                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                       "type": "string"
                     }
                   },
@@ -517,13 +517,13 @@
                     "localId": {
                       "maxLength": 256,
                       "minLength": 1,
-                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                       "type": "string"
                     },
                     "pluginId": {
                       "maxLength": 256,
                       "minLength": 3,
-                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                       "type": "string"
                     }
                   },
@@ -689,7 +689,7 @@
                 "accountId": {
                   "maxLength": 256,
                   "minLength": 1,
-                  "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                  "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                   "type": "string"
                 },
                 "service": {
@@ -698,13 +698,13 @@
                     "localId": {
                       "maxLength": 256,
                       "minLength": 1,
-                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                       "type": "string"
                     },
                     "pluginId": {
                       "maxLength": 256,
                       "minLength": 3,
-                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                       "type": "string"
                     }
                   },
@@ -744,7 +744,7 @@
                         "accountId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                          "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                           "type": "string"
                         },
                         "service": {
@@ -753,13 +753,13 @@
                             "localId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                               "type": "string"
                             },
                             "pluginId": {
                               "maxLength": 256,
                               "minLength": 3,
-                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                               "type": "string"
                             }
                           },
@@ -952,13 +952,13 @@
                     "localId": {
                       "maxLength": 256,
                       "minLength": 1,
-                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                       "type": "string"
                     },
                     "pluginId": {
                       "maxLength": 256,
                       "minLength": 3,
-                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                       "type": "string"
                     }
                   },
@@ -1042,7 +1042,7 @@
                     "accountId": {
                       "maxLength": 256,
                       "minLength": 1,
-                      "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                      "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                       "type": "string"
                     },
                     "service": {
@@ -1051,13 +1051,13 @@
                         "localId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                           "type": "string"
                         },
                         "pluginId": {
                           "maxLength": 256,
                           "minLength": 3,
-                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                           "type": "string"
                         }
                       },
@@ -1275,7 +1275,7 @@
                     "accountId": {
                       "maxLength": 256,
                       "minLength": 1,
-                      "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                      "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                       "type": "string"
                     },
                     "service": {
@@ -1284,13 +1284,13 @@
                         "localId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                           "type": "string"
                         },
                         "pluginId": {
                           "maxLength": 256,
                           "minLength": 3,
-                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                           "type": "string"
                         }
                       },
@@ -1687,7 +1687,7 @@
                     "accountId": {
                       "maxLength": 256,
                       "minLength": 1,
-                      "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                      "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                       "type": "string"
                     },
                     "service": {
@@ -1696,13 +1696,13 @@
                         "localId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                           "type": "string"
                         },
                         "pluginId": {
                           "maxLength": 256,
                           "minLength": 3,
-                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                           "type": "string"
                         }
                       },
@@ -2197,7 +2197,7 @@
                     "accountId": {
                       "maxLength": 256,
                       "minLength": 1,
-                      "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                      "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                       "type": "string"
                     },
                     "service": {
@@ -2206,13 +2206,13 @@
                         "localId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                           "type": "string"
                         },
                         "pluginId": {
                           "maxLength": 256,
                           "minLength": 3,
-                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                           "type": "string"
                         }
                       },
@@ -2387,6 +2387,9 @@
           "defaultModeId": "bot-token",
           "modes": [
             {
+              "directExport": {
+                "contractVersion": "happier.team-credential-manual-connected-account-direct.v1"
+              },
               "fields": [
                 {
                   "description": "Token issued by the Discord Developer Portal for this bot.",

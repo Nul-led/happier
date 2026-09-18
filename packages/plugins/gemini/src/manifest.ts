@@ -1,5 +1,6 @@
 import { projectAgentCapabilitiesV2FromDefinition } from '@happier-dev/plugin-sdk/agents';
 import { definePlugin } from '@happier-dev/plugin-sdk';
+import { CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1 } from '@happier-dev/plugin-sdk/connected-accounts';
 import type { HookHandler } from '@happier-dev/plugin-sdk/hooks';
 
 import { AGENT_DEFINITION } from './agent/definition.js';
@@ -53,6 +54,7 @@ export const GEMINI_PLUGIN = definePlugin({
           modes: [{
             id: 'api-key',
             kind: 'manual',
+            directExport: { contractVersion: CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1 },
             outcomeReconciliation: 'none',
             fields: [{
               id: 'token',
@@ -63,6 +65,7 @@ export const GEMINI_PLUGIN = definePlugin({
           }, {
             id: 'service-account',
             kind: 'manual',
+            directExport: { contractVersion: CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1 },
             title: 'Google service account',
             outcomeReconciliation: 'none',
             fields: [{
@@ -124,7 +127,12 @@ export const GEMINI_PLUGIN = definePlugin({
           credentialKinds: ['token'],
         }],
         capabilities: projectAgentCapabilitiesV2FromDefinition(AGENT_DEFINITION.core, {
-          sessions: { open: ['create', 'resume'], delivery: ['newTurn', 'steer', 'followUp'], cancel: true },
+          sessions: {
+            open: ['create', 'resume'],
+            delivery: ['newTurn', 'followUp'],
+            cancel: true,
+            executionRunContext: { versions: [1] },
+          },
         }),
       },
       factory: createGeminiAgentRuntime,

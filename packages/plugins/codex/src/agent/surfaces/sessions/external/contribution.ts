@@ -15,7 +15,10 @@ import {
   homeEntries,
   resolveConfiguredCodexHomePath,
 } from '../../../rollout/discovery/homeEntries.js';
-import { normalizeCodexBackendMode } from '../../../../protocol/runtimeDescriptorV1.js';
+import {
+  normalizeCodexBackendMode,
+  readExactCodexProviderSessionId,
+} from '../../../../protocol/runtimeDescriptorV1.js';
 import {
   CodexExternalSessionCandidateSourceChangedError,
   listCodexSessionCandidates,
@@ -227,7 +230,8 @@ export function createCodexExternalSessionsContribution(params: Readonly<{
   ) => {
     const stopped = getAgentExternalSessionsInvocationFailure(request);
     if (stopped) return stopped;
-    const remoteSessionId = request.remoteSessionId.trim();
+    // Codex minted this id; the resolved link identity keeps its exact bytes.
+    const remoteSessionId = readExactCodexProviderSessionId(request.remoteSessionId);
     if (!remoteSessionId) return failed('invalid_request', 'Codex remote session id must be non-empty.');
     const env = readEnv();
     const requestedSource = readLinkSource(request.linkData) ?? request.source;

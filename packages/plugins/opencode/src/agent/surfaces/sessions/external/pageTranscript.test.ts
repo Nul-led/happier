@@ -48,6 +48,7 @@ describe('pageOpenCodeTranscript', () => {
 
     const first = await pageOpenCodeTranscript({
       source: { kind: 'opencodeServer', baseUrl: 'http://127.0.0.1:4099' },
+      dialect: 'v1',
       providerSessionId: 'sess-1',
       direction: 'older',
       maxBytes: 100_000,
@@ -60,6 +61,7 @@ describe('pageOpenCodeTranscript', () => {
 
     const second = await pageOpenCodeTranscript({
       source: { kind: 'opencodeServer', baseUrl: 'http://127.0.0.1:4099' },
+      dialect: 'v1',
       providerSessionId: 'sess-1',
       direction: 'older',
       cursor: first.nextCursor ?? undefined,
@@ -91,6 +93,7 @@ describe('pageOpenCodeTranscript', () => {
 
     const page = await pageOpenCodeTranscript({
       source: { kind: 'opencodeServer', baseUrl: 'http://127.0.0.1:4099' },
+      dialect: 'v1',
       providerSessionId: 'sess-1',
       direction: 'older',
       maxBytes: 16,
@@ -128,6 +131,7 @@ describe('pageOpenCodeTranscript', () => {
 
     const page = await pageOpenCodeTranscript({
       source: { kind: 'opencodeServer', baseUrl: 'http://127.0.0.1:4099' },
+      dialect: 'v1',
       providerSessionId: 'sess-1',
       direction: 'older',
       maxBytes: 100_000,
@@ -187,6 +191,7 @@ describe('pageOpenCodeTranscript', () => {
 
     const first = await pageOpenCodeTranscript({
       source: { kind: 'opencodeServer', baseUrl: 'http://127.0.0.1:4099' },
+      dialect: 'v1',
       providerSessionId: 'sess-1',
       direction: 'older',
       maxBytes: 1,
@@ -202,6 +207,7 @@ describe('pageOpenCodeTranscript', () => {
 
     const second = await pageOpenCodeTranscript({
       source: { kind: 'opencodeServer', baseUrl: 'http://127.0.0.1:4099' },
+      dialect: 'v1',
       providerSessionId: 'sess-1',
       direction: 'older',
       cursor: first.nextCursor ?? undefined,
@@ -249,6 +255,7 @@ describe('pageOpenCodeTranscript', () => {
 
     const page = (cursor?: string) => pageOpenCodeTranscript({
       source: { kind: 'opencodeServer', baseUrl: 'http://127.0.0.1:4099' },
+      dialect: 'v1',
       providerSessionId: 'sess-1',
       direction: 'older',
       ...(cursor ? { cursor } : {}),
@@ -311,6 +318,7 @@ describe('pageOpenCodeTranscript', () => {
 
     const first = await pageOpenCodeTranscript({
       source: { kind: 'opencodeServer', baseUrl: 'http://127.0.0.1:4099' },
+      dialect: 'v1',
       providerSessionId: 'sess-1',
       direction: 'older',
       maxBytes: 100_000,
@@ -320,6 +328,7 @@ describe('pageOpenCodeTranscript', () => {
 
     const replacement = await pageOpenCodeTranscript({
       source: { kind: 'opencodeServer', baseUrl: 'http://127.0.0.1:4099' },
+      dialect: 'v1',
       providerSessionId: 'sess-1',
       direction: 'older',
       cursor: first.nextCursor ?? undefined,
@@ -357,6 +366,7 @@ describe('pageOpenCodeTranscript', () => {
 
     await expect(pageOpenCodeTranscript({
       source: { kind: 'opencodeServer', baseUrl: 'http://127.0.0.1:4099' },
+      dialect: 'v1',
       providerSessionId: 'sess-1',
       direction: 'older',
       maxBytes: 100_000,
@@ -373,6 +383,7 @@ describe('pageOpenCodeTranscript', () => {
   it('rejects an unbound vendor cursor before reading the source', async () => {
     await expect(pageOpenCodeTranscript({
       source: { kind: 'opencodeServer', baseUrl: 'http://127.0.0.1:4099' },
+      dialect: 'v1',
       providerSessionId: 'sess-1',
       direction: 'older',
       cursor: 'official-before-cursor',

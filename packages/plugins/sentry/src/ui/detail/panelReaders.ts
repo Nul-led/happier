@@ -319,6 +319,10 @@ function useSentryPagedWalk<TRow>(readPage: PageReader<TRow>): SentryPagedContro
     const outcome = await readPage(continuation, pageSignal);
     if (pageSignal.aborted) return;
     if (outcome.kind === 'failed') {
+      // Only a cursor this walk actually consumed may be refused a second time.
+      // A page that failed was never read, and the reader is looking at an
+      // enabled Load more for it — so the guard must let that press through.
+      if (continuation !== null) requested.current.delete(continuation);
       dispatch({ kind: 'pageFailed', token, failure: outcome.failure });
       return;
     }
@@ -350,8 +354,18 @@ function useSentryPagedWalk<TRow>(readPage: PageReader<TRow>): SentryPagedContro
   return useMemo(() => ({ state, loadMore }), [loadMore, state]);
 }
 
+/**
+ * The retained-events walk, in the ordering the reader chose.
+ *
+ * `sample` is part of the walk rather than of one request: `[SCHEMA]`
+ * `sample=true` reorders the same retained events, so changing it changes which
+ * collection is being paged. Changing it therefore restarts the walk at its
+ * first page — the reader's own choice replaces the list rather than appending a
+ * differently ordered tail to it (`SENTRY.md` §7.4).
+ */
 export function useSentryOccurrences(
   input: TriageDetailSurfaceInputV1,
+  sample = false,
 ): SentryPagedControllerV1<SentryProjectedEventRowV1> {
   const action = useMemo(
     () => ({ pluginId: SENTRY_PLUGIN_ID, localId: SENTRY_ACTION_IDS.listIssueEvents }),
@@ -370,6 +384,7 @@ export function useSentryOccurrences(
       instance,
       localRef,
       limit: SENTRY_DETAIL_PAGE_SIZE,
+      ...(sample ? { sample: true } : {}),
       ...(continuation === null ? {} : { continuation }),
     }, { signal }) as ExecuteResult;
     if (execution.status !== 'success') {
@@ -395,7 +410,7 @@ export function useSentryOccurrences(
         incomplete: parsed.data.incomplete ?? null,
       },
     };
-  }, [execute, instance, localRef]);
+  }, [execute, instance, localRef, sample]);
 
   return useSentryPagedWalk(readPage);
 }

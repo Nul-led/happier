@@ -156,7 +156,7 @@ export type TriageEntrySessionStartResultV1 =
         sessionId: SessionId;
         disposition: TriageEntrySessionDispositionV1;
         workspace: TriageEntrySessionWorkspaceFactsV1;
-        /** The admission owner's own verdict on the structured delivery. */
+        /** The Message-send owner's own verdict on the structured delivery. */
         delivery: TriageEntrySessionDeliveryOutcomeV1;
     }>
     | Readonly<{
@@ -318,8 +318,8 @@ async function linkDeliverThenOpen(
  *
  * It is stated rather than extracted from the result union because a resume
  * needs strictly less than a verdict carries. A link/open retry retains a
- * delivery verdict only when admission already settled; an absent verdict is
- * the explicit instruction to ask the canonical admission owner again.
+ * delivery verdict only when Message send already settled; an absent verdict is
+ * the explicit instruction to ask the canonical Message-send owner again.
  */
 export type TriageEntrySessionPendingPhaseV1 =
     | Readonly<{
@@ -340,7 +340,7 @@ export type TriageEntrySessionPendingPhaseV1 =
 /**
  * Retries exactly the phase that failed, and nothing earlier.
  *
- * A pending link retries the idempotent link, delivers if admission has not
+ * A pending link retries the idempotent link, delivers if Message send has not
  * settled and then opens; a pending open likewise asks admission only when no
  * settled verdict was retained, then re-invokes `session.open` with the same
  * stable id. Neither respawns, rematerializes, reseeds a draft or mints a second
@@ -351,7 +351,7 @@ export type TriageEntrySessionPendingPhaseV1 =
  * The re-delivery is safe by construction rather than by a remembered verdict:
  * the same key rejoins the same durable input, so an accepted send answers
  * `alreadyAccepted` and an unknown one settles. Keeping a per-phase memory of
- * what admission last said, only to decide whether to ask again, would be state
+ * what Message send last said, only to decide whether to ask again, would be state
  * this path does not need.
  */
 export async function resumeEntrySessionStart(

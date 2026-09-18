@@ -1,5 +1,5 @@
 /** @moduleRealm browser */
-import { createPluginUiHostApiClientFromTransport } from './clientTransport.js';
+import { createPluginUiHostApiClientFromTransport, PluginUiHostApiClientError } from './clientTransport.js';
 import {
     awaitHostedWebPluginUiHostApiClientBootstrapFromCurrentRealm,
     isHostedWebAccountDataCapabilityKnown,
@@ -27,6 +27,7 @@ export const createPluginUiHostApiClient = async (
     const bootstrap = await requireBootstrap(options);
     return createPluginUiHostApiClientFromTransport({
         identity: bootstrap.identity,
+        ...(bootstrap.authorPlugin === undefined ? {} : { authorPlugin: bootstrap.authorPlugin }),
         transport: bootstrap.transport,
         ...(bootstrap.apiRange === undefined ? {} : { apiRange: bootstrap.apiRange }),
         ...(options.signal === undefined ? {} : { signal: options.signal }),
@@ -45,7 +46,7 @@ export const createPluginUiHostApiClient = async (
  * This returns the SAME public `RenderContext` — no hosted-web-only type — built
  * from the host-issued surface binding:
  *
- * - `plugin` comes from the binding identity; `surface.mount` is the one
+ * - `plugin` comes from installed source metadata; `surface.mount` is the one
  *   host-stamped destination-or-embedded mount fact;
  * - `surface` is the negotiated snapshot; use `hostApi.watchContext` for changes;
  * - `launchInput` / `subPath` are the host's bounded launch facts, absent when
@@ -57,6 +58,9 @@ export const createPluginUiRenderContext = async (
     options: CreatePluginUiHostApiClientOptions = {},
 ): Promise<RenderContext> => {
     const bootstrap = await requireBootstrap(options);
+    if (bootstrap.authorPlugin === undefined) {
+        throw new PluginUiHostApiClientError('unavailable', 'A plugin RenderContext requires an installed plugin source.');
+    }
     const retirement = new AbortController();
     let active = false;
     const activity = Object.freeze({
@@ -64,6 +68,7 @@ export const createPluginUiRenderContext = async (
     });
     const hostApi = await createPluginUiHostApiClientFromTransport({
         identity: bootstrap.identity,
+        authorPlugin: bootstrap.authorPlugin,
         transport: bootstrap.transport,
         ...(bootstrap.apiRange === undefined ? {} : { apiRange: bootstrap.apiRange }),
         ...(options.signal === undefined ? {} : { signal: options.signal }),
@@ -73,8 +78,8 @@ export const createPluginUiRenderContext = async (
     const surface = await hostApi.context();
     const context = {
         plugin: Object.freeze({
-            id: bootstrap.identity.pluginId,
-            version: bootstrap.identity.pluginVersion,
+            id: bootstrap.authorPlugin.id,
+            version: bootstrap.authorPlugin.version,
         }),
         surface,
         hostApi,

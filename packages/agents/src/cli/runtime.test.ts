@@ -132,7 +132,7 @@ describe('AGENT_CLI_RUNTIME_SPECS', () => {
 
   it('keeps upstream manual install hints on the runtime catalog for vendor-recipe providers', () => {
     expect(JSON.stringify(getAgentCliRuntimeSpec('claude'))).toContain('claude.ai/install.sh');
-    expect(JSON.stringify(getAgentCliRuntimeSpec('kimi'))).toContain('code.kimi.com/install.sh');
+    expect(JSON.stringify(getAgentCliRuntimeSpec('kimi'))).toContain('code.kimi.com/kimi-code/install.sh');
   });
 
   it('declares Cursor as a system-first vendor CLI with cursor-agent as the primary binary', () => {
@@ -155,7 +155,7 @@ describe('AGENT_CLI_RUNTIME_SPECS', () => {
   it('keeps provider-specific setup guide links on the runtime catalog when they differ from general docs', () => {
     expect(getAgentCliRuntimeSpec('claude').installGuideUrl).toBe('https://code.claude.com/docs/en/setup');
     expect(getAgentCliRuntimeSpec('opencode').installGuideUrl).toBe('https://opencode.ai/docs');
-    expect(getAgentCliRuntimeSpec('kimi').installGuideUrl).toBe('https://kimi.moonshot.cn/docs/cli');
+    expect(getAgentCliRuntimeSpec('kimi').installGuideUrl).toBe('https://moonshotai.github.io/kimi-code/docs/en/reference/kimi-command.html');
     expect(getAgentCliRuntimeSpec('qwen').installGuideUrl).toBe('https://qwenlm.github.io/qwen-code-docs/');
     expect(getAgentCliRuntimeSpec('ohMyPi').installGuideUrl).toBe('https://github.com/can1357/oh-my-pi#via-bun-recommended');
     expect(getAgentCliRuntimeSpec('pi').installGuideUrl).toBe('https://github.com/badlogic/pi-mono');
@@ -247,6 +247,9 @@ describe('AGENT_CLI_RUNTIME_SPECS', () => {
       'kimi',
       'kilo',
       'kiro',
+      'devin',
+      'fx',
+      'droid',
       'cursor',
       'ohMyPi',
       'pi',

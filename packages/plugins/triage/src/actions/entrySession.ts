@@ -3,7 +3,10 @@ import {
     type JsonValue,
     type PluginInvocationContext,
 } from '@happier-dev/plugin-sdk';
-import type { ActionHandler } from '@happier-dev/plugin-sdk/actions';
+import {
+    isPluginActionApprovalRequestCreated,
+    type ActionHandler,
+} from '@happier-dev/plugin-sdk/actions';
 import {
     projectTriagePrepareReviewWorkspaceInputV1,
     type TriagePrepareReviewWorkspaceInputV1,
@@ -134,7 +137,7 @@ function projectStartResult(
                 type: result.type,
                 sessionId: result.sessionId,
                 disposition: result.disposition,
-                // The admission owner's verdict on the structured delivery,
+                // The Message-send owner's verdict on the structured delivery,
                 // carried out as it answered. The surface cannot ask again: the
                 // send happened inside this start, before the open.
                 delivery: result.delivery,
@@ -401,6 +404,42 @@ async function readCurrentVerifyReviewWorkspaceOperation(
 }
 
 /**
+ * Reads the canonical fan-out's own keyed verdict for the engines it was given.
+ *
+ * `packages/protocol/src/actions/actionExecutor.ts` starts one execution run per
+ * requested engine and returns EVERY outcome — including a
+ * `review_engine_unavailable` refusal — inside an outer success. Discarding that
+ * value reported a review as started when none was, so the split is read here
+ * and carried, keyed exactly as the caller asked.
+ *
+ * `null` means the answer could not be attributed to the requested engines at
+ * all. That is deliberately not a refusal: runs may already exist, so the caller
+ * must reach its non-repeatable outcome-unknown path instead of a retry.
+ */
+function readReviewStartOutcomes(
+    result: unknown,
+    engineIds: readonly string[],
+): Readonly<{ started: readonly string[]; failed: readonly string[] }> | null {
+    if (typeof result !== 'object' || result === null) return null;
+    const results = (result as Readonly<{ results?: unknown }>).results;
+    if (!Array.isArray(results) || results.length !== engineIds.length) return null;
+    const started: string[] = [];
+    const failed: string[] = [];
+    for (const item of results) {
+        if (typeof item !== 'object' || item === null) return null;
+        const { key, ok } = item as Readonly<{ key?: unknown; ok?: unknown }>;
+        if (typeof key !== 'string' || typeof ok !== 'boolean') return null;
+        (ok ? started : failed).push(key);
+    }
+    const answered = new Set([...started, ...failed]);
+    if (answered.size !== engineIds.length
+        || engineIds.some((engineId) => !answered.has(engineId))) {
+        return null;
+    }
+    return { started, failed };
+}
+
+/**
  * The terminal selected-PR review transition: one carrier-backed reread,
  * generic scope production, then the incumbent generic review fan-out. The
  * engine list and human choice deliberately happened on the mounted surface
@@ -466,7 +505,7 @@ export function createTriageStartPullRequestReviewActionHandler(): ActionHandler
             return { v: 1, status: 'refused', reason: 'scopeRefused' };
         }
 
-        await context.services.actions.execute('review.start', {
+        const fanout = await context.services.actions.execute('review.start', {
             sessionId: input.sessionId,
             engineIds: [...input.engineIds],
             instructions: input.instructions,
@@ -474,7 +513,23 @@ export function createTriageStartPullRequestReviewActionHandler(): ActionHandler
             base: { kind: 'commit', baseCommit: input.review.observed.baseSha },
             scmPullRequestReviewScope: scope.scope,
         }, context.signal === undefined ? undefined : { signal: context.signal });
-        return { v: 1, status: 'started' };
+        const outcomes = readReviewStartOutcomes(fanout, input.engineIds);
+        if (outcomes === null) {
+            // The write happened and its per-engine effect is unknown. Failing
+            // loudly reaches the caller's existing outcome-unknown state, which
+            // offers only the idempotent Session open — never a blind second
+            // review start.
+            throw new Error('triage:review:startOutcomeUnattributable');
+        }
+        if (outcomes.started.length === 0) {
+            return { v: 1, status: 'refused', reason: 'noEngineStarted' };
+        }
+        return {
+            v: 1,
+            status: 'started',
+            startedEngineIds: outcomes.started,
+            failedEngineIds: outcomes.failed,
+        };
     };
 }
 
@@ -592,11 +647,17 @@ export function createTriageStartEntrySessionActionHandler(): ActionHandler<
         const prepareReviewWorkspace = await readCurrentPrepareReviewWorkspace(input, context);
         return await startTriageEntrySession(input, {
             collections: bindCorpusCollections(requireTriageAccountStorage(context)),
-            execute: async (actionId, actionInput, options) => await context.services.actions.execute(
-                actionId,
-                actionInput,
-                options ?? {},
-            ),
+            execute: async (actionId, actionInput, options) => {
+                const result = await context.services.actions.execute(
+                    actionId,
+                    actionInput,
+                    options ?? {},
+                );
+                if (isPluginActionApprovalRequestCreated(result)) {
+                    throw new Error('triage:sessionAction:approvalDeferred');
+                }
+                return result;
+            },
             nowMs: () => Date.now(),
             ...(prepareReviewWorkspace === undefined ? {} : { prepareReviewWorkspace }),
             ...(context.signal ? { signal: context.signal } : {}),

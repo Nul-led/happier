@@ -40,6 +40,8 @@ export type BitbucketEntryObservationV1 = Readonly<{
   state: BitbucketPullRequestNativeState | null;
   headCommit: string | null;
   viewerReviewVerdict: 'approved' | 'changes_requested' | null;
+  /** Native Markdown for detail, independent of the list observation's single-line projection. */
+  description: string | null;
 }>;
 
 export async function observeBitbucketEntryWithFacts(
@@ -59,6 +61,7 @@ export async function observeBitbucketEntryWithFacts(
     state: null,
     headCommit: null,
     viewerReviewVerdict: null,
+    description: null,
   });
 
   const viewer = await getBitbucketViewer({
@@ -72,7 +75,6 @@ export async function observeBitbucketEntryWithFacts(
     workspaceUuid: input.route.workspaceUuid,
     repositorySlug: input.route.repositorySlug,
     expectedRepositoryUuid: input.route.expectedRepositoryUuid,
-    expectedRepositoryKey: input.route.repositoryKey,
     entryId: input.route.entryId,
     ...(input.signal === undefined ? {} : { signal: input.signal }),
   });
@@ -96,6 +98,7 @@ export async function observeBitbucketEntryWithFacts(
     state: outcome.entry.state.native,
     headCommit: outcome.entry.source?.commitHash ?? null,
     viewerReviewVerdict: readViewerReviewVerdict(outcome.entry, viewer.viewer.accountUuid),
+    description: outcome.entry.summary,
   };
 }
 

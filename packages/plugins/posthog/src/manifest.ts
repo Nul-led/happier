@@ -2,20 +2,19 @@
  * The sole PostHog plugin manifest.
  *
  * It declares exactly one Triage source contribution, the three read Actions that carry
- * its roles, the three source-native detail reads behind its own body, the Connected
+ * its roles, the source-native detail reads behind its own body, the Connected
  * Account this source may materialize, the one direct-disclosure Tier-B Composer
  * reference, and the two host grants those reads need. It declares no Composer
  * attachment, control, chip, picker, region, or whole-entry reference provider:
  * `happier.triage` owns the one whole-entry attachment, and a second owner here would
  * make the aggregate ambiguous about what a row is.
  *
- * Every Action's input and result schema is the exact published Triage schema rather
- * than a source-local restatement, so a drift between this manifest and the shared
- * contract fails conformance instead of admitting a source that speaks a private
- * dialect.
+ * Triage-role Actions use the exact published Triage schemas. Native detail Actions
+ * reuse those inputs where applicable and own only their source-private result fields.
  */
 
 import { defineComposerReference, definePlugin } from '@happier-dev/plugin-sdk';
+import { CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1 } from '@happier-dev/plugin-sdk/connected-accounts';
 import { withTriageSourceSettingsTranslationsV1 } from '@happier-dev/triage-sources/translations';
 import {
     TRIAGE_SOURCES_CONTRIBUTION_POINT_ID_V1,
@@ -48,6 +47,7 @@ import {
     POSTHOG_SOURCE_CONTRIBUTION_ID,
 } from './posthogContracts.js';
 import { POSTHOG_ENTRY_KIND } from './source/map/entrySnapshot.js';
+import { PosthogNativeOverviewResultV1Schema } from './source/detail/nativeOverviewContract.js';
 import { POSTHOG_UI_TRANSLATIONS } from './ui/translations.js';
 import {
     PosthogIssueActivityInputV1Schema,
@@ -63,6 +63,7 @@ import {
 } from './source/detail/codeVariablesContract.js';
 import {
     getPosthogSourceEntry,
+    readPosthogNativeOverview,
     listPosthogInstances,
     readPosthogActivity,
     readPosthogConfigurationDirectory,
@@ -327,8 +328,9 @@ export const POSTHOG_PLUGIN = definePlugin({
             scopes: ['global'],
             surfaces: sources.operations.listInstances.declaration.surfaces,
             // Mounted-only placement. `plugin` stays because the Triage daemon
-            // consumes it and `ui` because this source's own mounted surfaces
-            // hold present-user authority; the explicit empty list only
+            // consumes it and `ui` remains admitted by the shared get contract;
+            // native Overview now consumes its own projection of this same read.
+            // The explicit empty list only
             // withdraws the Action from global placement discovery — it
             // disables no invocation.
             placementBindings: [],
@@ -397,6 +399,20 @@ export const POSTHOG_PLUGIN = definePlugin({
             connectedAccountPurposeBindings: INSTANCE_ACCOUNT_BINDINGS,
             run: readPosthogCodeVariablesForIssue,
         },
+        [POSTHOG_ACTION_IDS.nativeOverview]: {
+            title: 'Read a PostHog issue overview',
+            execution: { target: 'daemon' },
+            description: 'Reads native overview facts and query-enrichment status through the canonical issue read.',
+            scopes: ['global'],
+            surfaces: ['ui'],
+            placementBindings: [],
+            dangerLevel: 'safe',
+            inputSchema: sources.operations.get.declaration.input.schema.jsonSchema,
+            resultSchema: PosthogNativeOverviewResultV1Schema.jsonSchema,
+            hostAccess: READ_HOST_ACCESS,
+            connectedAccountPurposeBindings: INSTANCE_ACCOUNT_BINDINGS,
+            run: readPosthogNativeOverview,
+        },
         [POSTHOG_ACTION_IDS.get]: {
             title: 'Read a PostHog error issue',
             execution: { target: 'daemon' },
@@ -431,6 +447,7 @@ export const POSTHOG_PLUGIN = definePlugin({
                     modes: [{
                         id: POSTHOG_PERSONAL_API_KEY_MODE_ID,
                         kind: 'manual',
+                        directExport: { contractVersion: CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1 },
                         title: {
                             key: 'plugins.posthog.auth.personalApiKey.mode',
                             fallback: 'Personal API key',

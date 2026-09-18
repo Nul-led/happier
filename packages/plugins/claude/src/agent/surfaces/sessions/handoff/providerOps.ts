@@ -10,13 +10,15 @@ import {
 } from './bundle.js';
 import { ClaudeSessionBundleSchema } from './types.js';
 import { resolveClaudeProjectId } from './path.js';
+import { readClaudeProviderIdentityValue } from '../../../../protocol/providerIdentity.js';
 
+/** Canonicalizes the Happier-owned directory facts below; never a vendor id. */
 function readNonEmptyString(value: unknown): string | null {
     return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
 }
 
 export const claudeHandoffSurface = {
-    evaluateAvailability: ({ sessionId }) => readNonEmptyString(sessionId)
+    evaluateAvailability: ({ sessionId }) => readClaudeProviderIdentityValue(sessionId)
         ? { available: true as const }
         : { available: false as const, reasonCode: 'missing_metadata' as const },
     buildRuntimeLocalMetadata: ({ identity, runtimeDescriptorV1 }) => {
@@ -38,7 +40,9 @@ export const claudeHandoffSurface = {
         };
     },
     exportBundle: async (params, context) => {
-        const remoteSessionId = params.sessionId.trim() || null;
+        // The bundle records this id and the successor resumes it; rewriting the
+        // bytes exports a sibling transcript under an id Claude never minted.
+        const remoteSessionId = readClaudeProviderIdentityValue(params.sessionId);
         if (!remoteSessionId) {
             return { ok: false, code: 'bundle_invalid', message: 'Claude handoff export requires a vendor session id' };
         }

@@ -46,7 +46,7 @@
                               "accountId": {
                                 "maxLength": 256,
                                 "minLength": 1,
-                                "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                                "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                                 "type": "string"
                               },
                               "service": {
@@ -55,13 +55,13 @@
                                   "localId": {
                                     "maxLength": 256,
                                     "minLength": 1,
-                                    "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                    "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                     "type": "string"
                                   },
                                   "pluginId": {
                                     "maxLength": 256,
                                     "minLength": 3,
-                                    "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                    "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                     "type": "string"
                                   }
                                 },
@@ -186,7 +186,7 @@
                               "accountId": {
                                 "maxLength": 256,
                                 "minLength": 1,
-                                "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                                "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                                 "type": "string"
                               },
                               "service": {
@@ -195,13 +195,13 @@
                                   "localId": {
                                     "maxLength": 256,
                                     "minLength": 1,
-                                    "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                    "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                     "type": "string"
                                   },
                                   "pluginId": {
                                     "maxLength": 256,
                                     "minLength": 3,
-                                    "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                    "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                     "type": "string"
                                   }
                                 },
@@ -322,7 +322,7 @@
                               "accountId": {
                                 "maxLength": 256,
                                 "minLength": 1,
-                                "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                                "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                                 "type": "string"
                               },
                               "service": {
@@ -331,13 +331,13 @@
                                   "localId": {
                                     "maxLength": 256,
                                     "minLength": 1,
-                                    "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                    "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                     "type": "string"
                                   },
                                   "pluginId": {
                                     "maxLength": 256,
                                     "minLength": 3,
-                                    "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                    "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                     "type": "string"
                                   }
                                 },
@@ -511,7 +511,7 @@
                               "accountId": {
                                 "maxLength": 256,
                                 "minLength": 1,
-                                "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                                "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                                 "type": "string"
                               },
                               "service": {
@@ -520,13 +520,13 @@
                                   "localId": {
                                     "maxLength": 256,
                                     "minLength": 1,
-                                    "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                    "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                     "type": "string"
                                   },
                                   "pluginId": {
                                     "maxLength": 256,
                                     "minLength": 3,
-                                    "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                    "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                     "type": "string"
                                   }
                                 },
@@ -739,7 +739,7 @@
                             "accountId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                              "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                               "type": "string"
                             },
                             "service": {
@@ -748,13 +748,13 @@
                                 "localId": {
                                   "maxLength": 256,
                                   "minLength": 1,
-                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                   "type": "string"
                                 },
                                 "pluginId": {
                                   "maxLength": 256,
                                   "minLength": 3,
-                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                   "type": "string"
                                 }
                               },
@@ -812,13 +812,13 @@
                             "localId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                               "type": "string"
                             },
                             "pluginId": {
                               "maxLength": 256,
                               "minLength": 3,
-                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                               "type": "string"
                             }
                           },
@@ -935,7 +935,7 @@
                             "accountId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                              "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                               "type": "string"
                             },
                             "service": {
@@ -944,13 +944,13 @@
                                 "localId": {
                                   "maxLength": 256,
                                   "minLength": 1,
-                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                                  "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                                   "type": "string"
                                 },
                                 "pluginId": {
                                   "maxLength": 256,
                                   "minLength": 3,
-                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                                  "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                                   "type": "string"
                                 }
                               },
@@ -1008,13 +1008,13 @@
                             "localId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                               "type": "string"
                             },
                             "pluginId": {
                               "maxLength": 256,
                               "minLength": 3,
-                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                               "type": "string"
                             }
                           },
@@ -2762,7 +2762,7 @@
                         "accountId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                          "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                           "type": "string"
                         },
                         "service": {
@@ -2771,13 +2771,13 @@
                             "localId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                               "type": "string"
                             },
                             "pluginId": {
                               "maxLength": 256,
                               "minLength": 3,
-                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                               "type": "string"
                             }
                           },
@@ -2835,13 +2835,13 @@
                         "localId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                           "type": "string"
                         },
                         "pluginId": {
                           "maxLength": 256,
                           "minLength": 3,
-                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                           "type": "string"
                         }
                       },
@@ -3760,13 +3760,13 @@
                     "localId": {
                       "maxLength": 256,
                       "minLength": 1,
-                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                       "type": "string"
                     },
                     "pluginId": {
                       "maxLength": 256,
                       "minLength": 3,
-                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                       "type": "string"
                     }
                   },
@@ -3797,7 +3797,7 @@
                         "accountId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                          "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                           "type": "string"
                         },
                         "service": {
@@ -3806,13 +3806,13 @@
                             "localId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                               "type": "string"
                             },
                             "pluginId": {
                               "maxLength": 256,
                               "minLength": 3,
-                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                               "type": "string"
                             }
                           },
@@ -3870,13 +3870,13 @@
                         "localId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                           "type": "string"
                         },
                         "pluginId": {
                           "maxLength": 256,
                           "minLength": 3,
-                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                           "type": "string"
                         }
                       },
@@ -4336,13 +4336,13 @@
                     "localId": {
                       "maxLength": 256,
                       "minLength": 1,
-                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                       "type": "string"
                     },
                     "pluginId": {
                       "maxLength": 256,
                       "minLength": 3,
-                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                       "type": "string"
                     }
                   },
@@ -4373,7 +4373,7 @@
                         "accountId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                          "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                           "type": "string"
                         },
                         "service": {
@@ -4382,13 +4382,13 @@
                             "localId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                               "type": "string"
                             },
                             "pluginId": {
                               "maxLength": 256,
                               "minLength": 3,
-                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                               "type": "string"
                             }
                           },
@@ -4446,13 +4446,13 @@
                         "localId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                           "type": "string"
                         },
                         "pluginId": {
                           "maxLength": 256,
                           "minLength": 3,
-                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                           "type": "string"
                         }
                       },
@@ -4783,7 +4783,7 @@
                         "accountId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                          "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                           "type": "string"
                         },
                         "service": {
@@ -4792,13 +4792,13 @@
                             "localId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                               "type": "string"
                             },
                             "pluginId": {
                               "maxLength": 256,
                               "minLength": 3,
-                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                               "type": "string"
                             }
                           },
@@ -4856,13 +4856,13 @@
                         "localId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                           "type": "string"
                         },
                         "pluginId": {
                           "maxLength": 256,
                           "minLength": 3,
-                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                           "type": "string"
                         }
                       },
@@ -5209,7 +5209,7 @@
                         "accountId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                          "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                           "type": "string"
                         },
                         "service": {
@@ -5218,13 +5218,13 @@
                             "localId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                               "type": "string"
                             },
                             "pluginId": {
                               "maxLength": 256,
                               "minLength": 3,
-                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                               "type": "string"
                             }
                           },
@@ -5282,13 +5282,13 @@
                         "localId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                           "type": "string"
                         },
                         "pluginId": {
                           "maxLength": 256,
                           "minLength": 3,
-                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                           "type": "string"
                         }
                       },
@@ -5439,6 +5439,27 @@
             {
               "additionalProperties": false,
               "properties": {
+                "description": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "x-happier-max-utf8-bytes": 24000000
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "descriptionTruncated": {
+                  "anyOf": [
+                    {
+                      "const": true
+                    },
+                    {
+                      "const": false
+                    }
+                  ]
+                },
                 "kind": {
                   "const": "overview"
                 },
@@ -6168,7 +6189,9 @@
               "required": [
                 "kind",
                 "observedAtMs",
-                "observation"
+                "observation",
+                "description",
+                "descriptionTruncated"
               ],
               "type": "object"
             },
@@ -6281,7 +6304,7 @@
                         "accountId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                          "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                           "type": "string"
                         },
                         "service": {
@@ -6290,13 +6313,13 @@
                             "localId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                               "type": "string"
                             },
                             "pluginId": {
                               "maxLength": 256,
                               "minLength": 3,
-                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                               "type": "string"
                             }
                           },
@@ -6354,13 +6377,13 @@
                         "localId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                           "type": "string"
                         },
                         "pluginId": {
                           "maxLength": 256,
                           "minLength": 3,
-                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                           "type": "string"
                         }
                       },
@@ -6735,7 +6758,7 @@
                         "accountId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                          "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                           "type": "string"
                         },
                         "service": {
@@ -6744,13 +6767,13 @@
                             "localId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                               "type": "string"
                             },
                             "pluginId": {
                               "maxLength": 256,
                               "minLength": 3,
-                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                               "type": "string"
                             }
                           },
@@ -6808,13 +6831,13 @@
                         "localId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                           "type": "string"
                         },
                         "pluginId": {
                           "maxLength": 256,
                           "minLength": 3,
-                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                           "type": "string"
                         }
                       },
@@ -7173,7 +7196,7 @@
                         "accountId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                          "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                           "type": "string"
                         },
                         "service": {
@@ -7182,13 +7205,13 @@
                             "localId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                               "type": "string"
                             },
                             "pluginId": {
                               "maxLength": 256,
                               "minLength": 3,
-                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                               "type": "string"
                             }
                           },
@@ -7246,13 +7269,13 @@
                         "localId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                           "type": "string"
                         },
                         "pluginId": {
                           "maxLength": 256,
                           "minLength": 3,
-                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                           "type": "string"
                         }
                       },
@@ -7644,7 +7667,7 @@
                         "accountId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                          "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                           "type": "string"
                         },
                         "service": {
@@ -7653,13 +7676,13 @@
                             "localId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                               "type": "string"
                             },
                             "pluginId": {
                               "maxLength": 256,
                               "minLength": 3,
-                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                               "type": "string"
                             }
                           },
@@ -7717,13 +7740,13 @@
                         "localId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                           "type": "string"
                         },
                         "pluginId": {
                           "maxLength": 256,
                           "minLength": 3,
-                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                           "type": "string"
                         }
                       },
@@ -11799,7 +11822,7 @@
                         "accountId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                          "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                           "type": "string"
                         },
                         "service": {
@@ -11808,13 +11831,13 @@
                             "localId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                               "type": "string"
                             },
                             "pluginId": {
                               "maxLength": 256,
                               "minLength": 3,
-                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                               "type": "string"
                             }
                           },
@@ -11872,13 +11895,13 @@
                         "localId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                           "type": "string"
                         },
                         "pluginId": {
                           "maxLength": 256,
                           "minLength": 3,
-                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                           "type": "string"
                         }
                       },
@@ -15934,7 +15957,7 @@
                         "accountId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                          "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                           "type": "string"
                         },
                         "service": {
@@ -15943,13 +15966,13 @@
                             "localId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                               "type": "string"
                             },
                             "pluginId": {
                               "maxLength": 256,
                               "minLength": 3,
-                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                               "type": "string"
                             }
                           },
@@ -16007,13 +16030,13 @@
                         "localId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                           "type": "string"
                         },
                         "pluginId": {
                           "maxLength": 256,
                           "minLength": 3,
-                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                           "type": "string"
                         }
                       },
@@ -16474,7 +16497,7 @@
                         "accountId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                          "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                           "type": "string"
                         },
                         "service": {
@@ -16483,13 +16506,13 @@
                             "localId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                               "type": "string"
                             },
                             "pluginId": {
                               "maxLength": 256,
                               "minLength": 3,
-                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                               "type": "string"
                             }
                           },
@@ -16547,13 +16570,13 @@
                         "localId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                           "type": "string"
                         },
                         "pluginId": {
                           "maxLength": 256,
                           "minLength": 3,
-                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                           "type": "string"
                         }
                       },
@@ -17009,7 +17032,7 @@
                         "accountId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                          "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                           "type": "string"
                         },
                         "service": {
@@ -17018,13 +17041,13 @@
                             "localId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                               "type": "string"
                             },
                             "pluginId": {
                               "maxLength": 256,
                               "minLength": 3,
-                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                               "type": "string"
                             }
                           },
@@ -17082,13 +17105,13 @@
                         "localId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                           "type": "string"
                         },
                         "pluginId": {
                           "maxLength": 256,
                           "minLength": 3,
-                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                           "type": "string"
                         }
                       },
@@ -19814,6 +19837,9 @@
                     "verdict"
                   ],
                   "type": "object"
+                },
+                "settlement": {
+                  "const": "unrecorded"
                 }
               },
               "required": [
@@ -20686,7 +20712,7 @@
                         "accountId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                          "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                           "type": "string"
                         },
                         "service": {
@@ -20695,13 +20721,13 @@
                             "localId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                               "type": "string"
                             },
                             "pluginId": {
                               "maxLength": 256,
                               "minLength": 3,
-                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                               "type": "string"
                             }
                           },
@@ -20759,13 +20785,13 @@
                         "localId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                           "type": "string"
                         },
                         "pluginId": {
                           "maxLength": 256,
                           "minLength": 3,
-                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                           "type": "string"
                         }
                       },
@@ -22664,6 +22690,9 @@
                     "verdict"
                   ],
                   "type": "object"
+                },
+                "settlement": {
+                  "const": "unrecorded"
                 }
               },
               "required": [
@@ -23536,7 +23565,7 @@
                         "accountId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^(?!\\s)[\\s\\S]*\\S$",
+                          "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
                           "type": "string"
                         },
                         "service": {
@@ -23545,13 +23574,13 @@
                             "localId": {
                               "maxLength": 256,
                               "minLength": 1,
-                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                               "type": "string"
                             },
                             "pluginId": {
                               "maxLength": 256,
                               "minLength": 3,
-                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                               "type": "string"
                             }
                           },
@@ -23609,13 +23638,13 @@
                         "localId": {
                           "maxLength": 256,
                           "minLength": 1,
-                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
                           "type": "string"
                         },
                         "pluginId": {
                           "maxLength": 256,
                           "minLength": 3,
-                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
                           "type": "string"
                         }
                       },
@@ -25514,6 +25543,9 @@
                     "verdict"
                   ],
                   "type": "object"
+                },
+                "settlement": {
+                  "const": "unrecorded"
                 }
               },
               "required": [
@@ -26355,6 +26387,9 @@
           "defaultModeId": "manual",
           "modes": [
             {
+              "directExport": {
+                "contractVersion": "happier.team-credential-manual-connected-account-direct.v1"
+              },
               "fields": [
                 {
                   "description": "The email address of the Atlassian account this API token belongs to.",
@@ -26625,6 +26660,8 @@
             "plugins.bitbucket.ui.mutations.review.replyProposal": "Reply proposal",
             "plugins.bitbucket.ui.mutations.review.replyTitle": "Reply with a review proposal",
             "plugins.bitbucket.ui.mutations.review.requestChanges": "Request changes",
+            "plugins.bitbucket.ui.mutations.review.settlementUnrecorded": "Published on Bitbucket, but Happier could not record it.",
+            "plugins.bitbucket.ui.mutations.review.settlementUnrecordedDetail": "Reload before publishing again so this review is reconciled instead of repeated.",
             "plugins.bitbucket.ui.mutations.review.submit": "Submit review",
             "plugins.bitbucket.ui.mutations.review.summary": "Review summary",
             "plugins.bitbucket.ui.mutations.review.summaryVisible": "Review summary visible on Bitbucket",
@@ -26667,6 +26704,7 @@
             "plugins.bitbucket.ui.readingComments": "Reading the comments from Bitbucket",
             "plugins.bitbucket.ui.readingDiff": "Reading this diff from Bitbucket",
             "plugins.bitbucket.ui.reply": "reply",
+            "plugins.bitbucket.ui.replyToComment": "Reply to comment {id}",
             "plugins.bitbucket.ui.rereadActivity": "Re-read this activity from Bitbucket",
             "plugins.bitbucket.ui.rereadBuilds": "Re-read the builds from Bitbucket",
             "plugins.bitbucket.ui.rereadComments": "Re-read the comments from Bitbucket",
@@ -26682,6 +26720,7 @@
             "plugins.bitbucket.ui.showMoreBuilds": "Show more builds",
             "plugins.bitbucket.ui.showMoreComments": "Show 30 more comments",
             "plugins.bitbucket.ui.showMoreFiles": "Show more changed files",
+            "plugins.bitbucket.ui.showReturnedReplies": "Show returned replies",
             "plugins.bitbucket.ui.someone": "Someone",
             "plugins.bitbucket.ui.status.failing": "Failing",
             "plugins.bitbucket.ui.status.passing": "Passing",
@@ -26857,6 +26896,8 @@
             "plugins.bitbucket.ui.mutations.review.replyProposal": "Предложение для ответа",
             "plugins.bitbucket.ui.mutations.review.replyTitle": "Ответить предложением из ревью",
             "plugins.bitbucket.ui.mutations.review.requestChanges": "Запросить изменения",
+            "plugins.bitbucket.ui.mutations.review.settlementUnrecorded": "Опубликовано в Bitbucket, но Happier не смог это записать.",
+            "plugins.bitbucket.ui.mutations.review.settlementUnrecordedDetail": "Обновите страницу перед повторной публикацией, чтобы это ревью было сверено, а не продублировано.",
             "plugins.bitbucket.ui.mutations.review.submit": "Отправить ревью",
             "plugins.bitbucket.ui.mutations.review.summary": "Итог ревью",
             "plugins.bitbucket.ui.mutations.review.summaryVisible": "Итог ревью виден в Bitbucket",
@@ -26899,6 +26940,7 @@
             "plugins.bitbucket.ui.readingComments": "Чтение комментариев из Bitbucket",
             "plugins.bitbucket.ui.readingDiff": "Чтение различий из Bitbucket",
             "plugins.bitbucket.ui.reply": "ответ",
+            "plugins.bitbucket.ui.replyToComment": "Ответ на комментарий {id}",
             "plugins.bitbucket.ui.rereadActivity": "Повторно прочитать активность из Bitbucket",
             "plugins.bitbucket.ui.rereadBuilds": "Повторно прочитать сборки из Bitbucket",
             "plugins.bitbucket.ui.rereadComments": "Повторно прочитать комментарии из Bitbucket",
@@ -26914,6 +26956,7 @@
             "plugins.bitbucket.ui.showMoreBuilds": "Показать ещё сборки",
             "plugins.bitbucket.ui.showMoreComments": "Показать ещё 30 комментариев",
             "plugins.bitbucket.ui.showMoreFiles": "Показать ещё изменённые файлы",
+            "plugins.bitbucket.ui.showReturnedReplies": "Показать загруженные ответы",
             "plugins.bitbucket.ui.someone": "Кто-то",
             "plugins.bitbucket.ui.status.failing": "С ошибками",
             "plugins.bitbucket.ui.status.passing": "Успешно",
@@ -27089,6 +27132,8 @@
             "plugins.bitbucket.ui.mutations.review.replyProposal": "Propozycja odpowiedzi",
             "plugins.bitbucket.ui.mutations.review.replyTitle": "Odpowiedz propozycją z recenzji",
             "plugins.bitbucket.ui.mutations.review.requestChanges": "Poproś o zmiany",
+            "plugins.bitbucket.ui.mutations.review.settlementUnrecorded": "Opublikowano w Bitbucket, ale Happier nie zdołał tego zapisać.",
+            "plugins.bitbucket.ui.mutations.review.settlementUnrecordedDetail": "Odśwież przed ponowną publikacją, aby ta recenzja została uzgodniona, a nie powtórzona.",
             "plugins.bitbucket.ui.mutations.review.submit": "Wyślij recenzję",
             "plugins.bitbucket.ui.mutations.review.summary": "Podsumowanie recenzji",
             "plugins.bitbucket.ui.mutations.review.summaryVisible": "Podsumowanie recenzji jest widoczne w Bitbucket",
@@ -27131,6 +27176,7 @@
             "plugins.bitbucket.ui.readingComments": "Czytanie komentarzy z Bitbucket",
             "plugins.bitbucket.ui.readingDiff": "Odczytywanie różnic z Bitbucket",
             "plugins.bitbucket.ui.reply": "odpowiedź",
+            "plugins.bitbucket.ui.replyToComment": "Odpowiedź na komentarz {id}",
             "plugins.bitbucket.ui.rereadActivity": "Odczytaj ponownie aktywność z Bitbucket",
             "plugins.bitbucket.ui.rereadBuilds": "Odczytaj ponownie kompilacje z Bitbucket",
             "plugins.bitbucket.ui.rereadComments": "Odczytaj ponownie komentarze z Bitbucket",
@@ -27146,6 +27192,7 @@
             "plugins.bitbucket.ui.showMoreBuilds": "Pokaż więcej kompilacji",
             "plugins.bitbucket.ui.showMoreComments": "Pokaż 30 kolejnych komentarzy",
             "plugins.bitbucket.ui.showMoreFiles": "Pokaż więcej zmienionych plików",
+            "plugins.bitbucket.ui.showReturnedReplies": "Pokaż pobrane odpowiedzi",
             "plugins.bitbucket.ui.someone": "Ktoś",
             "plugins.bitbucket.ui.status.failing": "Niepowodzenia",
             "plugins.bitbucket.ui.status.passing": "Powodzenia",
@@ -27321,6 +27368,8 @@
             "plugins.bitbucket.ui.mutations.review.replyProposal": "Propuesta de respuesta",
             "plugins.bitbucket.ui.mutations.review.replyTitle": "Responder con una propuesta de revisión",
             "plugins.bitbucket.ui.mutations.review.requestChanges": "Solicitar cambios",
+            "plugins.bitbucket.ui.mutations.review.settlementUnrecorded": "Publicado en Bitbucket, pero Happier no pudo registrarlo.",
+            "plugins.bitbucket.ui.mutations.review.settlementUnrecordedDetail": "Vuelve a cargar antes de publicar de nuevo para que esta revisión se concilie en lugar de repetirse.",
             "plugins.bitbucket.ui.mutations.review.submit": "Enviar revisión",
             "plugins.bitbucket.ui.mutations.review.summary": "Resumen de la revisión",
             "plugins.bitbucket.ui.mutations.review.summaryVisible": "El resumen de la revisión está visible en Bitbucket",
@@ -27363,6 +27412,7 @@
             "plugins.bitbucket.ui.readingComments": "Leyendo los comentarios de Bitbucket",
             "plugins.bitbucket.ui.readingDiff": "Leyendo las diferencias de Bitbucket",
             "plugins.bitbucket.ui.reply": "respuesta",
+            "plugins.bitbucket.ui.replyToComment": "Respuesta al comentario {id}",
             "plugins.bitbucket.ui.rereadActivity": "Volver a leer la actividad desde Bitbucket",
             "plugins.bitbucket.ui.rereadBuilds": "Volver a leer las compilaciones desde Bitbucket",
             "plugins.bitbucket.ui.rereadComments": "Volver a leer los comentarios desde Bitbucket",
@@ -27378,6 +27428,7 @@
             "plugins.bitbucket.ui.showMoreBuilds": "Mostrar más compilaciones",
             "plugins.bitbucket.ui.showMoreComments": "Mostrar 30 comentarios más",
             "plugins.bitbucket.ui.showMoreFiles": "Mostrar más archivos modificados",
+            "plugins.bitbucket.ui.showReturnedReplies": "Mostrar respuestas recibidas",
             "plugins.bitbucket.ui.someone": "Alguien",
             "plugins.bitbucket.ui.status.failing": "Con errores",
             "plugins.bitbucket.ui.status.passing": "Correctas",
@@ -27553,6 +27604,8 @@
             "plugins.bitbucket.ui.mutations.review.replyProposal": "Proposition de réponse",
             "plugins.bitbucket.ui.mutations.review.replyTitle": "Répondre avec une proposition de revue",
             "plugins.bitbucket.ui.mutations.review.requestChanges": "Demander des modifications",
+            "plugins.bitbucket.ui.mutations.review.settlementUnrecorded": "Publié sur Bitbucket, mais Happier n'a pas pu l'enregistrer.",
+            "plugins.bitbucket.ui.mutations.review.settlementUnrecordedDetail": "Rechargez avant de republier afin que cette revue soit réconciliée plutôt que répétée.",
             "plugins.bitbucket.ui.mutations.review.submit": "Envoyer la revue",
             "plugins.bitbucket.ui.mutations.review.summary": "Résumé de la revue",
             "plugins.bitbucket.ui.mutations.review.summaryVisible": "Le résumé de la revue est visible sur Bitbucket",
@@ -27595,6 +27648,7 @@
             "plugins.bitbucket.ui.readingComments": "Lecture des commentaires depuis Bitbucket",
             "plugins.bitbucket.ui.readingDiff": "Lecture des différences depuis Bitbucket",
             "plugins.bitbucket.ui.reply": "réponse",
+            "plugins.bitbucket.ui.replyToComment": "Réponse au commentaire {id}",
             "plugins.bitbucket.ui.rereadActivity": "Relire l’activité depuis Bitbucket",
             "plugins.bitbucket.ui.rereadBuilds": "Relire les compilations depuis Bitbucket",
             "plugins.bitbucket.ui.rereadComments": "Relire les commentaires depuis Bitbucket",
@@ -27610,6 +27664,7 @@
             "plugins.bitbucket.ui.showMoreBuilds": "Afficher plus de compilations",
             "plugins.bitbucket.ui.showMoreComments": "Afficher 30 commentaires supplémentaires",
             "plugins.bitbucket.ui.showMoreFiles": "Afficher plus de fichiers modifiés",
+            "plugins.bitbucket.ui.showReturnedReplies": "Afficher les réponses reçues",
             "plugins.bitbucket.ui.someone": "Quelqu’un",
             "plugins.bitbucket.ui.status.failing": "En échec",
             "plugins.bitbucket.ui.status.passing": "Réussies",
@@ -27785,6 +27840,8 @@
             "plugins.bitbucket.ui.mutations.review.replyProposal": "Proposta di risposta",
             "plugins.bitbucket.ui.mutations.review.replyTitle": "Rispondi con una proposta di revisione",
             "plugins.bitbucket.ui.mutations.review.requestChanges": "Richiedi modifiche",
+            "plugins.bitbucket.ui.mutations.review.settlementUnrecorded": "Pubblicato su Bitbucket, ma Happier non è riuscito a registrarlo.",
+            "plugins.bitbucket.ui.mutations.review.settlementUnrecordedDetail": "Ricarica prima di pubblicare di nuovo, così questa revisione viene riconciliata anziché ripetuta.",
             "plugins.bitbucket.ui.mutations.review.submit": "Invia revisione",
             "plugins.bitbucket.ui.mutations.review.summary": "Riepilogo della revisione",
             "plugins.bitbucket.ui.mutations.review.summaryVisible": "Il riepilogo della revisione è visibile su Bitbucket",
@@ -27827,6 +27884,7 @@
             "plugins.bitbucket.ui.readingComments": "Leggendo i commenti da Bitbucket",
             "plugins.bitbucket.ui.readingDiff": "Lettura delle differenze da Bitbucket",
             "plugins.bitbucket.ui.reply": "risposta",
+            "plugins.bitbucket.ui.replyToComment": "Risposta al commento {id}",
             "plugins.bitbucket.ui.rereadActivity": "Rileggi le attività da Bitbucket",
             "plugins.bitbucket.ui.rereadBuilds": "Rileggi le build da Bitbucket",
             "plugins.bitbucket.ui.rereadComments": "Rileggi i commenti da Bitbucket",
@@ -27842,6 +27900,7 @@
             "plugins.bitbucket.ui.showMoreBuilds": "Mostra altre build",
             "plugins.bitbucket.ui.showMoreComments": "Mostra altri 30 commenti",
             "plugins.bitbucket.ui.showMoreFiles": "Mostra altri file modificati",
+            "plugins.bitbucket.ui.showReturnedReplies": "Mostra le risposte ricevute",
             "plugins.bitbucket.ui.someone": "Qualcuno",
             "plugins.bitbucket.ui.status.failing": "Non riuscite",
             "plugins.bitbucket.ui.status.passing": "Riuscite",
@@ -28017,6 +28076,8 @@
             "plugins.bitbucket.ui.mutations.review.replyProposal": "Proposta de resposta",
             "plugins.bitbucket.ui.mutations.review.replyTitle": "Responder com uma proposta de revisão",
             "plugins.bitbucket.ui.mutations.review.requestChanges": "Solicitar alterações",
+            "plugins.bitbucket.ui.mutations.review.settlementUnrecorded": "Publicado no Bitbucket, mas o Happier não conseguiu registá-lo.",
+            "plugins.bitbucket.ui.mutations.review.settlementUnrecordedDetail": "Recarrega antes de publicar de novo para que esta revisão seja reconciliada em vez de repetida.",
             "plugins.bitbucket.ui.mutations.review.submit": "Enviar revisão",
             "plugins.bitbucket.ui.mutations.review.summary": "Resumo da revisão",
             "plugins.bitbucket.ui.mutations.review.summaryVisible": "O resumo da revisão está visível no Bitbucket",
@@ -28059,6 +28120,7 @@
             "plugins.bitbucket.ui.readingComments": "Lendo os comentários do Bitbucket",
             "plugins.bitbucket.ui.readingDiff": "A ler as diferenças do Bitbucket",
             "plugins.bitbucket.ui.reply": "resposta",
+            "plugins.bitbucket.ui.replyToComment": "Resposta ao comentário {id}",
             "plugins.bitbucket.ui.rereadActivity": "Voltar a ler a atividade no Bitbucket",
             "plugins.bitbucket.ui.rereadBuilds": "Voltar a ler as compilações no Bitbucket",
             "plugins.bitbucket.ui.rereadComments": "Voltar a ler os comentários no Bitbucket",
@@ -28074,6 +28136,7 @@
             "plugins.bitbucket.ui.showMoreBuilds": "Mostrar mais compilações",
             "plugins.bitbucket.ui.showMoreComments": "Mostrar mais 30 comentários",
             "plugins.bitbucket.ui.showMoreFiles": "Mostrar mais ficheiros alterados",
+            "plugins.bitbucket.ui.showReturnedReplies": "Mostrar respostas recebidas",
             "plugins.bitbucket.ui.someone": "Alguém",
             "plugins.bitbucket.ui.status.failing": "Com falhas",
             "plugins.bitbucket.ui.status.passing": "Bem-sucedidas",
@@ -28249,6 +28312,8 @@
             "plugins.bitbucket.ui.mutations.review.replyProposal": "Antwortvorschlag",
             "plugins.bitbucket.ui.mutations.review.replyTitle": "Mit einem Review-Vorschlag antworten",
             "plugins.bitbucket.ui.mutations.review.requestChanges": "Änderungen anfordern",
+            "plugins.bitbucket.ui.mutations.review.settlementUnrecorded": "Auf Bitbucket veröffentlicht, aber Happier konnte es nicht speichern.",
+            "plugins.bitbucket.ui.mutations.review.settlementUnrecordedDetail": "Lade neu, bevor du erneut veröffentlichst, damit dieses Review abgeglichen und nicht wiederholt wird.",
             "plugins.bitbucket.ui.mutations.review.submit": "Review absenden",
             "plugins.bitbucket.ui.mutations.review.summary": "Review-Zusammenfassung",
             "plugins.bitbucket.ui.mutations.review.summaryVisible": "Review-Zusammenfassung in Bitbucket sichtbar",
@@ -28291,6 +28356,7 @@
             "plugins.bitbucket.ui.readingComments": "Kommentare werden aus Bitbucket gelesen",
             "plugins.bitbucket.ui.readingDiff": "Diff wird aus Bitbucket gelesen",
             "plugins.bitbucket.ui.reply": "Antwort",
+            "plugins.bitbucket.ui.replyToComment": "Antwort auf Kommentar {id}",
             "plugins.bitbucket.ui.rereadActivity": "Diese Aktivität erneut aus Bitbucket lesen",
             "plugins.bitbucket.ui.rereadBuilds": "Builds erneut aus Bitbucket lesen",
             "plugins.bitbucket.ui.rereadComments": "Kommentare erneut aus Bitbucket lesen",
@@ -28306,6 +28372,7 @@
             "plugins.bitbucket.ui.showMoreBuilds": "Weitere Builds anzeigen",
             "plugins.bitbucket.ui.showMoreComments": "30 weitere Kommentare anzeigen",
             "plugins.bitbucket.ui.showMoreFiles": "Weitere geänderte Dateien anzeigen",
+            "plugins.bitbucket.ui.showReturnedReplies": "Geladene Antworten anzeigen",
             "plugins.bitbucket.ui.someone": "Jemand",
             "plugins.bitbucket.ui.status.failing": "Fehlgeschlagen",
             "plugins.bitbucket.ui.status.passing": "Erfolgreich",
@@ -28481,6 +28548,8 @@
             "plugins.bitbucket.ui.mutations.review.replyProposal": "Proposta de resposta",
             "plugins.bitbucket.ui.mutations.review.replyTitle": "Respon amb una proposta de revisió",
             "plugins.bitbucket.ui.mutations.review.requestChanges": "Sol·licita canvis",
+            "plugins.bitbucket.ui.mutations.review.settlementUnrecorded": "Publicat a Bitbucket, però Happier no ho ha pogut registrar.",
+            "plugins.bitbucket.ui.mutations.review.settlementUnrecordedDetail": "Torna a carregar abans de publicar de nou perquè aquesta revisió es concilii en lloc de repetir-se.",
             "plugins.bitbucket.ui.mutations.review.submit": "Envia la revisió",
             "plugins.bitbucket.ui.mutations.review.summary": "Resum de la revisió",
             "plugins.bitbucket.ui.mutations.review.summaryVisible": "El resum de la revisió és visible a Bitbucket",
@@ -28523,6 +28592,7 @@
             "plugins.bitbucket.ui.readingComments": "Llegint els comentaris de Bitbucket",
             "plugins.bitbucket.ui.readingDiff": "S’estan llegint les diferències de Bitbucket",
             "plugins.bitbucket.ui.reply": "resposta",
+            "plugins.bitbucket.ui.replyToComment": "Resposta al comentari {id}",
             "plugins.bitbucket.ui.rereadActivity": "Torna a llegir l’activitat de Bitbucket",
             "plugins.bitbucket.ui.rereadBuilds": "Torna a llegir les compilacions de Bitbucket",
             "plugins.bitbucket.ui.rereadComments": "Torna a llegir els comentaris de Bitbucket",
@@ -28538,6 +28608,7 @@
             "plugins.bitbucket.ui.showMoreBuilds": "Mostra més compilacions",
             "plugins.bitbucket.ui.showMoreComments": "Mostra 30 comentaris més",
             "plugins.bitbucket.ui.showMoreFiles": "Mostra més fitxers modificats",
+            "plugins.bitbucket.ui.showReturnedReplies": "Mostra les respostes rebudes",
             "plugins.bitbucket.ui.someone": "Algú",
             "plugins.bitbucket.ui.status.failing": "Amb errors",
             "plugins.bitbucket.ui.status.passing": "Correctes",
@@ -28713,6 +28784,8 @@
             "plugins.bitbucket.ui.mutations.review.replyProposal": "回复建议",
             "plugins.bitbucket.ui.mutations.review.replyTitle": "用评审建议回复",
             "plugins.bitbucket.ui.mutations.review.requestChanges": "请求变更",
+            "plugins.bitbucket.ui.mutations.review.settlementUnrecorded": "已发布到 Bitbucket，但 Happier 未能记录。",
+            "plugins.bitbucket.ui.mutations.review.settlementUnrecordedDetail": "再次发布前请先重新加载，让这次评审被对账而不是重复发布。",
             "plugins.bitbucket.ui.mutations.review.submit": "提交评审",
             "plugins.bitbucket.ui.mutations.review.summary": "评审摘要",
             "plugins.bitbucket.ui.mutations.review.summaryVisible": "评审摘要已显示在 Bitbucket 上",
@@ -28755,6 +28828,7 @@
             "plugins.bitbucket.ui.readingComments": "从Bitbucket读取评论",
             "plugins.bitbucket.ui.readingDiff": "正在从 Bitbucket 读取差异",
             "plugins.bitbucket.ui.reply": "回复",
+            "plugins.bitbucket.ui.replyToComment": "回复评论 {id}",
             "plugins.bitbucket.ui.rereadActivity": "从 Bitbucket 重新读取活动",
             "plugins.bitbucket.ui.rereadBuilds": "从 Bitbucket 重新读取构建",
             "plugins.bitbucket.ui.rereadComments": "从 Bitbucket 重新读取评论",
@@ -28770,6 +28844,7 @@
             "plugins.bitbucket.ui.showMoreBuilds": "显示更多构建",
             "plugins.bitbucket.ui.showMoreComments": "再显示 30 条评论",
             "plugins.bitbucket.ui.showMoreFiles": "显示更多已更改文件",
+            "plugins.bitbucket.ui.showReturnedReplies": "显示已返回的回复",
             "plugins.bitbucket.ui.someone": "某人",
             "plugins.bitbucket.ui.status.failing": "失败",
             "plugins.bitbucket.ui.status.passing": "通过",
@@ -28945,6 +29020,8 @@
             "plugins.bitbucket.ui.mutations.review.replyProposal": "回覆建議",
             "plugins.bitbucket.ui.mutations.review.replyTitle": "以審查建議回覆",
             "plugins.bitbucket.ui.mutations.review.requestChanges": "請求變更",
+            "plugins.bitbucket.ui.mutations.review.settlementUnrecorded": "已發布到 Bitbucket，但 Happier 未能記錄。",
+            "plugins.bitbucket.ui.mutations.review.settlementUnrecordedDetail": "再次發布前請先重新載入，讓這次審查被對帳而不是重複發布。",
             "plugins.bitbucket.ui.mutations.review.submit": "送出審查",
             "plugins.bitbucket.ui.mutations.review.summary": "審查摘要",
             "plugins.bitbucket.ui.mutations.review.summaryVisible": "審查摘要已顯示在 Bitbucket 上",
@@ -28987,6 +29064,7 @@
             "plugins.bitbucket.ui.readingComments": "讀取 Bitbucket 中的評論",
             "plugins.bitbucket.ui.readingDiff": "正在從 Bitbucket 讀取差異",
             "plugins.bitbucket.ui.reply": "回覆",
+            "plugins.bitbucket.ui.replyToComment": "回覆留言 {id}",
             "plugins.bitbucket.ui.rereadActivity": "從 Bitbucket 重新讀取活動",
             "plugins.bitbucket.ui.rereadBuilds": "從 Bitbucket 重新讀取建置",
             "plugins.bitbucket.ui.rereadComments": "從 Bitbucket 重新讀取留言",
@@ -29002,6 +29080,7 @@
             "plugins.bitbucket.ui.showMoreBuilds": "顯示更多建置",
             "plugins.bitbucket.ui.showMoreComments": "再顯示 30 則留言",
             "plugins.bitbucket.ui.showMoreFiles": "顯示更多已變更檔案",
+            "plugins.bitbucket.ui.showReturnedReplies": "顯示已傳回的回覆",
             "plugins.bitbucket.ui.someone": "某人",
             "plugins.bitbucket.ui.status.failing": "失敗",
             "plugins.bitbucket.ui.status.passing": "通過",
@@ -29177,6 +29256,8 @@
             "plugins.bitbucket.ui.mutations.review.replyProposal": "返信する提案",
             "plugins.bitbucket.ui.mutations.review.replyTitle": "レビュー提案で返信",
             "plugins.bitbucket.ui.mutations.review.requestChanges": "変更を要求",
+            "plugins.bitbucket.ui.mutations.review.settlementUnrecorded": "Bitbucket には公開されましたが、Happier が記録できませんでした。",
+            "plugins.bitbucket.ui.mutations.review.settlementUnrecordedDetail": "再度公開する前に再読み込みして、このレビューが重複せず突き合わせられるようにしてください。",
             "plugins.bitbucket.ui.mutations.review.submit": "レビューを送信",
             "plugins.bitbucket.ui.mutations.review.summary": "レビューの概要",
             "plugins.bitbucket.ui.mutations.review.summaryVisible": "レビュー概要は Bitbucket に表示されています",
@@ -29219,6 +29300,7 @@
             "plugins.bitbucket.ui.readingComments": "Bitbucketからコメントを読み取っています",
             "plugins.bitbucket.ui.readingDiff": "Bitbucket から差分を読み込み中",
             "plugins.bitbucket.ui.reply": "返信",
+            "plugins.bitbucket.ui.replyToComment": "コメント {id} への返信",
             "plugins.bitbucket.ui.rereadActivity": "Bitbucket からアクティビティを再読み込み",
             "plugins.bitbucket.ui.rereadBuilds": "Bitbucket からビルドを再読み込み",
             "plugins.bitbucket.ui.rereadComments": "Bitbucket からコメントを再読み込み",
@@ -29234,6 +29316,7 @@
             "plugins.bitbucket.ui.showMoreBuilds": "ビルドをさらに表示",
             "plugins.bitbucket.ui.showMoreComments": "コメントをさらに 30 件表示",
             "plugins.bitbucket.ui.showMoreFiles": "変更されたファイルをさらに表示",
+            "plugins.bitbucket.ui.showReturnedReplies": "取得済みの返信を表示",
             "plugins.bitbucket.ui.someone": "誰か",
             "plugins.bitbucket.ui.status.failing": "失敗",
             "plugins.bitbucket.ui.status.passing": "成功",

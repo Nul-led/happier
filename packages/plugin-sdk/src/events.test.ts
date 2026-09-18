@@ -293,6 +293,59 @@ describe('EventsService contract', () => {
         expect(actionIds).toEqual(['automation.event.sources.list']);
     });
 
+    it('keeps an observation unsettled when host Action policy defers admission for approval', async () => {
+        const reports: unknown[] = [];
+        const context = {
+            signal: new AbortController().signal,
+            services: {
+                actions: {
+                    execute: async (actionId: string, input: unknown) => {
+                        if (actionId === 'automation.event.sources.list') {
+                            return {
+                                kind: 'page',
+                                revision: '7',
+                                definitions: [sourceDefinition('trigger-1')],
+                                nextCursor: null,
+                            };
+                        }
+                        if (actionId === 'automation.event.admit') {
+                            return {
+                                kind: 'approval_request_created',
+                                artifactId: 'artifact-1',
+                                actionId: 'action-1',
+                            };
+                        }
+                        if (actionId === 'automation.event.source.status.report') {
+                            reports.push(input);
+                            return {};
+                        }
+                        throw new Error(`unexpected Action ${actionId}`);
+                    },
+                },
+            },
+        } as unknown as PluginInvocationContext;
+
+        await expect(publicEvents.admitCheckpointedPluginEventObservationV1({
+            eventRef: { pluginId: 'com.example.events', localId: 'message-received' },
+            sourceInstanceId: 'source:trigger-1',
+            sourceContractVersion: 1,
+            occurrenceId: 'occurrence-1',
+            occurredAt: 1,
+            observationReceivedAt: 1,
+            observedDelta: 1,
+            payload: {},
+        }, context)).resolves.toEqual({ kind: 'unsettled' });
+        expect(reports).toContainEqual(expect.objectContaining({
+            kind: 'source',
+            triggerId: 'trigger-1',
+            state: 'backingOff',
+            code: 'admissionUnavailable',
+            observedDelta: 1,
+            admittedDelta: 0,
+            skippedDelta: 0,
+        }));
+    });
+
     it.each([
         ['an empty continuation', [
             { kind: 'page', revision: '7', definitions: [], nextCursor: 'page-2' },

@@ -1,5 +1,6 @@
 import { definePlugin } from '@happier-dev/plugin-sdk';
 import { VoiceCredentialSlotIdSchema } from '@happier-dev/plugin-sdk/voice';
+import { CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1 } from '@happier-dev/plugin-sdk/connected-accounts';
 
 import { openAiConnectedAccountRuntime } from './auth/connectedAccountRuntime.js';
 import { OPENAI_VOICE_PROVIDER_CONTRIBUTION_ID } from './constants.js';
@@ -21,6 +22,7 @@ export const { manifest: PLUGIN_MANIFEST, activate } = definePlugin({
           modes: [{
             id: 'api-key',
             kind: 'manual',
+            directExport: { contractVersion: CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1 },
             outcomeReconciliation: 'none',
             fields: [{
               id: 'token',

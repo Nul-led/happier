@@ -51,11 +51,45 @@ describe('subscribeSseJson', () => {
     expect(reader.cancel).toHaveBeenCalledWith(expect.any(OpenCodeSseReadIdleTimeoutError));
   });
 
-  it('parses JSON frames and forwards event ids', async () => {
+  it('does not impose a read-idle deadline on a healthy quiet stream by default', async () => {
+    vi.useFakeTimers();
+    const reader = {
+      read: () => new Promise<TestReaderResult<Uint8Array>>((resolve) => {
+        setTimeout(() => resolve({ done: true }), 31_000);
+      }),
+      cancel: vi.fn(async () => undefined),
+    };
+    const fetch = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      body: { getReader: () => reader },
+    } as unknown as Response));
+
+    const subscription = await subscribeSseJson<{ type: string }>({
+      url: 'http://127.0.0.1:9999/global/event',
+      fetch,
+      signal: new AbortController().signal,
+      onMessage: vi.fn(),
+    });
+    const outcome = subscription.done.then(
+      () => 'resolved' as const,
+      (error: unknown) => error,
+    );
+
+    await vi.advanceTimersByTimeAsync(31_000);
+    await expect(outcome).resolves.toBe('resolved');
+    expect(reader.cancel).not.toHaveBeenCalled();
+  });
+
+  it('parses JSON data frames and ignores non-data SSE fields', async () => {
     const encoder = new TextEncoder();
     const chunks = [
+      // `id:` is parsed as a field rather than payload, but is not surfaced:
+      // neither OpenCode event route supports resuming from one.
       encoder.encode('id: evt-1\ndata: {"type":"hello"}\n\n'),
-      encoder.encode('data: {"type":"bye"}\n\n'),
+      encoder.encode('event: message\ndata: {"type":"bye"}\n\n'),
+      encoder.encode(': heartbeat\n\n'),
     ];
     const fetch = vi.fn(async () => ({
       ok: true,
@@ -82,7 +116,9 @@ describe('subscribeSseJson', () => {
     });
     await subscription.done;
 
-    expect(onMessage).toHaveBeenCalledWith({ type: 'hello' }, { id: 'evt-1' });
-    expect(onMessage).toHaveBeenCalledWith({ type: 'bye' }, {});
+    expect(onMessage.mock.calls).toEqual([
+      [{ type: 'hello' }],
+      [{ type: 'bye' }],
+    ]);
   });
 });

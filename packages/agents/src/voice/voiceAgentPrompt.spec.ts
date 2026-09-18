@@ -182,7 +182,7 @@ describe('voiceAgentPrompt', () => {
     expect(prompt).toContain('listAgentModels');
     expect(prompt).toContain('Use listExecutionRuns to discover runs by title or status before choosing runId internally');
     expect(prompt).toContain('Use getExecutionRun after choosing runId to inspect available actions before choosing actionId internally');
-    expect(prompt).toContain('Use listSessions to discover sessions by title before choosing sessionId internally');
+    expect(prompt).toContain('Use listSessions before choosing the exact serverId and sessionId internally');
     expect(prompt).toContain('Use listMachines to discover machines by label before choosing machineId internally');
   });
 

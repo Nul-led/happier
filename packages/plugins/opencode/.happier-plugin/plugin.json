@@ -22,6 +22,11 @@
               "steer",
               "followUp"
             ],
+            "executionRunContext": {
+              "versions": [
+                1
+              ]
+            },
             "open": [
               "create",
               "resume",
@@ -482,7 +487,8 @@
     "systemTools": [
       {
         "executableNames": [
-          "opencode"
+          "opencode",
+          "opencode2"
         ],
         "id": "opencode-cli",
         "title": "OpenCode CLI"

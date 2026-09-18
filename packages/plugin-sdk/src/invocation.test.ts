@@ -57,6 +57,7 @@ describe('Plugin invocation context', () => {
                 kind: 'plugin';
                 pluginId: string;
                 contribution: PluginInvocationContributionIdentity;
+                immutableGenerationId: string;
                 materialization: PluginMachineMaterializationRefV1;
                 originSurface?: 'cli' | 'mcp' | 'agent' | 'ui' | 'voice' | 'background' | 'api';
             }>

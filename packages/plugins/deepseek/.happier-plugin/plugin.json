@@ -40,6 +40,10 @@
           "source": "static+probe",
           "staticModels": [
             {
+              "aliases": [
+                "deepseek-chat",
+                "deepseek-reasoner"
+              ],
               "id": "deepseek-v4-flash",
               "name": "DeepSeek V4 Flash"
             },

@@ -68,7 +68,10 @@ function createTransportHarness(openSnapshots: readonly unknown[] = [firstSnapsh
   const disconnectListeners = new Set<DisconnectListener>();
   let openCount = 0;
   let disconnected = false;
-  const request = vi.fn(async (operation: Readonly<Record<string, unknown>>) => {
+  const request = vi.fn(async (
+    operation: Readonly<Record<string, unknown>>,
+    _options?: Readonly<{ signal?: AbortSignal }>,
+  ) => {
     if (disconnected && operation.kind === 'data') {
       return {
         kind: 'error',
@@ -128,6 +131,7 @@ function createTransportHarness(openSnapshots: readonly unknown[] = [firstSnapsh
       if (operation.operation === 'accountKv.transaction.set') return { kind: 'data', value: { version: 5 } };
       if (operation.operation === 'accountKv.transaction.delete') return { kind: 'data', value: { version: 6, deleted: true } };
       if (operation.operation === 'accountKv.transaction.commit') return { kind: 'data', value: null };
+      if (operation.operation === 'accountKv.transaction.rollback') return { kind: 'data', value: null };
     }
     throw new Error('Unexpected bridge operation');
   });
@@ -231,6 +235,53 @@ describe('hosted-web Collection UI-query guest pager', () => {
         arguments: ['transaction_1', 'cursor', { expectedVersion: 5 }],
       }, { signal: deleteCancellation.signal }],
     ]);
+  });
+
+  it('rolls a hosted transaction back instead of committing it after a method signal is cancelled', async () => {
+    const harness = createTransportHarness();
+    const client = createClient(harness);
+    const cancellation = new AbortController();
+
+    await expect(client.accountKv.transaction(async (transaction) => {
+      await transaction.set('cursor', { cursor: 9 }, {
+        expectedVersion: 4,
+        signal: cancellation.signal,
+      });
+      cancellation.abort();
+    })).rejects.toMatchObject({ name: 'PluginError', code: 'plugin_collection_cancelled' });
+
+    expect(harness.request.mock.calls
+      .map(([operation]) => operation.operation)
+      .filter((operation): operation is string => (
+        typeof operation === 'string' && operation.startsWith('accountKv.transaction.')
+      ))).toEqual([
+      'accountKv.transaction.begin',
+      'accountKv.transaction.set',
+      'accountKv.transaction.rollback',
+    ]);
+  });
+
+  it('keeps a hosted transaction participant signal connected to the host after its method settles', async () => {
+    const harness = createTransportHarness();
+    const client = createClient(harness);
+    const outer = new AbortController();
+    const inner = new AbortController();
+
+    await expect(client.accountKv.transaction(async (transaction) => {
+      await transaction.set('cursor', { cursor: 9 }, {
+        expectedVersion: 4,
+        signal: inner.signal,
+      });
+      const hostSignal = harness.request.mock.calls.find(
+        ([operation]) => operation.operation === 'accountKv.transaction.set',
+      )?.[1]?.signal;
+      expect(hostSignal?.aborted).toBe(false);
+      inner.abort();
+      // The host keeps this signal for the life of the transaction. A merge
+      // disposed when the individual method returned would silently detach the
+      // caller's cancellation from the host before the commit it must cancel.
+      expect(hostSignal?.aborted).toBe(true);
+    }, { signal: outer.signal })).rejects.toMatchObject({ code: 'plugin_collection_cancelled' });
   });
 
   it('preserves typed host conflict and currentness failures at the public hosted boundary', async () => {

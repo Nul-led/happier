@@ -22,6 +22,7 @@ import {
   listOpenCodeSessionCandidates,
   type OpenCodeExternalSessionCandidate,
 } from './candidates.js';
+import type { OpenCodeServerDialect } from '../../../runtime/server/dialect.js';
 import {
   type OpenCodeExternalSessionSource,
   projectOpenCodeExternalSessionSource,
@@ -32,6 +33,7 @@ import {
   resolveOpenCodeLinkedExternalSessionIdentity,
 } from './identity.js';
 import {
+  resolveOpenCodeExternalSessionsDialect,
   resolveOpenCodeExternalSessionsManagedService,
 } from './managedServer.js';
 import { pageOpenCodeTranscript } from './pageTranscript.js';
@@ -263,6 +265,7 @@ async function canonicalizeMissingOpenCodeDirectory(params: Readonly<{
 
   const directory = await getOpenCodeExternalSessionVerifiedWorkingDirectory({
     source: params.resolved.source,
+    dialect: await resolveRequestDialect(params.resolved.source, params.invocation),
     providerSessionId: params.resolved.providerSessionId,
     maxBytes: params.invocation.maxSerializedBytes,
     signal: params.invocation.signal,
@@ -285,6 +288,28 @@ async function canonicalizeMissingOpenCodeDirectory(params: Readonly<{
       ...params.resolved.source,
       directory,
     },
+  });
+}
+
+/**
+ * Which OpenCode surface this call's reads must speak, from the host-stamped
+ * execution authority every External Sessions invocation carries.
+ *
+ * It is the same question, asked of the same owner, as the readiness route of the
+ * server the host declares for this source — so a browse-owned `opencode2`
+ * server is declared healthy on `/api/health` and then read over `/api/*`. The
+ * two resolutions are independent calls because the host owns the declaration
+ * boundary, but they read one deterministic fact: where the OpenCode system tool
+ * resolves for this Agent.
+ */
+async function resolveRequestDialect(
+  source: OpenCodeExternalSessionSource,
+  invocation: AgentExternalSessionsInvocation,
+): Promise<OpenCodeServerDialect> {
+  return await resolveOpenCodeExternalSessionsDialect({
+    source,
+    exec: invocation.exec,
+    signal: invocation.signal,
   });
 }
 
@@ -351,6 +376,7 @@ export function createOpenCodeExternalSessionsContribution(params: Readonly<{
       try {
         const listed = await listOpenCodeSessionCandidates({
           source: validation.value.source,
+          dialect: await resolveRequestDialect(validation.value.source, request),
           ...(request.cursor ? { cursor: request.cursor } : {}),
           limit: request.maxItems,
           maxBytes: request.maxSerializedBytes,
@@ -467,6 +493,7 @@ export function createOpenCodeExternalSessionsContribution(params: Readonly<{
       try {
         const page = await pageOpenCodeTranscript({
           source: validation.value.source,
+          dialect: await resolveRequestDialect(validation.value.source, request),
           providerSessionId: request.remoteSessionId,
           direction: request.direction,
           cursor: request.cursor,
@@ -499,6 +526,7 @@ export function createOpenCodeExternalSessionsContribution(params: Readonly<{
       try {
         const page = await readAfterOpenCodeTranscript({
           source: validation.value.source,
+          dialect: await resolveRequestDialect(validation.value.source, request),
           providerSessionId: request.remoteSessionId,
           cursor: request.cursor,
           maxBytes: request.maxSerializedBytes,

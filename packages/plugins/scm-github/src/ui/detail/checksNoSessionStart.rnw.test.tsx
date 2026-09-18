@@ -120,12 +120,8 @@ describe('the mounted GitHub Checks plane Session-start boundary', () => {
     let detail!: PluginUiTestkit;
     await act(async () => {
       detail = await createPluginUiTestkit({
-        identity: {
-          pluginId: GITHUB_PLUGIN_ID,
-          pluginVersion: '0.0.0',
-          viewId: 'github-triage-detail',
-          generation: 'github-triage-checks-mount',
-        },
+        identity: { instanceId: 'fixture-instance-199', mountNonce: 'fixture-mount-199' },
+        authorPlugin: { id: GITHUB_PLUGIN_ID, version: '0.0.0' },
         surface: renderSurface,
         surfaceContext: createSurfaceContextFixture(),
         adapter: createPluginUiRnwSemanticSurfaceAdapter(),

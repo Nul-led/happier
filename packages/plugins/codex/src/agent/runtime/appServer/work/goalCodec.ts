@@ -4,6 +4,8 @@ import type {
   SessionWorkStateStatusV1,
 } from '@happier-dev/plugin-sdk/sessions/work-state';
 
+import { readExactCodexProviderSessionId } from '../../../../protocol/runtimeDescriptorV1.js';
+
 export const CODEX_APP_SERVER_GOAL_STATUSES = [
   'active',
   'paused',
@@ -19,7 +21,9 @@ type SessionWorkStateStatusReason = NonNullable<SessionWorkStateItemV1['statusRe
 type DecodedCodexGoal = SessionWorkStateItemV1 & Readonly<{ vendorRef: string }>;
 
 const CodexAppServerGoalSchema = z.object({
-  threadId: z.string().trim().min(1),
+  // Codex minted this thread id and it is the vendor reference Happier sends
+  // back for goal control, so presence is checked without rewriting its bytes.
+  threadId: z.string().refine((value) => readExactCodexProviderSessionId(value) !== null),
   objective: z.string().trim().min(1).max(4000),
   status: z.enum(CODEX_APP_SERVER_GOAL_STATUSES),
   tokenBudget: z.number().finite().positive().nullable().optional(),

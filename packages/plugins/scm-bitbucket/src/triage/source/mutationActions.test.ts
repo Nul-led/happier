@@ -373,6 +373,60 @@ describe('Bitbucket pull-request merge', () => {
     expect(requests.filter((request) => request.url === PULL_REQUEST_URL)).toHaveLength(2);
   });
 
+  it('confirms a merge whose success body could not be decoded rather than calling it refused', async () => {
+    // Bitbucket answered `200`: the merge happened. A body this build cannot parse proves nothing
+    // about the effect, so folding it into a no-effect contract failure would report an applied
+    // merge as refused — and release the claim that keeps a publication from being redispatched.
+    const { context, requests } = harness({
+      reads: [pullRequest('OPEN'), pullRequest('MERGED')],
+      write: (url) => (url === MERGE_URL ? { status: 200, bodyBytes: '{broken' } : undefined),
+    });
+
+    const settled = BitbucketMutationResultV1Schema.parse(
+      await mergeBitbucketPullRequestAction(mergeInput(), context),
+    );
+
+    expect(settled.kind).toBe('applied');
+    expect(writesTo(requests, MERGE_URL)).toBe(1);
+    expect(requests.filter((request) => request.url === PULL_REQUEST_URL)).toHaveLength(2);
+  });
+
+  it('keeps an undecodable merge success uncertain when the confirming read cannot prove it', async () => {
+    const { context, requests } = harness({
+      reads: [pullRequest('OPEN'), pullRequest('OPEN')],
+      write: (url) => (url === MERGE_URL ? { status: 200, bodyBytes: '{broken' } : undefined),
+    });
+
+    const settled = BitbucketMutationResultV1Schema.parse(
+      await mergeBitbucketPullRequestAction(mergeInput(), context),
+    );
+
+    expect(settled.kind).toBe('uncertain');
+    if (settled.kind !== 'uncertain') throw new Error('an undecodable success cannot be unchanged');
+    expect(settled.failure?.code).toBe('malformed-success-response');
+    expect(writesTo(requests, MERGE_URL)).toBe(1);
+  });
+
+  it('still refuses a genuine 4xx merge without a confirming read', async () => {
+    // The paired negative for the case above: a refusal status is Bitbucket saying the command
+    // was not applied, so it must not acquire a confirming read that could adopt someone else's
+    // later change as this Action's success.
+    const { context, requests } = harness({
+      reads: [pullRequest('OPEN')],
+      write: (url) => (
+        url === MERGE_URL ? { status: 403, body: { error: { message: 'forbidden' } } } : undefined
+      ),
+    });
+
+    const settled = BitbucketMutationResultV1Schema.parse(
+      await mergeBitbucketPullRequestAction(mergeInput(), context),
+    );
+
+    expect(settled.kind).toBe('unavailable');
+    expect(requests.filter((request) => request.url === PULL_REQUEST_URL)).toHaveLength(1);
+    expect(writesTo(requests, MERGE_URL)).toBe(1);
+  });
+
   it('confirms one transport-answer-lost merge without writing a second time', async () => {
     const { context, requests } = harness({
       reads: [pullRequest('OPEN'), pullRequest('MERGED')],

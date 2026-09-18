@@ -28,7 +28,7 @@ describe('Kilo plugin manifest', () => {
         agents: [{
           id: 'kilo', title: 'Kilo', primary: 'sessions',
           runtime: { kind: 'custom' },
-          capabilities: { sessions: { open: ['create', 'resume'], delivery: ['newTurn', 'steer', 'followUp'], cancel: true } },
+          capabilities: { sessions: { open: ['create', 'resume'], delivery: ['newTurn', 'followUp'], cancel: true } },
         }],
         systemTools: [{ id: 'kilo-cli', executableNames: ['kilo'] }],
         settings: [KILO_AGENT_SETTINGS_CONTRIBUTION],
