@@ -14,6 +14,7 @@ export function runHeartbeatWrappedCommand(params: {
   args: string[];
   config: string;
   toolName: string;
+  diagnosticPath?: string;
   spawnOptions: {
     stdio: 'inherit';
     env: NodeJS.ProcessEnv;

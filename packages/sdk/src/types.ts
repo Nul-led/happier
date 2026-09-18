@@ -1,4 +1,5 @@
 import type { ActionApprovalRequestCreatedResult } from '@happier-dev/protocol/actions';
+import type { WorkflowProjectTargetV1 } from '@happier-dev/protocol/workflows';
 import type {
   PublicActionId,
   PublicActionInputById,
@@ -6,7 +7,7 @@ import type {
 } from './actions/generated.js';
 
 export type ActionTarget =
-  | Readonly<{ kind: 'machine'; machineId: string }>
+  | Readonly<{ kind: 'machine'; machineId: string; project?: WorkflowProjectTargetV1 }>
   | Readonly<{ kind: 'session'; sessionId: string }>;
 
 export type ActionExecutionOptions = Readonly<{

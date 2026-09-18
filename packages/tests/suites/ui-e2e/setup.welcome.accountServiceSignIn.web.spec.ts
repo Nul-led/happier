@@ -33,19 +33,19 @@ import { secretBearingBrowserCapturePolicy } from '../../src/testkit/uiE2e/secre
  * Everything runs through production entry points; no Account Directory, profile-adoption,
  * focus, or credential owner is mocked:
  *   WelcomeDecisionPanel (`useAccountServiceEntryOptions` → exact-endpoint discovery)
- *   → "Choose sign-in service" (`Modal.prompt` → `setAccountServiceEndpoint`)
+ *   → "Choose sign-in service" (full-screen `AccountServiceSelectionForm` → `setAccountServiceEndpoint`)
  *   → "Use a key" (`authenticateSelectedAccountServiceWithKey` → key-challenge v2 restricted
  *     credential in the dedicated `account_directory_auth_credentials` namespace; the A10
  *     same-service bootstrap on the dual-role service publishes its own linked preferred Home)
- *   → `refreshAndEnrollAccountServiceDirectory` with `enter_preferred_home`
+ *   → `completeAccountServicePostAuth` with exact automatic Home entry intent
  *   → assertion mint → destination-bound redemption → sealed `{ token }` credential
- *   → non-focusing adoption + `finalizePreferredHomeEnrollmentEntryIntent`
+ *   → Directory-owned enrollment/material completion and exact Home entry
  *   → `setActiveServerAndSwitch` → authenticated shell.
  *
  * Mocked boundaries (external only):
  *   - `https://api.happier.dev` (the real default Happier Cloud endpoint) is aborted at the
  *     browser network boundary so the selected-service decision is deterministic in any
- *     environment; the journey then selects the local service through the production prompt.
+ *     environment; the journey then selects the local service through the production form.
  *   - The service's public origin is the existing ephemeral-TLS recording proxy used by the
  *     Account Directory core E2Es: the server publishes its real HTTPS ingress descriptor
  *     through it, and the browser trusts that fixture origin via per-file `ignoreHTTPSErrors`.
@@ -277,10 +277,10 @@ test.describe('ui e2e: welcome Account Service sign-in journey', () => {
       await expect(lateTour).toBeHidden({ timeout: 30_000 });
       await chooseService.click();
     }
-    const input = page.getByTestId('web-prompt-input');
+    const input = page.getByTestId('account-service-url-input');
     await expect(input).toHaveCount(1, { timeout: 30_000 });
     await input.fill(serviceOrigin);
-    await page.getByTestId('web-prompt-confirm').click();
+    await page.getByTestId('account-service-url-submit').click();
 
     // Discovery of the exact selected endpoint succeeds → its advertised methods own the
     // welcome sign-in path. This service advertises key login only.
@@ -314,10 +314,10 @@ test.describe('ui e2e: welcome Account Service sign-in journey', () => {
     // Familiar advertised method → restricted `account_directory` key ceremony (key-challenge
     // v2) → Directory refresh → preferred Home enrollment → explicit open.
     await page.getByTestId('welcome-account-service-key').click();
-    const secretInput = page.getByTestId('web-prompt-input');
+    const secretInput = page.getByTestId('restore-manual-secret-input');
     await expect(secretInput).toHaveCount(1, { timeout: 30_000 });
     await secretInput.fill(secretKeyBase64Url);
-    await page.getByTestId('web-prompt-confirm').click();
+    await page.getByTestId('restore-manual-submit').click();
 
     await waitForAuthenticatedHomeUi({ page, timeoutMs: 300_000 });
 

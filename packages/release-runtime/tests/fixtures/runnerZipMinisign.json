@@ -1,0 +1,7 @@
+{
+  "artifactName": "happier-runner-v0.3.0-linux-x64.zip",
+  "artifactSha256": "a172b3b59650440273a7091bff3128ba6b22610590eda8a4692cfd6ee98202ef",
+  "checksumsText": "a172b3b59650440273a7091bff3128ba6b22610590eda8a4692cfd6ee98202ef  happier-runner-v0.3.0-linux-x64.zip\n",
+  "publicKeyFile": "untrusted comment: test-only public key\nRWQBAgMEBQYHCDZER+LDSNZhselYlaS8pFHdobf+5/pjey/23xA0RxxQ\n",
+  "signatureFile": "untrusted comment: test-only signature\nRWQBAgMEBQYHCDI0jpA1gNwterQJYrk/E2pmO0L/9B+ukhCXr7gwmDFRyorxkcdxQj9d33PNjvXpDzDSr6E6+xarSNR2ocElXAE=\ntrusted comment: Runner ZIP loader independent OpenSSL test vector\n9mTj5UuZ/LTUkrCGiTKFulRlBHX1PIfbII0VHhdjwZC/cI7KU7Mzak3waQ6NwNpbUCO8kNDhUqjb4UMpZPeUCQ==\n"
+}

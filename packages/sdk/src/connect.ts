@@ -2,17 +2,28 @@ import {
   ActionApprovalRequestCreatedResultSchema,
   type ActionApprovalRequestCreatedResult,
   EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES,
+  EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES_V2,
+  ExternalActionHttpErrorSchema,
   ExternalActionHttpErrorV1Schema,
   ExternalActionRequestIdV1Schema,
   ExternalActionTargetV1Schema,
   parseExternalActionResponseEnvelopeV1,
+  parseSessionListQueryActionResultV1,
+  SESSION_LIST_QUERY_UPDATE_REQUIRED_ERROR_CODE,
   parseQualifiedPluginActionId,
+  sealExternalActionRequestV2,
+  openExternalActionResponseV2,
 } from '@happier-dev/protocol/actions';
-import { parseAccountApiTokenBearerV1 } from '@happier-dev/protocol/auth/accountApiTokens';
+import { SessionListActionInputV1Schema } from '@happier-dev/protocol/actions/actionSpecs';
+import {
+  ACCOUNT_API_TOKEN_ENCRYPTION_ACCESS_HTTP_PATH_V1,
+  AccountApiTokensServerErrorV1Schema,
+} from '@happier-dev/protocol/auth/accountApiTokens';
 import { SessionIdSchema } from '@happier-dev/protocol/sessions/idsV1';
 import { Agent, request as requestWithUndici } from 'undici';
 
 import { createGeneratedActions, MUTATING_PUBLIC_ACTION_IDS } from './actions/generated.js';
+import { createClientCredential, waitForClientMaterial, type ClientCredential } from './clientCredential.js';
 import { waitForClientCleanupGrace } from './cleanupGrace.js';
 import { HappierActionError, HappierClientClosedError, HappierTransportError } from './errors.js';
 import {
@@ -46,13 +57,6 @@ import type {
   PublicActionInputById,
   PublicActionResultById,
 } from './actions/generated.js';
-
-function requireApiToken(value: string): string {
-  if (parseAccountApiTokenBearerV1(value) === null) {
-    throw new TypeError('token must be an exact Happier API Token');
-  }
-  return value;
-}
 
 function requireMachineId(value: string): string {
   const parsed = ExternalActionTargetV1Schema.safeParse({
@@ -142,9 +146,10 @@ function declaredResponseByteLength(
 async function readExternalActionResponseJson(
   body: ExternalActionResponseBody,
   headers: Readonly<Record<string, string | string[] | undefined>>,
+  maximumBytes = EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES,
 ): Promise<unknown> {
   const declaredLength = declaredResponseByteLength(headers);
-  if (declaredLength !== undefined && declaredLength > EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES) {
+  if (declaredLength !== undefined && declaredLength > maximumBytes) {
     rejectOversizedExternalActionResponse(body);
   }
 
@@ -152,7 +157,7 @@ async function readExternalActionResponseJson(
   let byteLength = 0;
   for await (const chunk of body) {
     byteLength += chunk.byteLength;
-    if (byteLength > EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES) {
+    if (byteLength > maximumBytes) {
       rejectOversizedExternalActionResponse(body);
     }
     chunks.push(chunk);
@@ -167,7 +172,25 @@ async function readExternalActionResponseJson(
   return JSON.parse(new TextDecoder().decode(bytes));
 }
 
-function transportErrorCode(body: unknown): string | undefined {
+function transportErrorCode(
+  body: unknown,
+  mode: 'ordinary' | 'credential_bootstrap' | 'protected_action',
+  expectedRequestId?: string,
+): string | undefined {
+  if (mode === 'protected_action') {
+    const externalActionError = ExternalActionHttpErrorSchema.safeParse(body);
+    if (!externalActionError.success) return undefined;
+    if ('requestId' in externalActionError.data
+      && externalActionError.data.requestId !== undefined
+      && externalActionError.data.requestId !== expectedRequestId) return undefined;
+    return 'code' in externalActionError.data
+      ? externalActionError.data.code
+      : externalActionError.data.error;
+  }
+  if (mode === 'credential_bootstrap') {
+    const apiTokenError = AccountApiTokensServerErrorV1Schema.safeParse(body);
+    return apiTokenError.success ? apiTokenError.data.error : undefined;
+  }
   const externalActionError = ExternalActionHttpErrorV1Schema.safeParse(body);
   if (externalActionError.success) return externalActionError.data.code;
   if (body === null || typeof body !== 'object') return undefined;
@@ -296,7 +319,7 @@ type ClientLifecycle = Readonly<{
   registerCloseCleanup: (cleanup: ClientCloseCleanup) => () => void;
 }>;
 
-function createClientLifecycle(): ClientLifecycle {
+function createClientLifecycle(disposeCredential: () => void): ClientLifecycle {
   const controller = new AbortController();
   const dispatcher = new Agent();
   const cleanup = new Set<ClientCloseCleanup>();
@@ -327,6 +350,8 @@ function createClientLifecycle(): ClientLifecycle {
         resolveClose?.();
       } catch (error) {
         rejectClose?.(error);
+      } finally {
+        disposeCredential();
       }
     })();
     return closePromise;
@@ -390,18 +415,18 @@ function createMachineActions(execute: RawActionExecute): HappierMachineActions 
 
 function createClient(
   endpoint: URL,
-  token: string,
+  credential: ClientCredential,
   lifecycle: ClientLifecycle,
 ): HappierClient;
 function createClient(
   endpoint: URL,
-  token: string,
+  credential: ClientCredential,
   lifecycle: ClientLifecycle,
   defaultTarget: MachineActionTarget,
 ): HappierMachineClient;
 function createClient(
   endpoint: URL,
-  token: string,
+  credential: ClientCredential,
   lifecycle: ClientLifecycle,
   defaultTarget?: MachineActionTarget,
 ): HappierClient | HappierMachineClient {
@@ -412,6 +437,7 @@ function createClient(
     requestId?: string;
     signal?: AbortSignal;
     allowAfterClose?: boolean;
+    protectedResponse?: boolean;
   }>): Promise<unknown> => {
     if (lifecycle.isClosed() && params.allowAfterClose !== true) {
       throw new HappierClientClosedError(params.requestId);
@@ -427,7 +453,7 @@ function createClient(
       response = await requestWithUndici(new URL(params.path, endpoint), {
         method: params.method,
         headers: {
-          authorization: `Bearer ${token}`,
+          authorization: `Bearer ${credential.bearer}`,
           ...(params.body === undefined ? {} : { 'content-type': 'application/json' }),
         },
         ...(params.body === undefined ? {} : { body: params.body }),
@@ -442,20 +468,24 @@ function createClient(
       if (params.signal?.aborted) throw params.signal.reason;
       throw new HappierTransportError('Could not reach the Happier API.', {
         requestId: params.requestId,
-        cause: error,
+        ...(credential.encryption ? {} : { cause: error }),
       });
     }
 
+    const responseMaximumBytes = params.protectedResponse
+      ? EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES_V2
+      : EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES;
     let body: unknown;
     try {
-      body = await readExternalActionResponseJson(response.body, response.headers);
+      body = await readExternalActionResponseJson(response.body, response.headers,
+        responseMaximumBytes);
     } catch (error) {
       if (error instanceof ExternalActionResponseBodyTooLargeError) {
         throw new HappierTransportError(error.message, {
           code: 'response_too_large',
           status: response.statusCode,
           requestId: params.requestId,
-          details: { maxSerializedBytes: EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES },
+          details: { maxSerializedBytes: responseMaximumBytes },
         });
       }
       if (lifecycle.controller.signal.aborted && params.allowAfterClose !== true) {
@@ -463,7 +493,8 @@ function createClient(
       }
       if (params.signal?.aborted) throw params.signal.reason;
       if (response.statusCode < 200 || response.statusCode >= 300) {
-        const code = responseHeader(response.headers, 'x-happier-retry-reason');
+        const retryReason = responseHeader(response.headers, 'x-happier-retry-reason');
+        const code = credential.encryption && retryReason !== 'server_unavailable' ? undefined : retryReason;
         throw new HappierTransportError(
           code === 'server_unavailable'
             ? 'The Happier API is unavailable.'
@@ -474,14 +505,24 @@ function createClient(
       throw new HappierTransportError('The Happier API returned invalid JSON.', {
         status: response.statusCode,
         requestId: params.requestId,
-        cause: error,
+        ...(credential.encryption ? {} : { cause: error }),
       });
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
+      // Protected clients expose only the Protocol's bounded error vocabulary,
+      // never arbitrary server strings or response details containing content.
       throw new HappierTransportError(`The Happier API returned HTTP ${response.statusCode}.`, {
-        code: transportErrorCode(body),
+        code: transportErrorCode(
+          body,
+          params.protectedResponse
+            ? 'protected_action'
+            : credential.encryption
+              ? 'credential_bootstrap'
+              : 'ordinary',
+          params.requestId,
+        ),
         status: response.statusCode,
-        details: body,
+        ...(credential.encryption ? {} : { details: body }),
         requestId: params.requestId,
       });
     }
@@ -495,32 +536,68 @@ function createClient(
     allowAfterClose = false,
     preserveDeferredApproval = true,
   ): Promise<PublicActionExecutionResult<K>> => {
+    if (lifecycle.isClosed() && !allowAfterClose) throw new HappierClientClosedError(options.requestId);
+    options.signal?.throwIfAborted();
+    const sessionListInput = actionId === 'session.list'
+      ? SessionListActionInputV1Schema.parse(input)
+      : undefined;
+    const requestInput = sessionListInput ?? input;
+    const requiresSessionListQueryProof = sessionListInput?.query !== undefined;
     const requestId = options.requestId === undefined
-      ? (MUTATING_PUBLIC_ACTION_IDS.has(actionId) ? globalThis.crypto.randomUUID() : undefined)
+      ? (credential.encryption || MUTATING_PUBLIC_ACTION_IDS.has(actionId) ? globalThis.crypto.randomUUID() : undefined)
       : requireExternalActionRequestId(options.requestId);
     const requestBody = {
       v: 1 as const,
       ...(requestId === undefined ? {} : { requestId }),
       ...((options.target ?? defaultTarget) === undefined ? {} : { target: options.target ?? defaultTarget }),
-      input,
+      input: requestInput,
     };
 
+    let protectedInvocation;
+    if (credential.encryption) {
+      const target = ExternalActionTargetV1Schema.safeParse(options.target ?? defaultTarget);
+      if (!target.success) throw new HappierTransportError('An encrypted Action requires an explicit target.', {
+        code: 'target_required', requestId,
+      });
+      const materialPromise = credential.encryption.getMaterial(() => requestJson({
+        path: ACCOUNT_API_TOKEN_ENCRYPTION_ACCESS_HTTP_PATH_V1.slice(1), method: 'POST', body: '{}',
+      }));
+      const material = allowAfterClose ? await materialPromise : await waitForClientMaterial(
+        materialPromise, combinedSignal(options.signal, lifecycle.controller.signal),
+      );
+      const binding = { serverIdentityId: credential.encryption.pins.serverIdentityId,
+        accountId: credential.encryption.pins.accountId, credentialId: credential.encryption.pins.tokenId,
+        actionId, requestId: requestId!, target: target.data };
+      try {
+        protectedInvocation = { material, binding, request: sealExternalActionRequestV2({ binding, input: requestInput, material,
+          randomBytes: (length) => globalThis.crypto.getRandomValues(new Uint8Array(length)) }) };
+      } catch {
+        throw new HappierTransportError('The encrypted Action request could not be prepared.', {
+          code: 'invalid_encrypted_envelope', requestId,
+        });
+      }
+    }
     const body = await requestJson({
       path: `v1/actions/${encodeURIComponent(actionId)}`,
       method: 'POST',
-      body: JSON.stringify(requestBody),
+      body: JSON.stringify(protectedInvocation?.request ?? requestBody),
       requestId,
       signal: options.signal,
       allowAfterClose,
+      protectedResponse: protectedInvocation !== undefined,
     });
-    const externalActionResponse = parseExternalActionResponseEnvelopeV1(body);
+    const openedExecution = protectedInvocation
+      ? openExternalActionResponseV2({ ...protectedInvocation, envelope: body }) : undefined;
+    const externalActionResponse = protectedInvocation
+      ? (openedExecution ? { actionId, requestId, execution: openedExecution } : null)
+      : parseExternalActionResponseEnvelopeV1(body);
     if (
       !externalActionResponse
       || externalActionResponse.actionId !== actionId
       || externalActionResponse.requestId !== requestId
     ) {
       throw new HappierTransportError('The Happier Action API returned an invalid response envelope.', {
-        details: body,
+        ...(protectedInvocation ? { code: 'invalid_encrypted_envelope' } : { details: body }),
         requestId,
       });
     }
@@ -542,6 +619,19 @@ function createClient(
         'approval_required',
         `The ${actionId} Action requires user approval before it can execute.`,
         deferredApproval,
+        requestId,
+      );
+    }
+    if (
+      deferredApproval === null
+      && actionId === 'session.list'
+      && requiresSessionListQueryProof
+      && !parseSessionListQueryActionResultV1(externalActionResponse.execution.result)
+    ) {
+      throw new HappierActionError(
+        SESSION_LIST_QUERY_UPDATE_REQUIRED_ERROR_CODE,
+        SESSION_LIST_QUERY_UPDATE_REQUIRED_ERROR_CODE,
+        undefined,
         requestId,
       );
     }
@@ -619,7 +709,7 @@ function createClient(
       }));
     },
   });
-  const machine = (machineId: string) => createClient(endpoint, token, lifecycle, {
+  const machine = (machineId: string) => createClient(endpoint, credential, lifecycle, {
     kind: 'machine',
     machineId: requireMachineId(machineId),
   });
@@ -694,6 +784,6 @@ function createClient(
 
 export function connect(options: HappierConnectOptions): HappierClient {
   const endpoint = normalizeEndpoint(options.endpoint);
-  const token = requireApiToken(options.token);
-  return createClient(endpoint, token, createClientLifecycle());
+  const credential = createClientCredential(options.token);
+  return createClient(endpoint, credential, createClientLifecycle(credential.dispose));
 }

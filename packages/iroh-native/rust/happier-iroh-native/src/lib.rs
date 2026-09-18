@@ -15,6 +15,7 @@ use happier_iroh_core::{
     MachineHttpTunnel, MachineTunnel, MachineTunnelConfig, MachineTunnelStatus, RelayPolicy,
     RelaySelection,
 };
+pub use happier_iroh_core::{IrohError, MachineHandshakeProvider};
 use serde::Deserialize;
 use serde_json::{json, Value};
 #[cfg(feature = "test-relay-fixture")]
@@ -461,7 +462,7 @@ fn ensure_endpoint_key(key_path: Option<&Path>) -> Result<(), OpError> {
         EndpointKeyStore::ensure(path).map_err(|_| {
             (
                 "endpoint_key_unavailable",
-                "endpoint identity key is missing or corrupt; explicit re-pair is required"
+                "endpoint identity key is missing or corrupt; endpoint-identity recovery is required"
                     .to_owned(),
             )
         })?;
@@ -1265,7 +1266,7 @@ fn start_machine_tunnel(value: *const c_char) -> Value {
     };
     let id = next_id();
     let status = tunnel.status();
-    let tunnel_local_capability = tunnel.local_capability().to_owned();
+    let tunnel_local_capability = tunnel.local_capability().map(str::to_owned);
     let started_at_ms = now_ms();
     let published = admission.publish_if_active(tunnel, |tunnel| {
         state()
@@ -1285,7 +1286,15 @@ fn start_machine_tunnel(value: *const c_char) -> Value {
         runtime().block_on(tunnel.stop_and_wait());
         return machine_start_error(happier_iroh_core::IrohError::Cancelled);
     }
-    json!({"ok": true, "result": {"machineTunnelId": id, "endpointHandle": input.endpoint_handle, "localPort": status.local_port, "localCapability": tunnel_local_capability, "connectionActive": status.connection_active, "remoteEndpointId": status.remote_endpoint_id, "observedPath": status.observed_path.observed_path.as_str(), "lastErrorCode": status.last_failure.map(|failure| failure.as_str()), "startedAtMs": started_at_ms}})
+    let mut result = json!({"machineTunnelId": id, "endpointHandle": input.endpoint_handle, "localPort": status.local_port, "connectionActive": status.connection_active, "remoteEndpointId": status.remote_endpoint_id, "observedPath": status.observed_path.observed_path.as_str(), "lastErrorCode": status.last_failure.map(|failure| failure.as_str()), "startedAtMs": started_at_ms});
+    add_optional_local_capability(&mut result, tunnel_local_capability);
+    json!({"ok": true, "result": result})
+}
+
+fn add_optional_local_capability(result: &mut Value, local_capability: Option<String>) {
+    if let Some(local_capability) = local_capability {
+        result["localCapability"] = Value::String(local_capability);
+    }
 }
 
 fn start_machine_http_tunnel(value: *const c_char) -> Value {
@@ -1293,6 +1302,13 @@ fn start_machine_http_tunnel(value: *const c_char) -> Value {
         Ok(value) => value,
         Err((code, message)) => return error_response(code, message),
     };
+    start_machine_http_tunnel_input(input, None)
+}
+
+fn start_machine_http_tunnel_input(
+    input: StartMachineTunnelRequest,
+    handshake_provider: Option<MachineHandshakeProvider>,
+) -> Value {
     if validate_endpoint_id(&input.endpoint_id).is_err() {
         return error_response("invalid-request", "endpointId is invalid");
     }
@@ -1326,17 +1342,24 @@ fn start_machine_http_tunnel(value: *const c_char) -> Value {
     };
     let tunnel = match runtime().block_on(async {
         tokio::select! {
-            result = MachineHttpTunnel::start(
-                &endpoint,
-                MachineTunnelConfig {
+            result = async {
+                let tunnel_config = MachineTunnelConfig {
                     endpoint_id: input.endpoint_id,
                     bind_addr: "127.0.0.1:0".parse().expect("fixed loopback"),
                     direct_addresses: input.direct_addresses,
                     relay_urls,
                     handshake_json: input.handshake_json,
                     cap_profile,
-                },
-            ) => result,
+                };
+                match handshake_provider {
+                    Some(provider) => MachineHttpTunnel::start_with_handshake_provider(
+                        &endpoint,
+                        tunnel_config,
+                        provider,
+                    ).await,
+                    None => MachineHttpTunnel::start(&endpoint, tunnel_config).await,
+                }
+            } => result,
             _ = admission.cancelled() => Err(happier_iroh_core::IrohError::Cancelled),
         }
     }) {
@@ -1370,8 +1393,26 @@ fn start_machine_http_tunnel(value: *const c_char) -> Value {
 }
 
 /// Safe JSON entry point used by Rust-native desktop hosts.
+pub fn start_machine_tunnel_json(request: &str) -> Value {
+    invoke_json_request(request, start_machine_tunnel)
+}
+
+/// Safe JSON entry point used by Rust-native desktop hosts.
 pub fn start_machine_http_tunnel_json(request: &str) -> Value {
     invoke_json_request(request, start_machine_http_tunnel)
+}
+
+/// Node-only extension of the same native lifecycle owner. Mobile and other
+/// released callers retain the static JSON operation; the optional provider
+/// changes only how each new HTTP stream obtains its bounded handshake.
+pub fn start_machine_http_tunnel_with_handshake_provider_json(
+    request: &str,
+    handshake_provider: MachineHandshakeProvider,
+) -> Value {
+    match serde_json::from_str::<StartMachineTunnelRequest>(request) {
+        Ok(input) => start_machine_http_tunnel_input(input, Some(handshake_provider)),
+        Err(_) => error_response("invalid-request", "request is not valid JSON"),
+    }
 }
 
 fn stop_machine_tunnel(value: *const c_char) -> Value {
@@ -1917,6 +1958,18 @@ mod android {
         call(&mut env, input, happier_iroh_native_create_endpoint_json)
     }
     #[no_mangle]
+    pub extern "system" fn Java_dev_happier_iroh_HappierIrohNativeRust_startMachineTunnelJson(
+        mut env: JNIEnv<'_>,
+        _: JClass<'_>,
+        input: JString<'_>,
+    ) -> jstring {
+        call(
+            &mut env,
+            input,
+            happier_iroh_native_start_machine_tunnel_json,
+        )
+    }
+    #[no_mangle]
     pub extern "system" fn Java_dev_happier_iroh_HappierIrohNativeRust_startMachineHttpTunnelJson(
         mut env: JNIEnv<'_>,
         _: JClass<'_>,
@@ -2033,7 +2086,10 @@ mod tests {
 
         let closed = begin_endpoint_shutdown_json(&request);
         assert_eq!(closed["ok"], true, "pre-close result: {closed}");
-        assert_eq!(closed["result"]["found"], true, "pre-close result: {closed}");
+        assert_eq!(
+            closed["result"]["found"], true,
+            "pre-close result: {closed}"
+        );
 
         let lifecycle = state()
             .endpoint_handles
@@ -2118,6 +2174,18 @@ mod tests {
             response["error"]["code"],
             happier_iroh_core::MachineFailureCode::EndpointIdentityMismatch.as_str()
         );
+    }
+
+    #[test]
+    fn optional_machine_local_capability_is_omitted_for_raw_finite_transfer() {
+        let mut result = json!({"localPort": 43123});
+        add_optional_local_capability(&mut result, None);
+        assert!(
+            result.get("localCapability").is_none(),
+            "raw finite-transfer results must not publish a local capability field"
+        );
+        add_optional_local_capability(&mut result, Some("qualified-capability".to_owned()));
+        assert_eq!(result["localCapability"], "qualified-capability");
     }
 
     #[test]

@@ -3,7 +3,9 @@
 Typed Node.js client for Happier's authenticated Action API.
 
 The current Developer Preview requires Node.js 18.17 or newer and supports
-server-side Node.js use. Public Action routes do not enable CORS, so this is not
+server-side Node.js use through the package's ESM root export. Use NodeNext (or
+an equivalent ESM-aware configuration); CommonJS `require()` and package deep
+imports are not public entry points. Public Action routes do not enable CORS, so this is not
 a browser client for arbitrary web origins; same-origin browser delivery has
 not been proven as a supported environment. Do not put an API Token in browser
 code.
@@ -141,6 +143,11 @@ dump.
 Start with the finite daemon-local [basic example](examples/basic/README.md).
 Use the [comprehensive recipe](examples/comprehensive/README.md) for dual-origin
 routing, explicit machine selection, Session lifecycle, and cleanup.
+The [external integration example](examples/external-plugin/README.md) shows the
+shape an external service or CI integration uses: the published SDK only,
+either credential kind, a Discussion, and a bound Execution Run. Installed
+external plugins use the public Plugin SDK and retain the same trusted host
+capabilities as built-in plugins; they are not narrowed to the PAT/API surface.
 Contributed Action discovery requires a known installed plugin and is shown
 separately below rather than making either first-run example depend on one.
 
@@ -172,17 +179,20 @@ approval; for `sessions.spawn()`, no Session has been created yet. Use
 `isHappierActionApprovalRequestCreated(result)` before reading an Action-specific
 result from a raw or generated method that may be deferred.
 
-Both the daemon-local and server origins cap the complete serialized response
+Both the daemon-local and server origins cap the decoded Action response
 envelope—not only the Action result—at 24,000,000 UTF-8 bytes. If execution
-finishes but the envelope would exceed that limit, the SDK rejects with
+finishes but that decoded envelope would exceed the limit, the SDK rejects with
 `HappierActionError`: `code` is `result_too_large` and `details` contains
 `{ executionCompleted: true, maxSerializedBytes: 24000000 }`. The Action may
 already have committed a mutation, so do not blindly retry it. Inspect current
 state or use the Action owner's idempotency contract. For large data, return
 Artifact references, use an existing stream Action, or expose bounded or
-paginated reads instead of one oversized inline result. The request-body limit
-is 32 MiB (33,554,432 bytes). The server-to-daemon relay reserves a 33 MiB
-(34,603,008-byte) request carrier, leaving one MiB for its framing.
+paginated reads instead of one oversized inline result. The decoded V1 request
+body limit is 32 MiB (33,554,432 bytes), and its server-to-daemon relay reserves
+a 33 MiB (34,603,008-byte) carrier, leaving one MiB for framing. Protected V2
+preserves those decoded request/result budgets and derives larger outer HTTP and
+socket ceilings only for authenticated-encryption and JSON framing overhead;
+the exported Protocol constants own those outer carrier limits.
 
 When you request `initialMessage`, `sessions.spawn()` resolves only after the
 canonical initial-input disposition is `accepted` or `alreadyAccepted`. If the
@@ -271,13 +281,14 @@ generated raw `actions.action.spec.search(...)` and
 `actions.action.spec.get(...)` methods remain available. Do not replace those
 sources with a hand-maintained method list.
 
-The client accepts an API Token only. It never reads CLI profiles,
-persists credentials, accepts Account signing or encryption material, retries a
+The client accepts an API Token, including the development-only encryption-capable
+`hapc_v1` credential issued by a trusted device. It never reads CLI profiles,
+persists credentials, accepts an Account recovery/signing secret, retries a
 mutation, or fails a mutation over to another endpoint. Abort individual calls
 with `AbortSignal`; `await close()` aborts outstanding calls. During shutdown it
 gives active transcript and execution-run cleanup requests up to one second to
-settle before destroying its transport. A server-mediated request
-is readable by that server. The public endpoint is
+settle before destroying its transport. Ordinary bearer-only server-mediated
+requests are readable by that server. The public endpoint is
 `POST /v1/actions/:actionId`: use either a daemon-local
 `http://127.0.0.1:<daemon-port>` endpoint or a configured server origin. The
 server origin relays to the exact selected machine, so it works with a
@@ -286,6 +297,35 @@ when direct local transport is required. Server revocation takes effect on the
 next verification; a daemon that has a positive validation result may accept a
 revoked token for at most 60 seconds and returns `auth_unavailable` after that
 cache expires if it cannot reach the server.
+
+The encryption-capable implementation and focused HTTP lifecycle tests are
+present in development source. A loaded end-to-end SDK journey through both the
+direct-daemon and server-relay origins has not yet been certified, and this
+contract has not shipped in a public release.
+
+Protected delivery to a restricted Runner is not available. That route remains
+fail-closed until the Runner Machine envelope can be authenticated independently
+of the configured Home; the SDK does not accept a key supplied by that same Home
+as proof of its own Machine claim. Use an ordinary authorized Account daemon for
+protected calls in this preview.
+
+With `hapc_v1`, the SDK sends only the embedded bearer in Authorization. It
+retrieves that token's wrapped content key, checks the locally pinned Home,
+Account, token and public key, then opens it locally. Action inputs and complete
+results use the shared protected transport; an unsupported peer, stale binding
+or invalid envelope fails the call without falling back to plaintext. Bind an
+explicit target for encrypted calls, including calls to a direct daemon. Opened
+material is shared by the client and its child handles until `close()` completes
+cleanup and clears it. Authorization remains subject to token expiry and revocation.
+
+This credential grants Account-wide content-key access. Revocation cannot recall
+keys or data already obtained, and the content key alone does not open historical
+recovery-secret-only ciphertext. The protected relay transport retains Happier's
+active-Home trust boundary: a malicious configured Home can still issue a separate
+permitted raw Action. Keep the compound credential out of logs and child
+environments. The CLI retains it only for in-process SDK use; it refuses the
+compound credential before any tmux or child continuation rather than
+downgrading it to the embedded bearer.
 
 For a mutating Action, the SDK generates a request ID when the caller does not
 supply one, but that generated value is not returned. If you may need to
@@ -309,6 +349,82 @@ stay on that same target. On a root client, a run input with `sessionId`
 automatically binds start, reads, and cancel to that Session; a detached run still
 needs an explicit machine target at a server endpoint. Snapshot Actions remain
 ordinary methods.
+
+## Session-owned execution runs
+
+Input addressed to a run inside a Session is ordinary Session input with one
+optional logical recipient, so it uses the same admission, idempotency and result
+contract as a main-Session send:
+
+```ts
+await client.actions.session.message.send({
+  sessionId,
+  message: 'Focus on the parser failure.',
+  recipient: { kind: 'execution_run', runId },
+});
+```
+
+For a runtime that supports retained interactive runs, start through the generated
+Action and bind its returned ID with `session.runs.get(runId)`. This development
+flow requires the target-aware Session admission and interactive runtime support
+on the selected components:
+
+```ts
+const started = await client.actions.execution.run.start({
+  sessionId,
+  backendTarget,
+  permissionMode,
+  intent: 'delegate',
+  runClass: 'long_lived',
+  retentionPolicy: 'resumable',
+  ioMode: 'streaming',
+});
+if (isHappierActionApprovalRequestCreated(started)) {
+  throw new Error(`Approval required: ${started.artifactId}`);
+}
+const run = client.sessions.get(sessionId).runs.get(started.runId);
+
+await run.send('Focus on the parser failure.');
+await run.sendAndWait('Finish this turn and summarize.', { timeoutSeconds: 300 });
+const transcript = await run.history({ limit: 50 });
+await run.stop();
+const terminal = await run.wait({ timeoutSeconds: 300 });
+```
+
+Choose `backendTarget` and `permissionMode` for your runtime, and import
+`isHappierActionApprovalRequestCreated` from `@happier-dev/sdk` to handle the raw
+Action's approval result. Physical `options.target` selects the executing Machine
+or Session route; logical `input.recipient` selects the run inside that Session.
+
+The bound handle preserves the canonical Action behavior:
+
+- `send`/`sendAndWait` perform exactly one `session.message.send`. `sendAndWait`
+  settles on the exact admitted target turn; it never substitutes parent-Session
+  idle, a run status read, polling, or a retry. A lost correlation returns the
+  canonical `outcomeUnknown` result rather than a guess.
+- `wait()` observes a **terminal** run status, not conversational idle. Its typed
+  observation timeout leaves the run running.
+- `history()` reads `execution.run.get` for the canonical sidechain
+  correspondence and then reads that exact sidechain through
+  `session.transcript.get`. It caches nothing and never falls back to the main
+  transcript scope; if the run read fails, no transcript request is sent. A run
+  without current sidechain correspondence rejects with the typed
+  `execution_run_correspondence_unavailable` Action code. A caller-supplied
+  `requestId` applies only to the transcript request. The handle reads its own
+  sidechain, so it refuses a `projection` rather than quietly ignoring one.
+- The handle's bound `sessionId`, recipient and wait mode are written after your
+  input, so an untyped caller cannot redirect them.
+- Type-level omission cannot constrain plain JavaScript, so every bound method
+  validates its finished body against the canonical public Action schema before
+  transport. A host-only or unknown field — plugin `source`, attachments, a
+  structured launch — rejects locally as `HappierActionError` with the daemon's
+  own `invalid_parameters` code instead of travelling inside a sealed request.
+- `session.send(message, options?)` is unchanged: its second argument is still
+  transport options, and an ordinary Session send serializes no `recipient`.
+
+`actions.execution.run.send` remains available for a genuinely **detached** run
+(`sessionId: null`), which has no parent Session admission owner. The bound
+Session handle never calls it.
 
 ## Release posture
 

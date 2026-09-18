@@ -1,6 +1,8 @@
 import * as React from 'react';
 import type { PluginActionExecution } from '@happier-dev/plugin-ui';
 
+import { resolveTriageCrossCopyContext } from './crossCopyContext.js';
+
 /**
  * The child-to-target half of Triage's post-mutation completion seam.
  *
@@ -52,7 +54,17 @@ export async function completeTriagePostMutationIfNeeded(
 
 const NO_AGGREGATE_COMPLETION: TriagePostMutationCompletionV1 = async () => undefined;
 
-const TriagePostMutationCompletionContext = React.createContext<TriagePostMutationCompletionV1>(
+/**
+ * The target installing this seam and the source detail reading it are separate
+ * plugin artifacts, each with its own bundled copy of this module, so the
+ * context object itself is agreed across copies. See `crossCopyContext.ts`.
+ */
+const TRIAGE_POST_MUTATION_COMPLETION_CONTEXT_KEY = Symbol.for(
+  'happier.triageSources.privatePostMutationCompletionContext.v1',
+);
+
+const TriagePostMutationCompletionContext = resolveTriageCrossCopyContext<TriagePostMutationCompletionV1>(
+  TRIAGE_POST_MUTATION_COMPLETION_CONTEXT_KEY,
   NO_AGGREGATE_COMPLETION,
 );
 

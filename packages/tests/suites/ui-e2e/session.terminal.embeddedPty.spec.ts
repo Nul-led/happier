@@ -13,6 +13,7 @@ import { spawnSessionFromDaemon } from '../../src/testkit/uiE2e/spawnSessionFrom
 import { acknowledgeTerminalConnectSuccessIfPresent } from '../../src/testkit/uiE2e/acknowledgeTerminalConnectSuccessIfPresent';
 import { waitForInitialAppUi } from '../../src/testkit/uiE2e/waitForInitialAppUi';
 import { ensureAccountReadyForConnect } from '../../src/testkit/uiE2e/ensureAccountReadyForConnect';
+import { collectBrowserDiagnostics } from '../../src/testkit/uiE2e/browserDiagnostics';
 import {
     expectEmbeddedTerminalConnected,
     expectEmbeddedTerminalExited,
@@ -23,31 +24,6 @@ import {
 } from '../../src/testkit/uiE2e/embeddedTerminalSmoke';
 
 const run = createRunDirs({ runLabel: 'ui-e2e' });
-
-function collectBrowserDiagnostics(params: Readonly<{ page: Page }>): () => string {
-    const pageConsole: string[] = [];
-    const pageErrors: string[] = [];
-    const requestFailures: string[] = [];
-    const responseErrors: string[] = [];
-
-    params.page.on('console', (msg) => pageConsole.push(`[${msg.type()}] ${msg.text()}`));
-    params.page.on('pageerror', (err) => pageErrors.push(String(err)));
-    params.page.on('requestfailed', (request) => {
-        const failure = request.failure();
-        requestFailures.push(`${request.method()} ${request.url()} ${failure ? `-> ${failure.errorText}` : ''}`.trim());
-    });
-    params.page.on('response', (response) => {
-        const status = response.status();
-        if (status >= 400) responseErrors.push(`${status} ${response.request().method()} ${response.url()}`);
-    });
-
-    return () =>
-        `# Browser diagnostics\n\n` +
-        `## Console\n\n${pageConsole.length ? pageConsole.join('\n') : '(none)'}\n\n` +
-        `## Page errors\n\n${pageErrors.length ? pageErrors.join('\n') : '(none)'}\n\n` +
-        `## Request failures\n\n${requestFailures.length ? requestFailures.join('\n') : '(none)'}\n\n` +
-        `## Response errors\n\n${responseErrors.length ? responseErrors.join('\n') : '(none)'}\n`;
-}
 
 async function expectEmbeddedTerminalEnabledInSettings(page: Page, baseUrl: string) {
     await page.goto(`${baseUrl}/settings/features`, { waitUntil: 'domcontentloaded' });

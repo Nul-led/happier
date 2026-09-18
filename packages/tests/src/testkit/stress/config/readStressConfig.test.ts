@@ -124,7 +124,7 @@ describe('readStressConfig', () => {
         expect(config.compose.minioPort).toBe(49000);
         expect(config.compose.minioConsolePort).toBe(49001);
         expect(config.compose.dbConnectionLimit).toBe(4);
-        expect(config.compose.authLoginEligibilityAccountSnapshotCacheTtlMs).toBe(60000);
+        expect(config.compose).not.toHaveProperty('authLoginEligibilityAccountSnapshotCacheTtlMs');
         expect(config.compose.metricsEnabled).toBe(true);
         expect(config.socketTransport).toBe('polling');
         expect(config.artifacts.metricsScrapeEnabled).toBe(true);

@@ -14,7 +14,7 @@
  * Usage: node packages/tests/scripts/plugin-platform/run-hosted-web-bridge-browser-qa.mjs
  */
 import { createServer } from 'node:http';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -36,23 +36,23 @@ function check(label, condition, detail) {
 }
 
 const IDENTITY = {
-  pluginId: 'acme.preview',
-  pluginVersion: '1.2.3',
-  viewId: 'preview-pane',
-  generation: '7',
+  instanceId: 'opaque-live-1',
+  mountNonce: 'nonce-live-1',
 };
+const AUTHOR_PLUGIN = { id: 'acme.preview', version: '1.2.3' };
+const VIEW_ID = 'preview-pane';
 const CONTRIBUTION_ID = 'preview-web';
 const SURFACE_ID = 'appSurface:acme.preview:preview-pane';
-const NONCE = 'nonce-live-1';
 
 function surfaceSnapshot(overrides = {}) {
   return {
     mount: {
       kind: 'destination',
-      destination: { pluginId: IDENTITY.pluginId, localId: IDENTITY.viewId },
+      destination: { pluginId: AUTHOR_PLUGIN.id, localId: VIEW_ID },
       container: 'appPage',
     },
     target: { kind: 'app' },
+    accountEncryptionMode: 'plain',
     platform: 'web',
     locale: 'en',
     direction: 'ltr',
@@ -84,7 +84,7 @@ function surfaceSnapshot(overrides = {}) {
     translations: { 'preview.title': 'Preview' },
     targetedContributions: {
       target: {
-        pluginId: IDENTITY.pluginId,
+        pluginId: AUTHOR_PLUGIN.id,
         immutableGenerationId: 'target-generation-live',
       },
       points: [],
@@ -108,6 +108,15 @@ async function bundle(entry, outfile, options = {}) {
     absWorkingDir: repoRoot,
     logLevel: 'silent',
     ...options,
+    // This source QA follows the moving SDK and wire owners, not a stale dist.
+    alias: {
+      '@happier-dev/plugin-sdk/ui/client': join(repoRoot, 'packages/plugin-sdk/src/ui/client/index.ts'),
+      '@happier-dev/protocol/plugins/ui/client': join(repoRoot, 'packages/protocol/src/plugins/ui/client.ts'),
+      '@happier-dev/protocol/plugins/ui/targetedContributions': join(repoRoot, 'packages/protocol/src/plugins/ui/targetedContributions.ts'),
+      '@happier-dev/protocol/plugins/ui': join(repoRoot, 'packages/protocol/src/plugins/ui/index.ts'),
+      '@happier-dev/protocol/plugins/contribution-identity': join(repoRoot, 'packages/protocol/src/plugins/contributionIdentity.ts'),
+      ...options.alias,
+    },
   });
 }
 
@@ -129,6 +138,7 @@ import { applyPluginUiThemeCssVariables, createPluginUiRenderContext } from '@ha
 const out = (key, value) => { document.body.dataset[key] = typeof value === 'string' ? value : JSON.stringify(value); };
 async function main() {
   const context = await createPluginUiRenderContext();
+  context.signal.addEventListener('abort', () => out('retired', 'yes'), { once: true });
   applyPluginUiThemeCssVariables(context.surface.theme, document.documentElement);
   out('negotiated', 'yes');
   out('mountcontainer', context.surface.mount.kind === 'destination'
@@ -137,6 +147,15 @@ async function main() {
   out('subpath', context.subPath ?? '');
   out('launchinput', context.launchInput ?? null);
   out('methods', context.hostApi.version().methods.join(','));
+  try { void parent.document; out('parentaccess', 'readable'); } catch { out('parentaccess', 'blocked'); }
+  try { localStorage.setItem('inline-probe', 'value'); localStorage.removeItem('inline-probe'); out('storageaccess', 'readable'); } catch { out('storageaccess', 'blocked'); }
+  let cancellation;
+  window.startSlowRead = () => {
+    cancellation = new AbortController();
+    void context.hostApi.readResource('slow', { signal: cancellation.signal })
+      .then(() => out('readresult', 'unexpected-success'), (error) => { out('readresult', 'cancelled'); out('readerror', String(error.message)); });
+  };
+  window.cancelSlowRead = () => cancellation.abort();
   if (context.hostApi.version().methods.includes('watchContext')) {
     await context.hostApi.watchContext((surface) => { out('pushedlocale', surface.locale); });
     out('watching', 'yes');
@@ -145,6 +164,11 @@ async function main() {
 void main().catch((error) => { out('error', String(error && error.message ? error.message : error)); });
 `, 'utf8');
   await bundle(guestEntry, join(assetRoot, 'guest.js'));
+  const inlineGuestPath = join(workspace, 'inline-guest.js');
+  await bundle(guestEntry, inlineGuestPath, { format: 'iife', minify: true });
+  const inlineGuest = await readFile(inlineGuestPath, 'utf8');
+  const inlineHtml = '<!doctype html><html><head><meta charset="utf-8"><title>Inline guest</title></head>'
+    + '<body><main>Self-contained SDK guest</main><script>' + inlineGuest + '</script></body></html>';
   await writeFile(join(assetRoot, 'index.html'), `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>EU-8 guest</title></head>
 <body><main id="root"></main><script type="module" src="./guest.js"></script></body></html>
@@ -153,7 +177,9 @@ void main().catch((error) => { out('error', String(error && error.message ? erro
   await writeFile(hostEntry, `
 import { createPluginHostedWebHostApiBridgeHandler } from '${repoRoot}/apps/ui/sources/components/plugins/hostApi/hostedWebAdapter.ts';
 import { validatePluginHostedWebBridgeMessage } from '${repoRoot}/apps/ui/sources/components/plugins/hostedWeb/bridge.ts';
-globalThis.__EU8__ = { createPluginHostedWebHostApiBridgeHandler, validatePluginHostedWebBridgeMessage };
+import { buildHostedHtmlDocument } from '${repoRoot}/apps/ui/sources/components/plugins/hostedWeb/buildHostedHtmlDocument.ts';
+import { PluginUiSurfaceContextV1Schema } from '@happier-dev/protocol/plugins/ui';
+globalThis.__EU8__ = { createPluginHostedWebHostApiBridgeHandler, validatePluginHostedWebBridgeMessage, buildHostedHtmlDocument, PluginUiSurfaceContextV1Schema };
 `, 'utf8');
   const hostBundlePath = join(workspace, 'host-bridge.js');
   await bundle(hostEntry, hostBundlePath, {
@@ -164,19 +190,75 @@ globalThis.__EU8__ = { createPluginHostedWebHostApiBridgeHandler, validatePlugin
   await writeFile(nodeEntry, `
 export { startHostedWebStaticAssetServer } from '${repoRoot}/apps/cli/src/daemon/local/services/plugins/staticAssets/server.ts';
 export { PluginHostedWebSecurityPolicyV1Schema } from '${repoRoot}/packages/protocol/src/plugins/ui/index.ts';
+export { PluginHostedHtmlSourceV1Schema, MAX_PLUGIN_HOSTED_HTML_SOURCE_UTF8_BYTES_V1 } from '${repoRoot}/packages/protocol/src/plugins/ui/index.ts';
+export { PluginUiHostApiSurfaceContextV1Schema } from '${repoRoot}/packages/protocol/src/plugins/ui/index.ts';
+export { definePlugin } from '${repoRoot}/packages/plugin-sdk/src/definePlugin.ts';
+export { defineUiSurfaceDefinition } from '${repoRoot}/packages/plugin-sdk/src/ui/surface.ts';
+export { createPluginCompatibilityProjectionV1, MAX_PLUGIN_COMPATIBILITY_PROJECTION_BYTES } from '${repoRoot}/packages/protocol/src/plugins/availability/v1.ts';
+export { createCanonicalJsonSigningInput } from '${repoRoot}/packages/protocol/src/crypto/canonicalJson.ts';
 export { resolveHostedPluginWebSandboxPolicy } from '${repoRoot}/apps/ui/sources/components/browser/adapters/HostedPluginTargetSecurity.ts';
 `, 'utf8');
   const nodeBundlePath = join(workspace, 'node-owners.mjs');
   await bundle(nodeEntry, nodeBundlePath, {
     platform: 'node',
     target: 'node20',
-    alias: { '@': join(repoRoot, 'apps/ui/sources') },
+    alias: { '@': join(repoRoot, 'apps/cli/src') },
+    banner: { js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' },
   });
   const {
     startHostedWebStaticAssetServer,
     PluginHostedWebSecurityPolicyV1Schema,
     resolveHostedPluginWebSandboxPolicy,
+    PluginHostedHtmlSourceV1Schema,
+    MAX_PLUGIN_HOSTED_HTML_SOURCE_UTF8_BYTES_V1,
+    PluginUiHostApiSurfaceContextV1Schema,
+    definePlugin,
+    defineUiSurfaceDefinition,
+    createPluginCompatibilityProjectionV1,
+    MAX_PLUGIN_COMPATIBILITY_PROJECTION_BYTES,
+    createCanonicalJsonSigningInput,
   } = await import(nodeBundlePath);
+  const inlineSource = PluginHostedHtmlSourceV1Schema.parse({ kind: 'html', html: inlineHtml });
+  const admittedSurface = PluginUiHostApiSurfaceContextV1Schema.parse(surfaceSnapshot());
+  check('complete self-contained SDK document fits the supported UTF-8 budget',
+    Buffer.byteLength(inlineSource.html) <= MAX_PLUGIN_HOSTED_HTML_SOURCE_UTF8_BYTES_V1,
+    { documentBytes: Buffer.byteLength(inlineSource.html), maximumBytes: MAX_PLUGIN_HOSTED_HTML_SOURCE_UTF8_BYTES_V1 });
+  const createInlinePlugin = (source) => definePlugin({
+    id: AUTHOR_PLUGIN.id,
+    version: AUTHOR_PLUGIN.version,
+    ui: { surfaces: [defineUiSurfaceDefinition({
+      id: VIEW_ID, placement: 'appPage',
+      renderer: { kind: 'hostedHtml', source },
+    })] },
+  });
+  const plugin = createInlinePlugin(inlineSource);
+  const projection = createPluginCompatibilityProjectionV1({
+    manifest: plugin.manifest,
+    uiArtifacts: { version: 1, entries: [] },
+  });
+  const projectionBytes = Buffer.byteLength(createCanonicalJsonSigningInput(projection));
+  check('SDK-authored inline plugin passes the canonical compatibility projection',
+    projectionBytes <= MAX_PLUGIN_COMPATIBILITY_PROJECTION_BYTES);
+  const nearBoundSource = PluginHostedHtmlSourceV1Schema.parse({
+    kind: 'html', html: 'x'.repeat(MAX_PLUGIN_HOSTED_HTML_SOURCE_UTF8_BYTES_V1),
+  });
+  let nearBoundRejected = false;
+  try {
+    createPluginCompatibilityProjectionV1({
+      manifest: createInlinePlugin(nearBoundSource).manifest,
+      uiArtifacts: { version: 1, entries: [] },
+    });
+  } catch (error) {
+    nearBoundRejected = Array.isArray(error.issues) && error.issues.some((issue) =>
+      issue.message === 'Compatibility projection exceeds the bounded canonical payload size.');
+  }
+  check('near-bound source still obeys the enclosing compatibility projection budget', nearBoundRejected);
+  process.stdout.write(`Inline budget evidence: ${JSON.stringify({
+    documentBytes: Buffer.byteLength(inlineSource.html), projectionBytes,
+    sourceMaximumBytes: MAX_PLUGIN_HOSTED_HTML_SOURCE_UTF8_BYTES_V1,
+    projectionMaximumBytes: MAX_PLUGIN_COMPATIBILITY_PROJECTION_BYTES,
+    nearBoundSourceBytes: Buffer.byteLength(nearBoundSource.html), nearBoundRejected,
+  })}\n`);
 
   const assetServer = await startHostedWebStaticAssetServer({
     installedRoot: workspace,
@@ -189,7 +271,7 @@ export { resolveHostedPluginWebSandboxPolicy } from '${repoRoot}/apps/ui/sources
     sourceMaps: { enabled: false },
     verifyArtifact: () => ({ ok: true }),
     preview: {
-      pluginId: IDENTITY.pluginId,
+      pluginId: AUTHOR_PLUGIN.id,
       contributionId: CONTRIBUTION_ID,
       sessionId: 'session-live',
       machineId: 'machine-live',
@@ -222,16 +304,16 @@ export { resolveHostedPluginWebSandboxPolicy } from '${repoRoot}/apps/ui/sources
 
   try {
     await page.goto(`${hostOrigin}/`, { waitUntil: 'domcontentloaded' });
-    await page.evaluate(async ({ assetOrigin: origin, token, identity, contributionId, surfaceId, nonce, surface }) => {
-      await window.startEu8Host({ assetOrigin: origin, token, identity, contributionId, surfaceId, nonce, surface });
+    await page.evaluate(async (input) => {
+      await window.startEu8Host(input);
     }, {
       assetOrigin,
       token: ancestorToken,
       identity: IDENTITY,
+      authorPlugin: AUTHOR_PLUGIN,
       contributionId: CONTRIBUTION_ID,
       surfaceId: SURFACE_ID,
-      nonce: NONCE,
-      surface: surfaceSnapshot(),
+      surface: admittedSurface,
     });
 
     const frame = page.frameLocator('#plugin-frame');
@@ -252,6 +334,9 @@ export { resolveHostedPluginWebSandboxPolicy } from '${repoRoot}/apps/ui/sources
       observed.launchinput === JSON.stringify({ noteId: 'note-7' }), observed.launchinput);
     const leakedFrameQueryFacts = [
       'happierPluginVersion',
+      'happierPluginId',
+      'happierContributionId',
+      'happierSurfaceId',
       'happierViewId',
       'happierGeneration',
       'happierSubPath',
@@ -289,6 +374,44 @@ export { resolveHostedPluginWebSandboxPolicy } from '${repoRoot}/apps/ui/sources
     });
     check('production sandbox gives the daemon-served guest an addressable origin',
       productionSandbox.sameOrigin === true, productionSandbox);
+
+    await page.goto(`${hostOrigin}/`, { waitUntil: 'domcontentloaded' });
+    await page.evaluate(async (input) => window.startEu8Host(input), {
+      identity: { instanceId: 'opaque-inline-1', mountNonce: 'nonce-inline-1' },
+      authorPlugin: AUTHOR_PLUGIN,
+      contributionId: CONTRIBUTION_ID,
+      surfaceId: SURFACE_ID,
+      surface: admittedSurface,
+      inlineHtml: inlineSource.html,
+    });
+    const inlineFrame = page.frameLocator('#plugin-frame');
+    await inlineFrame.locator('body[data-negotiated="yes"]').waitFor({ state: 'attached', timeout: 20_000 });
+    const inlineObserved = await inlineFrame.locator('body').evaluate((body) => ({ ...body.dataset }));
+    check('opaque inline document negotiates the existing SDK Host API', inlineObserved.mountcontainer === 'appPage', inlineObserved);
+    check('opaque inline document cannot read host DOM or origin storage',
+      inlineObserved.parentaccess === 'blocked' && inlineObserved.storageaccess === 'blocked', inlineObserved);
+    await page.evaluate(() => window.copyOpaqueFrame());
+    await page.waitForTimeout(250);
+    const copiedNegotiated = await page.frameLocator('#copied-frame').locator('body').getAttribute('data-negotiated');
+    check('copied opaque identity cannot negotiate from a different frame window', copiedNegotiated === null, copiedNegotiated);
+    await inlineFrame.locator('body').evaluate(() => window.startSlowRead());
+    await page.locator('body[data-readpending="yes"]').waitFor({ state: 'attached', timeout: 5_000 });
+    await inlineFrame.locator('body').evaluate(() => window.cancelSlowRead());
+    await page.locator('body[data-readcancelled="yes"]').waitFor({ state: 'attached', timeout: 5_000 });
+    check('inline SDK cancellation reaches the existing mounted request signal', true);
+    await page.evaluate(() => window.pushLocale('de'));
+    await inlineFrame.locator('body[data-pushedlocale="de"]').waitFor({ state: 'attached', timeout: 5_000 });
+    check('inline context updates reuse the existing subscription transport', true);
+    await page.evaluate(() => window.retireHost());
+    await inlineFrame.locator('body[data-retired="yes"]').waitFor({ state: 'attached', timeout: 5_000 });
+    check('host retirement aborts the real inline SDK RenderContext', true);
+  } catch (error) {
+    const frames = await Promise.all(page.frames().map(async (frame) => ({
+      source: frame.url().split('?')[0],
+      state: await frame.evaluate(() => ({ ...document.body?.dataset })).catch(() => null),
+    })));
+    process.stdout.write(`Browser QA failure context: ${JSON.stringify({ frames, consoleErrors })}\n`);
+    throw error;
   } finally {
     await browser.close();
     await new Promise((done) => hostServer.close(done));
@@ -309,71 +432,82 @@ const HOST_PAGE = `<!doctype html>
 <body>
 <script type="module">
 import '/host-bridge.js';
-const { createPluginHostedWebHostApiBridgeHandler, validatePluginHostedWebBridgeMessage } = globalThis.__EU8__;
+const { createPluginHostedWebHostApiBridgeHandler, validatePluginHostedWebBridgeMessage, buildHostedHtmlDocument } = globalThis.__EU8__;
 let handler;
 let frameWindow;
 let assetOriginGlobal;
 let surfaceGlobal;
 
-window.startEu8Host = async ({ assetOrigin, token, identity, contributionId, surfaceId, nonce, surface }) => {
+window.startEu8Host = async ({ assetOrigin, token, identity, authorPlugin, contributionId, surfaceId, surface, inlineHtml }) => {
   assetOriginGlobal = assetOrigin;
   surfaceGlobal = surface;
-  const legacySurface = {
-    pluginId: identity.pluginId,
+  const frameOrigin = inlineHtml === undefined ? assetOrigin : 'null';
+  const targetOrigin = inlineHtml === undefined ? assetOrigin : '*';
+  const legacySurface = window.__EU8__.PluginUiSurfaceContextV1Schema.parse({
+    pluginId: authorPlugin.id,
     contributionId,
     surfaceId,
-    placement: 'appPage',
+    placement: 'appSurface',
     platform: 'web',
     channel: 'internal',
     resourceScope: [],
     diagnostics: [],
-  };
+  });
   const allowed = new Set(['hostApi', 'ready']);
   let sink = null;
   handler = createPluginHostedWebHostApiBridgeHandler({
     surface: legacySurface,
     requestIdPrefix: 'live',
-    bridgeNonce: nonce,
-    canonicalHostApi: { identity, surface, methods: ['context'] },
+    identity,
+    canonicalHostApi: { identity, authorPlugin, surface, methods: ['context', 'readResource'] },
+    handleRequest: (request, options) => {
+      if (request.method !== 'readResource') throw new Error('Unexpected QA host operation');
+      document.body.dataset.readpending = 'yes';
+      return new Promise((_resolve, reject) => {
+        options?.signal?.addEventListener('abort', () => {
+          document.body.dataset.readcancelled = 'yes';
+          reject(new Error('QA resource boundary cancelled'));
+        }, { once: true });
+      });
+    },
     postToFrame: (envelope) => { sink?.(envelope); },
     bootstrap: {
-      frameOrigin: assetOrigin,
+      frameOrigin,
       subPath: 'work/ideas.md',
       launchInput: { noteId: 'note-7' },
     },
   });
-  sink = (envelope) => { frameWindow?.postMessage(envelope, assetOrigin); };
+  sink = (envelope) => { frameWindow?.postMessage(envelope, targetOrigin); };
 
   window.addEventListener('message', (event) => {
     if (event.source !== frameWindow) return;
     const result = validatePluginHostedWebBridgeMessage({
       message: event.data,
       origin: event.origin,
-      expectedOrigin: assetOrigin,
-      expectedPluginId: identity.pluginId,
-      expectedContributionId: contributionId,
-      expectedSurfaceId: surfaceId,
-      expectedNonce: nonce,
+      expectedOrigin: frameOrigin,
+      identity,
       allowedMessageKinds: allowed,
     });
     if (!result.ok) { document.body.dataset.rejected = result.code; return; }
     void Promise.resolve(handler(result.envelope)).then((response) => {
-      if (response) frameWindow.postMessage(response, assetOrigin);
+      if (response) frameWindow.postMessage(response, targetOrigin);
     });
   });
 
-  const url = new URL(assetOrigin + '/');
-  url.searchParams.set('happierAncestorToken', token);
-  url.searchParams.set('happierHostOrigin', window.location.origin);
-  url.searchParams.set('happierBridgeNonce', nonce);
-  url.searchParams.set('happierPluginId', identity.pluginId);
-  url.searchParams.set('happierContributionId', contributionId);
-  url.searchParams.set('happierSurfaceId', surfaceId);
   const frame = document.createElement('iframe');
   frame.id = 'plugin-frame';
-  frame.setAttribute('sandbox', window.__eu8Sandbox ?? 'allow-scripts allow-same-origin');
+  frame.setAttribute('sandbox', inlineHtml === undefined ? 'allow-scripts allow-same-origin' : 'allow-scripts');
   frame.referrerPolicy = 'no-referrer';
-  frame.src = url.toString();
+  if (inlineHtml === undefined) {
+    const url = new URL(assetOrigin + '/');
+    url.searchParams.set('happierAncestorToken', token);
+    url.searchParams.set('happierHostOrigin', window.location.origin);
+    url.searchParams.set('happierBridgeNonce', identity.mountNonce);
+    url.searchParams.set('happierInstanceId', identity.instanceId);
+    frame.src = url.toString();
+  } else {
+    frame.srcdoc = buildHostedHtmlDocument(inlineHtml, { identity, frameOrigin, hostOrigin: window.location.origin });
+  }
   document.body.appendChild(frame);
   frameWindow = frame.contentWindow;
   await new Promise((done) => { frame.addEventListener('load', done, { once: true }); });
@@ -382,6 +516,17 @@ window.startEu8Host = async ({ assetOrigin, token, identity, contributionId, sur
 
 window.pushLocale = (locale) => {
   handler.pushSurfaceContext({ ...surfaceGlobal, locale });
+};
+
+window.retireHost = () => handler.dispose();
+window.copyOpaqueFrame = async () => {
+  const copy = document.createElement('iframe');
+  copy.id = 'copied-frame';
+  copy.setAttribute('sandbox', 'allow-scripts');
+  copy.srcdoc = document.getElementById('plugin-frame').srcdoc;
+  const loaded = new Promise((resolve) => copy.addEventListener('load', resolve, { once: true }));
+  document.body.appendChild(copy);
+  await loaded;
 };
 
 window.probeForgedAncestor = async (assetOrigin) => {

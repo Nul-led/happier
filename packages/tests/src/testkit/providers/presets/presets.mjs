@@ -11,6 +11,10 @@ export const PROVIDER_ENV_FLAG_BY_PRESET_ID = Object.freeze({
   pi: 'HAPPIER_E2E_PROVIDER_PI',
   copilot: 'HAPPIER_E2E_PROVIDER_COPILOT',
   grok: 'HAPPIER_E2E_PROVIDER_GROK',
+  fx: 'HAPPIER_E2E_PROVIDER_FX',
+  droid: 'HAPPIER_E2E_PROVIDER_DROID',
+  devin: 'HAPPIER_E2E_PROVIDER_DEVIN',
+  antigravity: 'HAPPIER_E2E_PROVIDER_ANTIGRAVITY',
   // Deterministic local ACP fixture: selectable directly, but intentionally
   // excluded from the real-provider aggregate lane.
   cursor_acp_stub: 'HAPPIER_E2E_PROVIDER_CURSOR_ACP_STUB',

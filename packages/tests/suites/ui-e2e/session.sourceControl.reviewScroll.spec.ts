@@ -15,33 +15,9 @@ import { spawnSessionFromDaemon } from '../../src/testkit/uiE2e/spawnSessionFrom
 import { toTestIdSafeValue } from '../../src/testkit/uiE2e/testIdSafeValue';
 import { waitForInitialAppUi } from '../../src/testkit/uiE2e/waitForInitialAppUi';
 import { ensureAccountReadyForConnect } from '../../src/testkit/uiE2e/ensureAccountReadyForConnect';
+import { collectBrowserDiagnostics } from '../../src/testkit/uiE2e/browserDiagnostics';
 
 const run = createRunDirs({ runLabel: 'ui-e2e' });
-
-function collectBrowserDiagnostics(params: Readonly<{ page: Page }>): () => string {
-  const pageConsole: string[] = [];
-  const pageErrors: string[] = [];
-  const requestFailures: string[] = [];
-  const responseErrors: string[] = [];
-
-  params.page.on('console', (msg) => pageConsole.push(`[${msg.type()}] ${msg.text()}`));
-  params.page.on('pageerror', (err) => pageErrors.push(String(err)));
-  params.page.on('requestfailed', (request) => {
-    const failure = request.failure();
-    requestFailures.push(`${request.method()} ${request.url()} ${failure ? `-> ${failure.errorText}` : ''}`.trim());
-  });
-  params.page.on('response', (response) => {
-    const status = response.status();
-    if (status >= 400) responseErrors.push(`${status} ${response.request().method()} ${response.url()}`);
-  });
-
-  return () =>
-    `# Browser diagnostics\n\n` +
-    `## Console\n\n${pageConsole.length ? pageConsole.join('\n') : '(none)'}\n\n` +
-    `## Page errors\n\n${pageErrors.length ? pageErrors.join('\n') : '(none)'}\n\n` +
-    `## Request failures\n\n${requestFailures.length ? requestFailures.join('\n') : '(none)'}\n\n` +
-    `## Response errors\n\n${responseErrors.length ? responseErrors.join('\n') : '(none)'}\n`;
-}
 
 function detailsPaneLocator(page: Page) {
   return page
@@ -688,6 +664,91 @@ test.describe('ui e2e: SCM review scroll + tab state', () => {
     await page.getByTestId('file-details-view-mode-menu').click();
     await page.getByTestId('dropdown-option-file').click();
     await expectScrollableToScroll(page, 'file-details-scroll', 1800);
+
+    // Keep the same passage through refresh and a tab round-trip. The existing
+    // session entry point reaches the workspace-owned details surface in 0.3.
+    await clickScopedButtonByTestIdOrRole({
+      scope: rightPane,
+      testId: 'session-rightpanel-tab:files',
+      roleName: 'Files',
+      timeoutMs: 60_000,
+    });
+    const bigTab = page.getByTestId(`session-details-tab-${toTestIdSafeValue(`file:${bigPath}`)}`);
+    const refreshFiles = async () => {
+      await rightPane.getByTestId('repository-tree-refresh').click();
+      await expect(rightPane.getByTestId('repository-tree-refresh-loading')).toHaveCount(0, { timeout: 60_000 });
+    };
+    const insertedLines = Array.from({ length: 12 }, (_, index) => `inserted ${index}`);
+    const originalLines = Array.from({ length: 360 }, (_, index) => `changed ${index}`);
+    await detailsPaneLocator(page).locator('[data-testid="file-details-view-mode-menu"]:visible').click();
+    await page.getByTestId('dropdown-option-diff').click();
+    const pierre = detailsPaneLocator(page).locator('[data-testid="pierre-diff-viewer"]:visible');
+    await expect(pierre).toBeVisible({ timeout: 60_000 });
+    const diffPassage = pierre.locator('[data-line]').filter({ hasText: /^changed 180\n?$/ });
+    const isDiffPassageInViewport = async () => diffPassage.evaluate((node) => {
+      const rect = node.getBoundingClientRect();
+      return rect.bottom > 0 && rect.top < window.innerHeight;
+    }).catch(() => false);
+    for (let i = 0; i < 40 && !(await isDiffPassageInViewport()); i += 1) {
+      await pierre.hover();
+      await page.mouse.wheel(0, 300);
+      await page.waitForTimeout(50);
+    }
+    let initialDiffLineIndex: string | null = null;
+    await expect.poll(async () => {
+      initialDiffLineIndex = await diffPassage.evaluate((node) => {
+        const rect = node.getBoundingClientRect();
+        const lineIndex = (node as HTMLElement).dataset.lineIndex;
+        return rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < window.innerHeight && lineIndex
+          ? lineIndex
+          : null;
+      }).catch(() => null);
+      return initialDiffLineIndex !== null;
+    }, { timeout: 60_000 }).toBe(true);
+    const initialDiffLineIndexes = initialDiffLineIndex!.split(',').map((value) => Number(value));
+    expect(initialDiffLineIndexes).toHaveLength(2);
+    expect(initialDiffLineIndexes.every(Number.isFinite)).toBe(true);
+    const shiftedDiffLineIndex = initialDiffLineIndexes
+      .map((value) => value + insertedLines.length)
+      .join(',');
+    await writeFile(resolve(join(repoDir, bigPath)), `${[...insertedLines, ...originalLines].join('\n')}\n`, 'utf8');
+    await refreshFiles();
+    // The row's new index proves the changed patch was rendered. Its viewport
+    // position proves the virtualizer retained the passage across that update.
+    await expect(diffPassage).toHaveAttribute('data-line-index', shiftedDiffLineIndex, { timeout: 60_000 });
+    await expect(diffPassage).toBeInViewport({ timeout: 60_000 });
+    await writeFile(resolve(join(repoDir, bigPath)), `${originalLines.join('\n')}\n`, 'utf8');
+    await refreshFiles();
+    await expect(diffPassage).toHaveAttribute('data-line-index', initialDiffLineIndex!, { timeout: 60_000 });
+    await expect(diffPassage).toBeInViewport({ timeout: 60_000 });
+    await detailsPaneLocator(page).locator('[data-testid="file-details-view-mode-menu"]:visible').click();
+    await page.getByTestId('dropdown-option-file').click();
+    const passage = fileScroll.getByText('changed 180', { exact: true });
+    for (let i = 0; i < 20 && await passage.count() === 0; i += 1) {
+      await fileScroll.hover();
+      await page.mouse.wheel(0, 300);
+      await page.waitForTimeout(50);
+    }
+    await expect(passage).toHaveCount(1, { timeout: 60_000 });
+    await passage.scrollIntoViewIfNeeded();
+    await expect(passage).toBeInViewport({ timeout: 60_000 });
+    const mountedScroll = await fileScroll.elementHandle();
+    await refreshFiles();
+    // Observe background refresh over a short stability window;
+    // an immediate assertion could pass before its asynchronous read resolves.
+    await page.waitForTimeout(1500);
+    expect(await mountedScroll!.evaluate((node) => node.isConnected)).toBe(true);
+    await expect(passage).toBeInViewport({ timeout: 60_000 });
+
+    await writeFile(resolve(join(repoDir, bigPath)), `${[...insertedLines, ...originalLines].join('\n')}\n`, 'utf8');
+    await refreshFiles();
+    // The f:193 suffix proves the new bytes reached the real viewer. React may
+    // namespace the generated DOM id, so its prefix is not a product contract.
+    await expect.poll(async () => passage.evaluate((node) => node.closest<HTMLElement>('[id]')?.id.endsWith('f:193') ?? false).catch(() => false), { timeout: 60_000 }).toBe(true);
+    await expect(passage).toBeInViewport({ timeout: 60_000 });
+    await page.getByTestId(`session-details-tab-${toTestIdSafeValue(reviewTabKey)}`).click();
+    await bigTab.click();
+    await expect(passage).toBeInViewport({ timeout: 60_000 });
 
     // Link-file popover should open and be closable (regression: popover rendered behind transcript).
     await page.getByTestId('session-details-close').click();

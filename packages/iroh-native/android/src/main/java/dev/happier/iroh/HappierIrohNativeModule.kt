@@ -1,6 +1,7 @@
 package dev.happier.iroh
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
@@ -35,6 +36,9 @@ class HappierIrohNativeModule : Module() {
     }
     AsyncFunction("shutdownEndpoint") { request: Map<String, Any?> ->
       HappierIrohNativeBridge.shutdownEndpoint(request)
+    }
+    AsyncFunction("startMachineTunnel") { request: Map<String, Any?> ->
+      HappierIrohNativeBridge.startMachineTunnel(request)
     }
     AsyncFunction("startMachineHttpTunnel") { request: Map<String, Any?> ->
       HappierIrohNativeBridge.startMachineHttpTunnel(request)
@@ -71,6 +75,11 @@ private object HappierIrohNativeBridge {
   fun startMachineHttpTunnel(request: Map<String, Any?>): Map<String, Any?> {
     ensureLoaded()
     return unwrap(HappierIrohNativeRust.startMachineHttpTunnelJson(JSONObject(request).toString()))
+  }
+
+  fun startMachineTunnel(request: Map<String, Any?>): Map<String, Any?> {
+    ensureLoaded()
+    return unwrap(HappierIrohNativeRust.startMachineTunnelJson(JSONObject(request).toString()))
   }
 
   fun ensureHomeTunnel(request: Map<String, Any?>): Map<String, Any?> {
@@ -130,16 +139,49 @@ private object IrohAndroidContext {
   }
 }
 
-private object IrohEndpointIdentityStore {
-  private const val ALIAS = "dev.happier.iroh.endpoint-identity.v1"
-  private const val PREFERENCES = "dev.happier.iroh.endpoint-identity.v1.wrapped"
-  private const val CIPHERTEXT = "ciphertext"
-  private const val IV = "iv"
+internal class IrohEndpointIdentityStore(
+  private val preferences: SharedPreferences,
+  private val loadExistingKey: () -> SecretKey?,
+  private val createKey: () -> SecretKey,
+  private val createSeed: () -> ByteArray = {
+    ByteArray(32).also { SecureRandom().nextBytes(it) }
+  },
+) {
+  companion object {
+    private const val ALIAS = "dev.happier.iroh.endpoint-identity.v1"
+    private const val PREFERENCES = "dev.happier.iroh.endpoint-identity.v1.wrapped"
+    private const val CIPHERTEXT = "ciphertext"
+    private const val IV = "iv"
 
-  @Synchronized
-  fun loadOrCreate(context: Context): ByteArray {
+    @Synchronized
+    fun loadOrCreate(context: Context): ByteArray = IrohEndpointIdentityStore(
+      preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE),
+      loadExistingKey = ::existingAndroidKey,
+      createKey = ::provisionAndroidKey,
+    ).loadOrCreate()
+
+    private fun existingAndroidKey(): SecretKey? {
+      val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+      return (store.getEntry(ALIAS, null) as? KeyStore.SecretKeyEntry)?.secretKey
+    }
+
+    private fun provisionAndroidKey(): SecretKey {
+      val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
+      generator.init(
+        KeyGenParameterSpec.Builder(ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
+          .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+          .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+          .setRandomizedEncryptionRequired(true)
+          .setKeySize(256)
+          .build()
+      )
+      return generator.generateKey()
+    }
+  }
+
+  fun loadOrCreate(): ByteArray {
     return try {
-      loadOrCreateInternal(context)
+      loadOrCreateInternal()
     } catch (error: EndpointIdentityException) {
       throw error
     } catch (_: Exception) {
@@ -147,19 +189,19 @@ private object IrohEndpointIdentityStore {
     }
   }
 
-  private fun loadOrCreateInternal(context: Context): ByteArray {
-    val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+  private fun loadOrCreateInternal(): ByteArray {
     val encodedCiphertext = preferences.getString(CIPHERTEXT, null)
     val encodedIv = preferences.getString(IV, null)
+    val key = loadExistingKey()
     if (encodedCiphertext != null || encodedIv != null) {
       if (encodedCiphertext.isNullOrEmpty() || encodedIv.isNullOrEmpty()) corrupt()
-      val key = existingKey() ?: corrupt()
+      val retainedKey = key ?: corrupt()
       val ciphertext = decode(encodedCiphertext)
       val iv = decode(encodedIv)
       if (ciphertext.isEmpty() || iv.isEmpty()) corrupt()
       val seed = try {
         Cipher.getInstance("AES/GCM/NoPadding").run {
-          init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, iv))
+          init(Cipher.DECRYPT_MODE, retainedKey, GCMParameterSpec(128, iv))
           doFinal(ciphertext)
         }
       } catch (_: Exception) {
@@ -175,11 +217,15 @@ private object IrohEndpointIdentityStore {
       return seed
     }
 
-    val key = existingKey() ?: provisionKey()
-    val seed = ByteArray(32).also { SecureRandom().nextBytes(it) }
+    // The Keystore alias outlives the wrapped SharedPreferences material. If
+    // it survives without both wrapper fields, this installation previously
+    // had an endpoint identity and must not silently rotate it.
+    if (key != null) corrupt()
+    val provisionedKey = createKey()
+    val seed = createSeed()
     try {
       val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-      cipher.init(Cipher.ENCRYPT_MODE, key)
+      cipher.init(Cipher.ENCRYPT_MODE, provisionedKey)
       val ciphertext = cipher.doFinal(seed)
       val iv = cipher.iv
       val committed = try {
@@ -201,34 +247,16 @@ private object IrohEndpointIdentityStore {
     }
   }
 
-  private fun existingKey(): SecretKey? {
-    val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-    return (store.getEntry(ALIAS, null) as? KeyStore.SecretKeyEntry)?.secretKey
-  }
-
-  private fun provisionKey(): SecretKey {
-    val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
-    generator.init(
-      KeyGenParameterSpec.Builder(ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
-        .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-        .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-        .setRandomizedEncryptionRequired(true)
-        .setKeySize(256)
-        .build()
-    )
-    return generator.generateKey()
-  }
-
   private fun decode(value: String): ByteArray = runCatching {
     Base64.decode(value, Base64.NO_WRAP)
   }.getOrElse { corrupt() }
 
   private fun corrupt(): Nothing = throw EndpointIdentityException(
-    "Iroh endpoint identity is corrupt; explicit re-pair is required."
+    "Iroh endpoint identity is corrupt; secure-storage repair is required."
   )
 }
 
-private class EndpointIdentityException(message: String) :
+internal class EndpointIdentityException(message: String) :
   CodedException("endpoint_key_unavailable", message, null)
 
 private object HappierIrohNativeRust {
@@ -238,6 +266,7 @@ private object HappierIrohNativeRust {
   external fun ensureHomeTunnelJson(requestJson: String): String
   external fun releaseHomeTunnelJson(requestJson: String): String
   external fun shutdownEndpointJson(requestJson: String): String
+  external fun startMachineTunnelJson(requestJson: String): String
   external fun startMachineHttpTunnelJson(requestJson: String): String
   external fun stopMachineTunnelJson(requestJson: String): String
 }

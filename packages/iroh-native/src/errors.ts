@@ -153,10 +153,10 @@ function failClosed(failureClass: IrohHomeCarrierFailureClass): IrohHomeCarrierF
 
 const IROH_ERROR_CLASSIFICATIONS: Readonly<Record<IrohErrorCode, IrohHomeCarrierFailureClassification>> = {
   unavailable: FALLBACK_ALLOWED,
-  transport: FALLBACK_ALLOWED,
-  home_unreachable: FALLBACK_ALLOWED,
-  transport_timeout: FALLBACK_ALLOWED,
-  transport_closed: FALLBACK_ALLOWED,
+  transport: failClosed('carrier-unavailable'),
+  home_unreachable: failClosed('carrier-unavailable'),
+  transport_timeout: failClosed('carrier-unavailable'),
+  transport_closed: failClosed('carrier-unavailable'),
   invalid_descriptor: failClosed('descriptor-integrity'),
   endpoint_identity_invalid: failClosed('descriptor-integrity'),
   identity_mismatch: failClosed('identity-auth'),
@@ -172,8 +172,8 @@ const IROH_ERROR_CLASSIFICATIONS: Readonly<Record<IrohErrorCode, IrohHomeCarrier
 };
 
 const PROBE_REASON_CLASSIFICATIONS: Readonly<Record<string, IrohHomeCarrierFailureClassification>> = {
-  'health-unavailable': FALLBACK_ALLOWED,
-  'probe-timeout': FALLBACK_ALLOWED,
+  'health-unavailable': failClosed('verification-incomplete'),
+  'probe-timeout': failClosed('verification-incomplete'),
   'auth-failed': failClosed('identity-auth'),
   'identity-mismatch': failClosed('identity-auth'),
   'features-unavailable': failClosed('verification-incomplete'),
@@ -193,10 +193,11 @@ function readIrohErrorCode(error: unknown): IrohErrorCode | null {
 
 /**
  * Classifies one Home Iroh acquisition failure. An independently trusted HTTPS
- * origin may remain usable only after native unavailability or bounded network
- * reachability/connection loss. Identity, authorization, descriptor integrity,
- * protocol, endpoint configuration, cancellation, and unknown failures fail
- * closed. Callers remain responsible for independently validating HTTPS trust.
+ * origin may remain usable only when the Iroh host/native capability is
+ * unavailable before acquisition. Once Iroh was selected, reachability,
+ * probing, identity, authorization, descriptor integrity, protocol, endpoint
+ * configuration, cancellation, and unknown failures fail closed. Callers
+ * remain responsible for independently validating HTTPS trust.
  */
 export function classifyIrohHomeCarrierFailure(error: unknown): IrohHomeCarrierFailureClassification {
   const code = readIrohErrorCode(error);

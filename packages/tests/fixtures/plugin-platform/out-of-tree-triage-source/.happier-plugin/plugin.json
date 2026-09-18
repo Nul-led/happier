@@ -16,6 +16,24 @@
       }
     ]
   },
+  "hostAccess": {
+    "required": [
+      {
+        "id": "acme-ledger-api",
+        "capability": "connectedAccounts",
+        "reason": "List the Acme Ledger accounts already authorized for this source, and read the spaces each one carries.",
+        "scope": {
+          "serviceRefs": [
+            "acme-ledger-account"
+          ],
+          "operations": [
+            "use"
+          ]
+        }
+      }
+    ],
+    "optional": []
+  },
   "contributes": {
     "actions": [
       {
@@ -23,6 +41,9 @@
         "execution": {
           "target": "daemon"
         },
+        "hostAccess": [
+          "acme-ledger-api"
+        ],
         "inputSchema": {
           "$schema": "http://json-schema.org/draft-07/schema#",
           "type": "object",
@@ -708,7 +729,11 @@
           "global"
         ],
         "surfaces": [
-          "plugin"
+          "plugin",
+          "ui"
+        ],
+        "placementBindings": [
+          "commandPalette"
         ],
         "dangerLevel": "safe",
         "id": "ledger/discover-spaces"
@@ -718,6 +743,15 @@
         "execution": {
           "target": "daemon"
         },
+        "hostAccess": [
+          "acme-ledger-api"
+        ],
+        "connectedAccountPurposeBindings": [
+          {
+            "path": "instance.binding.account",
+            "purpose": "acme-ledger-api"
+          }
+        ],
         "inputSchema": {
           "$schema": "http://json-schema.org/draft-07/schema#",
           "anyOf": [
@@ -1102,7 +1136,8 @@
                         "token": {
                           "type": "string",
                           "minLength": 1,
-                          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+                          "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                          "x-happier-max-utf8-bytes": 40322
                         }
                       },
                       "required": [
@@ -1883,7 +1918,8 @@
                     "token": {
                       "type": "string",
                       "minLength": 1,
-                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                      "x-happier-max-utf8-bytes": 40322
                     }
                   },
                   "required": [
@@ -2730,6 +2766,15 @@
         "execution": {
           "target": "daemon"
         },
+        "hostAccess": [
+          "acme-ledger-api"
+        ],
+        "connectedAccountPurposeBindings": [
+          {
+            "path": "instance.binding.account",
+            "purpose": "acme-ledger-api"
+          }
+        ],
         "inputSchema": {
           "$schema": "http://json-schema.org/draft-07/schema#",
           "type": "object",
@@ -3690,7 +3735,11 @@
           "global"
         ],
         "surfaces": [
-          "plugin"
+          "plugin",
+          "ui"
+        ],
+        "placementBindings": [
+          "commandPalette"
         ],
         "dangerLevel": "safe",
         "id": "ledger/read-entry"
@@ -3702,12 +3751,63 @@
           "id": "ledger-detail",
           "kind": "declarative",
           "root": {
-            "kind": "text",
-            "text": "Acme Ledger entry"
+            "kind": "group",
+            "title": "Acme Ledger entry",
+            "children": [
+              {
+                "kind": "status",
+                "label": "Owner",
+                "value": "Waiting for this entry to load."
+              }
+            ]
+          },
+          "documentSource": {
+            "kind": "resource",
+            "resourceId": "ledger-detail-document"
           }
         }
       ]
     },
+    "connectedAccountDescriptors": [
+      {
+        "title": "Acme Ledger (fixture)",
+        "description": "A deterministic in-repository fixture connection. It reaches no network and carries no real credential.",
+        "authentication": {
+          "defaultModeId": "fixture-key",
+          "modes": [
+            {
+              "id": "fixture-key",
+              "kind": "manual",
+              "title": "Acme Ledger fixture key",
+              "outcomeReconciliation": "none",
+              "fields": [
+                {
+                  "id": "fixture-key",
+                  "title": "Fixture key",
+                  "description": "The published Acme Ledger fixture key. It authenticates nothing outside this fixture.",
+                  "schema": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "secret": true
+                }
+              ]
+            }
+          ]
+        },
+        "id": "acme-ledger-account"
+      }
+    ],
+    "resources": [
+      {
+        "source": "dynamic",
+        "kind": "config",
+        "contentType": "application/vnd.happier.declarative-document+json;version=1",
+        "scope": "surface",
+        "maxBytes": 8192,
+        "id": "ledger-detail-document"
+      }
+    ],
     "targetedPluginContributions": [
       {
         "protocol": {
@@ -3716,7 +3816,7 @@
         },
         "descriptor": {
           "v": 1,
-          "purpose": "acme.ledger.api",
+          "purpose": "acme-ledger-api",
           "displayName": "Acme Ledger",
           "kinds": [
             {

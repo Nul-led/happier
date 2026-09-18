@@ -37,6 +37,7 @@ export function buildCanonicalWebhookAccountSettings(params: Readonly<{
         ready: { enabled: readyEnabled },
       },
       channels: {
+        expo_push: { enabled: false },
         webhook: {
           enabled: true,
           quietHoursBehavior: params.webhookQuietHoursBehavior ?? 'deliver',

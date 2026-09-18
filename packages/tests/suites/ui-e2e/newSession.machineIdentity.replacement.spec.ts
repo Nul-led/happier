@@ -90,6 +90,27 @@ async function waitForMachineReplacement(params: Readonly<{
     .toBe(`${params.replacementMachineId}:inactive`);
 }
 
+async function createMachinePool(params: Readonly<{
+  baseUrl: string;
+  token: string;
+  poolId: string;
+  machineId: string;
+}>): Promise<void> {
+  const response = await fetch(`${params.baseUrl}/v1/machines/pools/create`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${params.token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      poolId: params.poolId,
+      name: 'Replacement pool',
+      members: [{ machineId: params.machineId, priorityTier: 0, enabled: true }],
+    }),
+  });
+  expect(response.status).toBe(200);
+}
+
 async function copyInstallationIdentityForReplacement(params: Readonly<{
   sourceHomeDir: string;
   targetHomeDir: string;
@@ -244,6 +265,27 @@ test.describe('ui e2e: machine identity and replacement surfaces', () => {
     await expect(machineLaunchOption(page, firstMachineId)).toHaveCount(0);
     await expect(machineLaunchOption(page, secondMachineId)).toHaveCount(1);
     await expectMachineReadyIfExposed({ page, machineId: secondMachineId });
+
+    const poolId = randomUUID();
+    await createMachinePool({
+      baseUrl: serverUrl,
+      token: accessKey.token,
+      poolId,
+      machineId: secondMachineId,
+    });
+    await gotoDomContentLoadedWithRetries(page, `${webUrl}/new?happier_hmr=0`, 60_000);
+    await page.getByTestId('agent-input-machine-chip').click();
+    const poolOption = page.locator(
+      `[data-testid^="new-session-machine-pool-option:"][data-testid$=":${poolId}"]:visible`,
+    ).first();
+    await expect(poolOption).toHaveCount(1, { timeout: 60_000 });
+    await poolOption.click();
+    await expect(page).toHaveURL(new RegExp(`machineId=${encodeURIComponent(secondMachineId)}`), { timeout: 60_000 });
+    await expect(page).toHaveURL(new RegExp(`machinePoolId=${encodeURIComponent(poolId)}`));
+
+    await page.getByTestId('agent-input-machine-chip').click();
+    await machineLaunchOption(page, secondMachineId).first().click();
+    await expect(page).not.toHaveURL(/machinePoolId=/);
 
     const legacyMachineId = `manual-old-${randomUUID()}`;
     const registration = await registerMachineIdentity({

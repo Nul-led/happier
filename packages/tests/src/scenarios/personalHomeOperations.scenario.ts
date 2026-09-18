@@ -272,10 +272,11 @@ export async function assertPersonalHomeRelocationContract(): Promise<void> {
         homeServerIdentityId: (await readPersonalHomeIdentityFromSqlite(destination.layout.databasePath, destination.catalog)).homeServerIdentityId,
         ...await readPersonalHomeDataCountsFromSqlite(destination.layout.databasePath),
       }),
-      materializeEndpoint: async ({ sourceDescriptorRevision }) => ({
-        homeServerIdentityId: 'srv_personal_home_fixture',
-        canonicalServerUrl: 'https://destination.example.test',
-        minimumOuterRevisionExclusive: sourceDescriptorRevision,
+      materializeEndpoint: async () => ({
+        connectionDescriptor: {
+          v: 1, homeServerIdentityId: 'srv_personal_home_fixture', canonicalServerUrl: 'https://destination.example.test',
+          revision: 27, endpoints: [{ kind: 'https', url: 'https://destination.example.test' }],
+        },
       }),
     });
     let transferredBytes = 0;
@@ -319,13 +320,7 @@ export async function assertPersonalHomeRelocationContract(): Promise<void> {
             require(source.lifecycle.quarantined && !source.lifecycle.running, 'Source was not quarantined before publication');
             require(destination.lifecycle.quarantined && !destination.lifecycle.running, 'Destination was not quarantined before publication');
             if (!publishAvailable) throw new Error('publication unavailable');
-            publishedDescriptor = {
-              v: 1,
-              homeServerIdentityId: facts.homeServerIdentityId,
-              canonicalServerUrl: facts.canonicalServerUrl,
-              revision: facts.minimumOuterRevisionExclusive + 1,
-              endpoints: facts.endpoints,
-            };
+            publishedDescriptor = facts.connectionDescriptor;
             return input.publishDestination(facts);
           },
           readPublishedDescriptor: input.readPublishedDescriptor,

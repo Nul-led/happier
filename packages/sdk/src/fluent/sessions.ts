@@ -1,6 +1,8 @@
 import type { PublicActionInputById, PublicActionResultById } from '../actions/generated.js';
 import type { FollowTranscriptOptions, HappierTranscriptItem } from '../subscriptions.js';
 import type { ActionExecute, ActionExecutionOptions, ActionTarget } from '../types.js';
+import { bindPublicActionInput, correspondenceOptions } from './boundActionCall.js';
+import { createSessionExecutionRuns, type HappierSessionExecutionRuns } from './sessionExecutionRuns.js';
 
 type WithoutSessionId<T> = T extends object ? Omit<T, 'sessionId'> : never;
 type SessionSpawnActionInput = PublicActionInputById['session.spawn_new'];
@@ -73,6 +75,7 @@ export class HappierSessionSpawnError extends Error {
 
 export type HappierSession<TOptions extends ActionExecutionOptions = ActionExecutionOptions> = Readonly<{
   id: string;
+  runs: HappierSessionExecutionRuns<TOptions>;
   send: (
     message: string,
     options?: TOptions,
@@ -172,28 +175,37 @@ export function createSessions<TOptions extends ActionExecutionOptions = ActionE
     };
     return Object.freeze({
       id,
-      send: (message: string, options?: TOptions) => params.execute(
+      runs: createSessionExecutionRuns<TOptions>({ sessionId: id, execute: params.execute, optionsForSession }),
+      send: async (message: string, options?: TOptions) => await params.execute(
         'session.message.send',
-        { sessionId: id, message },
+        bindPublicActionInput('session.message.send', { sessionId: id, message }, options?.requestId),
         optionsForSession(options),
       ),
-      sendAndWait: (message: string, input = {}, options?: TOptions) => params.execute(
+      sendAndWait: async (message: string, input = {}, options?: TOptions) => await params.execute(
         'session.message.send',
-        { ...input, sessionId: id, message, wait: true },
+        bindPublicActionInput(
+          'session.message.send',
+          { ...input, sessionId: id, message, wait: true },
+          options?.requestId,
+        ),
         optionsForSession(options),
       ),
-      waitForIdle: (input = {}, options?: TOptions) => params.execute(
+      waitForIdle: async (input = {}, options?: TOptions) => await params.execute(
         'session.wait.idle',
-        { ...input, sessionId: id },
+        bindPublicActionInput('session.wait.idle', { ...input, sessionId: id }, options?.requestId),
         optionsForSession(options),
       ),
-      history: (input = {}, options?: TOptions) => params.execute(
+      history: async (input = {}, options?: TOptions) => await params.execute(
         'session.transcript.get',
-        { ...input, sessionId: id },
+        bindPublicActionInput('session.transcript.get', { ...input, sessionId: id }, options?.requestId),
         optionsForSession(options),
       ),
       followTranscript: (options?: FollowTranscriptOptions) => params.followTranscript(id, options),
-      stop: (options?: TOptions) => params.execute('session.stop', { sessionId: id }, optionsForSession(options)),
+      stop: async (options?: TOptions) => await params.execute(
+        'session.stop',
+        bindPublicActionInput('session.stop', { sessionId: id }, options?.requestId),
+        optionsForSession(options),
+      ),
     });
   };
 
@@ -203,18 +215,13 @@ export function createSessions<TOptions extends ActionExecutionOptions = ActionE
       const inventory = await params.execute(
         'agents.backends.list',
         { includeDisabled: true },
-        options === undefined
-          ? undefined
-          : {
-              ...(options.target === undefined ? {} : { target: options.target }),
-              ...(options.signal === undefined ? {} : { signal: options.signal }),
-            },
+        correspondenceOptions(options),
       );
-      const result = await params.spawn({
+      const result = await params.spawn(bindPublicActionInput('session.spawn_new', {
         ...actionInput,
         ...(initialMessage === undefined ? {} : { initialInput: { text: initialMessage } }),
         agentTarget: { kind: 'agent', identity: resolveAgentIdentity(inventory.items, agent) },
-      }, options);
+      }, options?.requestId), options);
       if (result.type !== 'success') throw new HappierSessionSpawnError(result);
       const session = get(result.sessionId);
       if (initialMessage !== undefined && hasInitialInputFailure(result)) {

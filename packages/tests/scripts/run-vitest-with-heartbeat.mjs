@@ -12,6 +12,8 @@ import {
 import { resolveYarnCommandInvocation } from '../../../scripts/workspaces/execYarnCommand.mjs';
 
 const testsPackageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const scriptsDir = dirname(fileURLToPath(import.meta.url));
+const repoRoot = resolve(testsPackageRoot, '../..');
 
 function isPathInside(parentDir, childPath) {
   const relativePath = relative(parentDir, childPath);
@@ -68,6 +70,9 @@ if (!config) {
 
 const normalizedConfig = normalizeTestsPackagePathArg(config);
 const normalizedPassThrough = normalizeVitestPassThroughArgs(passThrough);
+const diagnosticPath = process.env.HAPPIER_CI_DIAGNOSTIC_PATH
+  || resolve(repoRoot, '.project/logs/e2e/vitest-heartbeat-diagnostic.ndjson');
+const reporterPath = resolve(scriptsDir, 'vitestHeartbeatReporter.mjs');
 
 // F-7. `vitest run <path>` silently ignores a positional path it cannot match and still exits 0, so
 // an explicit path list can under-collect with no signal at all: the lane reports success while the
@@ -95,6 +100,8 @@ const childArgs = [
   '--no-file-parallelism',
   '-c',
   normalizedConfig,
+  '--reporter=default',
+  `--reporter=${reporterPath}`,
   ...normalizedPassThrough,
 ];
 const invocation = resolveYarnCommandInvocation(childArgs, { npmExecPath: '' });
@@ -102,11 +109,15 @@ const invocation = resolveYarnCommandInvocation(childArgs, { npmExecPath: '' });
 await runHeartbeatWrappedCommand({
   toolName: 'vitest',
   config: normalizedConfig,
+  diagnosticPath,
   command: invocation.command,
   args: invocation.args,
   spawnOptions: {
     stdio: 'inherit',
-    env: process.env,
+    env: {
+      ...process.env,
+      HAPPIER_CI_DIAGNOSTIC_PATH: diagnosticPath,
+    },
     cwd: testsPackageRoot,
     ...(invocation.windowsVerbatimArguments
       ? { windowsVerbatimArguments: invocation.windowsVerbatimArguments }

@@ -42,7 +42,6 @@ describe('renderStressComposeYaml', () => {
         minioPort: 49000,
         minioConsolePort: 49001,
         dbConnectionLimit: 4,
-        authLoginEligibilityAccountSnapshotCacheTtlMs: 60000,
         metricsEnabled: true,
         filesBackend: 's3',
       },
@@ -77,7 +76,7 @@ describe('renderStressComposeYaml', () => {
     expect(yaml).toContain('S3_PUBLIC_URL: http://127.0.0.1:43080/files');
     expect(yaml).toContain('HAPPIER_SERVER_TRUST_PROXY: "1"');
     expect(yaml).toContain('HAPPIER_DB_CONNECTION_LIMIT: "4"');
-    expect(yaml).toContain('AUTH_LOGIN_ELIGIBILITY_ACCOUNT_SNAPSHOT_CACHE_TTL_MS: "60000"');
+    expect(yaml).not.toContain('AUTH_LOGIN_ELIGIBILITY_ACCOUNT_SNAPSHOT_CACHE_TTL_MS');
     expect(yaml).toContain('METRICS_ENABLED: "1"');
     expect(yaml).toContain('labels:');
     expect(yaml).toContain('happier.stress.owner: stress-harness');

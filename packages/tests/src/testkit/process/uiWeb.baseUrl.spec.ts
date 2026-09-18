@@ -311,6 +311,7 @@ describe('startUiWeb baseUrl resolution', () => {
       expect(exportCalls.length).toBeGreaterThanOrEqual(1);
       for (const call of exportCalls) {
         expect(call.env?.EXPO_PUBLIC_POSTHOG_KEY).toBe('phc-clear-export');
+        expect(call.env?.NODE_OPTIONS).toContain('--max-old-space-size=8192');
       }
     } finally {
       await started.stop();

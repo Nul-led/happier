@@ -22,10 +22,11 @@
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 
+use happier_iroh_native::MachineHandshakeProvider;
 use happier_iroh_native::{
     begin_endpoint_shutdown_json, happier_iroh_native_create_endpoint_json,
-    happier_iroh_native_ensure_home_tunnel_json,
-    happier_iroh_native_free_string, happier_iroh_native_get_endpoint_status_json,
+    happier_iroh_native_ensure_home_tunnel_json, happier_iroh_native_free_string,
+    happier_iroh_native_get_endpoint_status_json,
     happier_iroh_native_get_machine_acceptor_status_json,
     happier_iroh_native_get_machine_tunnel_status_json, happier_iroh_native_get_tunnel_status_json,
     happier_iroh_native_release_home_tunnel_json, happier_iroh_native_shutdown_endpoint_json,
@@ -33,6 +34,7 @@ use happier_iroh_native::{
     happier_iroh_native_start_machine_http_tunnel_json,
     happier_iroh_native_start_machine_tunnel_json, happier_iroh_native_stop_home_acceptor_json,
     happier_iroh_native_stop_machine_acceptor_json, happier_iroh_native_stop_machine_tunnel_json,
+    start_machine_http_tunnel_with_handshake_provider_json, IrohError,
 };
 #[cfg(feature = "test-relay-fixture")]
 use happier_iroh_native::{
@@ -40,8 +42,9 @@ use happier_iroh_native::{
     happier_iroh_native_test_force_relay_only_json, happier_iroh_native_test_observed_path,
     happier_iroh_native_test_relay_url, happier_iroh_native_test_restore_automatic_json,
 };
-use napi::bindgen_prelude::AsyncTask;
-use napi::{Env, Error, Result, Task};
+use napi::bindgen_prelude::{AsyncTask, Promise};
+use napi::threadsafe_function::ThreadsafeFunction;
+use napi::{Env, Error, Result, Status, Task};
 use napi_derive::napi;
 
 /// One synchronous C ABI call executed on the libuv worker pool. The C ABI
@@ -52,29 +55,77 @@ pub struct JsonOpTask {
     request: CString,
 }
 
-impl Task for JsonOpTask {
+type HandshakeProviderFunction = ThreadsafeFunction<(), Promise<String>, (), Status, false>;
+
+#[doc(hidden)]
+pub struct StartMachineHttpTunnelTask {
+    request: String,
+    handshake_provider: Option<std::sync::Arc<HandshakeProviderFunction>>,
+}
+
+impl Task for StartMachineHttpTunnelTask {
     type Output = String;
     type JsValue = String;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        let response = (self.operation)(self.request.as_ptr());
-        if response.is_null() {
-            return Err(Error::from_reason(
-                "happier-iroh-native returned no response for a lifecycle operation",
-            ));
+        if let Some(callback) = &self.handshake_provider {
+            let callback = std::sync::Arc::clone(callback);
+            let provider: MachineHandshakeProvider = std::sync::Arc::new(move || {
+                let callback = std::sync::Arc::clone(&callback);
+                Box::pin(async move {
+                    let promise = callback
+                        .call_async_catch(())
+                        .await
+                        .map_err(|_| IrohError::Cancelled)?;
+                    promise.await.map_err(|_| IrohError::Cancelled)
+                })
+            });
+            return Ok(start_machine_http_tunnel_with_handshake_provider_json(
+                &self.request,
+                provider,
+            )
+            .to_string());
         }
-        // SAFETY: the C ABI contract returns a NUL-terminated UTF-8 JSON
-        // string owned by the caller until `happier_iroh_native_free_string`.
-        let raw = unsafe { CStr::from_ptr(response) }
-            .to_string_lossy()
-            .into_owned();
-        happier_iroh_native_free_string(response);
-        Ok(raw)
+        let request = CString::new(self.request.as_str())
+            .map_err(|_| Error::from_reason("Iroh lifecycle request must not contain NUL bytes"))?;
+        invoke_json_op(happier_iroh_native_start_machine_http_tunnel_json, &request)
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
         Ok(output)
     }
+}
+
+impl Task for JsonOpTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        invoke_json_op(self.operation, &self.request)
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+fn invoke_json_op(
+    operation: extern "C" fn(*const c_char) -> *mut c_char,
+    request: &CString,
+) -> Result<String> {
+    let response = operation(request.as_ptr());
+    if response.is_null() {
+        return Err(Error::from_reason(
+            "happier-iroh-native returned no response for a lifecycle operation",
+        ));
+    }
+    // SAFETY: the C ABI contract returns a NUL-terminated UTF-8 JSON
+    // string owned by the caller until `happier_iroh_native_free_string`.
+    let raw = unsafe { CStr::from_ptr(response) }
+        .to_string_lossy()
+        .into_owned();
+    happier_iroh_native_free_string(response);
+    Ok(raw)
 }
 
 fn json_op(
@@ -260,8 +311,14 @@ pub fn start_machine_tunnel(request: String) -> Result<AsyncTask<JsonOpTask>> {
     json_op(happier_iroh_native_start_machine_tunnel_json, request)
 }
 #[napi]
-pub fn start_machine_http_tunnel(request: String) -> Result<AsyncTask<JsonOpTask>> {
-    json_op(happier_iroh_native_start_machine_http_tunnel_json, request)
+pub fn start_machine_http_tunnel(
+    request: String,
+    handshake_provider: Option<std::sync::Arc<HandshakeProviderFunction>>,
+) -> Result<AsyncTask<StartMachineHttpTunnelTask>> {
+    Ok(AsyncTask::new(StartMachineHttpTunnelTask {
+        request,
+        handshake_provider,
+    }))
 }
 #[napi]
 pub fn stop_machine_tunnel(request: String) -> Result<AsyncTask<JsonOpTask>> {

@@ -230,7 +230,6 @@ export const MIXED_REALISTIC_API_PROVISIONING_HTTP_SELECTORS = [
 
 export const MIXED_REALISTIC_API_CACHE_ENTRY_SELECTORS = [
   { alias: 'auth_token_cache_entries_positive', metricName: 'auth_token_cache_entries', labels: { bucket: 'positive_result' } },
-  { alias: 'auth_token_cache_entries_account_snapshot', metricName: 'auth_token_cache_entries', labels: { bucket: 'account_snapshot' } },
   { alias: 'auth_token_cache_entries_inflight', metricName: 'auth_token_cache_entries', labels: { bucket: 'inflight' } },
 ] as const;
 
@@ -333,8 +332,6 @@ export async function scrapeMixedRealisticFullComposeMetrics(params: {
         { alias: 'eligibility_provider_checks_count', metricName: 'auth_login_eligibility_stage_duration_seconds_count', labels: { stage: 'provider_checks', result: 'ok' } },
         { alias: 'eligibility_positive_hit_total', metricName: 'auth_login_eligibility_cache_total', labels: { cache: 'positive_result', result: 'hit' } },
         { alias: 'eligibility_positive_miss_total', metricName: 'auth_login_eligibility_cache_total', labels: { cache: 'positive_result', result: 'miss' } },
-        { alias: 'eligibility_account_snapshot_hit_total', metricName: 'auth_login_eligibility_cache_total', labels: { cache: 'account_snapshot', result: 'hit' } },
-        { alias: 'eligibility_account_snapshot_miss_total', metricName: 'auth_login_eligibility_cache_total', labels: { cache: 'account_snapshot', result: 'miss' } },
         { alias: 'eligibility_inflight_hit_total', metricName: 'auth_login_eligibility_cache_total', labels: { cache: 'inflight', result: 'hit' } },
         { alias: 'eligibility_inflight_miss_total', metricName: 'auth_login_eligibility_cache_total', labels: { cache: 'inflight', result: 'miss' } },
         { alias: 'access_sum', metricName: 'session_write_create_message_duration_seconds_sum', labels: { stage: 'access', result: 'ok' } },
@@ -454,8 +451,6 @@ export async function scrapeMixedRealisticFullComposeMetrics(params: {
     loginEligibilityCache: {
       positiveResultHits: apiStageMetrics.eligibility_positive_hit_total ?? 0,
       positiveResultMisses: apiStageMetrics.eligibility_positive_miss_total ?? 0,
-      accountSnapshotHits: apiStageMetrics.eligibility_account_snapshot_hit_total ?? 0,
-      accountSnapshotMisses: apiStageMetrics.eligibility_account_snapshot_miss_total ?? 0,
       inflightHits: apiStageMetrics.eligibility_inflight_hit_total ?? 0,
       inflightMisses: apiStageMetrics.eligibility_inflight_miss_total ?? 0,
     },

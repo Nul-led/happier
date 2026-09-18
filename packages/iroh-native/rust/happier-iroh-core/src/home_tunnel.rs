@@ -323,8 +323,8 @@ impl HomeTunnel {
                 ),
             )
             .await
-            .map_err(|_| IrohError::TransportClosed)?;
-        let connection = connecting.await.map_err(|_| IrohError::TransportClosed)?;
+            .map_err(IrohError::from)?;
+        let connection = connecting.await.map_err(IrohError::from)?;
         // The authenticated transport identity — not the requested descriptor
         // copy — is the only honest remote identity this tunnel reports. A
         // mismatch fails the start closed with the shared

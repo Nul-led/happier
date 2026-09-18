@@ -7,8 +7,18 @@ import {
   parseDockerPortLine,
   sanitizeDockerEnv,
 } from '../../../scripts/extended-db-docker.plan.mjs';
+import { parseArgs } from '../../../scripts/run-extended-db-docker.mjs';
 
 describe('extended db docker plan', () => {
+  it('passes an optional contract file filter only to the contract runner', () => {
+    const contractFile = 'sources/app/session/systemRecords/sessionSystemRecords.dbcontract.spec.ts';
+    const parsed = parseArgs(['node', 'run-extended-db-docker.mjs', '--db', 'mysql', '--mode', 'contract', '--contract-file', contractFile]);
+    expect(parsed['contract-file']).toBe(contractFile);
+    const plan = buildExtendedDbCommandPlan({ db: 'mysql', mode: 'contract', databaseUrl: 'mysql://localhost/test', contractFile });
+    expect(plan.find(step => step.kind === 'contract')?.args).toEqual(['workspace', '@happier-dev/server', 'test:db-contract', contractFile]);
+    expect(plan.filter(step => step.kind !== 'contract').every(step => !step.args.includes(contractFile))).toBe(true);
+    expect(() => buildExtendedDbCommandPlan({ db: 'mysql', mode: 'e2e', databaseUrl: 'mysql://localhost/test', contractFile })).toThrow();
+  });
   it('builds a postgres container plan with healthcheck and ephemeral port mapping', () => {
     const plan = buildDbContainerPlan({ db: 'postgres', name: 'happier-test-pg' });
 

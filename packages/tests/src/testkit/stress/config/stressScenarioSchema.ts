@@ -60,7 +60,6 @@ export type StressComposeConfig = Readonly<{
   frontDoorMode?: StressComposeFrontDoorMode;
   loadGenerationMode?: StressComposeLoadGenerationMode;
   dbConnectionLimit?: number;
-  authLoginEligibilityAccountSnapshotCacheTtlMs?: number;
   apiHeapDiagnosticSignal?: NodeJS.Signals;
   apiHeapDiagnosticOldSpaceThresholdBytes?: number;
   gatewayWorkerConnections?: number;

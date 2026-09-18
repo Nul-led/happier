@@ -1,4 +1,7 @@
-export type ProviderPresetId = 'opencode' | 'opencode_server' | 'claude' | 'codex' | 'kilo' | 'gemini' | 'qwen' | 'kimi' | 'auggie' | 'pi' | 'copilot' | 'grok' | 'cursor_acp_stub' | 'all';
+// Single declaration of the preset vocabulary, beside the runtime table that
+// defines it (`PROVIDER_ENV_FLAG_BY_PRESET_ID`); `presets.ts` re-exports these
+// types instead of keeping a second copy.
+export type ProviderPresetId = 'opencode' | 'opencode_server' | 'claude' | 'codex' | 'kilo' | 'gemini' | 'qwen' | 'kimi' | 'auggie' | 'pi' | 'copilot' | 'grok' | 'fx' | 'droid' | 'devin' | 'antigravity' | 'cursor_acp_stub' | 'all';
 export type ProviderConcretePresetId = Exclude<ProviderPresetId, 'all'>;
 export type ProviderAcpPresetId = Exclude<ProviderConcretePresetId, 'claude'>;
 export type ProviderScenarioTier = 'smoke' | 'extended';

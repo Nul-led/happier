@@ -51,15 +51,39 @@ export async function validateNodeNextConsumer({ tarballPath = null } = {}) {
       include: ['consumer.ts'],
     }, null, 2));
     await writeFile(join(fixture, 'consumer.ts'), [
-      "import { connect, type PublicActionId } from '@happier-dev/sdk';",
+      "import { connect, isHappierActionApprovalRequestCreated, type PublicActionId, type PublicActionInputById } from '@happier-dev/sdk';",
+      "type AssertNever<T extends never> = T;",
+      "type HumanCredentialLifecycleActionId = 'account.password.enroll' | 'account.password.change' | 'account.password.remove' | 'account.email.change.request' | 'account.apiTokens.create' | 'account.apiTokens.list' | 'account.apiTokens.revoke' | 'account.apiTokens.revokeAll';",
+      "type HumanCredentialLifecycleActionsStayPrivate = AssertNever<Extract<PublicActionId, HumanCredentialLifecycleActionId>>;",
+      "void (0 as unknown as HumanCredentialLifecycleActionsStayPrivate);",
       "const actionId: PublicActionId = 'machines.list';",
       `const client = connect({ endpoint: 'http://127.0.0.1:3210', token: ${JSON.stringify(consumerApiToken)} });`,
-      'void client.actions.execute(actionId, {});', 'void client.machines.list();', 'await client.close();', '',
+      'void client.actions.execute(actionId, {});', 'void client.machines.list();',
+      'void client.actions.account.security.get({});',
+      'async function exerciseInteractiveRun(',
+      '  sessionId: string,',
+      "  selection: Pick<PublicActionInputById['execution.run.start'], 'backendTarget' | 'permissionMode'>,",
+      ') {',
+      '  const started = await client.actions.execution.run.start({',
+      '    ...selection, sessionId,',
+      "    intent: 'delegate', runClass: 'long_lived', retentionPolicy: 'resumable', ioMode: 'streaming',",
+      '  });',
+      '  if (isHappierActionApprovalRequestCreated(started)) return;',
+      '  const run = client.sessions.get(sessionId).runs.get(started.runId);',
+      "  await run.send('Inspect the issue.');",
+      "  await run.sendAndWait('Summarize the result.', { localId: 'consumer-followup', timeoutSeconds: 300 });",
+      '  const history = await run.history({ limit: 50 });',
+      '  await run.stop();',
+      '  const terminal = await run.wait({ timeoutSeconds: 300 });',
+      '  return { history, terminal };',
+      '}',
+      'void exerciseInteractiveRun;',
+      'await client.close();', '',
     ].join('\n'));
 
     if (sourceMode) {
-      run(process.execPath, [join(repoRoot, 'scripts/workspaces/runTypeScriptCli.mjs'), '--noEmit', '-p', join(fixture, 'tsconfig.json')], fixture);
-      for (const exampleName of ['basic', 'comprehensive']) {
+      run(process.execPath, [join(repoRoot, 'scripts/workspaces/runTypeScriptCli.mjs'), '--noEmit', '-p', join(fixture, 'tsconfig.json')], repoRoot);
+      for (const exampleName of ['basic', 'comprehensive', 'external-plugin']) {
         const exampleTsconfigPath = join(fixture, `example-${exampleName}.tsconfig.json`);
         await writeFile(exampleTsconfigPath, JSON.stringify({
           compilerOptions: {
@@ -74,7 +98,7 @@ export async function validateNodeNextConsumer({ tarballPath = null } = {}) {
           },
           files: [join(sdkDir, 'examples', exampleName, 'index.ts')],
         }, null, 2));
-        run(process.execPath, [join(repoRoot, 'scripts/workspaces/runTypeScriptCli.mjs'), '--noEmit', '-p', exampleTsconfigPath], fixture);
+        run(process.execPath, [join(repoRoot, 'scripts/workspaces/runTypeScriptCli.mjs'), '--noEmit', '-p', exampleTsconfigPath], repoRoot);
       }
       const runtimeTsconfigPath = join(fixture, 'runtime.tsconfig.json');
       await writeFile(runtimeTsconfigPath, JSON.stringify({
@@ -93,7 +117,7 @@ export async function validateNodeNextConsumer({ tarballPath = null } = {}) {
 
     const tarball = await assertExactTarball(tarballPath);
     run('npm', ['install', '--ignore-scripts', '--no-package-lock', tarball], fixture);
-    run(process.execPath, [join(repoRoot, 'scripts/workspaces/runTypeScriptCli.mjs'), '--noEmit', '-p', join(fixture, 'tsconfig.json')], fixture);
+    run(process.execPath, [join(repoRoot, 'scripts/workspaces/runTypeScriptCli.mjs'), '--noEmit', '-p', join(fixture, 'tsconfig.json')], repoRoot);
     run(process.execPath, ['--input-type=module', '--eval', `import { connect } from '@happier-dev/sdk'; const client = connect({ endpoint: 'http://127.0.0.1:3210', token: ${JSON.stringify(consumerApiToken)} }); await client.close();`], fixture);
     const installed = JSON.parse(await readFile(join(fixture, 'node_modules/@happier-dev/sdk/package.json'), 'utf8'));
     if (installed.name !== '@happier-dev/sdk') throw new Error('Installed SDK package identity mismatch');

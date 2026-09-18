@@ -4,11 +4,10 @@ import { randomBytes } from 'node:crypto';
 
 import {
   deriveAccountMachineKeyFromRecoverySecret,
+  signAccountContentKeyBindingV1,
 } from '@happier-dev/protocol';
 
 import { fetchJson } from './http';
-
-const CONTENT_KEY_BINDING_PREFIX = new TextEncoder().encode('Happy content key v1\u0000');
 
 export type TestAuth = {
   token: string;
@@ -33,14 +32,10 @@ export async function createTestAuth(baseUrl: string): Promise<TestAuth> {
   const contentPublicKey = Uint8Array.from(
     tweetnacl.box.keyPair.fromSecretKey(accountMachineKey).publicKey,
   );
-  const contentKeyBinding = new Uint8Array(
-    CONTENT_KEY_BINDING_PREFIX.length + contentPublicKey.length,
-  );
-  contentKeyBinding.set(CONTENT_KEY_BINDING_PREFIX, 0);
-  contentKeyBinding.set(contentPublicKey, CONTENT_KEY_BINDING_PREFIX.length);
-  const contentPublicKeySig = Uint8Array.from(
-    tweetnacl.sign.detached(contentKeyBinding, secretKey),
-  );
+  const contentPublicKeySig = signAccountContentKeyBindingV1({
+    accountSigningSecretKey: secretKey,
+    contentPublicKey,
+  });
 
   const body = {
     publicKey: privacyKit.encodeBase64(publicKey),

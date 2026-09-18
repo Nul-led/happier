@@ -15,9 +15,23 @@ import {
     TriageSourcesContributionProtocolV1,
 } from '@happier-dev/triage-protocol/v1';
 
+import { decodeConfiguration, encodeConfiguration } from './configuration.mjs';
 import {
+    LEDGER_CONNECTION_FIELD_ID,
+    LEDGER_CONNECTION_MODE_ID,
+    ledgerConnectedAccountRuntime,
+} from './connection.mjs';
+import {
+    LEDGER_DETAIL_DOCUMENT_CONTENT_TYPE,
+    LEDGER_DETAIL_DOCUMENT_MAX_BYTES,
+    LEDGER_DETAIL_DOCUMENT_RESOURCE_ID,
+    LEDGER_DETAIL_STATIC_ROOT,
+    ledgerDetailDocumentResource,
+} from './detail.mjs';
+import {
+    LEDGER_SPACE_IDS,
+    LEDGER_SPACE_ID_LIST,
     LEDGER_UNAVAILABLE_REF,
-    readLedgerDetailOnlyFacts,
     readLedgerPage,
     readLedgerRow,
 } from './ledger.mjs';
@@ -31,25 +45,34 @@ export const LEDGER_ACTION_IDS = Object.freeze({
 });
 
 export const LEDGER_CONTRIBUTION_LOCAL_ID = 'acme-ledger';
-export const LEDGER_ACCOUNT_PURPOSE = 'acme.ledger.api';
-
-const DETAIL_RENDERER_ID = 'ledger-detail';
 
 /**
- * The source's own configured-instance token. It is a bounded, source-decoded
- * string: it carries the provider space this instance reads and nothing else —
- * no credential, no origin, no account ref.
+ * The Connected Account service this source connects, and the purpose it reads
+ * through.
+ *
+ * They are two identities, not one spelling of the same thing: the service is a
+ * contribution local id, while the purpose is the id of the `connectedAccounts`
+ * HostAccess request each Action names. The purpose therefore has to be
+ * expressible in the Action-to-HostAccess reference dialect — lower-case
+ * alphanumeric segments joined by `-` or `/`. A dotted purpose such as
+ * `acme.ledger.api` is a valid Triage descriptor identifier and a valid
+ * HostAccess request id, but no Action can reference it, so the host refuses
+ * `listAccounts` as undeclared and discovery silently returns nothing.
  */
-function encodeConfiguration(space) {
-    return { v: 1, token: `space=${space}` };
-}
+export const LEDGER_CONNECTED_ACCOUNT_ID = 'acme-ledger-account';
+export const LEDGER_ACCOUNT_PURPOSE = 'acme-ledger-api';
 
-function decodeConfiguration(configuration) {
-    const token = configuration?.token;
-    if (typeof token !== 'string' || !token.startsWith('space=')) return null;
-    const space = token.slice('space='.length);
-    return space.length > 0 ? space : null;
-}
+/**
+ * The input leaf each account-bearing read carries its account in. Declaring it
+ * is what lets the host resolve the exact credential before the Action runs;
+ * `listInstances` has no binding because discovering accounts is what it does.
+ */
+const INSTANCE_ACCOUNT_BINDINGS = [{
+    path: 'instance.binding.account',
+    purpose: LEDGER_ACCOUNT_PURPOSE,
+}];
+
+const DETAIL_RENDERER_ID = 'ledger-detail';
 
 /**
  * The invocation-local scan continuation.
@@ -88,14 +111,21 @@ async function runListInstances(_input, context) {
     const failures = [];
     for (const listing of listed.accounts) {
         const binding = { purpose: LEDGER_ACCOUNT_PURPOSE, account: listing.account };
-        candidates.push({
-            v: 1,
-            binding,
-            localInstanceKey: 'acme/ledger',
-            keyStability: 'stable',
-            configuration: encodeConfiguration('acme/ledger'),
-            locator: { v: 1, displayLabel: 'acme/ledger' },
-        });
+        // One candidate per space the account can read. Discovery offers the
+        // choice and configures nothing: which space an instance reads is
+        // settled by ordinary source configuration, so neither space is
+        // preselected here and neither is reachable only through an
+        // environment variable or a global mode.
+        for (const space of LEDGER_SPACE_ID_LIST) {
+            candidates.push({
+                v: 1,
+                binding,
+                localInstanceKey: space,
+                keyStability: 'stable',
+                configuration: encodeConfiguration(space),
+                locator: { v: 1, displayLabel: space },
+            });
+        }
     }
     // A truncated account listing is never reported as a complete enumeration.
     return listed.status === 'truncated'
@@ -125,7 +155,7 @@ async function runScan(input) {
         };
     }
 
-    const { rows, nextOffset } = readLedgerPage(request.offset, request.limit);
+    const { rows, nextOffset } = readLedgerPage(space, request.offset, request.limit);
     const { observations, omittedItemCount } = mapLedgerPage(rows, space);
     const evidence = omittedItemCount > 0
         ? { kind: 'partial', reason: 'acme/unmappable-rows', omittedItemCount }
@@ -154,7 +184,10 @@ async function runGet(input) {
             },
         };
     }
-    if (input.localRef.entryId === LEDGER_UNAVAILABLE_REF) {
+    // The unreachable row belongs to the curated space. Claiming a transient
+    // provider outage for it in the QA space would report an id that space
+    // never had as "try again later" rather than as the absence it is.
+    if (space === LEDGER_SPACE_IDS.curated && input.localRef.entryId === LEDGER_UNAVAILABLE_REF) {
         return {
             kind: 'unresolved',
             localRef: input.localRef,
@@ -165,15 +198,11 @@ async function runGet(input) {
             },
         };
     }
-    return mapLedgerAuthoritativeRead(readLedgerRow(input.localRef.entryId), input.localRef, space);
-}
-
-/**
- * Resolves the facts this source loads only in its detail surface. The list
- * projection declares the fact exists; only this read produces its value.
- */
-export function readDetailOnlyFacts(entryId) {
-    return readLedgerDetailOnlyFacts(entryId);
+    return mapLedgerAuthoritativeRead(
+        readLedgerRow(space, input.localRef.entryId),
+        input.localRef,
+        space,
+    );
 }
 
 /**
@@ -206,28 +235,101 @@ const plugin = definePlugin({
     runtime: { apiVersion: 1 },
     entrypoints: { daemon: './src/index.mjs' },
     activation: { events: [{ kind: 'startup' }] },
+    hostAccess: {
+        required: [{
+            id: LEDGER_ACCOUNT_PURPOSE,
+            capability: 'connectedAccounts',
+            reason: 'List the Acme Ledger accounts already authorized for this source,'
+                + ' and read the spaces each one carries.',
+            scope: {
+                serviceRefs: [LEDGER_CONNECTED_ACCOUNT_ID],
+                // Discovery enumerates the accounts already bound to this
+                // purpose; it opens no selection flow of its own. No
+                // `materializationKinds`: the provider is in-process, so this
+                // source never materializes a credential and the host
+                // authorizes none.
+                operations: ['use'],
+            },
+        }],
+        optional: [],
+    },
+    connectedAccountDescriptors: {
+        [LEDGER_CONNECTED_ACCOUNT_ID]: {
+            declaration: {
+                title: 'Acme Ledger (fixture)',
+                description: 'A deterministic in-repository fixture connection.'
+                    + ' It reaches no network and carries no real credential.',
+                authentication: {
+                    defaultModeId: LEDGER_CONNECTION_MODE_ID,
+                    modes: [{
+                        id: LEDGER_CONNECTION_MODE_ID,
+                        kind: 'manual',
+                        title: 'Acme Ledger fixture key',
+                        outcomeReconciliation: 'none',
+                        fields: [{
+                            id: LEDGER_CONNECTION_FIELD_ID,
+                            title: 'Fixture key',
+                            description: 'The published Acme Ledger fixture key.'
+                                + ' It authenticates nothing outside this fixture.',
+                            schema: { type: 'string', minLength: 1 },
+                            secret: true,
+                        }],
+                        // No connection-level configuration: the space an
+                        // instance reads belongs to Triage source
+                        // configuration, not to the account.
+                    }],
+                },
+            },
+            runtime: ledgerConnectedAccountRuntime,
+        },
+    },
     actions: {
         [LEDGER_ACTION_IDS.listInstances]: {
             title: 'Discover Acme Ledger spaces',
             ...actionContract(sourceOperations.listInstances),
+            hostAccess: [LEDGER_ACCOUNT_PURPOSE],
             run: runListInstances,
         },
         [LEDGER_ACTION_IDS.scan]: {
             title: 'Walk one Acme Ledger space',
             ...actionContract(sourceOperations.scan),
+            hostAccess: [LEDGER_ACCOUNT_PURPOSE],
+            connectedAccountPurposeBindings: INSTANCE_ACCOUNT_BINDINGS,
             run: runScan,
         },
         [LEDGER_ACTION_IDS.get]: {
             title: 'Read one Acme Ledger entry',
             ...actionContract(sourceOperations.get),
+            hostAccess: [LEDGER_ACCOUNT_PURPOSE],
+            connectedAccountPurposeBindings: INSTANCE_ACCOUNT_BINDINGS,
             run: runGet,
+        },
+    },
+    resources: {
+        [LEDGER_DETAIL_DOCUMENT_RESOURCE_ID]: {
+            source: 'dynamic',
+            kind: 'config',
+            contentType: LEDGER_DETAIL_DOCUMENT_CONTENT_TYPE,
+            // `surface` is what makes this a detail body rather than a banner:
+            // the host stamps the mount's own launch input onto every read, so
+            // the producer learns which entry the reader selected.
+            scope: 'surface',
+            maxBytes: LEDGER_DETAIL_DOCUMENT_MAX_BYTES,
+            runtime: ledgerDetailDocumentResource,
         },
     },
     ui: {
         renderers: [{
             id: DETAIL_RENDERER_ID,
             kind: 'declarative',
-            root: { kind: 'text', text: 'Acme Ledger entry' },
+            // The static root is the first paint and the unavailable-document
+            // state; it names no entry and no owner. The live document below is
+            // the only thing that resolves either.
+            root: LEDGER_DETAIL_STATIC_ROOT,
+            documentSource: {
+                kind: 'resource',
+                resourceId: LEDGER_DETAIL_DOCUMENT_RESOURCE_ID,
+            },
         }],
     },
     contributesTo: {

@@ -1,18 +1,29 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { randomBytes } from 'node:crypto';
+import {
+  buildAccountStoredContentCompatibilityHttpHeadersV1,
+  CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION,
+  createSessionOwnerMetadataV1,
+  deriveBoxPublicKeyFromSeed,
+  openEncryptedDataKeyEnvelopeV1,
+  projectSessionSharedMetadataV1,
+  sealEncryptedDataKeyEnvelopeV1,
+  sealSessionOwnerMetadataEnvelopeV1,
+  V2SessionByIdResponseSchema,
+} from '@happier-dev/protocol';
 
 import { createRunDirs } from '../../src/testkit/runDir';
 import { fetchJson } from '../../src/testkit/http';
 import { createTestAuth } from '../../src/testkit/auth';
 import { startServerLight, type StartedServer } from '../../src/testkit/process/serverLight';
 import { addFriend, fetchAccountId, setUsername } from '../../src/testkit/socialFriends';
+import { decryptDataKeyBase64, encryptDataKeyBase64 } from '../../src/testkit/rpcCrypto';
 
 const run = createRunDirs({ runLabel: 'core' });
 
-function makeEncryptedDataKeyV0Base64(): string {
-  const bytes = Buffer.alloc(1 + 32 + 24 + 16, 1);
-  bytes[0] = 0;
-  return bytes.toString('base64');
-}
+const currentHeaders = buildAccountStoredContentCompatibilityHttpHeadersV1(
+  CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION,
+);
 
 describe('core e2e: e2ee direct share requires encryptedDataKey', () => {
   let server: StartedServer | null = null;
@@ -22,7 +33,7 @@ describe('core e2e: e2ee direct share requires encryptedDataKey', () => {
     server = null;
   });
 
-  it('rejects missing/invalid encryptedDataKey for e2ee sessions and accepts a valid v0 envelope', async () => {
+  it('rejects missing/invalid envelopes and lets the recipient open the projected Session key and content', async () => {
     const testDir = run.testDir('sharing-session-e2ee-encrypted-datakey-required');
     server = await startServerLight({
       testDir,
@@ -43,18 +54,38 @@ describe('core e2e: e2ee direct share requires encryptedDataKey', () => {
     await addFriend(server.baseUrl, owner.token, recipientId);
     await addFriend(server.baseUrl, recipient.token, ownerId);
 
-    const create = await fetchJson<any>(`${server.baseUrl}/v1/sessions`, {
+    const sessionKey = Uint8Array.from(randomBytes(32));
+    const metadata = { path: '/tmp/direct-share-private-path', host: 'owner-device', name: 'Shared encrypted session' };
+    const sharedMetadata = projectSessionSharedMetadataV1({ metadata, agentState: null });
+    const ownerProjection = createSessionOwnerMetadataV1({ metadata });
+    if (!ownerProjection.ok) throw new Error('Unsupported owner metadata fixture');
+    const sealFor = (accountMachineKey: Uint8Array) => Buffer.from(sealEncryptedDataKeyEnvelopeV1({
+      dataKey: sessionKey,
+      recipientPublicKey: deriveBoxPublicKeyFromSeed(accountMachineKey),
+      randomBytes,
+    })).toString('base64');
+    const ownerDataKey = sealFor(owner.accountMachineKey);
+    const recipientDataKey = sealFor(recipient.accountMachineKey);
+
+    const create = await fetchJson<{ session: { id: string; encryptionMode: string } }>(`${server.baseUrl}/v1/sessions`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${owner.token}`,
         'Content-Type': 'application/json',
+        ...currentHeaders,
       },
       body: JSON.stringify({
         tag: 'e2e-share-e2ee',
         encryptionMode: 'e2ee',
-        metadata: Buffer.from('cipher-meta', 'utf8').toString('base64'),
+        metadataLayoutVersion: 1,
+        sharedMetadata: { ciphertext: encryptDataKeyBase64(sharedMetadata, sessionKey) },
+        ownerMetadata: sealSessionOwnerMetadataEnvelopeV1({
+          material: { type: 'dataKey', machineKey: owner.accountMachineKey },
+          ownerMetadata: ownerProjection.ownerMetadata,
+          randomBytes,
+        }),
         agentState: null,
-        dataEncryptionKey: Buffer.from('test-data-key', 'utf8').toString('base64'),
+        dataEncryptionKey: ownerDataKey,
       }),
       timeoutMs: 15_000,
     });
@@ -63,11 +94,12 @@ describe('core e2e: e2ee direct share requires encryptedDataKey', () => {
     expect(typeof sessionId).toBe('string');
     expect(create.data?.session?.encryptionMode).toBe('e2ee');
 
-    const missing = await fetchJson<any>(`${server.baseUrl}/v1/sessions/${sessionId}/shares`, {
+    const missing = await fetchJson<{ error: string }>(`${server.baseUrl}/v1/sessions/${sessionId}/shares`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${owner.token}`,
         'Content-Type': 'application/json',
+        ...currentHeaders,
       },
       body: JSON.stringify({ userId: recipientId, accessLevel: 'view' }),
       timeoutMs: 15_000,
@@ -75,11 +107,12 @@ describe('core e2e: e2ee direct share requires encryptedDataKey', () => {
     expect(missing.status).toBe(400);
     expect(missing.data?.error).toBe('encryptedDataKey required');
 
-    const invalid = await fetchJson<any>(`${server.baseUrl}/v1/sessions/${sessionId}/shares`, {
+    const invalid = await fetchJson<{ error: string }>(`${server.baseUrl}/v1/sessions/${sessionId}/shares`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${owner.token}`,
         'Content-Type': 'application/json',
+        ...currentHeaders,
       },
       body: JSON.stringify({ userId: recipientId, accessLevel: 'view', encryptedDataKey: Buffer.from('x').toString('base64') }),
       timeoutMs: 15_000,
@@ -87,21 +120,41 @@ describe('core e2e: e2ee direct share requires encryptedDataKey', () => {
     expect(invalid.status).toBe(400);
     expect(invalid.data?.error).toBe('Invalid encryptedDataKey');
 
-    const ok = await fetchJson<any>(`${server.baseUrl}/v1/sessions/${sessionId}/shares`, {
+    const ok = await fetchJson<{ share: { id: string } }>(`${server.baseUrl}/v1/sessions/${sessionId}/shares`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${owner.token}`,
         'Content-Type': 'application/json',
+        ...currentHeaders,
       },
       body: JSON.stringify({
         userId: recipientId,
         accessLevel: 'view',
-        encryptedDataKey: makeEncryptedDataKeyV0Base64(),
+        encryptedDataKey: recipientDataKey,
       }),
       timeoutMs: 15_000,
     });
     expect(ok.status).toBe(200);
     expect(typeof ok.data?.share?.id).toBe('string');
+
+    const fetched = await fetchJson<unknown>(`${server.baseUrl}/v2/sessions/${sessionId}`, {
+      headers: { Authorization: `Bearer ${recipient.token}`, ...currentHeaders },
+    });
+    expect(fetched.status).toBe(200);
+    const projected = V2SessionByIdResponseSchema.parse(fetched.data).session;
+    expect(projected.dataEncryptionKey).toBe(recipientDataKey);
+    expect(projected.ownerMetadata).toBeUndefined();
+    if (typeof projected.dataEncryptionKey !== 'string') throw new Error('Recipient envelope missing from projection');
+    const opened = openEncryptedDataKeyEnvelopeV1({
+      envelope: Buffer.from(projected.dataEncryptionKey, 'base64'),
+      recipientSecretKeyOrSeed: recipient.accountMachineKey,
+    });
+    expect(opened).toEqual(sessionKey);
+    if (!opened) throw new Error('Recipient could not open its projected Session key');
+    expect(decryptDataKeyBase64(projected.metadata, opened)).toEqual(sharedMetadata);
+    expect(openEncryptedDataKeyEnvelopeV1({
+      envelope: Buffer.from(ownerDataKey, 'base64'),
+      recipientSecretKeyOrSeed: recipient.accountMachineKey,
+    })).toBeNull();
   }, 180_000);
 });
-

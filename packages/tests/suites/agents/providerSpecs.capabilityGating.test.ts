@@ -30,11 +30,12 @@ describe('providers: scenario capability gating', () => {
     expect(qwen!.scenarioRegistry.tiers.extended).not.toContain('permission_mode_yolo_outside_workspace');
   });
 
-  it('does not require ACP resume-load scenarios for kimi', async () => {
+  it('covers Kimi ACP resume and dynamic model behavior declared by its provider', async () => {
     const providers = await loadProvidersFromCliSpecs();
     const kimi = providers.find((p) => p.id === 'kimi');
     expect(kimi).toBeTruthy();
-    expect(kimi!.scenarioRegistry.tiers.extended).not.toContain('acp_resume_load_session');
+    expect(kimi!.scenarioRegistry.tiers.extended).toContain('acp_resume_load_session');
+    expect(kimi!.scenarioRegistry.tiers.extended).toContain('acp_set_model_dynamic');
     expect(kimi!.scenarioRegistry.tiers.extended).not.toContain('acp_resume_fresh_session_imports_history');
   });
 
@@ -57,11 +58,15 @@ describe('providers: scenario capability gating', () => {
     expect(acpPermissions?.outsideWorkspaceWriteMustCompleteByMode?.['safe-yolo']).toBe(true);
   });
 
-  it('allows kimi host-auth fallback by default', async () => {
+  it('runs Kimi through host CLI auth with no env-key requirement', async () => {
     const providers = await loadProvidersFromCliSpecs();
     const kimi = providers.find((provider) => provider.id === 'kimi');
     expect(kimi).toBeTruthy();
-    expect(kimi!.auth?.mode).toBe('auto');
+    // Current Kimi Code authenticates through `kimi login` host state; the
+    // retired Python CLI's KIMI_API_KEY env flow is gone, so the declared mode
+    // is host rather than an env-fallback auto policy.
+    expect(kimi!.auth?.mode).toBe('host');
+    expect(kimi!.auth?.env).toBeUndefined();
   });
 
   it('keeps gemini extended coverage focused on ACP capability/model inventory', async () => {

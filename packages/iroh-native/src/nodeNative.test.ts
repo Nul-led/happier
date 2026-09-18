@@ -40,6 +40,7 @@ function createFakeAddon(handler: (operation: string, request: string) => string
     stopMachineAcceptor: async (request: string) => handler('stopMachineAcceptor', request),
     getMachineAcceptorStatus: async (request: string) => handler('getMachineAcceptorStatus', request),
     startMachineTunnel: async (request: string) => handler('startMachineTunnel', request),
+    startMachineHttpTunnel: async (request: string) => handler('startMachineHttpTunnel', request),
     stopMachineTunnel: async (request: string) => handler('stopMachineTunnel', request),
     getMachineTunnelStatus: async (request: string) => handler('getMachineTunnelStatus', request),
   };
@@ -383,6 +384,110 @@ describe('typed operations over the C ABI JSON envelope', () => {
         handshakeJson: '{}',
       }),
     ).rejects.toThrowError(/localCapability/);
+  });
+
+  it('accepts a capability-free finite-transfer listener while retaining protected machine adapters', async () => {
+    const finiteAddon = createFakeAddon((operation, request) => {
+      if (operation !== 'startMachineTunnel') return okNull;
+      expect(JSON.parse(request)).toMatchObject({
+        handshakeJson: JSON.stringify({ v: 1, flow: 'finite_transfer' }),
+      });
+      return JSON.stringify({
+        ok: true,
+        result: {
+          machineTunnelId: 'finite-1',
+          endpointHandle: 'e-1',
+          localPort: 45126,
+          localCapability: null,
+          connectionActive: true,
+          remoteEndpointId: 'normalized-peer-id',
+          observedPath: 'direct',
+          startedAtMs: 102,
+          lastErrorCode: null,
+        },
+      });
+    });
+    const finite = await createIrohNodeNativeModule(finiteAddon).startMachineTunnel({
+      endpointHandle: 'e-1',
+      endpointId: 'peer',
+      handshakeJson: JSON.stringify({ v: 1, flow: 'finite_transfer' }),
+    });
+    expect(finite).not.toHaveProperty('localCapability');
+
+    const protectedAddon = createFakeAddon((operation) => {
+      if (operation !== 'startMachineTunnel') return okNull;
+      return JSON.stringify({
+        ok: true,
+        result: {
+          machineTunnelId: 'workspace-1',
+          endpointHandle: 'e-1',
+          localPort: 45127,
+          localCapability: 'c'.repeat(64),
+          connectionActive: true,
+          remoteEndpointId: 'normalized-peer-id',
+          observedPath: 'direct',
+          startedAtMs: 103,
+          lastErrorCode: null,
+        },
+      });
+    });
+    await expect(createIrohNodeNativeModule(protectedAddon).startMachineTunnel({
+      endpointHandle: 'e-1',
+      endpointId: 'peer',
+      handshakeJson: JSON.stringify({ v: 1, flow: 'workspace_sync' }),
+    })).resolves.toMatchObject({ localCapability: 'c'.repeat(64) });
+
+    const unprotectedHttpAddon = createFakeAddon((operation) => {
+      if (operation !== 'startMachineHttpTunnel') return okNull;
+      return JSON.stringify({
+        ok: true,
+        result: {
+          machineTunnelId: 'provider-1',
+          endpointHandle: 'e-1',
+          localPort: 45128,
+          localCapability: null,
+          connectionActive: true,
+          remoteEndpointId: 'normalized-peer-id',
+          observedPath: 'direct',
+          startedAtMs: 104,
+          lastErrorCode: null,
+        },
+      });
+    });
+    await expect(createIrohNodeNativeModule(unprotectedHttpAddon).startMachineHttpTunnel({
+      endpointHandle: 'e-1',
+      endpointId: 'peer',
+      handshakeJson: JSON.stringify({ v: 1, kind: 'provider_broker' }),
+    })).rejects.toThrowError(/localCapability/);
+  });
+
+  it('uses the existing native HTTP operation for fresh handshakes without serializing the callback', async () => {
+    let serializedRequest = '';
+    const handshakeProvider = async () => JSON.stringify({ v: 1, kind: 'provider_broker', grantId: 'fresh' });
+    const addon = {
+      ...createFakeAddon(() => okNull),
+      startMachineHttpTunnel: async (
+        request: string,
+        provider?: () => Promise<string>,
+      ) => {
+        serializedRequest = request;
+        if (!provider) throw new Error('expected a fresh-handshake provider');
+        expect(await provider()).toContain('"grantId":"fresh"');
+        return JSON.stringify({ ok: true, result: {
+          machineTunnelId: 'provider-fresh-1', endpointHandle: 'e-1', localPort: 45129,
+          localCapability: 'd'.repeat(64), connectionActive: true,
+          remoteEndpointId: 'normalized-peer-id', observedPath: 'relay',
+          startedAtMs: 105, lastErrorCode: null,
+        } });
+      },
+    } satisfies IrohNodeNativeAddon;
+
+    await expect(createIrohNodeNativeModule(addon).startMachineHttpTunnel({
+      endpointHandle: 'e-1', endpointId: 'peer',
+      handshakeJson: JSON.stringify({ v: 1, kind: 'provider_broker' }),
+      handshakeProvider,
+    })).resolves.toMatchObject({ machineTunnelId: 'provider-fresh-1' });
+    expect(JSON.parse(serializedRequest)).not.toHaveProperty('handshakeProvider');
   });
 
   it('validates the acceptor start result including optional path telemetry', async () => {

@@ -6,18 +6,19 @@ import {
   resolveProviderPresetIds as resolveProviderPresetIdsImpl,
   resolveProviderRunPreset as resolveProviderRunPresetImpl,
 } from './presets.mjs';
+import type { ProviderAcpPresetId, ProviderConcretePresetId, ProviderRunPreset } from './presets.mjs';
 
-export type ProviderPresetId = 'opencode' | 'opencode_server' | 'claude' | 'codex' | 'kilo' | 'gemini' | 'qwen' | 'kimi' | 'auggie' | 'pi' | 'copilot' | 'grok' | 'cursor_acp_stub' | 'all';
-export type ProviderScenarioTier = 'smoke' | 'extended';
-export type ProviderConcretePresetId = Exclude<ProviderPresetId, 'all'>;
-export type ProviderAcpPresetId = Exclude<ProviderConcretePresetId, 'claude'>;
-
-export type ProviderRunPreset = {
-  id: ProviderPresetId;
-  tier: ProviderScenarioTier;
-  title: string;
-  env: Record<string, string>;
-};
+// The preset vocabulary has exactly one declaration, next to the runtime table
+// that defines it (`PROVIDER_ENV_FLAG_BY_PRESET_ID` in `presets.mjs`). This
+// module re-exports it rather than restating it: the second copy that used to
+// live here drifted from the implementation and omitted shipped providers.
+export type {
+  ProviderAcpPresetId,
+  ProviderConcretePresetId,
+  ProviderPresetId,
+  ProviderRunPreset,
+  ProviderScenarioTier,
+} from './presets.mjs';
 
 export const PROVIDER_PRESET_IDS = PROVIDER_PRESET_IDS_IMPL as readonly ProviderConcretePresetId[];
 export const ACP_PROVIDER_PRESET_IDS = ACP_PROVIDER_PRESET_IDS_IMPL as readonly ProviderAcpPresetId[];

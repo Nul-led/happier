@@ -15,6 +15,12 @@ import {
 import { waitForInitialAppUi } from '../../src/testkit/uiE2e/waitForInitialAppUi';
 import { secretBearingBrowserCapturePolicy } from '../../src/testkit/uiE2e/secretBearingBrowserCapture';
 import { createSession, fetchSessionsV2 } from '../../src/testkit/sessions';
+import { fetchJson } from '../../src/testkit/http';
+import { postPlainUiTextMessage } from '../../src/testkit/sessionHandoffUiMessages';
+import {
+  appendBrowserDiagnostics,
+  collectBrowserDiagnostics,
+} from '../../src/testkit/uiE2e/browserDiagnostics';
 
 test.use(secretBearingBrowserCapturePolicy);
 
@@ -93,6 +99,31 @@ async function listServerSessionIds(server: StartedServer, token: string): Promi
   return (await fetchSessionsV2(server.baseUrl, token, { limit: 50 })).sessions.map((session) => session.id);
 }
 
+type HomeSearchHit = Readonly<{
+  sessionId: string;
+  seqFrom: number;
+  seqTo: number;
+  summary: string;
+}>;
+
+async function searchHomeTranscript(
+  server: StartedServer,
+  token: string,
+  query: string,
+): Promise<readonly HomeSearchHit[]> {
+  const response = await fetchJson<{ ok?: boolean; hits?: HomeSearchHit[] }>(`${server.baseUrl}/v1/home/search`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ v: 1, query, scope: { type: 'global' }, mode: 'auto' }),
+    timeoutMs: 15_000,
+  });
+  if (response.status !== 200 || response.data?.ok !== true || !Array.isArray(response.data.hits)) return [];
+  return response.data.hits;
+}
+
 async function expectDiffSyntaxToggleChecked(page: Page, uiBaseUrl: string, checked: boolean): Promise<void> {
   await gotoDomContentLoadedWithRetries(page, `${uiBaseUrl}/settings/features?happier_hmr=0`, 180_000);
   const toggle = page.getByTestId(DIFF_SYNTAX_TOGGLE_ID);
@@ -130,6 +161,8 @@ test.describe('ui e2e: server/account scoped settings', () => {
       dbProvider: 'sqlite',
       extraEnv: {
         HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: '1',
+        HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'plaintext_only',
+        HAPPIER_MANAGED_RELAY_PURPOSE: 'personal-home',
       },
     });
 
@@ -140,6 +173,8 @@ test.describe('ui e2e: server/account scoped settings', () => {
       __portAllocator: async () => secondaryServerPort!,
       extraEnv: {
         HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: '1',
+        HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'plaintext_only',
+        HAPPIER_MANAGED_RELAY_PURPOSE: 'personal-home',
       },
     });
 
@@ -162,7 +197,7 @@ test.describe('ui e2e: server/account scoped settings', () => {
     await primaryServer?.stop().catch(() => {});
   });
 
-  test('keeps two persisted Homes isolated through server-attributed sessions, group focus, one-Home offline, and reconnect', async ({ page }) => {
+  test('keeps two persisted Homes isolated through scoped Universal Search, group focus, one-Home offline, and reconnect', async ({ page }) => {
     test.setTimeout(720_000);
     if (!primaryServer || !secondaryServer || !secondaryServerPort || !uiBaseUrl) {
       throw new Error('missing server/ui fixtures');
@@ -214,9 +249,91 @@ test.describe('ui e2e: server/account scoped settings', () => {
     const primarySession = await createSession(primaryServer.baseUrl, primaryAccountToken);
     const secondarySession = await createSession(secondaryServer.baseUrl, secondaryAccountToken);
 
+    // J09-10: put a unique canonical plaintext transcript row on Home B, then
+    // wait on the real Home route until Lane 07's derived index publishes it.
+    const searchWitness = `secondary-home-search-${run.runId}`;
+    await postPlainUiTextMessage({
+      baseUrl: secondaryServer.baseUrl,
+      token: secondaryAccountToken,
+      sessionId: secondarySession.sessionId,
+      text: searchWitness,
+      localId: `universal-search-${run.runId}`,
+    });
+    let secondarySearchHit: HomeSearchHit | undefined;
+    await expect.poll(async () => {
+      secondarySearchHit = (await searchHomeTranscript(
+        secondaryServer!,
+        secondaryAccountToken,
+        searchWitness,
+      )).find((hit) => hit.sessionId === secondarySession.sessionId && hit.summary.includes(searchWitness));
+      return secondarySearchHit !== undefined;
+    }, {
+      message: 'Home B search index should publish the canonical transcript row',
+      timeout: 120_000,
+    }).toBe(true);
+    expect(await searchHomeTranscript(primaryServer, primaryAccountToken, searchWitness)).toEqual([]);
+
     // Server-side attribution: each Home owns exactly its own seeded session.
     expect(await listServerSessionIds(primaryServer, primaryAccountToken)).toEqual([primarySession.sessionId]);
     expect(await listServerSessionIds(secondaryServer, secondaryAccountToken)).toEqual([secondarySession.sessionId]);
+
+    const browserDiagnostics = collectBrowserDiagnostics({ page });
+    try {
+      // Home A remains focused immediately before opening the one production
+      // Universal Search surface. Its scoped setting is a visible focus witness.
+      await expectDiffSyntaxToggleChecked(page, uiBaseUrl, false);
+      await gotoDomContentLoadedWithRetries(page, `${uiBaseUrl}/?happier_hmr=0`, 180_000);
+      const searchButton = page.getByTestId('sessions-search-all-button');
+      await expect(searchButton).toBeVisible({ timeout: 120_000 });
+
+      // A 640 CSS-pixel viewport represents a 1280-pixel window at 200% browser
+      // zoom. The modal keeps its controls inside the viewport and exposes the
+      // canonical dialog/input/button semantics; Escape returns focus.
+      await page.setViewportSize({ width: 640, height: 450 });
+      await searchButton.focus();
+      await searchButton.click();
+      const dialog = page.getByRole('dialog');
+      const modal = page.getByTestId('universal-search:modal');
+      const searchInput = page.getByTestId('selection-list:header:input');
+      await expect(dialog).toHaveAttribute('aria-modal', 'true');
+      await expect(modal).toBeVisible();
+      await expect(searchInput).toBeFocused();
+      await expect(page.getByTestId('universal-search:scope')).toBeVisible();
+      await expect(page.getByTestId('universal-search:close')).toBeVisible();
+      const modalBounds = await modal.boundingBox();
+      expect(modalBounds).not.toBeNull();
+      expect(modalBounds!.x).toBeGreaterThanOrEqual(0);
+      expect(modalBounds!.x + modalBounds!.width).toBeLessThanOrEqual(640);
+      await page.keyboard.press('Escape');
+      await expect(modal).toHaveCount(0);
+      await expect(searchButton).toBeFocused();
+
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await searchButton.click();
+      await page.getByTestId('universal-search:scope').click();
+      await page.getByRole('option', { name: 'Settings Scope B', exact: true }).click();
+      await expect(page.getByTestId('universal-search:scope')).toHaveAttribute('aria-label', 'Settings Scope B');
+      await searchInput.fill(searchWitness);
+
+      const exactSearchHit = secondarySearchHit!;
+      const result = page.getByTestId(
+        `universal-search:option:transcript:${secondarySession.sessionId}:${exactSearchHit.seqFrom}:${exactSearchHit.seqTo}`,
+      );
+      await expect(result).toBeVisible({ timeout: 120_000 });
+      await result.click();
+      await expect(page).toHaveURL(new RegExp(`/session/${secondarySession.sessionId}(?:[/?#]|$)`), { timeout: 120_000 });
+
+      // Activating Home B's exact result switches through the established
+      // transcript path. Home A's persisted credential and scoped state remain
+      // intact and can be resumed without another authentication ceremony.
+      await expectDiffSyntaxToggleChecked(page, uiBaseUrl, true);
+      await gotoDomContentLoadedWithPathFallback(page, `${uiBaseUrl}/server`, '/server', 120_000);
+      await page.getByTestId(`saved-server-switch-${primaryServerId}`).click();
+      await expectDiffSyntaxToggleChecked(page, uiBaseUrl, false);
+      expect(await listServerSessionIds(primaryServer, primaryAccountToken)).toEqual([primarySession.sessionId]);
+    } catch (error) {
+      throw appendBrowserDiagnostics(error, browserDiagnostics());
+    }
 
     // UI projection: the focused A runtime projects A's row while the secondary
     // (non-focused) Home runtime projects B's row in the same session list.
@@ -244,6 +361,8 @@ test.describe('ui e2e: server/account scoped settings', () => {
       __portAllocator: async () => secondaryServerPort!,
       extraEnv: {
         HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: '1',
+        HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'plaintext_only',
+        HAPPIER_MANAGED_RELAY_PURPOSE: 'personal-home',
       },
     });
 

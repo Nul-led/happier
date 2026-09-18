@@ -6,7 +6,7 @@ type FakeLocator = ReturnType<TerminalConnectApprovePage['locator']>;
 
 function createLocator(params: Readonly<{
   count: () => number;
-  onClick?: () => void;
+  onClick?: (options?: Parameters<FakeLocator['click']>[0]) => void;
   onEvaluateClick?: () => void;
 }>): FakeLocator {
   const evaluate: NonNullable<FakeLocator['evaluate']> = async <T,>(callback: (element: HTMLElement) => T | Promise<T>): Promise<T> =>
@@ -14,8 +14,8 @@ function createLocator(params: Readonly<{
 
   return {
     count: async () => params.count(),
-    click: vi.fn(async () => {
-      params.onClick?.();
+    click: vi.fn(async (options?: Parameters<FakeLocator['click']>[0]) => {
+      params.onClick?.(options);
     }),
     evaluate,
   };
@@ -26,7 +26,7 @@ function createPage(params: Readonly<{
   hiddenTestIdCount?: () => number;
   roleCount?: () => number;
   confirmCount?: () => number;
-  onConfirmClick?: () => void;
+  onConfirmClick?: (options?: Parameters<FakeLocator['click']>[0]) => void;
   onVisibleClick?: () => void;
   onVisibleEvaluateClick?: () => void;
   onRoleClick?: () => void;
@@ -71,6 +71,27 @@ afterEach(() => {
 });
 
 describe('approveTerminalConnect', () => {
+  it('dismisses the success modal without waiting for destination load and verifies navigation', async () => {
+    let approved = false;
+    let modalVisible = true;
+    let routeVerified = false;
+    const page = createPage({
+      visibleTestIdCount: () => approved ? 0 : 1,
+      onVisibleClick: () => { approved = true; },
+      confirmCount: () => modalVisible ? 1 : 0,
+      onConfirmClick: (options) => {
+        modalVisible = false;
+        if (options?.noWaitAfter !== true) throw new Error('scheduled navigation is still loading');
+      },
+      waitForURL: async () => {
+        expect(modalVisible).toBe(false);
+        routeVerified = true;
+      },
+    });
+    await approveTerminalConnect({ page, timeoutMs: 1_000 });
+    expect(routeVerified).toBe(true);
+  });
+
   it('clicks the visible role button when a hidden test-id locator is present', async () => {
     let roleVisible = true;
     let roleClicks = 0;

@@ -54,8 +54,12 @@ export type IrohNodeAvailability = Readonly<{
 /** Raw `.node` addon surface: one JSON-string request per C ABI operation. */
 export type IrohNodeNativeAddon = Readonly<{
   getAvailability: () => IrohNodeAvailability;
+  startMachineHttpTunnel: (
+    request: string,
+    handshakeProvider?: () => Promise<string>,
+  ) => Promise<string>;
 }> & {
-  [Name in Exclude<IrohNodeNativeExportName, 'getAvailability'>]: (
+  [Name in Exclude<IrohNodeNativeExportName, 'getAvailability' | 'startMachineHttpTunnel'>]: (
     request: string,
   ) => Promise<string>;
 };
@@ -93,6 +97,11 @@ export type IrohNodeStartMachineTunnelRequest = Readonly<{
   relayUrls?: readonly string[];
   handshakeJson: string;
   capProfile?: Extract<IrohNodeCapProfile, 'machineBulk'>;
+}>;
+
+export type IrohNodeStartMachineHttpTunnelRequest = IrohNodeStartMachineTunnelRequest & Readonly<{
+  /** Called once for each newly accepted local HTTP connection, before its QUIC stream opens. */
+  handshakeProvider?: () => Promise<string>;
 }>;
 
 export type IrohNodeEnsureHomeTunnelRequest = Readonly<{
@@ -144,8 +153,12 @@ export type IrohNodeMachineTunnelStarted = Readonly<{
   machineTunnelId: string;
   endpointHandle: string;
   localPort: number;
-  /** Per-listener local capability consumed natively before application bytes. */
-  localCapability: string;
+  /**
+   * Per-listener local capability consumed natively before application bytes.
+   * Finite transfers intentionally omit it because their prepared-transfer
+   * authority is enforced at the fixed admitted target.
+   */
+  localCapability?: string;
   connectionActive: boolean;
   /** Normalized authenticated remote endpoint identity this tunnel dials. */
   remoteEndpointId: string;
@@ -154,7 +167,9 @@ export type IrohNodeMachineTunnelStarted = Readonly<{
   lastErrorCode: IrohNodeMachineFailureCode | null;
 }>;
 
-export type IrohNodeMachineHttpTunnelStarted = IrohNodeMachineTunnelStarted;
+export type IrohNodeMachineHttpTunnelStarted = Readonly<
+  Omit<IrohNodeMachineTunnelStarted, 'localCapability'> & { localCapability: string }
+>;
 
 export type IrohNodeMachineTunnelStatus = Readonly<{
   machineTunnelId: string;
@@ -233,7 +248,7 @@ export type NodeIrohNativeModule = Readonly<{
   stopMachineAcceptor: (request: IrohNodeEndpointHandleRequest) => Promise<void>;
   getMachineAcceptorStatus: (endpointHandle: string) => Promise<IrohNodeAcceptorStatus | null>;
   startMachineTunnel: (request: IrohNodeStartMachineTunnelRequest) => Promise<IrohNodeMachineTunnelStarted>;
-  startMachineHttpTunnel: (request: IrohNodeStartMachineTunnelRequest) => Promise<IrohNodeMachineHttpTunnelStarted>;
+  startMachineHttpTunnel: (request: IrohNodeStartMachineHttpTunnelRequest) => Promise<IrohNodeMachineHttpTunnelStarted>;
   stopMachineTunnel: (machineTunnelId: string) => Promise<void>;
   getMachineTunnelStatus: (machineTunnelId: string) => Promise<IrohNodeMachineTunnelStatus | null>;
 }>;

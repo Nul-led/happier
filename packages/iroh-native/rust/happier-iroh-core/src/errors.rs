@@ -74,4 +74,40 @@ impl From<std::io::Error> for IrohError {
         Self::Io(e)
     }
 }
+
+impl From<iroh::endpoint::ConnectWithOptsError> for IrohError {
+    fn from(error: iroh::endpoint::ConnectWithOptsError) -> Self {
+        match error {
+            iroh::endpoint::ConnectWithOptsError::InvalidAlpn { .. } => Self::UnsupportedAlpn,
+            _ => Self::TransportClosed,
+        }
+    }
+}
+
+impl From<iroh::endpoint::ConnectingError> for IrohError {
+    fn from(error: iroh::endpoint::ConnectingError) -> Self {
+        use iroh::endpoint::{
+            AuthenticationError, ConnectingError, ConnectionError, TransportErrorCode,
+        };
+        // TLS 1.3 alert 120 is no_application_protocol (RFC 8446 §6.2).
+        // Iroh 1.1/noq carries it as QUIC CRYPTO_ERROR, locally or from the
+        // peer's CONNECTION_CLOSE. Never classify by diagnostic message text.
+        let unsupported_alpn = TransportErrorCode::crypto(120);
+        match error {
+            ConnectingError::ConnectionError {
+                source: ConnectionError::ConnectionClosed(close),
+                ..
+            } if close.error_code == unsupported_alpn => Self::UnsupportedAlpn,
+            ConnectingError::ConnectionError {
+                source: ConnectionError::TransportError(error),
+                ..
+            } if error.code == unsupported_alpn => Self::UnsupportedAlpn,
+            ConnectingError::HandshakeFailure {
+                source: AuthenticationError::NoAlpn { .. },
+                ..
+            } => Self::UnsupportedAlpn,
+            _ => Self::TransportClosed,
+        }
+    }
+}
 pub type Result<T> = std::result::Result<T, IrohError>;

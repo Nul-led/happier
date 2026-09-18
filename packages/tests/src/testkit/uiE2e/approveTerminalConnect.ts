@@ -42,12 +42,12 @@ async function maybeDismissWebModal(params: Readonly<{ page: TerminalConnectAppr
   const attempts = resolvePollAttempts(params.timeoutMs, intervalMs);
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     if ((await confirm.count()) > 0) {
-      await confirm.click({ timeout: 15_000 });
+      await confirm.click({ timeout: 15_000, noWaitAfter: true });
       await waitForLocatorGone({ locator: confirm, page: params.page, timeoutMs: 60_000 });
       return true;
     }
     if ((await button0.count()) > 0) {
-      await button0.click({ timeout: 15_000 });
+      await button0.click({ timeout: 15_000, noWaitAfter: true });
       await waitForLocatorGone({ locator: button0, page: params.page, timeoutMs: 60_000 });
       return true;
     }

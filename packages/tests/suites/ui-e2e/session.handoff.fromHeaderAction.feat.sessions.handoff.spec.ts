@@ -130,15 +130,30 @@ async function waitForSessionInfoMachineTarget(params: {
   );
 }
 
-async function openEnabledSessionHandoffFromHeader(page: Page): Promise<void> {
+async function openEnabledSessionHandoffFromHeader(
+  page: Page,
+  options: Readonly<{ keyboard?: boolean }> = {},
+): Promise<void> {
   const sessionActionsTrigger = page.getByLabel('Open session actions');
   await expect(sessionActionsTrigger).toHaveCount(1, { timeout: 60_000 });
-  await sessionActionsTrigger.click();
+  if (options.keyboard) {
+    await sessionActionsTrigger.focus();
+    await expect(sessionActionsTrigger).toBeFocused();
+    await sessionActionsTrigger.press('Enter');
+  } else {
+    await sessionActionsTrigger.click();
+  }
 
   const handoffOption = page.getByTestId('dropdown-option-session_handoff');
   await expect(handoffOption).toHaveCount(1, { timeout: 60_000 });
   await expect(handoffOption).toBeEnabled({ timeout: 60_000 });
-  await handoffOption.click();
+  if (options.keyboard) {
+    await handoffOption.focus();
+    await expect(handoffOption).toBeFocused();
+    await handoffOption.press('Enter');
+  } else {
+    await handoffOption.click();
+  }
 }
 
 async function restoreAccountUsingSecretKeyOnCurrentPage(page: Page, secretKeyFormatted: string): Promise<void> {
@@ -443,36 +458,96 @@ async function expectTransferredWorkspaceReadmeOnTarget(params: {
   await expect(readFile(resolve(join(String(invocation.cwd), 'README.md')), 'utf8')).resolves.toBe(params.expectedContents);
 }
 
-async function enableWorkspaceTransferForHandoff(page: Page): Promise<void> {
-  const transferItem = page.getByTestId('session-handoff-workspace-transfer-enabled');
-  await expect(transferItem).toHaveCount(1, { timeout: 60_000 });
-
-  const checkbox = transferItem.locator('input[type="checkbox"]').first();
-  if ((await checkbox.count()) > 0) {
-    if (!(await checkbox.isChecked().catch(() => false))) {
-      await transferItem.click();
-      await expect(checkbox).toBeChecked({ timeout: 60_000 });
-    }
-    return;
+async function selectMachineForHandoff(
+  page: Page,
+  machineId: string,
+  options: Readonly<{ keyboard?: boolean }> = {},
+): Promise<void> {
+  const trigger = page.getByTestId('session-handoff-machine-dropdown-trigger');
+  if (options.keyboard) {
+    await trigger.focus();
+    await expect(trigger).toBeFocused();
+    await trigger.press('Enter');
+  } else {
+    await trigger.click();
   }
-
-  const roleSwitch = transferItem.locator('[role="switch"]').first();
-  if ((await roleSwitch.count()) > 0) {
-    if ((await roleSwitch.getAttribute('aria-checked').catch(() => null)) !== 'true') {
-      await transferItem.click();
-      await expect(roleSwitch).toHaveAttribute('aria-checked', 'true', { timeout: 60_000 });
-    }
-    return;
-  }
-
-  throw new Error('workspace transfer toggle control not found in session handoff modal');
-}
-
-async function selectMachineForHandoff(page: Page, machineId: string): Promise<void> {
-  await page.getByTestId('session-handoff-machine-dropdown-trigger').click();
   const option = page.getByTestId(`session-handoff-machine-option:${machineId}`);
   await expect(option).toHaveCount(1, { timeout: 120_000 });
-  await option.click();
+  if (options.keyboard) {
+    await option.focus();
+    await expect(option).toBeFocused();
+    await option.press('Enter');
+  } else {
+    await option.click();
+  }
+}
+
+async function selectWorkspaceModeForHandoff(
+  page: Page,
+  mode: 'copy_once' | 'keep_synced' | 'mirror_exactly' | 'keep_both_in_sync' | 'none',
+  options: Readonly<{ keyboard?: boolean }> = {},
+): Promise<void> {
+  const trigger = page.getByTestId('session-handoff-workspace-sync-mode-trigger');
+  if (options.keyboard) {
+    await trigger.focus();
+    await expect(trigger).toBeFocused();
+    await trigger.press('Enter');
+  } else {
+    await trigger.click();
+  }
+  const option = page.getByTestId(`dropdown-option-${mode}`);
+  await expect(option).toHaveCount(1, { timeout: 60_000 });
+  if (options.keyboard) {
+    await option.focus();
+    await expect(option).toBeFocused();
+    await option.press('Enter');
+  } else {
+    await option.click();
+  }
+}
+
+async function expectHandoffModalUsableAtTwoHundredPercent(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    document.documentElement.style.zoom = '2';
+  });
+  const modal = page.getByTestId('session-handoff-modal');
+  const start = page.getByTestId('session-handoff-start');
+  await expect(modal).toBeVisible();
+  await start.scrollIntoViewIfNeeded();
+  await expect(start).toBeVisible();
+  await start.focus();
+  await expect(start).toBeFocused();
+  await page.evaluate(() => {
+    document.documentElement.style.zoom = '';
+  });
+}
+
+async function expectPersistentWorkspaceRelationshipOnSessionInfo(page: Page): Promise<void> {
+  const relationshipRows = page.locator(
+    '[data-testid^="workspace-sync-relationship-"]:not([data-testid$="-actions"]):not([data-testid$="-conflicts"])',
+  );
+  await expect(relationshipRows.first()).toBeVisible({ timeout: 60_000 });
+}
+
+async function collectLoadedHandoffRuntimeIdentity(params: Readonly<{
+  page: Page;
+  ui: StartedUiWeb;
+  uiBaseUrl: string;
+  serverBaseUrl: string;
+}>): Promise<string> {
+  const browser = await params.page.evaluate(() => ({
+    location: window.location.href,
+    scripts: Array.from(document.scripts)
+      .map((script) => script.src)
+      .filter((src) => src.length > 0),
+  }));
+  return JSON.stringify({
+    runId: run.runId,
+    uiMode: params.ui.mode,
+    uiBaseUrl: params.uiBaseUrl,
+    serverBaseUrl: params.serverBaseUrl,
+    browser,
+  }, null, 2);
 }
 
 function buildServerScopedUiUrl(uiBaseUrl: string, serverBaseUrl: string, path: string = '/'): string {
@@ -625,7 +700,7 @@ test.describe('ui e2e: session handoff from header action menu via direct peer',
 
   test('hands off a Claude session to a second online machine and updates the session machine binding', async ({ page }, testInfo) => {
     test.setTimeout(540_000);
-    if (!server || !uiBaseUrl) throw new Error('missing server/ui fixtures');
+    if (!server || !ui || !uiBaseUrl) throw new Error('missing server/ui fixtures');
 
     const fakeClaudePath = fakeClaudeFixturePath();
     const browserStateOutputPath = resolve(join(suiteDir, 'browser-state.md'));
@@ -737,15 +812,28 @@ test.describe('ui e2e: session handoff from header action menu via direct peer',
 
       await page.goto(`${uiBaseUrl}/session/${sessionId}`, { waitUntil: 'domcontentloaded' });
       await expect(page.getByTestId('transcript-chat-list')).toHaveCount(1, { timeout: 120_000 });
+      await testInfo.attach('loaded-runtime-identity.json', {
+        body: await collectLoadedHandoffRuntimeIdentity({
+          page,
+          ui,
+          uiBaseUrl,
+          serverBaseUrl: server.baseUrl,
+        }),
+        contentType: 'application/json',
+      });
 
       await openEnabledSessionHandoffFromHeader(page);
 
       await expect(page.getByTestId('session-handoff-modal')).toHaveCount(1, { timeout: 60_000 });
-      await selectMachineForHandoff(page, targetMachineId);
-      await enableWorkspaceTransferForHandoff(page);
-      await page.getByTestId('session-handoff-workspace-transfer-strategy-trigger').click();
-      await expect(page.getByTestId('dropdown-option-keep_synced')).toHaveCount(1, { timeout: 60_000 });
-      await page.getByTestId('dropdown-option-keep_synced').click();
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('session-handoff-modal')).toHaveCount(0, { timeout: 60_000 });
+      await expect(page.getByLabel('Open session actions')).toBeFocused();
+
+      await openEnabledSessionHandoffFromHeader(page, { keyboard: true });
+      await expect(page.getByTestId('session-handoff-modal')).toHaveCount(1, { timeout: 60_000 });
+      await expectHandoffModalUsableAtTwoHundredPercent(page);
+      await selectMachineForHandoff(page, targetMachineId, { keyboard: true });
+      await selectWorkspaceModeForHandoff(page, 'keep_synced', { keyboard: true });
       await page.getByTestId('session-handoff-start').click();
       await expect(page.getByTestId('web-modal-confirm')).toHaveCount(1, { timeout: 60_000 });
       await page.getByTestId('web-modal-confirm').click();
@@ -764,6 +852,7 @@ test.describe('ui e2e: session handoff from header action menu via direct peer',
         expectedContents: 'session handoff ui e2e\n',
         timeoutMs: 180_000,
       });
+      await expectPersistentWorkspaceRelationshipOnSessionInfo(page);
     } catch (error) {
       thrown = error;
       const browserStateDiagnostics = await collectBrowserStateDiagnostics(page, {
@@ -961,10 +1050,7 @@ test.describe('ui e2e: session handoff from header action menu via forced server
 
     await expect(page.getByTestId('session-handoff-modal')).toHaveCount(1, { timeout: 60_000 });
     await selectMachineForHandoff(page, targetMachineId);
-    await enableWorkspaceTransferForHandoff(page);
-    await page.getByTestId('session-handoff-workspace-transfer-strategy-trigger').click();
-    await expect(page.getByTestId('dropdown-option-keep_synced')).toHaveCount(1, { timeout: 60_000 });
-    await page.getByTestId('dropdown-option-keep_synced').click();
+    await selectWorkspaceModeForHandoff(page, 'keep_synced');
     await page.getByTestId('session-handoff-start').click();
     await expect(page.getByTestId('web-modal-confirm')).toHaveCount(1, { timeout: 60_000 });
     await page.getByTestId('web-modal-confirm').click();
@@ -983,6 +1069,7 @@ test.describe('ui e2e: session handoff from header action menu via forced server
       expectedContents: 'session handoff ui e2e\n',
       timeoutMs: 180_000,
     });
+    await expectPersistentWorkspaceRelationshipOnSessionInfo(page);
   });
 });
 

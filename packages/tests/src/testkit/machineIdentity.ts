@@ -22,6 +22,8 @@ export type MachineIdentityRow = {
   metadataVersion?: number;
   daemonState?: unknown;
   daemonStateVersion?: number;
+  operationProtocolCapabilities?: unknown | null;
+  operationProtocolCapabilitiesRevision?: number | null;
   installationId?: string | null;
   installationPublicKey?: string | null;
   contentPublicKeyFingerprint?: string | null;

@@ -42,10 +42,6 @@ export function renderStressComposeYaml(params: {
   } = params;
   const frontDoorMode = config.frontDoorMode ?? 'gateway';
   const metricsEnabled = config.metricsEnabled ? '"1"' : '"false"';
-  const authLoginEligibilityAccountSnapshotCacheTtlMs =
-    typeof config.authLoginEligibilityAccountSnapshotCacheTtlMs === 'number'
-      ? `\n      AUTH_LOGIN_ELIGIBILITY_ACCOUNT_SNAPSHOT_CACHE_TTL_MS: "${config.authLoginEligibilityAccountSnapshotCacheTtlMs}"`
-      : '';
   const stressLabels = `    labels:
       happier.stress.owner: stress-harness
       happier.stress.repo-root: ${repoRootFingerprint}`;
@@ -82,7 +78,6 @@ ${stressLabels}
       S3_SECRET_KEY: ${secrets.minioSecretKey}
       S3_PUBLIC_URL: ${publicBaseUrl}/files
       HAPPIER_SERVER_TRUST_PROXY: "1"
-${authLoginEligibilityAccountSnapshotCacheTtlMs}
       METRICS_ENABLED: ${metricsEnabled}
     depends_on:
       postgres:
@@ -193,7 +188,6 @@ ${stressLabels}
       S3_SECRET_KEY: ${secrets.minioSecretKey}
       S3_PUBLIC_URL: ${publicBaseUrl}/files
       HAPPIER_SERVER_TRUST_PROXY: "1"
-${authLoginEligibilityAccountSnapshotCacheTtlMs}
       METRICS_ENABLED: ${metricsEnabled}
     depends_on:
       postgres:
@@ -234,7 +228,6 @@ ${stressLabels}
       S3_ACCESS_KEY: ${secrets.minioAccessKey}
       S3_SECRET_KEY: ${secrets.minioSecretKey}
       S3_PUBLIC_URL: ${publicBaseUrl}/files
-${authLoginEligibilityAccountSnapshotCacheTtlMs}
       METRICS_ENABLED: ${metricsEnabled}
     depends_on:
       postgres:

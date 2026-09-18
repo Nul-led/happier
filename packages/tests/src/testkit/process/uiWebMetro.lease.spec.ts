@@ -231,7 +231,9 @@ describe('startUiWebMetro', () => {
 
             expect(lastSpawnArgs).toContain('--host');
             expect(lastSpawnArgs?.[lastSpawnArgs.indexOf('--host') + 1]).toBe('localhost');
-            expect(lastSpawnEnv?.NODE_OPTIONS).toBe('--trace-warnings --dns-result-order=ipv4first');
+            expect(lastSpawnEnv?.NODE_OPTIONS).toBe(
+                '--trace-warnings --dns-result-order=ipv4first --max-old-space-size=8192',
+            );
             expect(started.baseUrl).toBe('http://127.0.0.1:19077');
 
             await started.stop();

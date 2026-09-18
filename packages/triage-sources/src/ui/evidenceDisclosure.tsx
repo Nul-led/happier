@@ -2,6 +2,8 @@ import * as React from 'react';
 import type { ComposerReferenceCandidatePageV1 } from '@happier-dev/plugin-sdk';
 import type { PluginUiContributionIdentityV1 } from '@happier-dev/plugin-sdk/ui';
 
+import { resolveTriageCrossCopyContext } from './crossCopyContext.js';
+
 /**
  * The child-to-parent half of Triage's selected-evidence disclosure seam.
  *
@@ -88,7 +90,17 @@ const NO_EVIDENCE_DISCLOSURE: TriageEvidenceDisclosureV1 = Object.freeze({
   disclose: async () => INERT,
 });
 
-const TriageEvidenceDisclosureContext = React.createContext<TriageEvidenceDisclosureV1>(
+/**
+ * The parent installing this seam and the source reading it are separate plugin
+ * artifacts, each with its own bundled copy of this module, so the context
+ * object itself is agreed across copies. See `crossCopyContext.ts`.
+ */
+const TRIAGE_EVIDENCE_DISCLOSURE_CONTEXT_KEY = Symbol.for(
+  'happier.triageSources.privateEvidenceDisclosureContext.v1',
+);
+
+const TriageEvidenceDisclosureContext = resolveTriageCrossCopyContext<TriageEvidenceDisclosureV1>(
+  TRIAGE_EVIDENCE_DISCLOSURE_CONTEXT_KEY,
   NO_EVIDENCE_DISCLOSURE,
 );
 

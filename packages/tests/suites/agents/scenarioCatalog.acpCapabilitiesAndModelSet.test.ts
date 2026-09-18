@@ -77,11 +77,11 @@ describe('scenarioCatalog: ACP capability/model-set scenarios', () => {
     expect(typeof scenario.postSatisfy?.run).toBe('function');
   });
 
-  it('rejects acp_set_model_dynamic for providers without known dynamic model probing', () => {
+  it('lets provider-owned registries opt ACP providers into dynamic model probing', () => {
     const build = (scenarioCatalog as Record<string, any>).acp_set_model_dynamic;
     expect(typeof build).toBe('function');
-    expect(() => build(acpProvider('qwen'))).toThrow(/dynamic model/i);
-    expect(() => build(acpProvider('kimi'))).toThrow(/dynamic model/i);
+    expect(build(acpProvider('qwen')).id).toBe('acp_set_model_dynamic');
+    expect(build(acpProvider('kimi')).id).toBe('acp_set_model_dynamic');
   });
 
   it('defines acp_set_model_inventory for gemini only', () => {

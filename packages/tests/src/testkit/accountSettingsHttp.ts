@@ -1,5 +1,7 @@
 import {
   accountSettingsParse,
+  buildAccountStoredContentCompatibilityHttpHeadersV1,
+  CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION,
   type AccountSettings,
 } from '@happier-dev/protocol';
 
@@ -90,6 +92,10 @@ export async function writeAccountSettingsV1(params: Readonly<{
     headers: {
       Authorization: `Bearer ${params.token}`,
       'Content-Type': 'application/json',
+      // This test writer forwards the complete supplied settings object unchanged.
+      ...buildAccountStoredContentCompatibilityHttpHeadersV1(
+        CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION,
+      ),
     },
     body: JSON.stringify({
       settings: JSON.stringify(params.settings),
@@ -113,6 +119,10 @@ export async function writeAccountSettingsV1(params: Readonly<{
     headers: {
       Authorization: `Bearer ${params.token}`,
       'Content-Type': 'application/json',
+      // This test writer forwards the complete supplied settings object unchanged.
+      ...buildAccountStoredContentCompatibilityHttpHeadersV1(
+        CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION,
+      ),
     },
     body: JSON.stringify({
       expectedVersion,

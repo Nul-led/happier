@@ -203,4 +203,98 @@ test.describe('ui e2e: System Status + Diagnosis screens', () => {
       await cliLogin?.stop().catch(() => {});
     }
   });
+
+  test('keeps Connection details usable with keyboard, constrained layouts, color schemes, and reduced motion', async ({ page }) => {
+    test.setTimeout(240_000);
+    if (!uiBaseUrl) throw new Error('missing ui base url');
+
+    await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' });
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await gotoDomContentLoadedWithRetries(page, uiBaseUrl);
+    await createAccountAndReachConnectMachineState({ page });
+    await gotoDomContentLoadedWithRetries(page, `${uiBaseUrl}/`);
+    await waitForAuthenticatedHomeUi({ page, timeoutMs: 180_000 });
+
+    const trigger = page.getByRole('button', {
+      name: /, (Connected|Reconnecting|Unavailable|Sign in again)$/,
+      expanded: false,
+    }).first();
+    await expect(trigger).toBeVisible({ timeout: 60_000 });
+    await trigger.focus();
+    await expect(trigger).toBeFocused();
+    await page.keyboard.press('Enter');
+
+    const popover = page.getByTestId('connection-popover-content');
+    await expect(page.getByText('Connection', { exact: true })).toBeVisible();
+    await expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    await expect.poll(async () => popover.evaluate((element) => element.contains(document.activeElement))).toBe(true);
+
+    const disclosure = page.getByRole('button', { name: 'Details', expanded: false });
+    await disclosure.focus();
+    await page.keyboard.press('Space');
+    await expect(disclosure).toHaveAttribute('aria-expanded', 'true');
+
+    await expect(page.getByText('Connection Details', { exact: true })).toBeVisible();
+    await expect(page.getByText('Canonical address', { exact: true })).toBeVisible();
+    await expect(page.getByText('Home identity', { exact: true })).toBeVisible();
+    const copyDiagnostics = page.getByRole('button', { name: /^(Copy diagnostics|Diagnostics copied)$/ });
+    await expect(copyDiagnostics).toBeVisible();
+
+    // A 320 CSS-pixel viewport exercises the same responsive reflow width as a
+    // 640 device-pixel window at 200% browser zoom. Long identity/URL values
+    // must stay inside the existing popover while its scroll owner keeps the
+    // final action reachable.
+    await page.setViewportSize({ width: 320, height: 480 });
+    await expect.poll(async () => {
+      const box = await popover.boundingBox();
+      return box ? { left: Math.round(box.x), right: Math.round(box.x + box.width) } : null;
+    }).toEqual(expect.objectContaining({ left: expect.any(Number), right: expect.any(Number) }));
+    const horizontalBounds = await popover.boundingBox();
+    expect(horizontalBounds).not.toBeNull();
+    expect(horizontalBounds!.x).toBeGreaterThanOrEqual(0);
+    expect(horizontalBounds!.x + horizontalBounds!.width).toBeLessThanOrEqual(320);
+
+    await copyDiagnostics.scrollIntoViewIfNeeded();
+    await expect(copyDiagnostics).toBeVisible();
+    const copyBounds = await copyDiagnostics.boundingBox();
+    expect(copyBounds).not.toBeNull();
+    expect(copyBounds!.y).toBeGreaterThanOrEqual(0);
+    expect(copyBounds!.y + copyBounds!.height).toBeLessThanOrEqual(480);
+
+    const diagnosticsText = await popover.innerText();
+    expect(diagnosticsText).not.toMatch(/authorization:\s*bearer|password\s*[:=]|[?&](?:token|key|secret)=/i);
+
+    await copyDiagnostics.click();
+    await expect(page.getByRole('button', { name: 'Diagnostics copied' })).toBeVisible();
+
+    await test.info().attach('connection-details-dark-reduced-narrow', {
+      body: await page.screenshot(),
+      contentType: 'image/png',
+    });
+
+    await page.setViewportSize({ width: 640, height: 320 });
+    await expect(popover).toBeVisible();
+    await copyDiagnostics.scrollIntoViewIfNeeded();
+    await expect(copyDiagnostics).toBeVisible();
+
+    await page.keyboard.press('Escape');
+    await expect(popover).toHaveCount(0);
+    await expect(trigger).toBeFocused();
+    await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+
+    await page.emulateMedia({ colorScheme: 'light', reducedMotion: 'no-preference' });
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await trigger.focus();
+    await page.keyboard.press('Enter');
+    await expect(popover).toBeVisible();
+    await disclosure.focus();
+    await page.keyboard.press('Space');
+    await expect(page.getByText('Connection Details', { exact: true })).toBeVisible();
+    await test.info().attach('connection-details-light', {
+      body: await page.screenshot(),
+      contentType: 'image/png',
+    });
+    await page.keyboard.press('Escape');
+    await expect(trigger).toBeFocused();
+  });
 });

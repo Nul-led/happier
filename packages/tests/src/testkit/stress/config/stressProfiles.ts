@@ -59,7 +59,6 @@ export const defaultStressConfig: StressConfig = {
     frontDoorMode: 'gateway',
     loadGenerationMode: 'host',
     dbConnectionLimit: undefined,
-    authLoginEligibilityAccountSnapshotCacheTtlMs: undefined,
     apiHeapDiagnosticSignal: undefined,
     apiHeapDiagnosticOldSpaceThresholdBytes: undefined,
     gatewayWorkerConnections: 16_384,

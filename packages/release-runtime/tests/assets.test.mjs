@@ -1,7 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { resolveReleaseAssetBundle } from '../dist/assets.js';
+import { resolveReleaseArtifactArchiveName, resolveReleaseAssetBundle } from '../dist/assets.js';
+
+test('resolveReleaseArtifactArchiveName binds Runner product, version, and target to one ZIP name', () => {
+  assert.equal(resolveReleaseArtifactArchiveName({
+    product: 'happier-runner',
+    version: '0.3.0-preview.1',
+    os: 'linux',
+    arch: 'x64',
+  }), 'happier-runner-v0.3.0-preview.1-linux-x64.zip');
+});
 
 test('resolveReleaseAssetBundle selects tar.gz + checksums + minisig for linux artifacts', () => {
   const assets = [
@@ -59,3 +68,12 @@ test('resolveReleaseAssetBundle selects ui web bundle artifacts', () => {
   assert.equal(resolved.version, '0.3.0-preview.1.1');
 });
 
+
+test('Runner selects its single ZIP format on every platform', () => {
+  for (const os of ['linux', 'darwin', 'windows']) {
+    const prefix = `happier-runner-v0.3.0-${os}-x64`;
+    const assets = [prefix + '.zip', prefix + '.tar.gz', 'checksums-happier-runner-v0.3.0.txt', 'checksums-happier-runner-v0.3.0.txt.minisig'].map((name) => ({ name, browser_download_url: 'https://example.test/' + name }));
+    assert.equal(resolveReleaseAssetBundle({ assets, product: 'happier-runner', os, arch: 'x64' }).archive.name, prefix + '.zip');
+    assert.throws(() => resolveReleaseAssetBundle({ assets: assets.filter((asset) => !asset.name.endsWith('.zip')), product: 'happier-runner', os, arch: 'x64' }));
+  }
+});

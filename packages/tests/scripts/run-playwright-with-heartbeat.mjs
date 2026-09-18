@@ -8,6 +8,9 @@ import {
 import { resolveYarnCommandInvocation } from '../../../scripts/workspaces/execYarnCommand.mjs';
 import { resolvePlaywrightWrapperTimeoutFallbackMs } from './playwrightWrapperTimeout.mjs';
 
+const scriptsDir = dirname(fileURLToPath(import.meta.url));
+const repoRoot = resolve(scriptsDir, '../../..');
+
 const { config, passThrough } = parseHeartbeatArgs(process.argv);
 if (!config) {
   // eslint-disable-next-line no-console
@@ -21,6 +24,8 @@ const invocation = resolveYarnCommandInvocation(childArgs, { npmExecPath: '' });
 await runHeartbeatWrappedCommand({
   toolName: 'playwright',
   config,
+  diagnosticPath: process.env.HAPPIER_CI_DIAGNOSTIC_PATH
+    || resolve(repoRoot, '.project/logs/e2e/playwright-heartbeat-diagnostic.ndjson'),
   command: invocation.command,
   args: invocation.args,
   spawnOptions: {
@@ -34,3 +39,5 @@ await runHeartbeatWrappedCommand({
     return typeof result.code === 'number' ? result.code : resolveSignalExitCode(result.signal);
   },
 });
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';

@@ -37,6 +37,20 @@ describe('Iroh mobile release build contract', () => {
     }
   });
 
+  it('stages iOS universal and XCFramework outputs outside the synchronized checkout before publication', () => {
+    const source = readPackageFile('scripts/build-rust-ios.sh');
+
+    expect(source).toMatch(/WORK_DIR="\$\(mktemp -d /u);
+    expect(source).toMatch(/trap .*WORK_DIR.* EXIT/u);
+    expect(source).toContain('SIM_UNIVERSAL="${WORK_DIR}/libhappier_iroh_native.a"');
+    expect(source).toContain('STAGED_XCFRAMEWORK="${WORK_DIR}/HappierIrohNativeRust.xcframework"');
+    expect(source).toContain('-output "${STAGED_XCFRAMEWORK}"');
+    expect(source).toContain('mv "${STAGED_XCFRAMEWORK}" "${XCFRAMEWORK}"');
+    expect(source.indexOf('xcodebuild -create-xcframework')).toBeLessThan(
+      source.indexOf('rm -rf "${XCFRAMEWORK}"'),
+    );
+  });
+
   it('uses abort-on-panic for release native libraries', () => {
     const workspaceManifest = readPackageFile('rust/Cargo.toml');
     expect(workspaceManifest).toMatch(/\[profile\.release\][\s\S]*?panic\s*=\s*"abort"/u);
@@ -107,18 +121,79 @@ describe('Iroh mobile release build contract', () => {
   });
 
   it('exposes only the canonical endpoint-and-tunnel handle lifecycle on mobile bindings', () => {
-    for (const source of [
-      readPackageFile('ios/HappierIrohNativeModule.swift'),
-      readPackageFile('android/src/main/java/dev/happier/iroh/HappierIrohNativeModule.kt'),
-    ]) {
-      for (const operation of ['createEndpoint', 'ensureHomeTunnel', 'releaseHomeTunnel', 'getTunnelStatus', 'shutdownEndpoint']) {
+    const ios = readPackageFile('ios/HappierIrohNativeModule.swift');
+    const android = readPackageFile(
+      'android/src/main/java/dev/happier/iroh/HappierIrohNativeModule.kt',
+    );
+    for (const source of [ios, android]) {
+      for (const operation of [
+        'createEndpoint',
+        'ensureHomeTunnel',
+        'releaseHomeTunnel',
+        'getTunnelStatus',
+        'shutdownEndpoint',
+        'startMachineTunnel',
+        'startMachineHttpTunnel',
+        'stopMachineTunnel',
+      ]) {
         expect(source).toContain(`AsyncFunction("${operation}")`);
       }
       for (const removed of ['startHomeTunnel', 'stopHomeTunnel', 'getHomeTunnelStatus']) {
         expect(source).not.toContain(removed);
       }
     }
-    const rustProduction = readPackageFile('rust/happier-iroh-native/src/lib.rs').split('#[cfg(test)]')[0];
+    const rustProduction = readPackageFile('rust/happier-iroh-native/src/lib.rs')
+      .split('\n#[cfg(test)]\nmod tests')[0];
+    const types = readPackageFile('src/HappierIrohNative.types.ts');
+    expect(types).toContain('startMachineTunnel?: (request:');
+    expect(types).toMatch(/startMachineTunnel\?:[\s\S]*?localCapability\?: string;/u);
+    expect(ios).toContain('happier_iroh_native_start_machine_tunnel_json');
+    const iosGeneratedHeader = readPackageFile('scripts/build-rust-ios.sh');
+    expect(iosGeneratedHeader).toContain('happier_iroh_native_start_machine_http_tunnel_json');
+    expect(android).toContain('HappierIrohNativeRust.startMachineTunnelJson(');
+    expect(android).toContain('external fun startMachineTunnelJson(requestJson: String): String');
+    expect(rustProduction).toContain('pub fn start_machine_tunnel_json(request: &str) -> Value');
+    expect(rustProduction).toContain(
+      'Java_dev_happier_iroh_HappierIrohNativeRust_startMachineTunnelJson',
+    );
+    const tauri = readPackageFile('../../apps/ui/src-tauri/src/iroh.rs');
+    const rawCommand = tauri.slice(
+      tauri.indexOf('pub async fn iroh_start_machine_tunnel('),
+      tauri.indexOf('pub async fn iroh_stop_machine_tunnel('),
+    );
+    const rawProjection = tauri.slice(
+      tauri.indexOf('fn renderer_machine_tunnel_lease('),
+      tauri.indexOf('fn renderer_machine_http_tunnel_lease('),
+    );
+    const lifecycle = readPackageFile(
+      '../../apps/ui/sources/sync/runtime/nativeIrohTunnels/machineTransferLifecycle.ts',
+    );
+    const finiteLifecycle = lifecycle.slice(
+      lifecycle.indexOf('export async function startIrohMachineTransferTunnel('),
+    );
+    const desktopFiniteLifecycle = finiteLifecycle.slice(
+      finiteLifecycle.indexOf('if (desktopHostKind() !== null)'),
+      finiteLifecycle.indexOf('const native = await requireMobileModule()'),
+    );
+    expect(rawCommand).toContain('renderer_machine_tunnel_lease(started)');
+    expect(rawCommand).not.toContain('renderer_machine_http_tunnel_lease(started)');
+    expect(rawCommand).not.toContain('localCapability');
+    expect(rawProjection).toContain('"localPort": local_port');
+    expect(rawProjection).toContain('started.get("localCapability")');
+    expect(rawProjection).not.toContain('"localOrigin"');
+    expect(lifecycle).toContain('const localOrigin = record.localOrigin');
+    expect(desktopFiniteLifecycle).toContain(
+      "await invokeDesktopHost<unknown>('iroh_start_machine_tunnel'",
+    );
+    expect(desktopFiniteLifecycle).toContain(
+      "await invokeDesktopHost('iroh_stop_machine_tunnel'",
+    );
+    expect(desktopFiniteLifecycle).not.toContain('iroh_stop_machine_http_tunnel');
+    expect(desktopFiniteLifecycle).toContain('record.localPort');
+    expect(desktopFiniteLifecycle).not.toContain('record.localOrigin');
+    for (const source of [types, ios, android]) {
+      expect(source).not.toMatch(/payload(?:Bytes|Base64)/u);
+    }
     for (const removed of ['start_home_tunnel_json', 'stop_home_tunnel_json', 'get_home_tunnel_status_json']) {
       expect(rustProduction).not.toContain(removed);
     }

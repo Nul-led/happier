@@ -54,6 +54,24 @@ export type NativeIrohModule = Readonly<{
   shutdownEndpoint: (request: { endpointHandle: string }) => Promise<void>;
   getEndpointStatus?: (endpointHandle: string) => Promise<Record<string, unknown> | null>;
   getTunnelStatus: (tunnelId: string) => Promise<Record<string, unknown> | null>;
+  startMachineTunnel?: (request: {
+    endpointHandle: string;
+    endpointId: string;
+    directAddresses?: readonly string[];
+    relayUrls?: readonly string[];
+    handshakeJson: string;
+    capProfile?: 'machineBulk';
+  }) => Promise<{
+    machineTunnelId: string;
+    endpointHandle: string;
+    localPort: number;
+    localCapability?: string;
+    connectionActive: boolean;
+    remoteEndpointId: string;
+    observedPath: 'direct' | 'relay' | 'unknown';
+    startedAtMs: number;
+    lastErrorCode: string | null;
+  }>;
   startMachineHttpTunnel?: (request: {
     endpointHandle: string;
     endpointId: string;

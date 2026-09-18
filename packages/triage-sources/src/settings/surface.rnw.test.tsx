@@ -208,12 +208,8 @@ async function mountSettings(
   let fixture!: PluginUiTestkit;
   await act(async () => {
     fixture = await createPluginUiTestkit({
-      identity: {
-        pluginId: PLUGIN_ID,
-        pluginVersion: '0.0.0',
-        viewId: 'triage-sources',
-        generation: 'triage-sources-mount',
-      },
+      identity: { instanceId: 'fixture-instance-1', mountNonce: 'fixture-mount-1' },
+      authorPlugin: { id: PLUGIN_ID, version: '0.0.0' },
       surface,
       surfaceContext: createSurfaceContextFixture({ translations }),
       adapter: createPluginUiRnwSemanticSurfaceAdapter(),
@@ -277,12 +273,8 @@ describe('the mounted PRs & Issues source settings page', () => {
     let page!: PluginUiTestkit;
     await act(async () => {
       page = await createPluginUiTestkit({
-        identity: {
-          pluginId: PLUGIN_ID,
-          pluginVersion: '0.0.0',
-          viewId: 'triage-sources',
-          generation: 'triage-sources-configurable-mount',
-        },
+        identity: { instanceId: 'fixture-instance-2', mountNonce: 'fixture-mount-2' },
+        authorPlugin: { id: PLUGIN_ID, version: '0.0.0' },
         surface: configurableSurface,
         surfaceContext: createSurfaceContextFixture(),
         adapter: createPluginUiRnwSemanticSurfaceAdapter(),

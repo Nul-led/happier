@@ -358,19 +358,37 @@ test('QB-59: the census rejects an export map its own tarball would not carry', 
  */
 export function censusShippedDetailSurface(manifest) {
     const findings = [];
-    const declaredRenderers = new Set(
-        (manifest.contributes?.ui?.renderers ?? []).map((renderer) => renderer.id),
+    const shippedRenderers = new Map(
+        (manifest.contributes?.ui?.renderers ?? []).map((renderer) => [renderer.id, renderer]),
+    );
+    const dynamicResources = new Set(
+        (manifest.contributes?.resources ?? [])
+            .filter((resource) => resource.source === 'dynamic')
+            .map((resource) => resource.id),
     );
     const contributions = manifest.contributes?.targetedPluginContributions ?? [];
     if (contributions.length === 0) return ['the manifest declares no targeted contribution'];
 
     let detailSurfaces = 0;
     for (const contribution of contributions) {
-        const renderer = contribution.surfaces?.detail?.renderer;
-        if (renderer === undefined) continue;
+        const rendererId = contribution.surfaces?.detail?.renderer;
+        if (rendererId === undefined) continue;
         detailSurfaces += 1;
-        if (!declaredRenderers.has(renderer)) {
-            findings.push(`${contribution.id}: detail names renderer '${renderer}', which this manifest never ships`);
+        const renderer = shippedRenderers.get(rendererId);
+        if (renderer === undefined) {
+            findings.push(`${contribution.id}: detail names renderer '${rendererId}', which this manifest never ships`);
+            continue;
+        }
+        // A declarative detail renderer with no live document paints the same
+        // bytes for every entry. It mounts, it looks like a detail body, and it
+        // can never answer QB-02's question about the *selected* entry — which
+        // is exactly the failure a "the renderer exists" check waves through.
+        if (renderer.kind !== 'declarative') continue;
+        const documentResourceId = renderer.documentSource?.resourceId;
+        if (documentResourceId === undefined) {
+            findings.push(`${contribution.id}: declarative detail renderer '${rendererId}' binds no live document, so it cannot show the selected entry`);
+        } else if (!dynamicResources.has(documentResourceId)) {
+            findings.push(`${contribution.id}: detail document '${documentResourceId}' is not a dynamic Resource this manifest ships`);
         }
     }
     if (detailSurfaces === 0) return ['no contribution declares a detail surface'];
@@ -394,4 +412,18 @@ test('QB-59: the census rejects a detail surface pointing at a renderer nobody s
     shipsNothing.contributes.ui.renderers = [];
     assert.ok(censusShippedDetailSurface(shipsNothing)
         .some((finding) => finding.includes('never ships')));
+
+    // The subtler one: a shipped, mountable, entirely static detail renderer.
+    // It passes every "does the renderer exist" check and can never say
+    // anything about the entry the reader selected.
+    const staticOnly = clone(shippedManifest);
+    delete staticOnly.contributes.ui.renderers[0].documentSource;
+    assert.ok(censusShippedDetailSurface(staticOnly)
+        .some((finding) => finding.includes('binds no live document')));
+
+    // And a document source pointing at a Resource nobody produces.
+    const danglingDocument = clone(shippedManifest);
+    danglingDocument.contributes.ui.renderers[0].documentSource.resourceId = 'ledger-detail-docment';
+    assert.ok(censusShippedDetailSurface(danglingDocument)
+        .some((finding) => finding.includes('is not a dynamic Resource')));
 });

@@ -1,8 +1,9 @@
 use crate::{
     EndpointConfig, HomeAcceptor, HomeAcceptorConfig, HomeTunnel, HomeTunnelConfig, IrohCapProfile,
-    IrohEndpoint, MachineAcceptor, MachineAcceptorConfig, MachineHttpTunnel, MachineTunnel,
-    MachineTunnelConfig, RelayPolicy, IROH_MACHINE_APPLICATION_CAPABILITY_HEADER,
-    IROH_MACHINE_APPLICATION_PORT_HEADER, IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER,
+    IrohEndpoint, IrohError, MachineAcceptor, MachineAcceptorConfig, MachineHandshakeProvider,
+    MachineHttpTunnel, MachineTunnel, MachineTunnelConfig, RelayPolicy,
+    IROH_MACHINE_APPLICATION_CAPABILITY_HEADER, IROH_MACHINE_APPLICATION_PORT_HEADER,
+    IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER,
 };
 use std::collections::VecDeque;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -85,6 +86,21 @@ async fn read_http_request(socket: &mut TcpStream) -> Vec<u8> {
     request
 }
 
+async fn read_http_head_bytewise(socket: &mut TcpStream) -> Vec<u8> {
+    let mut head = Vec::new();
+    loop {
+        let mut byte = [0u8; 1];
+        socket
+            .read_exact(&mut byte)
+            .await
+            .expect("read complete HTTP request head");
+        head.push(byte[0]);
+        if head.ends_with(b"\r\n\r\n") {
+            return head;
+        }
+    }
+}
+
 /// Admission responses with a per-response queue of application-port header
 /// values: each queued entry is the exact set of
 /// `{IROH_MACHINE_APPLICATION_PORT_HEADER}` header lines to emit for one
@@ -129,6 +145,33 @@ async fn admission_server(
                 ));
             }
             response.push_str("Content-Length: 0\r\nConnection: close\r\n\r\n");
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("admission response");
+        }
+    });
+    addr
+}
+
+async fn recording_admission_server(
+    expected_remote: String,
+    application_port: u16,
+    handshakes: Arc<Mutex<Vec<String>>>,
+) -> SocketAddr {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind recording admission");
+    let addr = listener.local_addr().expect("recording admission addr");
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            let request = read_http_request(&mut socket).await;
+            let request = String::from_utf8(request).expect("utf8 admission request");
+            let (_, body) = request.split_once("\r\n\r\n").expect("request head/body");
+            handshakes.lock().expect("handshakes").push(body.to_owned());
+            let response = format!(
+                "HTTP/1.1 204 No Content\r\nX-Happier-Iroh-Remote-Endpoint-Id: {expected_remote}\r\n{IROH_MACHINE_APPLICATION_PORT_HEADER}: {application_port}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
             socket
                 .write_all(response.as_bytes())
                 .await
@@ -255,7 +298,8 @@ async fn one_client_endpoint_identity_moves_home_then_machine_bytes() {
             bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
             direct_addresses: vec![direct_addr(&machine_server).await],
             relay_urls: vec![],
-            handshake_json: r#"{"v":1,"operationId":"shared-endpoint"}"#.to_owned(),
+            handshake_json: r#"{"v":1,"flow":"workspace_sync","operationId":"shared-endpoint"}"#
+                .to_owned(),
             cap_profile: IrohCapProfile::MachineBulk,
         },
     )
@@ -264,7 +308,9 @@ async fn one_client_endpoint_identity_moves_home_then_machine_bytes() {
     assert_eq!(
         exchange_echo_with_capability(
             machine_tunnel.local_addr().unwrap(),
-            machine_tunnel.local_capability(),
+            machine_tunnel
+                .local_capability()
+                .expect("workspace tunnel capability"),
             b"machine-shared-endpoint",
         )
         .await,
@@ -306,16 +352,20 @@ async fn machine_tunnel_moves_duplex_bytes_to_the_admission_selected_application
             bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
             direct_addresses: vec![direct_addr(&server).await],
             relay_urls: vec![],
-            handshake_json: r#"{"v":1,"operationId":"op-1"}"#.to_owned(),
+            handshake_json: r#"{"v":1,"flow":"finite_transfer","operationId":"op-1"}"#.to_owned(),
             cap_profile: IrohCapProfile::MachineBulk,
         },
     )
     .await
     .expect("machine tunnel");
-
-    let echoed = exchange_echo_with_capability(
-        tunnel.local_addr().expect("local addr"),
+    assert_eq!(
         tunnel.local_capability(),
+        None,
+        "finite-transfer fetch bytes must enter the sole loopback listener unchanged"
+    );
+
+    let echoed = exchange_echo(
+        tunnel.local_addr().expect("local addr"),
         b"machine-native-nonzero-duplex",
     )
     .await;
@@ -335,6 +385,85 @@ async fn machine_tunnel_moves_duplex_bytes_to_the_admission_selected_application
     assert_eq!(tunnel.status().remote_endpoint_id, server.id().to_string());
     tunnel.stop();
     acceptor.stop();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn machine_http_tunnel_rejects_finite_transfer_before_publishing_a_second_listener() {
+    let server = endpoint(IrohCapProfile::MachineBulk).await;
+    let client = endpoint(IrohCapProfile::MachineBulk).await;
+    let app_contacts = Arc::new(AtomicUsize::new(0));
+    let app_port = echo_server(Arc::clone(&app_contacts)).await.port();
+    let admission_target = admission_server(
+        client.id().to_string(),
+        Arc::new(Mutex::new(VecDeque::from([vec![app_port.to_string()]]))),
+        Arc::new(AtomicUsize::new(0)),
+    )
+    .await;
+    let acceptor = MachineAcceptor::start(&server, MachineAcceptorConfig { admission_target })
+        .expect("machine acceptor");
+
+    let result = MachineHttpTunnel::start(
+        &client,
+        MachineTunnelConfig {
+            endpoint_id: server.id().to_string(),
+            bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+            direct_addresses: vec![direct_addr(&server).await],
+            relay_urls: vec![],
+            handshake_json: r#"{"v":1,"flow":"finite_transfer","operationId":"no-http-facade"}"#
+                .to_owned(),
+            cap_profile: IrohCapProfile::MachineBulk,
+        },
+    )
+    .await;
+
+    match result {
+        Err(error) => assert_eq!(error, IrohError::InvalidDescriptor),
+        Ok(tunnel) => {
+            tunnel.stop_and_wait().await;
+            panic!("finite transfer must not allocate the Machine HTTP facade");
+        }
+    }
+    assert_eq!(app_contacts.load(Ordering::Relaxed), 0);
+    acceptor.stop_and_wait().await;
+    client.shutdown().await;
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn machine_http_tunnel_accepts_runner_broker_readiness_as_a_capability_gated_consumer() {
+    let server = endpoint(IrohCapProfile::MachineBulk).await;
+    let client = endpoint(IrohCapProfile::MachineBulk).await;
+    let app_contacts = Arc::new(AtomicUsize::new(0));
+    let app_port = echo_server(Arc::clone(&app_contacts)).await.port();
+    let admission_target = admission_server(
+        client.id().to_string(),
+        Arc::new(Mutex::new(VecDeque::from([vec![app_port.to_string()]]))),
+        Arc::new(AtomicUsize::new(0)),
+    )
+    .await;
+    let acceptor = MachineAcceptor::start(&server, MachineAcceptorConfig { admission_target })
+        .expect("machine acceptor");
+    let tunnel =
+        MachineHttpTunnel::start(
+            &client,
+            MachineTunnelConfig {
+                endpoint_id: server.id().to_string(),
+                bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+                direct_addresses: vec![direct_addr(&server).await],
+                relay_urls: vec![],
+                handshake_json:
+                    r#"{"v":1,"kind":"provider_broker_readiness","operationId":"readiness"}"#
+                        .to_owned(),
+                cap_profile: IrohCapProfile::MachineBulk,
+            },
+        )
+        .await
+        .expect("readiness uses the qualified HTTP tunnel");
+    assert_eq!(tunnel.local_capability().len(), 64);
+    tunnel.stop_and_wait().await;
+    acceptor.stop_and_wait().await;
+    client.shutdown().await;
+    server.shutdown().await;
 }
 
 /// The public Machine acceptor shutdown boundary owns its active per-stream
@@ -361,14 +490,18 @@ async fn stopping_acceptor_joins_an_active_machine_stream() {
             bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
             direct_addresses: vec![direct_addr(&server).await],
             relay_urls: vec![],
-            handshake_json: r#"{"v":1,"operationId":"joined-stop"}"#.to_owned(),
+            handshake_json: r#"{"v":1,"flow":"workspace_sync","operationId":"joined-stop"}"#
+                .to_owned(),
             cap_profile: IrohCapProfile::MachineBulk,
         },
     )
     .await
     .expect("machine tunnel");
     let local_addr = tunnel.local_addr().expect("local addr");
-    let local_capability = tunnel.local_capability().to_owned();
+    let local_capability = tunnel
+        .local_capability()
+        .expect("workspace tunnel capability")
+        .to_owned();
     let mut local = TcpStream::connect(local_addr).await.expect("local connect");
     local
         .write_all(local_capability.as_bytes())
@@ -422,7 +555,8 @@ async fn machine_http_tunnel_requires_capability_before_opening_a_machine_stream
             bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
             direct_addresses: vec![direct_addr(&server).await],
             relay_urls: vec![],
-            handshake_json: r#"{"v":1,"operationId":"http-op-1"}"#.to_owned(),
+            handshake_json: r#"{"v":1,"kind":"provider_broker","operationId":"http-op-1"}"#
+                .to_owned(),
             cap_profile: IrohCapProfile::MachineBulk,
         },
     )
@@ -482,6 +616,36 @@ async fn machine_http_tunnel_requires_capability_before_opening_a_machine_stream
     assert_eq!(admission_contacts.load(Ordering::Relaxed), 0);
     assert_eq!(app_contacts.load(Ordering::Relaxed), 0);
 
+    let mut ambiguous = TcpStream::connect(tunnel.local_addr().expect("HTTP loopback addr"))
+        .await
+        .expect("connect ambiguous-framing HTTP loopback");
+    ambiguous
+        .write_all(
+            format!(
+                "POST /probe HTTP/1.1\r\nHost: 127.0.0.1\r\n{}: {}\r\nContent-Length: 4\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n0\r\n\r\n",
+                IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER,
+                tunnel.local_capability(),
+            )
+            .as_bytes(),
+        )
+        .await
+        .expect("write ambiguous-framing request");
+    ambiguous
+        .shutdown()
+        .await
+        .expect("shutdown ambiguous-framing request");
+    let mut ambiguous_rejected = Vec::new();
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        ambiguous.read_to_end(&mut ambiguous_rejected),
+    )
+    .await
+    .expect("ambiguous-framing listener close")
+    .expect("read ambiguous-framing close");
+    assert!(ambiguous_rejected.is_empty());
+    assert_eq!(admission_contacts.load(Ordering::Relaxed), 0);
+    assert_eq!(app_contacts.load(Ordering::Relaxed), 0);
+
     let authenticated_request = format!(
         "POST /machine-transfers/direct/imports/http-op-1 HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Happier-Test-Preserved: yes\r\n{}: {}\r\nContent-Length: 18\r\nConnection: close\r\n\r\nmachine-body-bytes",
         IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER,
@@ -502,6 +666,611 @@ async fn machine_http_tunnel_requires_capability_before_opening_a_machine_stream
     assert_eq!(tunnel.status().streams_opened, 1);
     tunnel.stop();
     acceptor.stop();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn machine_http_tunnel_strips_capability_from_keep_alive_and_concurrent_requests() {
+    let server = endpoint(IrohCapProfile::MachineBulk).await;
+    let client = endpoint(IrohCapProfile::MachineBulk).await;
+    let application_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind HTTP application");
+    let application_port = application_listener
+        .local_addr()
+        .expect("HTTP application addr")
+        .port();
+    let application_task = tokio::spawn(async move {
+        let mut received = Vec::new();
+        let (mut keep_alive, _) = application_listener
+            .accept()
+            .await
+            .expect("accept keep-alive HTTP application connection");
+        for request_index in 0..2 {
+            received.push(read_http_head_bytewise(&mut keep_alive).await);
+            let connection = if request_index == 0 {
+                "keep-alive"
+            } else {
+                "close"
+            };
+            keep_alive
+                .write_all(
+                    format!(
+                        "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: {connection}\r\n\r\n"
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .expect("write keep-alive HTTP application response");
+        }
+
+        let (first, second) =
+            tokio::join!(application_listener.accept(), application_listener.accept());
+        let (first, _) = first.expect("accept first concurrent HTTP connection");
+        let (second, _) = second.expect("accept second concurrent HTTP connection");
+        let serve = |mut socket: TcpStream| async move {
+            let head = read_http_head_bytewise(&mut socket).await;
+            socket
+                .write_all(
+                    b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .expect("write concurrent HTTP application response");
+            head
+        };
+        let (first_head, second_head) = tokio::join!(serve(first), serve(second));
+        received.extend([first_head, second_head]);
+        received
+    });
+    let admission_target = admission_server(
+        client.id().to_string(),
+        Arc::new(Mutex::new(VecDeque::from([
+            vec![application_port.to_string()],
+            vec![application_port.to_string()],
+            vec![application_port.to_string()],
+        ]))),
+        Arc::new(AtomicUsize::new(0)),
+    )
+    .await;
+    let acceptor = MachineAcceptor::start(&server, MachineAcceptorConfig { admission_target })
+        .expect("machine acceptor");
+    let tunnel = MachineHttpTunnel::start(
+        &client,
+        MachineTunnelConfig {
+            endpoint_id: server.id().to_string(),
+            bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+            direct_addresses: vec![direct_addr(&server).await],
+            relay_urls: vec![],
+            handshake_json: r#"{"v":1,"kind":"provider_broker","operationId":"http-keep-alive"}"#
+                .to_owned(),
+            cap_profile: IrohCapProfile::MachineBulk,
+        },
+    )
+    .await
+    .expect("machine HTTP tunnel");
+
+    let expected_heads = [
+        "GET /first HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: keep-alive\r\n\r\n",
+        "GET /second HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+        "GET /concurrent-a HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+        "GET /concurrent-b HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    ];
+    let mut keep_alive = TcpStream::connect(tunnel.local_addr().expect("HTTP loopback addr"))
+        .await
+        .expect("connect keep-alive client");
+    for expected in &expected_heads[..2] {
+        let request = expected.replacen(
+            "Connection:",
+            &format!(
+                "{}: {}\r\nConnection:",
+                IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER,
+                tunnel.local_capability()
+            ),
+            1,
+        );
+        keep_alive
+            .write_all(request.as_bytes())
+            .await
+            .expect("write keep-alive request");
+        let response = read_http_head_bytewise(&mut keep_alive).await;
+        assert!(response.starts_with(b"HTTP/1.1 204 No Content\r\n"));
+    }
+
+    let local_addr = tunnel.local_addr().expect("HTTP loopback addr");
+    let local_capability = tunnel.local_capability().to_owned();
+    let request_concurrently = |expected: &'static str| {
+        let local_capability = local_capability.clone();
+        async move {
+            let mut socket = TcpStream::connect(local_addr)
+                .await
+                .expect("connect concurrent HTTP client");
+            let request = expected.replacen(
+                "Connection:",
+                &format!(
+                    "{}: {}\r\nConnection:",
+                    IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER, local_capability
+                ),
+                1,
+            );
+            socket
+                .write_all(request.as_bytes())
+                .await
+                .expect("write concurrent HTTP request");
+            let response = read_http_head_bytewise(&mut socket).await;
+            assert!(response.starts_with(b"HTTP/1.1 204 No Content\r\n"));
+        }
+    };
+    tokio::join!(
+        request_concurrently(expected_heads[2]),
+        request_concurrently(expected_heads[3]),
+    );
+
+    let mut received = tokio::time::timeout(Duration::from_secs(5), application_task)
+        .await
+        .expect("HTTP application completed")
+        .expect("HTTP application task");
+    received[2..].sort();
+    let mut expected = expected_heads.map(|head| head.as_bytes().to_vec());
+    expected[2..].sort();
+    assert_eq!(
+        received, expected,
+        "the loopback-only capability must be stripped from every request"
+    );
+    assert_eq!(tunnel.status().streams_opened, 3);
+    tunnel.stop();
+    acceptor.stop();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn machine_http_tunnel_preserves_pipelined_content_length_boundaries() {
+    let server = endpoint(IrohCapProfile::MachineBulk).await;
+    let client = endpoint(IrohCapProfile::MachineBulk).await;
+    let application_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind pipelined HTTP application");
+    let application_port = application_listener
+        .local_addr()
+        .expect("pipelined HTTP application addr")
+        .port();
+    let application_task = tokio::spawn(async move {
+        let (mut socket, _) = application_listener
+            .accept()
+            .await
+            .expect("accept pipelined HTTP application connection");
+        let mut first = read_http_head_bytewise(&mut socket).await;
+        let mut first_body = [0u8; 4];
+        socket
+            .read_exact(&mut first_body)
+            .await
+            .expect("read pipelined Content-Length body");
+        first.extend_from_slice(&first_body);
+        let second = read_http_head_bytewise(&mut socket).await;
+        socket
+            .write_all(
+                b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\nHTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .expect("write pipelined HTTP responses");
+        [first, second]
+    });
+    let admission_target = admission_server(
+        client.id().to_string(),
+        Arc::new(Mutex::new(VecDeque::from([vec![
+            application_port.to_string()
+        ]]))),
+        Arc::new(AtomicUsize::new(0)),
+    )
+    .await;
+    let acceptor = MachineAcceptor::start(&server, MachineAcceptorConfig { admission_target })
+        .expect("machine acceptor");
+    let tunnel = MachineHttpTunnel::start(
+        &client,
+        MachineTunnelConfig {
+            endpoint_id: server.id().to_string(),
+            bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+            direct_addresses: vec![direct_addr(&server).await],
+            relay_urls: vec![],
+            handshake_json: r#"{"v":1,"kind":"provider_broker","operationId":"http-pipelined"}"#
+                .to_owned(),
+            cap_profile: IrohCapProfile::MachineBulk,
+        },
+    )
+    .await
+    .expect("machine HTTP tunnel");
+
+    let first_expected =
+        "POST /first HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 4\r\nConnection: keep-alive\r\n\r\nbody";
+    let second_expected = "GET /second HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+    let requests = format!(
+        "POST /first HTTP/1.1\r\nHost: 127.0.0.1\r\n{}: {}\r\nContent-Length: 4\r\nConnection: keep-alive\r\n\r\nbodyGET /second HTTP/1.1\r\nHost: 127.0.0.1\r\n{}: {}\r\nConnection: close\r\n\r\n",
+        IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER,
+        tunnel.local_capability(),
+        IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER,
+        tunnel.local_capability(),
+    );
+    let mut application = TcpStream::connect(tunnel.local_addr().expect("HTTP loopback addr"))
+        .await
+        .expect("connect pipelined HTTP client");
+    application
+        .write_all(requests.as_bytes())
+        .await
+        .expect("write pipelined HTTP requests");
+    application
+        .shutdown()
+        .await
+        .expect("finish pipelined HTTP requests");
+    let mut responses = Vec::new();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        application.read_to_end(&mut responses),
+    )
+    .await
+    .expect("pipelined responses complete")
+    .expect("read pipelined responses");
+    assert_eq!(
+        responses
+            .windows(12)
+            .filter(|window| *window == b"HTTP/1.1 204")
+            .count(),
+        2
+    );
+
+    let received = tokio::time::timeout(Duration::from_secs(5), application_task)
+        .await
+        .expect("pipelined HTTP application completed")
+        .expect("pipelined HTTP application task");
+    assert_eq!(
+        received,
+        [
+            first_expected.as_bytes().to_vec(),
+            second_expected.as_bytes().to_vec(),
+        ]
+    );
+    assert_eq!(tunnel.status().streams_opened, 1);
+    tunnel.stop_and_wait().await;
+    acceptor.stop_and_wait().await;
+    client.shutdown().await;
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn machine_http_tunnel_requests_a_fresh_handshake_for_each_new_local_connection() {
+    let server = endpoint(IrohCapProfile::MachineBulk).await;
+    let client = endpoint(IrohCapProfile::MachineBulk).await;
+    let contacts = Arc::new(AtomicUsize::new(0));
+    let application_addr = echo_server(Arc::clone(&contacts)).await;
+    let handshakes = Arc::new(Mutex::new(Vec::new()));
+    let admission_target = recording_admission_server(
+        client.id().to_string(),
+        application_addr.port(),
+        Arc::clone(&handshakes),
+    )
+    .await;
+    let acceptor = MachineAcceptor::start(&server, MachineAcceptorConfig { admission_target })
+        .expect("machine acceptor");
+    let sequence = Arc::new(AtomicUsize::new(0));
+    let provider: MachineHandshakeProvider = Arc::new({
+        let sequence = Arc::clone(&sequence);
+        move || {
+            let witness = sequence.fetch_add(1, Ordering::SeqCst) + 1;
+            Box::pin(async move {
+                Ok(format!(
+                    r#"{{"v":1,"kind":"provider_broker","witness":{witness}}}"#
+                ))
+            })
+        }
+    });
+    let tunnel = MachineHttpTunnel::start_with_handshake_provider(
+        &client,
+        MachineTunnelConfig {
+            endpoint_id: server.id().to_string(),
+            bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+            direct_addresses: vec![direct_addr(&server).await],
+            relay_urls: vec![],
+            handshake_json: r#"{"v":1,"kind":"provider_broker","witness":0}"#.to_owned(),
+            cap_profile: IrohCapProfile::MachineBulk,
+        },
+        provider,
+    )
+    .await
+    .expect("machine HTTP tunnel");
+
+    for body in ["first", "second"] {
+        let request = format!(
+            "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\n{}: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER,
+            tunnel.local_capability(),
+            body.len(),
+            body,
+        );
+        let _ = exchange_echo(
+            tunnel.local_addr().expect("HTTP loopback addr"),
+            request.as_bytes(),
+        )
+        .await;
+    }
+
+    assert_eq!(
+        *handshakes.lock().expect("handshakes"),
+        vec![
+            r#"{"v":1,"kind":"provider_broker","witness":1}"#.to_owned(),
+            r#"{"v":1,"kind":"provider_broker","witness":2}"#.to_owned(),
+        ]
+    );
+    assert_eq!(sequence.load(Ordering::SeqCst), 2);
+    tunnel.stop_and_wait().await;
+    acceptor.stop_and_wait().await;
+    client.shutdown().await;
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn machine_http_tunnel_provider_failure_closes_only_that_connection() {
+    let server = endpoint(IrohCapProfile::MachineBulk).await;
+    let client = endpoint(IrohCapProfile::MachineBulk).await;
+    let contacts = Arc::new(AtomicUsize::new(0));
+    let application_addr = echo_server(Arc::clone(&contacts)).await;
+    let handshakes = Arc::new(Mutex::new(Vec::new()));
+    let admission_target = recording_admission_server(
+        client.id().to_string(),
+        application_addr.port(),
+        Arc::clone(&handshakes),
+    )
+    .await;
+    let acceptor = MachineAcceptor::start(&server, MachineAcceptorConfig { admission_target })
+        .expect("machine acceptor");
+    let sequence = Arc::new(AtomicUsize::new(0));
+    let provider: MachineHandshakeProvider = Arc::new({
+        let sequence = Arc::clone(&sequence);
+        move || {
+            let attempt = sequence.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                if attempt == 0 {
+                    return Err(IrohError::Cancelled);
+                }
+                Ok(r#"{"v":1,"kind":"provider_broker","witness":"recovered"}"#.to_owned())
+            })
+        }
+    });
+    let tunnel = MachineHttpTunnel::start_with_handshake_provider(
+        &client,
+        MachineTunnelConfig {
+            endpoint_id: server.id().to_string(),
+            bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+            direct_addresses: vec![direct_addr(&server).await],
+            relay_urls: vec![],
+            handshake_json: r#"{"v":1,"kind":"provider_broker"}"#.to_owned(),
+            cap_profile: IrohCapProfile::MachineBulk,
+        },
+        provider,
+    )
+    .await
+    .expect("machine HTTP tunnel");
+
+    let first = exchange_echo(
+        tunnel.local_addr().expect("HTTP addr"),
+        format!(
+            "POST / HTTP/1.1\r\n{}: {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER,
+            tunnel.local_capability(),
+        )
+        .as_bytes(),
+    )
+    .await;
+    assert!(first.is_empty());
+    let second = exchange_echo(
+        tunnel.local_addr().expect("HTTP addr"),
+        format!(
+            "POST / HTTP/1.1\r\n{}: {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER,
+            tunnel.local_capability(),
+        )
+        .as_bytes(),
+    )
+    .await;
+    assert!(second.starts_with(b"app-reply:"));
+    assert_eq!(handshakes.lock().expect("handshakes").len(), 1);
+    tunnel.stop_and_wait().await;
+    acceptor.stop_and_wait().await;
+    client.shutdown().await;
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stopping_machine_http_tunnel_cancels_a_pending_handshake_provider() {
+    struct DropWitness(Arc<AtomicUsize>);
+    impl Drop for DropWitness {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    let server = endpoint(IrohCapProfile::MachineBulk).await;
+    let client = endpoint(IrohCapProfile::MachineBulk).await;
+    let admission_target = admission_server(
+        client.id().to_string(),
+        Arc::new(Mutex::new(VecDeque::new())),
+        Arc::new(AtomicUsize::new(0)),
+    )
+    .await;
+    let acceptor = MachineAcceptor::start(&server, MachineAcceptorConfig { admission_target })
+        .expect("machine acceptor");
+    let started = Arc::new(AtomicUsize::new(0));
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let provider: MachineHandshakeProvider = Arc::new({
+        let started = Arc::clone(&started);
+        let dropped = Arc::clone(&dropped);
+        move || {
+            started.fetch_add(1, Ordering::SeqCst);
+            let witness = DropWitness(Arc::clone(&dropped));
+            Box::pin(async move {
+                let _witness = witness;
+                std::future::pending::<()>().await;
+                unreachable!()
+            })
+        }
+    });
+    let tunnel = MachineHttpTunnel::start_with_handshake_provider(
+        &client,
+        MachineTunnelConfig {
+            endpoint_id: server.id().to_string(),
+            bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+            direct_addresses: vec![direct_addr(&server).await],
+            relay_urls: vec![],
+            handshake_json: r#"{"v":1,"kind":"provider_broker"}"#.to_owned(),
+            cap_profile: IrohCapProfile::MachineBulk,
+        },
+        provider,
+    )
+    .await
+    .expect("machine HTTP tunnel");
+    let mut application = TcpStream::connect(tunnel.local_addr().expect("HTTP addr"))
+        .await
+        .expect("connect");
+    application
+        .write_all(
+            format!(
+                "POST / HTTP/1.1\r\n{}: {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER,
+                tunnel.local_capability(),
+            )
+            .as_bytes(),
+        )
+        .await
+        .expect("write request");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while started.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("provider starts");
+    tunnel.stop_and_wait().await;
+    assert_eq!(dropped.load(Ordering::SeqCst), 1);
+    acceptor.stop_and_wait().await;
+    client.shutdown().await;
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn machine_http_tunnel_streams_sse_after_a_chunked_request_and_stops_cleanly() {
+    let server = endpoint(IrohCapProfile::MachineBulk).await;
+    let client = endpoint(IrohCapProfile::MachineBulk).await;
+    let application_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind streaming HTTP application");
+    let application_port = application_listener
+        .local_addr()
+        .expect("streaming HTTP application addr")
+        .port();
+    let application_task = tokio::spawn(async move {
+        let (mut socket, _) = application_listener
+            .accept()
+            .await
+            .expect("accept streaming HTTP application connection");
+        let request_head = read_http_head_bytewise(&mut socket).await;
+        let expected_head = b"POST /stream HTTP/1.1\r\nHost: 127.0.0.1\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n";
+        assert_eq!(request_head, expected_head);
+        let expected_body = b"4\r\ntest\r\n0\r\n\r\n";
+        let mut request_body = vec![0u8; expected_body.len()];
+        socket
+            .read_exact(&mut request_body)
+            .await
+            .expect("read complete chunked request body");
+        assert_eq!(request_body, expected_body);
+
+        let streamed_response = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n9\r\ndata: a\n\n\r\n";
+        socket
+            .write_all(streamed_response)
+            .await
+            .expect("write first SSE event");
+        let mut remaining = Vec::new();
+        socket
+            .read_to_end(&mut remaining)
+            .await
+            .expect("stream closes when tunnel stops");
+        assert!(remaining.is_empty());
+    });
+    let admission_target = admission_server(
+        client.id().to_string(),
+        Arc::new(Mutex::new(VecDeque::from([vec![
+            application_port.to_string()
+        ]]))),
+        Arc::new(AtomicUsize::new(0)),
+    )
+    .await;
+    let acceptor = MachineAcceptor::start(&server, MachineAcceptorConfig { admission_target })
+        .expect("machine acceptor");
+    let tunnel = MachineHttpTunnel::start(
+        &client,
+        MachineTunnelConfig {
+            endpoint_id: server.id().to_string(),
+            bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+            direct_addresses: vec![direct_addr(&server).await],
+            relay_urls: vec![],
+            handshake_json: r#"{"v":1,"kind":"provider_broker","operationId":"http-sse"}"#
+                .to_owned(),
+            cap_profile: IrohCapProfile::MachineBulk,
+        },
+    )
+    .await
+    .expect("machine HTTP tunnel");
+
+    let mut application = TcpStream::connect(tunnel.local_addr().expect("HTTP loopback addr"))
+        .await
+        .expect("connect streaming HTTP client");
+    let request_head = format!(
+        "POST /stream HTTP/1.1\r\nHost: 127.0.0.1\r\n{}: {}\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n",
+        IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER,
+        tunnel.local_capability(),
+    );
+    let split = request_head.len() / 2;
+    application
+        .write_all(&request_head.as_bytes()[..split])
+        .await
+        .expect("write fragmented request head prefix");
+    application
+        .write_all(&request_head.as_bytes()[split..])
+        .await
+        .expect("write fragmented request head suffix");
+    application
+        .write_all(b"4\r\nte")
+        .await
+        .expect("write fragmented chunk prefix");
+    application
+        .write_all(
+            format!(
+                "st\r\n0\r\n{}: {}\r\n\r\n",
+                IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER,
+                tunnel.local_capability(),
+            )
+            .as_bytes(),
+        )
+        .await
+        .expect("write chunk suffix and local-only trailer");
+    let expected_response = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n9\r\ndata: a\n\n\r\n";
+    let mut streamed_response = vec![0u8; expected_response.len()];
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        application.read_exact(&mut streamed_response),
+    )
+    .await
+    .expect("SSE event arrives before request-side close")
+    .expect("read first SSE event");
+    assert_eq!(streamed_response, expected_response);
+
+    tunnel.stop_and_wait().await;
+    let mut byte = [0u8; 1];
+    let closed = tokio::time::timeout(Duration::from_secs(5), application.read(&mut byte))
+        .await
+        .expect("HTTP client closes when tunnel stops");
+    assert!(!matches!(closed, Ok(length) if length > 0));
+    tokio::time::timeout(Duration::from_secs(5), application_task)
+        .await
+        .expect("streaming HTTP application settles")
+        .expect("streaming HTTP application task");
+    acceptor.stop_and_wait().await;
+    client.shutdown().await;
+    server.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -563,7 +1332,9 @@ async fn machine_acceptor_presents_and_strips_the_admission_selected_local_capab
             bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
             direct_addresses: vec![direct_addr(&server).await],
             relay_urls: vec![],
-            handshake_json: r#"{"v":1,"operationId":"target-local-capability"}"#.to_owned(),
+            handshake_json:
+                r#"{"v":1,"kind":"provider_broker","operationId":"target-local-capability"}"#
+                    .to_owned(),
             cap_profile: IrohCapProfile::MachineBulk,
         },
     )
@@ -571,11 +1342,80 @@ async fn machine_acceptor_presents_and_strips_the_admission_selected_local_capab
     .expect("machine tunnel");
     let echoed = exchange_echo_with_capability(
         tunnel.local_addr().expect("local addr"),
-        tunnel.local_capability(),
+        tunnel
+            .local_capability()
+            .expect("provider tunnel capability"),
         b"payload-after-two-local-capabilities",
     )
     .await;
     assert_eq!(echoed, b"app-reply:payload-after-two-local-capabilities");
+    tunnel.stop();
+    acceptor.stop();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn finite_transfer_connects_the_prepared_port_without_an_application_capability_prefix() {
+    let server = endpoint(IrohCapProfile::MachineBulk).await;
+    let client = endpoint(IrohCapProfile::MachineBulk).await;
+    let app_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind prepared-transfer app");
+    let app_port = app_listener.local_addr().expect("prepared app addr").port();
+    tokio::spawn(async move {
+        let (mut socket, _) = app_listener.accept().await.expect("accept prepared app");
+        let mut payload = Vec::new();
+        socket
+            .read_to_end(&mut payload)
+            .await
+            .expect("read prepared-transfer payload");
+        socket
+            .write_all(&payload)
+            .await
+            .expect("echo prepared payload");
+    });
+
+    let admission_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind admission");
+    let admission_target = admission_listener.local_addr().expect("admission addr");
+    let expected_remote = client.id().to_string();
+    tokio::spawn(async move {
+        let (mut socket, _) = admission_listener.accept().await.expect("accept admission");
+        let _request = read_http_request(&mut socket).await;
+        let response = format!(
+            "HTTP/1.1 204 No Content\r\nX-Happier-Iroh-Remote-Endpoint-Id: {expected_remote}\r\n{IROH_MACHINE_APPLICATION_PORT_HEADER}: {app_port}\r\n{IROH_MACHINE_APPLICATION_CAPABILITY_HEADER}: {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            "e".repeat(64),
+        );
+        socket
+            .write_all(response.as_bytes())
+            .await
+            .expect("write admission response");
+    });
+
+    let acceptor = MachineAcceptor::start(&server, MachineAcceptorConfig { admission_target })
+        .expect("machine acceptor");
+    let tunnel = MachineTunnel::start(
+        &client,
+        MachineTunnelConfig {
+            endpoint_id: server.id().to_string(),
+            bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+            direct_addresses: vec![direct_addr(&server).await],
+            relay_urls: vec![],
+            handshake_json: r#"{"v":1,"flow":"finite_transfer","operationId":"prepared-direct"}"#
+                .to_owned(),
+            cap_profile: IrohCapProfile::MachineBulk,
+        },
+    )
+    .await
+    .expect("finite-transfer tunnel");
+
+    let echoed = exchange_echo(
+        tunnel.local_addr().expect("finite loopback addr"),
+        b"prepared-transfer-payload",
+    )
+    .await;
+    assert_eq!(echoed, b"prepared-transfer-payload");
+
     tunnel.stop();
     acceptor.stop();
 }
@@ -595,19 +1435,22 @@ async fn machine_tunnel_rejects_an_unauthorized_local_socket_before_opening_a_ma
     .await;
     let acceptor = MachineAcceptor::start(&server, MachineAcceptorConfig { admission_target })
         .expect("machine acceptor");
-    let tunnel = MachineTunnel::start(
-        &client,
-        MachineTunnelConfig {
-            endpoint_id: server.id().to_string(),
-            bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
-            direct_addresses: vec![direct_addr(&server).await],
-            relay_urls: vec![],
-            handshake_json: r#"{"v":1,"operationId":"op-local-capability"}"#.to_owned(),
-            cap_profile: IrohCapProfile::MachineBulk,
-        },
-    )
-    .await
-    .expect("machine tunnel");
+    let tunnel =
+        MachineTunnel::start(
+            &client,
+            MachineTunnelConfig {
+                endpoint_id: server.id().to_string(),
+                bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+                direct_addresses: vec![direct_addr(&server).await],
+                relay_urls: vec![],
+                handshake_json:
+                    r#"{"v":1,"kind":"provider_broker","operationId":"op-local-capability"}"#
+                        .to_owned(),
+                cap_profile: IrohCapProfile::MachineBulk,
+            },
+        )
+        .await
+        .expect("machine tunnel");
 
     let mut scanner = TcpStream::connect(tunnel.local_addr().expect("local addr"))
         .await
@@ -627,7 +1470,9 @@ async fn machine_tunnel_rejects_an_unauthorized_local_socket_before_opening_a_ma
 
     let echoed = exchange_echo_with_capability(
         tunnel.local_addr().expect("local addr"),
-        tunnel.local_capability(),
+        tunnel
+            .local_capability()
+            .expect("provider tunnel capability"),
         b"authorized-after-scanner",
     )
     .await;
@@ -655,16 +1500,16 @@ async fn machine_admission_keeps_request_write_half_open_for_async_node_response
             bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
             direct_addresses: vec![direct_addr(&server).await],
             relay_urls: vec![],
-            handshake_json: r#"{"v":1,"operationId":"node-async-op"}"#.to_owned(),
+            handshake_json: r#"{"v":1,"flow":"finite_transfer","operationId":"node-async-op"}"#
+                .to_owned(),
             cap_profile: IrohCapProfile::MachineBulk,
         },
     )
     .await
     .expect("machine tunnel");
 
-    let echoed = exchange_echo_with_capability(
+    let echoed = exchange_echo(
         tunnel.local_addr().expect("local addr"),
-        tunnel.local_capability(),
         b"node-async-admission-bytes",
     )
     .await;
@@ -711,7 +1556,7 @@ async fn each_admitted_stream_reaches_only_its_own_selected_application_port() {
             bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
             direct_addresses: vec![direct_addr(&server).await],
             relay_urls: vec![],
-            handshake_json: r#"{"v":1,"operationId":"op-1"}"#.to_owned(),
+            handshake_json: r#"{"v":1,"flow":"finite_transfer","operationId":"op-1"}"#.to_owned(),
             cap_profile: IrohCapProfile::MachineBulk,
         },
     )
@@ -719,12 +1564,7 @@ async fn each_admitted_stream_reaches_only_its_own_selected_application_port() {
     .expect("tunnel");
     let local_addr = tunnel.local_addr().expect("local addr");
 
-    let echoed_a = exchange_echo_with_capability(
-        local_addr,
-        tunnel.local_capability(),
-        b"first-stream-payload-a",
-    )
-    .await;
+    let echoed_a = exchange_echo(local_addr, b"first-stream-payload-a").await;
     assert_eq!(
         echoed_a,
         [
@@ -736,12 +1576,7 @@ async fn each_admitted_stream_reaches_only_its_own_selected_application_port() {
     assert_eq!(app_a_contacts.load(Ordering::Relaxed), 1);
     assert_eq!(app_b_contacts.load(Ordering::Relaxed), 0);
 
-    let echoed_b = exchange_echo_with_capability(
-        local_addr,
-        tunnel.local_capability(),
-        b"second-stream-payload-b",
-    )
-    .await;
+    let echoed_b = exchange_echo(local_addr, b"second-stream-payload-b").await;
     assert_eq!(
         echoed_b,
         [
@@ -797,28 +1632,25 @@ async fn invalid_application_port_headers_reject_before_any_application_connecti
     .await;
     let acceptor = MachineAcceptor::start(&server, MachineAcceptorConfig { admission_target })
         .expect("acceptor");
-    let tunnel = MachineTunnel::start(
-        &client,
-        MachineTunnelConfig {
-            endpoint_id: server.id().to_string(),
-            bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
-            direct_addresses: vec![direct_addr(&server).await],
-            relay_urls: vec![],
-            handshake_json: r#"{"v":1,"operationId":"op-1"}"#.to_owned(),
-            cap_profile: IrohCapProfile::MachineBulk,
-        },
-    )
-    .await
-    .expect("tunnel");
+    let server_addr = direct_addr(&server).await;
 
     for _ in 0..cases.len() {
+        let tunnel = MachineTunnel::start(
+            &client,
+            MachineTunnelConfig {
+                endpoint_id: server.id().to_string(),
+                bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+                direct_addresses: vec![server_addr],
+                relay_urls: vec![],
+                handshake_json: r#"{"v":1,"flow":"finite_transfer","operationId":"op-1"}"#.to_owned(),
+                cap_profile: IrohCapProfile::MachineBulk,
+            },
+        )
+        .await
+        .expect("tunnel");
         let mut socket = TcpStream::connect(tunnel.local_addr().expect("local addr"))
             .await
             .expect("local connect");
-        socket
-            .write_all(tunnel.local_capability().as_bytes())
-            .await
-            .expect("local capability");
         socket
             .write_all(b"must-not-reach-app")
             .await
@@ -829,6 +1661,7 @@ async fn invalid_application_port_headers_reject_before_any_application_connecti
                 .await
                 .expect("bounded reject");
         assert!(matches!(result, Ok(0) | Err(_)));
+        tunnel.stop();
     }
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     assert_eq!(admission_contacts.load(Ordering::Relaxed), cases.len());
@@ -840,7 +1673,6 @@ async fn invalid_application_port_headers_reject_before_any_application_connecti
         status.last_failure,
         Some(crate::MachineFailureCode::AdmissionRejected)
     );
-    tunnel.stop();
     acceptor.stop();
 }
 
@@ -878,7 +1710,7 @@ async fn denied_machine_handshake_never_contacts_any_application_listener() {
             bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
             direct_addresses: vec![direct_addr(&server).await],
             relay_urls: vec![],
-            handshake_json: r#"{"v":1,"operationId":"op-1"}"#.to_owned(),
+            handshake_json: r#"{"v":1,"flow":"finite_transfer","operationId":"op-1"}"#.to_owned(),
             cap_profile: IrohCapProfile::MachineBulk,
         },
     )
@@ -887,10 +1719,6 @@ async fn denied_machine_handshake_never_contacts_any_application_listener() {
     let mut socket = TcpStream::connect(tunnel.local_addr().expect("local addr"))
         .await
         .expect("local connect");
-    socket
-        .write_all(tunnel.local_capability().as_bytes())
-        .await
-        .expect("local capability");
     socket
         .write_all(b"must-not-reach-app")
         .await
@@ -904,7 +1732,7 @@ async fn denied_machine_handshake_never_contacts_any_application_listener() {
     assert_eq!(app_contacts.load(Ordering::Relaxed), 0);
     assert_eq!(acceptor.status().streams_rejected, 1);
     assert_eq!(
-        tunnel.status().last_failure,
+        acceptor.status().last_failure,
         Some(crate::MachineFailureCode::AdmissionRejected)
     );
     tunnel.stop();
@@ -926,12 +1754,7 @@ async fn malformed_machine_control_never_reaches_admission_or_app() {
     .await;
     let acceptor = MachineAcceptor::start(&server, MachineAcceptorConfig { admission_target })
         .expect("acceptor");
-    let remote = iroh::EndpointAddr::new(server.id()).with_ip_addr(direct_addr(&server).await);
-    let connection = client
-        .endpoint()
-        .connect(remote, crate::MACHINE_ALPN)
-        .await
-        .expect("machine connection");
+    let server_addr = direct_addr(&server).await;
     let cases: Vec<Vec<u8>> = vec![
         vec![],
         vec![0x02],
@@ -946,6 +1769,14 @@ async fn malformed_machine_control_never_reaches_admission_or_app() {
         [vec![0x01], 1u32.to_be_bytes().to_vec(), b"[".to_vec()].concat(),
     ];
     for bytes in cases {
+        let connection = client
+            .endpoint()
+            .connect(
+                iroh::EndpointAddr::new(server.id()).with_ip_addr(server_addr),
+                crate::MACHINE_ALPN,
+            )
+            .await
+            .expect("machine connection");
         let (mut send, mut recv) = connection.open_bi().await.expect("stream");
         send.write_all(&bytes).await.expect("control bytes");
         send.finish().expect("finish control");
@@ -1007,7 +1838,7 @@ async fn admission_endpoint_echo_mismatch_never_contacts_any_application_listene
             bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
             direct_addresses: vec![direct_addr(&server).await],
             relay_urls: vec![],
-            handshake_json: r#"{"v":1,"operationId":"op-1"}"#.to_owned(),
+            handshake_json: r#"{"v":1,"flow":"finite_transfer","operationId":"op-1"}"#.to_owned(),
             cap_profile: IrohCapProfile::MachineBulk,
         },
     )
@@ -1016,10 +1847,6 @@ async fn admission_endpoint_echo_mismatch_never_contacts_any_application_listene
     let mut socket = TcpStream::connect(tunnel.local_addr().expect("local addr"))
         .await
         .expect("local connect");
-    socket
-        .write_all(tunnel.local_capability().as_bytes())
-        .await
-        .expect("local capability");
     socket
         .write_all(b"must-not-reach-app")
         .await
@@ -1082,27 +1909,24 @@ async fn duplicate_or_comma_folded_remote_endpoint_echo_rejects_before_any_appli
     });
     let acceptor = MachineAcceptor::start(&server, MachineAcceptorConfig { admission_target })
         .expect("acceptor");
-    let tunnel = MachineTunnel::start(
-        &client,
-        MachineTunnelConfig {
-            endpoint_id: server.id().to_string(),
-            bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
-            direct_addresses: vec![direct_addr(&server).await],
-            relay_urls: vec![],
-            handshake_json: r#"{"v":1,"operationId":"op-1"}"#.to_owned(),
-            cap_profile: IrohCapProfile::MachineBulk,
-        },
-    )
-    .await
-    .expect("tunnel");
+    let server_addr = direct_addr(&server).await;
     for _ in 0..2 {
+        let tunnel = MachineTunnel::start(
+            &client,
+            MachineTunnelConfig {
+                endpoint_id: server.id().to_string(),
+                bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+                direct_addresses: vec![server_addr],
+                relay_urls: vec![],
+                handshake_json: r#"{"v":1,"flow":"finite_transfer","operationId":"op-1"}"#.to_owned(),
+                cap_profile: IrohCapProfile::MachineBulk,
+            },
+        )
+        .await
+        .expect("tunnel");
         let mut socket = TcpStream::connect(tunnel.local_addr().expect("local addr"))
             .await
             .expect("local connect");
-        socket
-            .write_all(tunnel.local_capability().as_bytes())
-            .await
-            .expect("local capability");
         socket
             .write_all(b"must-not-reach-app")
             .await
@@ -1113,6 +1937,7 @@ async fn duplicate_or_comma_folded_remote_endpoint_echo_rejects_before_any_appli
                 .await
                 .expect("bounded reject");
         assert!(matches!(result, Ok(0) | Err(_)));
+        tunnel.stop();
     }
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     assert_eq!(admission_contacts.load(Ordering::Relaxed), 2);
@@ -1124,7 +1949,6 @@ async fn duplicate_or_comma_folded_remote_endpoint_echo_rejects_before_any_appli
         status.last_failure,
         Some(crate::MachineFailureCode::EndpointIdentityMismatch)
     );
-    tunnel.stop();
     acceptor.stop();
 }
 
@@ -1183,7 +2007,14 @@ async fn workspace_sync_accepts_exactly_one_local_socket_for_one_grant() {
         let mut socket = TcpStream::connect(tunnel.local_addr().unwrap())
             .await
             .unwrap();
-        let _ = socket.write_all(tunnel.local_capability().as_bytes()).await;
+        let _ = socket
+            .write_all(
+                tunnel
+                    .local_capability()
+                    .expect("workspace tunnel capability")
+                    .as_bytes(),
+            )
+            .await;
         let _ = socket.write_all(b"held").await;
         sockets.push(socket);
     }
@@ -1245,6 +2076,58 @@ async fn an_admitted_machine_connection_that_opens_no_stream_drains_after_the_cu
         0,
         "a connection without a first stream must never reach admission"
     );
+    assert_eq!(acceptor.status().streams_accepted, 0);
+
+    acceptor.stop();
+    client.shutdown().await;
+    server.shutdown().await;
+}
+
+/// The first stream remains connection-level pre-admission custody until its
+/// signed framing and application admission succeed. A rejected first stream
+/// must therefore retire the peer's whole QUIC connection, not leave a socket
+/// that can submit further streams indefinitely.
+#[tokio::test]
+async fn an_invalid_first_machine_stream_closes_the_connection_before_a_second_is_accepted() {
+    let admission_contacts = Arc::new(AtomicUsize::new(0));
+    let admission_target = echo_server(Arc::clone(&admission_contacts)).await;
+    let server = endpoint(IrohCapProfile::MachineBulk).await;
+    let server_addr = direct_addr(&server).await;
+    let acceptor = MachineAcceptor::start(&server, MachineAcceptorConfig { admission_target })
+        .expect("machine acceptor");
+    let client = endpoint(IrohCapProfile::MachineBulk).await;
+
+    let connection = client
+        .endpoint()
+        .connect(
+            iroh::EndpointAddr::new(server.id()).with_ip_addr(server_addr),
+            crate::MACHINE_ALPN,
+        )
+        .await
+        .expect("machine dial connects");
+    let (mut send, mut recv) = connection.open_bi().await.expect("first stream");
+    send.write_all(&[crate::TUNNEL_PREAMBLE.wrapping_add(1)])
+        .await
+        .expect("invalid first preamble");
+    send.finish().expect("finish invalid first stream");
+
+    let mut rejection = [0u8; 1];
+    match recv.read_exact(&mut rejection).await {
+        Ok(()) => assert_eq!(rejection[0], crate::machine::MACHINE_STREAM_REJECT_BYTE),
+        Err(_) => {
+            // Closing the pre-admission connection is authoritative. QUIC may
+            // surface that application close before the best-effort stream
+            // rejection byte, so either observation proves fail-closed.
+        }
+    }
+    tokio::time::timeout(Duration::from_secs(1), connection.closed())
+        .await
+        .expect("invalid first stream must close the whole connection");
+    assert!(
+        connection.open_bi().await.is_err(),
+        "a rejected pre-admission connection must accept no second stream"
+    );
+    assert_eq!(admission_contacts.load(Ordering::Relaxed), 0);
     assert_eq!(acceptor.status().streams_accepted, 0);
 
     acceptor.stop();

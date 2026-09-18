@@ -65,8 +65,9 @@ export type RegistryDependencies = Readonly<{
         getTunnelStatus: (tunnelId: string) => Promise<Record<string, unknown> | null>;
         getApplicationEndpoint: (request: unknown) => Promise<{ endpointId: string }>;
         getAvailability: () => Promise<{ available: boolean }>;
+        startMachineTunnel: (request: unknown) => Promise<unknown>;
         startMachineHttpTunnel: (request: unknown) => Promise<unknown>;
-        stopMachineHttpTunnel: (leaseId: string) => Promise<void>;
+        stopMachineTunnel: (leaseId: string) => Promise<void>;
     }>;
     systemTasks: Readonly<{
         start: (specJson: string) => Promise<{ taskId: string }>;
@@ -226,14 +227,18 @@ export function createCommandRegistry(dependencies: RegistryDependencies): Comma
         if (!args.request || typeof args.request !== 'object') throw new Error('iroh_get_application_endpoint requires a request');
         return dependencies.irohTunnel.getApplicationEndpoint(args.request);
     });
+    registry.set('iroh_start_machine_tunnel', (args) => {
+        if (!args.request || typeof args.request !== 'object') throw new Error('iroh_start_machine_tunnel requires a request');
+        return dependencies.irohTunnel.startMachineTunnel(args.request);
+    });
     registry.set('iroh_start_machine_http_tunnel', (args) => {
         if (!args.request || typeof args.request !== 'object') throw new Error('iroh_start_machine_http_tunnel requires a request');
         return dependencies.irohTunnel.startMachineHttpTunnel(args.request);
     });
-    registry.set('iroh_stop_machine_http_tunnel', async (args) => {
+    registry.set('iroh_stop_machine_tunnel', async (args) => {
         const leaseId = readString(args, 'leaseId');
-        if (leaseId === null) throw new Error('iroh_stop_machine_http_tunnel requires a leaseId');
-        await dependencies.irohTunnel.stopMachineHttpTunnel(leaseId);
+        if (leaseId === null) throw new Error('iroh_stop_machine_tunnel requires a leaseId');
+        await dependencies.irohTunnel.stopMachineTunnel(leaseId);
         return null;
     });
 

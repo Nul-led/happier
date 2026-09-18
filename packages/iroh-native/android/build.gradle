@@ -25,6 +25,11 @@ android {
   }
 }
 
+dependencies {
+  testImplementation "junit:junit:4.13.2"
+  testImplementation "org.robolectric:robolectric:4.14.1"
+}
+
 tasks.register("buildHappierIrohRustAndroid", Exec) {
   workingDir projectDir.parentFile
   environment "HAPPIER_ANDROID_NATIVE_API_LEVEL", (System.getenv("HAPPIER_ANDROID_NATIVE_API_LEVEL") ?: happierIrohNativeAndroidApiLevel.toString())

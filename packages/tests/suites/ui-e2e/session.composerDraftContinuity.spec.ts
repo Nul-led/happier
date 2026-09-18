@@ -232,6 +232,17 @@ async function openSecondContext(params: Readonly<{
     return { context, page, composer: opened.composer };
 }
 
+async function openSecondSessionContext(params: Readonly<{
+    browser: Browser;
+    uiBaseUrl: string;
+    session: SeededSession;
+}>): Promise<Readonly<{ context: BrowserContext; page: Page; composer: ReturnType<Page['locator']> }>> {
+    const context = await params.browser.newContext();
+    const page = await context.newPage();
+    const composer = await openSession({ page, uiBaseUrl: params.uiBaseUrl, session: params.session });
+    return { context, page, composer };
+}
+
 async function selectPermissionMode(page: Page, mode: 'default' | 'yolo'): Promise<void> {
     const compactTrigger = page.getByTestId('agent-input-permission-chip');
     const wizardTrigger = page.getByTestId('new-session-permission-dropdown-trigger');
@@ -483,6 +494,32 @@ test.describe('ui e2e: session composer draft continuity', () => {
         releaseResponse();
         await expect(reopened).toHaveValue(newer, { timeout: 60_000 });
         await page.unroute(`**/v2/sessions/${sessionA.id}/messages`);
+    });
+
+    test('converges an existing-session clear across two contexts without lifecycle resurrection', async ({ page, browser }) => {
+        test.setTimeout(360_000);
+        if (!server || !token || !uiBaseUrl || !sessionB) throw new Error('missing existing-session draft fixtures');
+
+        const seed = `existing-session shared draft ${run.runId}`;
+        const firstComposer = await openSession({ page, uiBaseUrl, session: sessionB });
+        await fillAndFlushDraft(page, firstComposer, seed);
+        const second = await openSecondSessionContext({ browser, uiBaseUrl, session: sessionB });
+
+        try {
+            await expect(second.composer).toHaveValue(seed, { timeout: 60_000 });
+            await fillAndFlushDraft(second.page, second.composer, '');
+            await expect(firstComposer).toHaveValue('', { timeout: 60_000 });
+
+            await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+            await expect.poll(async () => (await readDraft({
+                baseUrl: server!.baseUrl,
+                token: token!,
+                address: { kind: 'session', sessionId: sessionB!.id },
+            })).status, { timeout: 60_000 }).toBe('deleted');
+            await expect(firstComposer).toHaveValue('');
+        } finally {
+            await second.context.close();
+        }
     });
 
     test('rebases distinct fields, exposes same-field conflict, and does not resurrect a deleted draft across two contexts', async ({ page, browser }) => {

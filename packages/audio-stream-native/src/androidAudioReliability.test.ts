@@ -50,6 +50,19 @@ describe('Android Voice audio reliability contract', () => {
     expect(moduleSource).toContain('HappierVoiceAudioForegroundService.cancelPendingStart(requestId)');
   });
 
+  it('settles JS audio-session configuration only after foreground delivery is acknowledged', () => {
+    expect(moduleSource).toContain('import expo.modules.kotlin.Promise');
+    expect(moduleSource).toMatch(
+      /AsyncFunction\("configureAudioSession"\) \{ params: Map<String, Any>, promise: Promise ->[\s\S]*?synchronizeVoiceForegroundService\([\s\S]*?promise\.resolve\(configuration\)/,
+    );
+    expect(moduleSource).toMatch(
+      /foregroundServiceStartCompletion = onSettled[\s\S]*?HappierVoiceAudioForegroundService\.start\(context, requestId\)[\s\S]*?completion\?\.invoke\(result\)/,
+    );
+    expect(moduleSource).toMatch(
+      /stopVoiceForegroundService\([\s\S]*?foregroundServiceStartCompletion[\s\S]*?Result\.failure\(/,
+    );
+  });
+
   it('acknowledges only after startForeground and reports exact start failure', () => {
     const startForegroundIndex = serviceSource.indexOf('startForeground(');
     const successIndex = serviceSource.indexOf('settleStart(requestId, Result.success(Unit))');

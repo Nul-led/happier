@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 
 const basicExamplePath = fileURLToPath(new URL('../examples/basic/index.ts', import.meta.url));
 const comprehensiveExamplePath = fileURLToPath(new URL('../examples/comprehensive/index.ts', import.meta.url));
+const externalPluginExamplePath = fileURLToPath(new URL('../examples/external-plugin/index.ts', import.meta.url));
 const sensitivePayload = 'encrypted-transcript-payload'.repeat(1_000);
 const BASIC_EXAMPLE_CHILD_TIMEOUT_MS = 60_000;
 const BASIC_EXAMPLE_TEST_TIMEOUT_MS = BASIC_EXAMPLE_CHILD_TIMEOUT_MS + 5_000;
@@ -150,6 +151,30 @@ function successfulActionResponse(actionId: string): Readonly<Record<string, unk
     return { v: 1, actionId, execution: { ok: true, result: { accepted: true } } };
   }
 
+  if (actionId === 'session.discussion.post') {
+    return { v: 1, actionId, execution: { ok: true, result: { discussionId: 'discussion-1' } } };
+  }
+
+  if (actionId === 'execution.run.start') {
+    return { v: 1, actionId, execution: { ok: true, result: { runId: 'run-1' } } };
+  }
+
+  if (actionId === 'execution.run.get') {
+    return {
+      v: 1,
+      actionId,
+      execution: { ok: true, result: { run: { id: 'run-1', sidechainId: 'sidechain-1' } } },
+    };
+  }
+
+  if (actionId === 'execution.run.stop') {
+    return { v: 1, actionId, execution: { ok: true, result: { ok: true } } };
+  }
+
+  if (actionId === 'execution.run.wait') {
+    return { v: 1, actionId, execution: { ok: true, result: { status: 'cancelled' } } };
+  }
+
   if (actionId === 'session.transcript.get') {
     return {
       v: 1,
@@ -249,6 +274,12 @@ async function runBasicExample(
         HAPPIER_MACHINE_ID: options.machineId ?? '',
         HAPPIER_AGENT_ID: 'codex',
         HAPPIER_WORKSPACE_PATH: '/repo',
+        HAPPIER_SESSION_ID: 'session-1',
+        HAPPIER_DISCUSSION_ID: 'discussion-1',
+        HAPPIER_RUN_SELECTION: JSON.stringify({
+          backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+          permissionMode: 'safe-yolo',
+        }),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -400,6 +431,35 @@ describe('basic SDK example', () => {
       'transcript.unfollow',
       'session.transcript.get',
       'session.stop',
+    ]);
+  }, BASIC_EXAMPLE_TEST_TIMEOUT_MS);
+});
+
+describe('external integration SDK example', () => {
+  it('runs through the public generated and fluent Action surfaces only', async () => {
+    const result = await runBasicExample(successfulActionResponse, {
+      examplePath: externalPluginExamplePath,
+      machineId: 'machine-1',
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      discussionId: 'discussion-1',
+      runId: 'run-1',
+      settled: { accepted: true },
+      historyOk: true,
+    });
+    expect(result.stderr).toBe('');
+    expect(result.stdout).not.toContain(sensitivePayload);
+    expect(result.actionIds).toEqual([
+      'session.discussion.post',
+      'execution.run.start',
+      'session.message.send',
+      'session.message.send',
+      'execution.run.get',
+      'session.transcript.get',
+      'execution.run.stop',
+      'execution.run.wait',
     ]);
   }, BASIC_EXAMPLE_TEST_TIMEOUT_MS);
 });

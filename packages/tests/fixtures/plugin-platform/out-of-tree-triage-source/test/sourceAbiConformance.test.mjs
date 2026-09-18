@@ -35,7 +35,6 @@ import {
     LEDGER_ACCOUNT_PURPOSE,
     LEDGER_CONTRIBUTION_LOCAL_ID,
     activate,
-    readDetailOnlyFacts,
 } from '../src/index.mjs';
 import { LEDGER_ROW_COUNT, LEDGER_UNAVAILABLE_REF } from '../src/ledger.mjs';
 import { mapLedgerPage } from '../src/map.mjs';
@@ -58,6 +57,18 @@ const manifest = JSON.parse(
 );
 
 const LEDGER_SPACE = 'acme/ledger';
+/**
+ * The declared QA space (`qa/QA-PROTOCOL.md` QB-57).
+ *
+ * It is the same provider, page geometry and mapping as the curated space, read
+ * through the same configured-instance token: the only difference is which
+ * space the ordinary source configuration selected.
+ */
+const LEDGER_QA_SPACE = 'acme/ledger-qa';
+const LEDGER_QA_ROW_COUNT = 2_000;
+const LEDGER_QA_PAGE_LIMIT = 100;
+/** Every space discovery offers, in the order it reports them. */
+const LEDGER_SPACES = Object.freeze([LEDGER_SPACE, LEDGER_QA_SPACE]);
 const LISTED_ACCOUNT = Object.freeze({
     service: Object.freeze({ pluginId: 'acme.ledger', localId: 'ledger-account' }),
     accountId: 'account-1',
@@ -74,7 +85,7 @@ function plain(value) {
     return JSON.parse(JSON.stringify(value));
 }
 
-function configuredInstance(sourcePluginId = manifest.id) {
+function configuredInstance(sourcePluginId = manifest.id, space = LEDGER_SPACE) {
     return {
         v: 1,
         instance: {
@@ -82,8 +93,8 @@ function configuredInstance(sourcePluginId = manifest.id) {
             sourceInstanceId: '2f1c9c4e-8c1f-4a53-9c2a-4c9a7b1d3e05',
         },
         binding: { purpose: LEDGER_ACCOUNT_PURPOSE, account: LISTED_ACCOUNT },
-        localInstanceKey: LEDGER_SPACE,
-        configuration: { v: 1, token: `space=${LEDGER_SPACE}` },
+        localInstanceKey: space,
+        configuration: { v: 1, token: `space=${space}` },
     };
 }
 
@@ -261,7 +272,15 @@ test('QB-01: install, activation, listInstances, scan and get all work through p
     try {
         const listed = await installed.listInstances({ v: 1 });
         assert.equal(listed.kind, 'complete');
-        assert.equal(listed.candidates.length, 1);
+        // One candidate per space the account can read. Discovery offers the
+        // choice; ordinary source configuration is where a human makes it, so
+        // neither space is preselected here and neither is reachable only
+        // through an environment or global mode.
+        assert.deepEqual(listed.candidates.map((candidate) => candidate.localInstanceKey), LEDGER_SPACES);
+        assert.deepEqual(
+            listed.candidates.map((candidate) => plain(candidate.configuration)),
+            LEDGER_SPACES.map((space) => ({ v: 1, token: `space=${space}` })),
+        );
         assert.deepEqual(plain(listed.candidates[0].binding.account), plain(LISTED_ACCOUNT));
         // Discovery produced a draft, never a durable configured instance.
         assert.equal(Object.hasOwn(listed.candidates[0], 'instance'), false);
@@ -290,7 +309,7 @@ test('QB-01: a truncated account listing is reported incomplete, never complete'
         const listed = await installed.listInstances({ v: 1 });
 
         assert.equal(listed.kind, 'incomplete');
-        assert.equal(listed.candidates.length, 1);
+        assert.equal(listed.candidates.length, LEDGER_SPACES.length);
     } finally {
         await installed.dispose();
     }
@@ -314,8 +333,8 @@ test('QB-02: the list preserves a labelled detail-only fact without inventing a 
             value: { kind: 'detailOnly' },
         });
         // The value exists at the source; only a detail read resolves it, and
-        // the strict list projection carries no side channel for it.
-        assert.deepEqual(readDetailOnlyFacts('CHG-17'), { owner: 'r.okafor' });
+        // the strict list projection carries no side channel for it. The
+        // mounted-document tests above are where that read actually happens.
         assert.equal(JSON.stringify(change).includes('r.okafor'), false);
     } finally {
         await installed.dispose();
@@ -330,6 +349,173 @@ test('QB-02: an omitted fact and a detail-only fact are different projections', 
 
     assert.equal(withOwner.snapshot.facts.some((fact) => fact.id === 'acme/owner'), true);
     assert.equal(withoutOwner.snapshot.facts.some((fact) => fact.id === 'acme/owner'), false);
+});
+
+// ---------------------------------------------------------------------------
+// QB-02 — the mounted detail body actually resolves the fact the list withheld
+// ---------------------------------------------------------------------------
+
+/**
+ * The live document producer behind this source's declarative detail renderer.
+ *
+ * A detail surface is only a real answer to QB-02 if the *mounted* body can
+ * produce the value the list projection deliberately withheld. A static
+ * declarative root cannot: it paints the same bytes for every entry, so a
+ * module-level helper that resolves the owner would be proving nothing about
+ * anything a reader can reach.
+ */
+const LEDGER_DETAIL_DOCUMENT_RESOURCE_ID = 'ledger-detail-document';
+
+/**
+ * The exact launch input the aggregate mounts a source detail with.
+ *
+ * `packages/plugins/triage/src/ui/detail/input.ts` builds this value and hands
+ * it to `TargetedSurface`, and the host republishes it to the mount's
+ * `surface`-scoped Resource reads. Building it here from the source's own scan
+ * output is what keeps this a real boundary rather than a hand-written stub of
+ * a shape the aggregate does not send.
+ */
+function detailSurfaceInput(observation, space = LEDGER_SPACE) {
+    return {
+        v: 1,
+        instance: configuredInstance(manifest.id, space),
+        observation: {
+            entryRef: {
+                source: { pluginId: manifest.id, localId: LEDGER_CONTRIBUTION_LOCAL_ID },
+                ...plain(observation.localRef),
+            },
+            observedAtMs: 1_760_000_900_000,
+            locator: plain(observation.locator),
+            snapshot: plain(observation.snapshot),
+            viewer: plain(observation.viewer),
+        },
+        linkedSessions: [],
+    };
+}
+
+async function readDetailDocument(installed, context) {
+    const runtime = installed.source.registration('resources', LEDGER_DETAIL_DOCUMENT_RESOURCE_ID);
+    assert.ok(runtime, 'the source registers no detail document producer');
+    const produced = await runtime.read({ signal: new AbortController().signal, context });
+    const text = typeof produced === 'string' ? produced : new TextDecoder().decode(produced);
+    return JSON.parse(text);
+}
+
+/** Flattens the document's labelled values, which is what a reader sees. */
+function documentValues(document) {
+    const values = {};
+    const visit = (node) => {
+        if (node === null || typeof node !== 'object') return;
+        if (node.kind === 'status') values[node.label] = node.value;
+        for (const child of node.children ?? []) visit(child);
+    };
+    visit(document.root);
+    return values;
+}
+
+async function scannedEntry(installed, entryId, space = LEDGER_SPACE) {
+    const pages = [];
+    let input = { v: 1, instance: configuredInstance(manifest.id, space), page: { kind: 'initial', limit: 100 } };
+    for (let guard = 0; guard < 4; guard += 1) {
+        const result = TriageScanResultV1Schema.parse(await installed.scan(input));
+        pages.push(result);
+        const found = result.observations.find((o) => o.localRef.entryId === entryId);
+        if (found !== undefined) return found;
+        if (result.kind !== 'page') break;
+        input = {
+            v: 1,
+            instance: configuredInstance(manifest.id, space),
+            page: { kind: 'continuation', continuation: result.continuation },
+        };
+    }
+    throw new Error(`scan_never_observed_${entryId}`);
+}
+
+test('QB-02: the mounted detail document resolves the selected entry\'s owner the list withheld', async () => {
+    const installed = await install();
+    try {
+        const change = await scannedEntry(installed, 'CHG-17');
+        // The list still carries the labelled fact without its value.
+        assert.equal(JSON.stringify(change).includes('r.okafor'), false);
+
+        const document = await readDetailDocument(installed, {
+            kind: 'surface',
+            mountInstanceKey: 'acme-ledger/change/CHG-17',
+            launchInput: detailSurfaceInput(change),
+        });
+
+        assert.equal(document.version, 1);
+        const values = documentValues(document);
+        assert.equal(values.Owner, 'r.okafor');
+        // The document names the entry it answered for, so a reader can tell
+        // this body apart from one that resolved a different selection.
+        assert.equal(values.Entry, `${LEDGER_SPACE} CHG-17`);
+    } finally {
+        await installed.dispose();
+    }
+});
+
+test('QB-02: the detail document answers for the exact selected entry across both spaces', async () => {
+    const installed = await install();
+    try {
+        // Same shared ledger, different configured space: the owner is the one
+        // this entry actually carries, not a value cached from the first read.
+        const qaEntry = await scannedEntry(installed, 'LGQ-3', LEDGER_QA_SPACE);
+        const qaDocument = await readDetailDocument(installed, {
+            kind: 'surface',
+            mountInstanceKey: 'acme-ledger/ticket/LGQ-3',
+            launchInput: detailSurfaceInput(qaEntry, LEDGER_QA_SPACE),
+        });
+        assert.equal(documentValues(qaDocument).Owner, 's.nakamura');
+        assert.equal(documentValues(qaDocument).Entry, `${LEDGER_QA_SPACE} LGQ-3`);
+
+        // An entry whose provider row carries no owner gets no invented value,
+        // exactly as the list projection omits the fact for it.
+        const withoutOwner = await scannedEntry(installed, 'CHG-18');
+        assert.equal(withoutOwner.snapshot.facts.some((fact) => fact.id === 'acme/owner'), false);
+        const plainDocument = await readDetailDocument(installed, {
+            kind: 'surface',
+            mountInstanceKey: 'acme-ledger/change/CHG-18',
+            launchInput: detailSurfaceInput(withoutOwner),
+        });
+        assert.equal(documentValues(plainDocument).Owner, 'No owner is recorded for this entry.');
+    } finally {
+        await installed.dispose();
+    }
+});
+
+test('QB-02: a detail mount the source cannot authorize resolves nothing at all', async () => {
+    const installed = await install();
+    try {
+        const change = await scannedEntry(installed, 'CHG-17');
+
+        // The configured instance says one space and the selected entry says
+        // another. Answering from the configured space would hand the reader a
+        // different entry's owner under the selected entry's name.
+        const crossed = detailSurfaceInput(change);
+        crossed.observation.entryRef.collisionScope = LEDGER_QA_SPACE;
+        const crossedDocument = await readDetailDocument(installed, {
+            kind: 'surface',
+            mountInstanceKey: 'acme-ledger/change/CHG-17',
+            launchInput: crossed,
+        });
+        assert.equal(JSON.stringify(crossedDocument).includes('r.okafor'), false);
+
+        // A read with no mounted surface has no selection to answer for.
+        const unmounted = await readDetailDocument(installed, { kind: 'global' });
+        assert.equal(JSON.stringify(unmounted).includes('r.okafor'), false);
+
+        // And a launch input the published contract refuses is refused whole
+        // rather than partially believed.
+        const malformed = await readDetailDocument(installed, {
+            kind: 'surface',
+            mountInstanceKey: 'acme-ledger/change/CHG-17',
+            launchInput: { v: 1, instance: configuredInstance(), linkedSessions: [] },
+        });
+        assert.equal(JSON.stringify(malformed).includes('r.okafor'), false);
+    } finally {
+        await installed.dispose();
+    }
 });
 
 // ---------------------------------------------------------------------------
@@ -571,6 +757,145 @@ test('QB-05: a page never exceeds the submitted limit once omissions are counted
                 : 0;
             assert.ok(page.observations.length + omitted <= 3);
         }
+    } finally {
+        await installed.dispose();
+    }
+});
+
+// ---------------------------------------------------------------------------
+// QB-57 — the declared QA space is a real source for the loaded list recipe
+// ---------------------------------------------------------------------------
+
+test('QB-57: the configured QA space pages 2,000 real entries through the same scan owner', async () => {
+    // QB-57's workload is 2,000 mixed entries. A performance recipe run against
+    // a six-row fixture measures nothing, and a source that quietly returned
+    // the small space for a QA-space configuration would look identical in
+    // every schema check — so this walks the whole space and counts it.
+    const installed = await install();
+    try {
+        const instance = configuredInstance(manifest.id, LEDGER_QA_SPACE);
+        const seen = new Set();
+        let pages = 0;
+        let evidence = null;
+        let input = { v: 1, instance, page: { kind: 'initial', limit: LEDGER_QA_PAGE_LIMIT } };
+
+        for (let guard = 0; guard <= LEDGER_QA_ROW_COUNT / LEDGER_QA_PAGE_LIMIT; guard += 1) {
+            const result = TriageScanResultV1Schema.parse(await installed.scan(input));
+            pages += 1;
+            assert.ok(result.observations.length <= LEDGER_QA_PAGE_LIMIT);
+            for (const observation of result.observations) {
+                assert.equal(observation.localRef.collisionScope, LEDGER_QA_SPACE);
+                assert.equal(
+                    seen.has(observation.localRef.entryId),
+                    false,
+                    `the walk repeated ${observation.localRef.entryId}`,
+                );
+                seen.add(observation.localRef.entryId);
+            }
+            if (result.kind !== 'page') {
+                assert.equal(result.kind, 'complete');
+                evidence = result.evidence;
+                break;
+            }
+            input = {
+                v: 1,
+                instance,
+                page: { kind: 'continuation', continuation: result.continuation },
+            };
+        }
+
+        assert.equal(seen.size, LEDGER_QA_ROW_COUNT);
+        assert.equal(pages, LEDGER_QA_ROW_COUNT / LEDGER_QA_PAGE_LIMIT);
+        // The QA space carries no unmappable row: a partial walk would shrink
+        // the workload the recipe is supposed to measure.
+        assert.deepEqual(plain(evidence), { kind: 'walkFinished' });
+
+        // A deep entry is authoritative without any walk at all, so the recipe
+        // can open a detail from a window it never scanned to.
+        const deep = TriageGetResultV1Schema.parse(await installed.get({
+            v: 1,
+            instance,
+            localRef: {
+                kindId: 'ticket',
+                collisionScope: LEDGER_QA_SPACE,
+                entryId: `LGQ-${LEDGER_QA_ROW_COUNT - 1}`,
+            },
+        }));
+        assert.equal(deep.kind, 'present');
+        assert.equal(deep.snapshot.scopeLabel, LEDGER_QA_SPACE);
+
+        const beyond = TriageGetResultV1Schema.parse(await installed.get({
+            v: 1,
+            instance,
+            localRef: {
+                kindId: 'ticket',
+                collisionScope: LEDGER_QA_SPACE,
+                entryId: `LGQ-${LEDGER_QA_ROW_COUNT}`,
+            },
+        }));
+        assert.equal(beyond.kind, 'absent');
+    } finally {
+        await installed.dispose();
+    }
+});
+
+test('QB-57: the two spaces stay separate entry sets under the same configured source', async () => {
+    const installed = await install();
+    try {
+        // Reading a curated entry through a QA-space instance is a scope
+        // mismatch, never an absence claim: the spaces are different sets, and
+        // conflating them would let one configuration erase the other's rows.
+        const crossed = TriageGetResultV1Schema.parse(await installed.get({
+            v: 1,
+            instance: configuredInstance(manifest.id, LEDGER_QA_SPACE),
+            localRef: { kindId: 'ticket', collisionScope: LEDGER_SPACE, entryId: 'TCK-204' },
+        }));
+        assert.equal(crossed.kind, 'unresolved');
+        assert.equal(crossed.failure.code, 'acme/instance-scope-mismatch');
+
+        // And a QA entry id read inside the QA space resolves, so the mismatch
+        // above is about the configured scope rather than an unknown id.
+        const inSpace = TriageGetResultV1Schema.parse(await installed.get({
+            v: 1,
+            instance: configuredInstance(manifest.id, LEDGER_QA_SPACE),
+            localRef: { kindId: 'change', collisionScope: LEDGER_QA_SPACE, entryId: 'LGQ-0' },
+        }));
+        assert.equal(inSpace.kind, 'present');
+
+        // The curated space's deliberately unreachable row is a curated fact.
+        // In the QA space that id is simply not there, and reporting it as a
+        // transient outage would tell the aggregate to retry forever for an
+        // entry this space never had.
+        const foreign = TriageGetResultV1Schema.parse(await installed.get({
+            v: 1,
+            instance: configuredInstance(manifest.id, LEDGER_QA_SPACE),
+            localRef: {
+                kindId: 'ticket',
+                collisionScope: LEDGER_QA_SPACE,
+                entryId: LEDGER_UNAVAILABLE_REF,
+            },
+        }));
+        assert.equal(foreign.kind, 'absent');
+    } finally {
+        await installed.dispose();
+    }
+});
+
+test('QB-04: a configured token naming a space this source does not serve fails, never empties', async () => {
+    const installed = await install();
+    try {
+        const instance = configuredInstance(manifest.id, 'acme/ledger-retired');
+        const result = TriageScanResultV1Schema.parse(await installed.scan({
+            v: 1,
+            instance,
+            page: { kind: 'initial', limit: 3 },
+        }));
+
+        // An empty successful walk would tell the aggregate the source is
+        // healthy and has nothing, which is the one answer this source cannot
+        // truthfully give about a space it cannot read.
+        assert.equal(result.kind, 'failed');
+        assert.equal(result.failure.code, 'acme/unreadable-source-token');
     } finally {
         await installed.dispose();
     }

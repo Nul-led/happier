@@ -29,7 +29,7 @@
  * for the whole journey. That relay's ordinary URL is the only relay fact the
  * production children receive — through the real `HAPPIER_IROH_RELAY_POLICY=automatic`
  * + `HAPPIER_IROH_RELAY_URLS` configuration — so the restarted Home publishes
- * a fresh descriptor with a stable relay set and the restarted daemon
+ * a fresh descriptor with a stable relay set and the still-running daemon
  * reacquires it over a transport path that survives the Home process restart
  * even though its persisted direct-address hints went stale. The fixture
  * addon path never reaches a production child, and forced-direct coverage
@@ -39,7 +39,8 @@
  * the ordinary addon the runner builds can disappear while this journey runs.
  * The fixture therefore re-establishes artifact custody — one canonical
  * `iroh-native` `build:native` invocation — immediately before every
- * production child start (server and daemon, first start and restart).
+ * production child start (each server start/restart and the daemon's initial
+ * start). The daemon then remains alive while only Home restarts.
  *
  * The suite is inert unless the canonical Iroh real-integration runner
  * (`packages/iroh-native` `test:home-iroh:real`) selects it.
@@ -49,10 +50,14 @@ import { mkdir, readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { HomeConnectionDescriptorV1 } from '@happier-dev/protocol';
+import {
+  readMachineIrohEndpointAuthorityV1,
+  type HomeConnectionDescriptorV1,
+} from '@happier-dev/protocol';
 import {
   createIrohTestControllerFromNativeAddon,
   type IrohTestController,
@@ -63,10 +68,15 @@ import { seedCliAuthForTestAccount } from '../../src/testkit/cliAuth';
 import { startTestDaemon, type StartedDaemon } from '../../src/testkit/daemon/daemon';
 import { fetchJson } from '../../src/testkit/http';
 import { ensureProductionIrohNodeAddon } from '../../src/testkit/iroh/productionIrohNodeAddon';
-import { fetchMachineIdentities } from '../../src/testkit/machineIdentity';
+import {
+  fetchMachineIdentities,
+  type MachineIdentityRow,
+} from '../../src/testkit/machineIdentity';
 import { reserveAvailablePort } from '../../src/testkit/network/reserveAvailablePort';
 import { startServerLight, type StartedServer } from '../../src/testkit/process/serverLight';
+import { isProcessAlive } from '../../src/testkit/process/processTree';
 import { createRunDirs } from '../../src/testkit/runDir';
+import { repoRootDir } from '../../src/testkit/paths';
 import { createUserScopedSocketCollector, type SocketCollector } from '../../src/testkit/socketClient';
 import { waitForRegexInFile } from '../../src/testkit/waitForRegexInFile';
 
@@ -198,27 +208,74 @@ async function startComposedDaemon(params: Readonly<{
   env: NodeJS.ProcessEnv;
 }>): Promise<StartedDaemon> {
   await ensureProductionIrohNodeAddon({ testDir: params.testDir });
-  return await startTestDaemon(params);
+  const rootDir = repoRootDir();
+  return await startTestDaemon({
+    ...params,
+    // This is a moving-source integration journey, not a packaged-CLI or
+    // source-snapshot certification lane. Launch the real CLI command surface
+    // directly from the synchronized workspace so this moving-source journey
+    // does not require a separate bundled-plugin publication build.
+    // Production plugin-manifest validation remains active in the child;
+    // `startTestDaemon` still owns environment sanitization, process custody,
+    // daemon-state readiness and shutdown.
+    cliLaunchSpec: {
+      command: process.execPath,
+      args: [
+        '--preserve-symlinks',
+        '--preserve-symlinks-main',
+        '--import',
+        'tsx',
+        resolve(rootDir, 'apps', 'cli', 'src', 'index.ts'),
+      ],
+      cwd: resolve(rootDir, 'apps', 'cli'),
+      env: {
+        TSX_TSCONFIG_PATH: resolve(rootDir, 'apps', 'cli', 'tsconfig.json'),
+      },
+    },
+  });
 }
 
 async function waitForMachineActive(params: Readonly<{
   baseUrl: string;
   token: string;
   timeoutMs: number;
-}>): Promise<Readonly<{ id: string }>> {
+  minimumIrohAuthorityRevisionExclusive?: number;
+}>): Promise<MachineIdentityRow> {
   const deadline = Date.now() + params.timeoutMs;
   let lastSeen = 'none';
   while (Date.now() < deadline) {
     const machines = await fetchMachineIdentities({ baseUrl: params.baseUrl, token: params.token })
       .catch(() => []);
     const active = machines.find((machine) => machine.active === true);
-    if (active) return { id: active.id };
+    const activeIrohAuthority = readMachineIrohEndpointAuthorityV1({
+      capabilities: active?.operationProtocolCapabilities,
+      revision: active?.operationProtocolCapabilitiesRevision,
+    });
+    if (
+      active
+      && activeIrohAuthority
+      && (
+        params.minimumIrohAuthorityRevisionExclusive === undefined
+        || activeIrohAuthority.revision > params.minimumIrohAuthorityRevisionExclusive
+      )
+    ) return active;
     lastSeen = machines.length === 0
       ? 'no machines registered'
-      : machines.map((machine) => `${machine.id}:active=${String(machine.active)}`).join(', ');
+      : machines.map((machine) => {
+          const endpointAuthority = readMachineIrohEndpointAuthorityV1({
+            capabilities: machine.operationProtocolCapabilities,
+            revision: machine.operationProtocolCapabilitiesRevision,
+          });
+          return [
+            machine.id,
+            `active=${String(machine.active)}`,
+            `irohEndpoint=${endpointAuthority?.endpointId ?? 'none'}`,
+            `revision=${endpointAuthority?.revision ?? 'none'}`,
+          ].join(':');
+        }).join(', ');
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 500));
   }
-  throw new Error(`Timed out waiting for an active registered Machine (${lastSeen})`);
+  throw new Error(`Timed out waiting for an active registered Machine with current Iroh endpoint authority (${lastSeen})`);
 }
 
 /**
@@ -237,6 +294,24 @@ async function readPersistedProfileHomeConnectionDescriptor(params: Readonly<{
     servers?: Record<string, { homeConnectionDescriptor?: HomeConnectionDescriptorV1 } | undefined>;
   };
   return settings.servers?.[params.serverId]?.homeConnectionDescriptor ?? null;
+}
+
+async function waitForPersistedProfileHomeConnectionDescriptor(params: Readonly<{
+  cliHome: string;
+  serverId: string;
+  expected: HomeConnectionDescriptorV1;
+  timeoutMs: number;
+}>): Promise<HomeConnectionDescriptorV1> {
+  const deadline = Date.now() + params.timeoutMs;
+  let observed: HomeConnectionDescriptorV1 | null = null;
+  while (Date.now() < deadline) {
+    observed = await readPersistedProfileHomeConnectionDescriptor(params).catch(() => null);
+    if (observed && isDeepStrictEqual(observed, params.expected)) return observed;
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 500));
+  }
+  throw new Error(
+    `Timed out waiting for exact restarted Home descriptor adoption (expected revision=${params.expected.revision}, observed revision=${observed?.revision ?? 'none'})`,
+  );
 }
 
 /**
@@ -284,7 +359,7 @@ describe.skipIf(!shouldRunComposedHomeIrohJourney)('core e2e: composed Personal 
     }
   });
 
-  it('runs startServer -> Home Iroh endpoint -> startDaemon -> authenticated registration -> scoped Socket.IO state, then re-registers after Home restart and exact descriptor refresh', async () => {
+  it('keeps the spawned daemon registered over Iroh across a Home-only restart and adopts the current descriptor', async () => {
     const testDir = run.testDir(`home-iroh-composed-personal-home-${randomUUID()}`);
     const port = await reserveAvailablePort();
     const canonicalServerUrl = `http://127.0.0.1:${port}`;
@@ -330,12 +405,23 @@ describe.skipIf(!shouldRunComposedHomeIrohJourney)('core e2e: composed Personal 
       relayUrl: testRelayUrl,
     });
 
+    // The authenticated feature route is the sole first-publication owner for
+    // descriptor continuity. Public discovery is deliberately read-only and
+    // may project only an already committed descriptor; asking it first would
+    // turn this fixture into a competing publication owner.
+    const authenticatedDescriptor =
+      (await fetchAuthenticatedFeatures(server.baseUrl, auth.token)).homeConnectionDescriptor;
+    const authenticatedIroh = readIrohEndpoint(authenticatedDescriptor);
+    if (!authenticatedDescriptor || !authenticatedIroh) {
+      throw new Error(
+        `Managed Personal Home did not publish its authenticated Iroh endpoint after signup closure.\n${await readServerStartupLogs(testDir)}`,
+      );
+    }
+
     const publicDescriptor = (await fetchPublicFeatures(server.baseUrl)).homeConnectionDescriptor;
     const publicIroh = readIrohEndpoint(publicDescriptor);
-    if (!publicIroh) {
-      throw new Error(
-        `Managed Personal Home did not publish its Iroh endpoint after signup closure.\n${await readServerStartupLogs(testDir)}`,
-      );
+    if (!publicDescriptor || !publicIroh) {
+      throw new Error('Managed Personal Home did not project its committed public Iroh descriptor');
     }
     expect(publicDescriptor?.canonicalServerUrl).toBe(canonicalServerUrl);
     // Public projection never leaks private direct-address hints, and it
@@ -343,12 +429,6 @@ describe.skipIf(!shouldRunComposedHomeIrohJourney)('core e2e: composed Personal 
     expect(publicIroh).not.toHaveProperty('directAddresses');
     expect(publicIroh.relayUrls).toEqual([testRelayUrl]);
 
-    const authenticatedDescriptor =
-      (await fetchAuthenticatedFeatures(server.baseUrl, auth.token)).homeConnectionDescriptor;
-    const authenticatedIroh = readIrohEndpoint(authenticatedDescriptor);
-    if (!authenticatedDescriptor || !authenticatedIroh) {
-      throw new Error('Composed Personal Home did not publish an authenticated Iroh endpoint descriptor');
-    }
     expect(authenticatedIroh.endpointId).toBe(publicIroh?.endpointId);
     expect(authenticatedIroh.directAddresses ?? []).not.toHaveLength(0);
     // The applied native endpoint exposes exactly the configured relay set.
@@ -373,7 +453,11 @@ describe.skipIf(!shouldRunComposedHomeIrohJourney)('core e2e: composed Personal 
       homeConnectionDescriptor: authenticatedDescriptor,
     });
 
-    accountSocket = createUserScopedSocketCollector(canonicalServerUrl, auth.token);
+    // The parent-process observer talks to the managed Home's real loopback
+    // listener. Only the spawned daemon is under carrier test; the loopback
+    // canonical origin is the stable authentication audience while the daemon
+    // reaches that listener through its selected Iroh runtime origin.
+    accountSocket = createUserScopedSocketCollector(server.baseUrl, auth.token);
     accountSocket.connect();
 
     const daemonEnv: NodeJS.ProcessEnv = {
@@ -397,10 +481,17 @@ describe.skipIf(!shouldRunComposedHomeIrohJourney)('core e2e: composed Personal 
     daemon = await startComposedDaemon({ testDir, happyHomeDir: daemonHomeDir, env: daemonEnv });
 
     const registeredMachine = await waitForMachineActive({
-      baseUrl: canonicalServerUrl,
+      baseUrl: server.baseUrl,
       token: auth.token,
       timeoutMs: 90_000,
     });
+    const initialMachineIrohAuthority = readMachineIrohEndpointAuthorityV1({
+      capabilities: registeredMachine.operationProtocolCapabilities,
+      revision: registeredMachine.operationProtocolCapabilitiesRevision,
+    });
+    if (!initialMachineIrohAuthority) {
+      throw new Error('Registered Machine did not publish its current Iroh EndpointId authority');
+    }
 
     // The daemon's own composition root reports which carrier moved those
     // authenticated bytes. A standard-carrier daemon would still register, so
@@ -413,16 +504,17 @@ describe.skipIf(!shouldRunComposedHomeIrohJourney)('core e2e: composed Personal 
     // machine-activity state the daemon published over its Iroh-carried socket.
     // The observed count is kept as the baseline for the restart oracle below:
     // while this first daemon process is the only possible publisher, every
-    // matching event it produced is counted before any restart begins.
+    // matching event it produced is counted before the Home restart begins.
     const machineActivityBeforeRestart =
       countMachineActivityEvents(accountSocket, registeredMachine.id);
     expect(machineActivityBeforeRestart).toBeGreaterThan(0);
 
-    // --- Phase 4: Home restart. The persistent endpoint key and continuity
-    // record must preserve the EndpointId across the real process restart, and
-    // a restarted daemon must reconnect through the same descriptor.
-    await daemon.stop();
-    daemon = null;
+    // --- Phase 4: Home-only restart. The daemon process deliberately remains
+    // alive. Its existing Socket.IO connection and Iroh lease both lose the
+    // Home, so the production reconnect supervisor must reacquire the carrier,
+    // refresh the descriptor and republish live Machine activity without a
+    // daemon restart masking any lifecycle gap.
+    const daemonPidBeforeHomeRestart = daemon.state.pid;
     await server.stop();
     server = null;
 
@@ -440,12 +532,13 @@ describe.skipIf(!shouldRunComposedHomeIrohJourney)('core e2e: composed Personal 
     // The persistent endpoint key and continuity record survive the process
     // restart, so the EndpointId is stable and no new transport identity is
     // created. The restarted Home publishes the same stable relay set — that
-    // is what lets the restarted daemon reacquire it remotely — while the
+    // is what lets the still-running daemon reacquire it remotely — while the
     // descriptor revision only ever moves forward: a restart rebinds an
     // ephemeral UDP port, so its direct-address hints legitimately change.
     expect(restartedIroh?.endpointId).toBe(publicIroh?.endpointId);
     expect(restartedIroh?.relayUrls).toEqual([testRelayUrl]);
     expect(restartedDescriptor?.revision ?? 0).toBeGreaterThanOrEqual(publicDescriptor?.revision ?? 0);
+    expect(isProcessAlive(daemonPidBeforeHomeRestart)).toBe(true);
 
     // A restart rebinds the endpoint's ephemeral UDP port, so the daemon's
     // persisted direct-address hints are stale. The fixture leaves the seeded
@@ -467,21 +560,30 @@ describe.skipIf(!shouldRunComposedHomeIrohJourney)('core e2e: composed Personal 
     expect(restartedAuthenticatedIroh.endpointId).toBe(publicIroh?.endpointId);
     expect(restartedAuthenticatedIroh.relayUrls).toEqual([testRelayUrl]);
 
-    daemon = await startComposedDaemon({ testDir, happyHomeDir: daemonHomeDir, env: daemonEnv });
     const reconnectedMachine = await waitForMachineActive({
-      baseUrl: canonicalServerUrl,
+      baseUrl: server.baseUrl,
       token: auth.token,
       timeoutMs: 90_000,
+      minimumIrohAuthorityRevisionExclusive: initialMachineIrohAuthority.revision,
     });
     expect(reconnectedMachine.id).toBe(registeredMachine.id);
+    expect(isProcessAlive(daemonPidBeforeHomeRestart)).toBe(true);
+    const reconnectedMachineIrohAuthority = readMachineIrohEndpointAuthorityV1({
+      capabilities: reconnectedMachine.operationProtocolCapabilities,
+      revision: reconnectedMachine.operationProtocolCapabilitiesRevision,
+    });
+    if (!reconnectedMachineIrohAuthority) {
+      throw new Error('Reconnected Machine did not republish its current Iroh EndpointId authority');
+    }
+    expect(reconnectedMachineIrohAuthority.endpointId).toBe(initialMachineIrohAuthority.endpointId);
+    expect(reconnectedMachineIrohAuthority.revision).toBeGreaterThan(initialMachineIrohAuthority.revision);
 
-    // Stale-row guard: the row lookup above proves identity continuity, but a
-    // pre-restart row that never deactivated would satisfy it without any
-    // fresh publication. The account socket survives the Home restart
-    // (socket.io reconnection), so machine-activity events beyond the
-    // pre-restart baseline prove the restarted daemon process itself published
-    // live state through a freshly acquired Home transport. In this
-    // loopback-only composition that transport can only be the verified Iroh
+    // The advanced endpoint-authority revision above proves fresh control
+    // publication from this daemon connection. The account socket survives
+    // the Home restart (socket.io reconnection), so machine-activity events
+    // beyond the pre-restart baseline prove the still-running daemon process
+    // itself published live state through a freshly acquired Home transport.
+    // In this loopback-only composition that transport can only be the verified Iroh
     // lease — no standard carrier is ever published, so an authenticated
     // Machine cannot publish through anything else.
     const freshActivityDeadline = Date.now() + 90_000;
@@ -491,7 +593,7 @@ describe.skipIf(!shouldRunComposedHomeIrohJourney)('core e2e: composed Personal 
     ) {
       if (Date.now() > freshActivityDeadline) {
         throw new Error(
-          'Timed out waiting for post-restart machine-activity publication from the restarted daemon',
+          'Timed out waiting for post-restart machine-activity publication from the still-running daemon',
         );
       }
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 500));
@@ -499,13 +601,14 @@ describe.skipIf(!shouldRunComposedHomeIrohJourney)('core e2e: composed Personal 
 
     // The fixture never rewrote the persisted profile, so the exact adoption
     // of the restarted authenticated projection is observable in the
-    // daemon-owned profile: the stale seeded revision must have been replaced
-    // by the restarted projection through the production reconcile owner.
-    const adoptedDescriptor = await readPersistedProfileHomeConnectionDescriptor({
+    // daemon-owned profile: it must match the restarted projection through the
+    // production reconcile owner.
+    const adoptedDescriptor = await waitForPersistedProfileHomeConnectionDescriptor({
       cliHome: daemonHomeDir,
       serverId: seeded.serverId,
+      expected: restartedAuthenticatedDescriptor,
+      timeoutMs: 90_000,
     });
-    expect(adoptedDescriptor?.revision).toBe(restartedAuthenticatedDescriptor.revision);
-    expect(readIrohEndpoint(adoptedDescriptor ?? undefined)?.endpointId).toBe(publicIroh?.endpointId);
+    expect(adoptedDescriptor).toEqual(restartedAuthenticatedDescriptor);
   }, 900_000);
 });

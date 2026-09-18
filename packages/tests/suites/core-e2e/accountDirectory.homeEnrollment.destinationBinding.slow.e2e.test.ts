@@ -62,9 +62,9 @@ import {
  *   attacker       recording endpoint in front of the real Home that forges only `/v1/features`.
  *
  * Production composition exercised: AccountDirectorySession → provisionAuthenticatedHomeLink →
- * refreshAccountHomeDirectory → enrollPreferredDirectoryHome → continueHomeLoginEnrollment →
+ * refreshAccountHomeDirectory → completeAccountServicePostAuth → enrollDirectoryHome → continueHomeLoginEnrollment →
  * resolveHomeEnrollmentTransport → redeemHomeLoginAssertion → homeDeviceApprovalClient →
- * resumePendingPreferredHomeEnrollment → adoptHomeProfileWithCredentials. Assertion minting and
+ * resumePendingDirectoryHomeEnrollment → adoptHomeProfileWithCredentials. Assertion minting and
  * redemption are the real Account Service and real Home routes; nothing about the security owner
  * is stubbed, and no missing binding is simulated.
  *
@@ -166,7 +166,8 @@ async function loadProductionModules() {
         adoptWithCredentials: await loadProductionModule('adoptWithCredentials', () => import('@/sync/domains/server/adoptHomeProfile')),
         refreshDirectory: await loadProductionModule('refreshDirectory', () => import('@/sync/ops/accountDirectory/refreshAccountHomeDirectory')),
         provisionHomeLink: await loadProductionModule('provisionHomeLink', () => import('@/sync/ops/accountDirectory/provisionAuthenticatedHomeLink')),
-        enrollment: await loadProductionModule('enrollment', () => import('@/sync/ops/accountDirectory/enrollPreferredDirectoryHome')),
+        postAuth: await loadProductionModule('postAuth', () => import('@/sync/ops/accountDirectory/completeAccountServicePostAuth')),
+        enrollment: await loadProductionModule('enrollment', () => import('@/sync/ops/accountDirectory/enrollDirectoryHome')),
     };
 }
 
@@ -260,6 +261,7 @@ describe('core e2e: Account Directory Home enrollment is bound to its credential
     let benignRequesterClient!: ProductionClient;
     let approverClient!: ProductionClient;
     let directoryCapability!: DirectoryCapability;
+    let directoryService!: Parameters<ProductionModules['postAuth']['completeAccountServicePostAuth']>[0]['service'];
     let previousStorageScope: string | undefined;
 
     let accountServiceBaseUrl = '';
@@ -424,12 +426,20 @@ describe('core e2e: Account Directory Home enrollment is bound to its credential
             force: true,
         });
         expect(directoryProbe.status).toBe('ready');
+        if (directoryProbe.status !== 'ready') throw new Error('unreachable');
         accountServiceIdentity = directoryProbe.serverIdentityId!.trim();
         expect(accountServiceIdentity).toBe('srv_accountDirectoryDestBindingSvcA1');
         directoryCapability = modules.directorySession.parseAccountDirectoryCapability(
             directoryProbe.features.capabilities.accountDirectory,
         )!;
         expect(directoryCapability.homeEnrollment).toBe(true);
+        directoryService = {
+            endpointUrl: accountServiceBaseUrl,
+            serverIdentityId: accountServiceIdentity,
+            canonicalServerUrl: accountServiceBaseUrl,
+            capability: directoryCapability,
+            snapshot: directoryProbe,
+        };
 
         const homeProbe = await modules.serverFeatures.probeServerFeaturesAtUrl({
             endpointUrl: homeBaseUrl,
@@ -531,8 +541,10 @@ describe('core e2e: Account Directory Home enrollment is bound to its credential
                 { kind: 'https', url: attackerBaseUrl },
             ]);
 
-            const attacked = await requesterModules.enrollment.enrollPreferredDirectoryHome(session, {
-                entryIntent: 'connect_service',
+            const attacked = await requesterModules.postAuth.completeAccountServicePostAuth({
+                service: directoryService,
+                session,
+                intent: { kind: 'enroll', homeServerIdentityId: homeIdentity },
             });
 
             // Read the Home's approval state before any decision: a request approved later would
@@ -548,13 +560,17 @@ describe('core e2e: Account Directory Home enrollment is bound to its credential
             // attacker route. Under a destination-bound Home this branch is unreachable.
             let outcome: string = attacked.kind;
             if (attacked.kind === 'approval_required') {
+                const pending = requesterModules.enrollment.getPendingDirectoryHomeEnrollment();
+                expect(pending?.kind).toBe('approval_required');
+                if (pending?.kind !== 'approval_required') throw new Error('unreachable');
+                expect(pending.approvalId).toEqual(expect.any(String));
                 await approverModules.approvalClient.decideHomeDeviceApproval(
                     approvalTarget,
-                    attacked.approvalId,
+                    pending.approvalId,
                     'approve',
                 );
                 useProductionClient(attackRequesterClient);
-                const resumed = await requesterModules.enrollment.resumePendingPreferredHomeEnrollment();
+                const resumed = await requesterModules.enrollment.resumePendingDirectoryHomeEnrollment();
                 outcome = resumed?.kind ?? outcome;
             }
             useProductionClient(attackRequesterClient);
@@ -598,9 +614,9 @@ describe('core e2e: Account Directory Home enrollment is bound to its credential
 
             // The production caller reports a terminal failure rather than an enrolled Home or a
             // durable pending approval the user could still confirm.
-            expect(outcome).not.toBe('enrolled');
+            expect(outcome).not.toBe('home_enrolled');
             expect(outcome).not.toBe('approval_required');
-            expect(requesterModules.enrollment.getPendingPreferredHomeEnrollment()).toBeNull();
+            expect(requesterModules.enrollment.getPendingDirectoryHomeEnrollment()).toBeNull();
 
             // A10: the stable canonical auth origin never becomes the attacker route.
             //
@@ -615,7 +631,7 @@ describe('core e2e: Account Directory Home enrollment is bound to its credential
                 .not.toContain(attackerBaseUrl);
         } finally {
             useProductionClient(attackRequesterClient);
-            await requesterModules.enrollment.cancelPendingPreferredHomeEnrollment().catch(() => {});
+            await requesterModules.enrollment.cancelPendingDirectoryHomeEnrollment().catch(() => {});
         }
     }, 300_000);
 
@@ -681,26 +697,39 @@ describe('core e2e: Account Directory Home enrollment is bound to its credential
             endpoints: publishedDescriptor.endpoints,
         });
 
-        const enrollment = await requesterModules.enrollment.enrollPreferredDirectoryHome(session, {
-            entryIntent: 'connect_service',
+        const enrollment = await requesterModules.postAuth.completeAccountServicePostAuth({
+            service: directoryService,
+            session,
+            intent: { kind: 'enroll', homeServerIdentityId: homeIdentity },
         });
         expect({
             kind: enrollment.kind,
             detail: 'reason' in enrollment ? enrollment.reason : null,
         }).toEqual({ kind: 'approval_required', detail: null });
         if (enrollment.kind !== 'approval_required') throw new Error('unreachable');
+        const pending = requesterModules.enrollment.getPendingDirectoryHomeEnrollment();
+        expect(pending?.kind).toBe('approval_required');
+        if (pending?.kind !== 'approval_required') throw new Error('unreachable');
+        expect(pending.approvalId).toEqual(expect.any(String));
 
         useProductionClient(approverClient);
         const decision = await approverModules.approvalClient.decideHomeDeviceApproval(
             approvalTarget,
-            enrollment.approvalId,
+            pending.approvalId,
             'approve',
         );
         expect(decision).toMatchObject({ ok: true, status: 'approved' });
 
         useProductionClient(benignRequesterClient);
-        const resumed = await requesterModules.enrollment.resumePendingPreferredHomeEnrollment();
-        expect(resumed).toEqual({ kind: 'enrolled', homeServerIdentityId: homeIdentity });
+        const resumed = await requesterModules.enrollment.resumePendingDirectoryHomeEnrollment();
+        // The Home credential commit succeeded; the default-E2EE Home then reports
+        // the exact A12 material stage instead of claiming token-only is ready.
+        expect(resumed).toEqual({
+            kind: 'home_material_required',
+            homeServerIdentityId: homeIdentity,
+            reason: 'missing_material',
+            intent: { kind: 'enroll', homeServerIdentityId: homeIdentity },
+        });
 
         const stored = await requesterModules.tokenStorage.TokenStorage
             .getCredentialsForServerUrl(homeBaseUrl, { serverId: homeIdentity });

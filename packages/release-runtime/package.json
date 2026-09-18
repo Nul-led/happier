@@ -18,6 +18,10 @@
       "types": "./dist/checksums.d.ts",
       "default": "./dist/checksums.js"
     },
+    "./releaseArtifactVerification": {
+      "types": "./dist/releaseArtifactVerification.d.ts",
+      "default": "./dist/releaseArtifactVerification.js"
+    },
     "./assets": {
       "types": "./dist/assets.d.ts",
       "default": "./dist/assets.js"
@@ -25,6 +29,10 @@
     "./archiveExtraction": {
       "types": "./dist/archiveExtraction.d.ts",
       "default": "./dist/archiveExtraction.js"
+    },
+    "./archiveSymlinkContainment": {
+      "types": "./dist/archiveSymlinkContainment.d.ts",
+      "default": "./dist/archiveSymlinkContainment.js"
     },
     "./verifiedDownload": {
       "types": "./dist/verifiedDownload.d.ts",
@@ -39,6 +47,14 @@
       "import": "./dist/releaseRings.js",
       "require": "./releaseRings.cjs",
       "default": "./dist/releaseRings.js"
+    },
+    "./releaseProducts": {
+      "types": "./dist/releaseProducts.d.ts",
+      "default": "./dist/releaseProducts.js"
+    },
+    "./releaseManifest": {
+      "types": "./dist/releaseManifest.d.ts",
+      "default": "./dist/releaseManifest.js"
     }
   },
   "files": [
@@ -58,6 +74,9 @@
     "postinstall": "node -e \"const fs=require('fs');const cp=require('child_process');if(/(^|[\\\\\\\\/])node_modules([\\\\\\\\/]|$)/i.test(process.cwd()))process.exit(0);try{const gate=require('../../scripts/postinstall/shouldRunPostinstall.cjs');if(!gate.shouldRunPostinstall({workspace:'release-runtime',scope:process.env.HAPPIER_INSTALL_SCOPE||''}))process.exit(0);}catch{}if(!fs.existsSync('tsconfig.json'))process.exit(0);const run=(cmd,args)=>cp.spawnSync(cmd,args,{stdio:'inherit'});const npmExec=process.env.npm_execpath;let r;if(npmExec){r=run(process.execPath,[npmExec,'run','-s','postinstall:real']);}else{r=run(process.platform==='win32'?'yarn.cmd':'yarn',['-s','postinstall:real']);if(r.error&&process.platform==='win32'){r=run('yarn',['-s','postinstall:real']);}}if(r.error){console.error(r.error.message);process.exit(1);}process.exit(r.status??1);\""
   },
   "dependencies": {
+    "@noble/curves": "^1.9.0",
+    "@noble/hashes": "^1.8.0",
+    "base64-js": "^1.5.1",
     "tar": "7.5.22",
     "xz-decompress": "^0.2.3",
     "yauzl": "^2.10.0"

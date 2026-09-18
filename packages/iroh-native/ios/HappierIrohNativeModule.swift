@@ -8,6 +8,7 @@ import Security
 @_silgen_name("happier_iroh_native_ensure_home_tunnel_json") private func irohEnsureHomeTunnel(_ request: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar>?
 @_silgen_name("happier_iroh_native_release_home_tunnel_json") private func irohReleaseHomeTunnel(_ request: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar>?
 @_silgen_name("happier_iroh_native_shutdown_endpoint_json") private func irohShutdownEndpoint(_ request: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar>?
+@_silgen_name("happier_iroh_native_start_machine_tunnel_json") private func irohStartMachineTunnel(_ request: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar>?
 @_silgen_name("happier_iroh_native_start_machine_http_tunnel_json") private func irohStartMachineHttpTunnel(_ request: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar>?
 @_silgen_name("happier_iroh_native_stop_machine_tunnel_json") private func irohStopMachineTunnel(_ request: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar>?
 @_silgen_name("happier_iroh_native_free_string") private func irohFree(_ value: UnsafeMutablePointer<CChar>?)
@@ -39,6 +40,9 @@ public final class HappierIrohNativeModule: Module {
     }
     AsyncFunction("shutdownEndpoint") { (_ request: [String: Any]) async throws -> Void in
       _ = try call(request, irohShutdownEndpoint)
+    }
+    AsyncFunction("startMachineTunnel") { (_ request: [String: Any]) async throws -> [String: Any] in
+      try call(request, irohStartMachineTunnel)
     }
     AsyncFunction("startMachineHttpTunnel") { (_ request: [String: Any]) async throws -> [String: Any] in
       try call(request, irohStartMachineHttpTunnel)
@@ -110,7 +114,7 @@ private enum IrohEndpointIdentityStore {
   private static func validate(_ data: Data) throws -> Data {
     guard data.count == 32 else {
       // Existing unreadable/corrupt identity is never deleted or rotated.
-      throw identityError(code: 2, message: "Iroh endpoint identity is corrupt; explicit re-pair is required.")
+      throw identityError(code: 2, message: "Iroh endpoint identity is corrupt; secure-storage repair is required.")
     }
     return data
   }

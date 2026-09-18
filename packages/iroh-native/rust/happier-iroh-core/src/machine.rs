@@ -9,12 +9,15 @@ use crate::{
     MACHINE_ALPN, TUNNEL_PREAMBLE,
 };
 use iroh::RelayUrl;
+use std::future::Future;
+use std::io::{Error, ErrorKind};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch};
 use tokio::task::{JoinHandle, JoinSet};
@@ -34,6 +37,7 @@ pub const IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER: &str = "X-Happier-Machine-L
 pub const MACHINE_LOCAL_CAPABILITY_BYTES: usize = 32;
 pub const MACHINE_LOCAL_CAPABILITY_HEX_LENGTH: usize = MACHINE_LOCAL_CAPABILITY_BYTES * 2;
 const MAX_ADMISSION_RESPONSE_BYTES: usize = 16 * 1024;
+const MAX_MACHINE_HTTP_HEAD_BYTES: usize = 16 * 1024;
 pub const MACHINE_STREAM_ACCEPT_BYTE: u8 = 0x01;
 pub const MACHINE_STREAM_REJECT_BYTE: u8 = 0x00;
 
@@ -164,10 +168,10 @@ fn validate_target(target: SocketAddr) -> Result<()> {
 }
 
 /// Streams on one dispatched machine connection. The connection's first stream
-/// must arrive inside the endpoint's pre-application custody window; after it
-/// has, the loop keeps waiting for further streams for as long as the peer holds
-/// the connection open, preserving the existing long-lived transfer and
-/// workspace-sync semantics.
+/// must arrive and complete signed application admission inside pre-admission
+/// custody. Only then does the loop accept further streams for as long as the
+/// peer holds the connection open, preserving the existing long-lived transfer
+/// and workspace-sync semantics.
 async fn pump_connection(
     accepted: AcceptedIrohConnection,
     config: MachineAcceptorConfig,
@@ -181,13 +185,21 @@ async fn pump_connection(
         // (including its endpoint cap lease) drains the admission.
         return;
     };
-    streams.spawn(pump_stream(
+    let Some(first_stream) = admit_stream(
         send,
         recv,
         config,
-        remote_endpoint_id.clone(),
+        &remote_endpoint_id,
         Arc::clone(&state),
-    ));
+    )
+    .await
+    else {
+        accepted
+            .connection
+            .close(0u32.into(), b"first_stream_rejected");
+        return;
+    };
+    streams.spawn(pump_admitted_stream(first_stream, Arc::clone(&state)));
     loop {
         tokio::select! {
             _ = shutdown_rx.changed() => { break; }
@@ -202,12 +214,32 @@ async fn pump_connection(
 }
 
 async fn pump_stream(
-    mut send: iroh::endpoint::SendStream,
-    mut recv: iroh::endpoint::RecvStream,
+    send: iroh::endpoint::SendStream,
+    recv: iroh::endpoint::RecvStream,
     config: MachineAcceptorConfig,
     remote_endpoint_id: String,
     state: Arc<AcceptorState>,
 ) {
+    let Some(stream) = admit_stream(send, recv, config, &remote_endpoint_id, Arc::clone(&state)).await
+    else {
+        return;
+    };
+    pump_admitted_stream(stream, state).await;
+}
+
+struct AdmittedMachineStream {
+    send: iroh::endpoint::SendStream,
+    recv: iroh::endpoint::RecvStream,
+    app: TcpStream,
+}
+
+async fn admit_stream(
+    mut send: iroh::endpoint::SendStream,
+    mut recv: iroh::endpoint::RecvStream,
+    config: MachineAcceptorConfig,
+    remote_endpoint_id: &str,
+    state: Arc<AcceptorState>,
+) -> Option<AdmittedMachineStream> {
     let admitted = tokio::time::timeout(MACHINE_CONTROL_TIMEOUT, async {
         let mut preamble = [0u8; 1];
         recv.read_exact(&mut preamble)
@@ -235,7 +267,14 @@ async fn pump_stream(
         if !parsed.is_object() {
             return Err(MachineFailureCode::InvalidControl);
         }
-        authorize(config.admission_target, &remote_endpoint_id, &handshake).await
+        let purpose = validate_handshake(text).map_err(|_| MachineFailureCode::InvalidControl)?;
+        authorize(
+            config.admission_target,
+            remote_endpoint_id,
+            &handshake,
+            purpose.requires_local_capability(),
+        )
+        .await
     })
     .await;
     let application_target = match admitted {
@@ -251,7 +290,7 @@ async fn pump_stream(
             state.streams_rejected.fetch_add(1, Ordering::Relaxed);
             let _ = send.write_all(&[MACHINE_STREAM_REJECT_BYTE]).await;
             let _ = send.finish();
-            return;
+            return None;
         }
     };
     // The application host is hard-coded loopback; only the port comes from
@@ -262,20 +301,32 @@ async fn pump_stream(
         state.streams_rejected.fetch_add(1, Ordering::Relaxed);
         let _ = send.write_all(&[MACHINE_STREAM_REJECT_BYTE]).await;
         let _ = send.finish();
-        return;
+        return None;
     };
     if let Some(local_capability) = application_target.local_capability {
         if app.write_all(local_capability.as_bytes()).await.is_err() {
             state.streams_rejected.fetch_add(1, Ordering::Relaxed);
             let _ = send.write_all(&[MACHINE_STREAM_REJECT_BYTE]).await;
             let _ = send.finish();
-            return;
+            return None;
         }
     }
     if send.write_all(&[MACHINE_STREAM_ACCEPT_BYTE]).await.is_err() {
-        return;
+        return None;
     }
     state.streams_accepted.fetch_add(1, Ordering::Relaxed);
+    Some(AdmittedMachineStream { send, recv, app })
+}
+
+async fn pump_admitted_stream(
+    stream: AdmittedMachineStream,
+    state: Arc<AcceptorState>,
+) {
+    let AdmittedMachineStream {
+        mut send,
+        mut recv,
+        mut app,
+    } = stream;
     state.streams_active.fetch_add(1, Ordering::Relaxed);
     struct ActiveStreamGuard<'a>(&'a AtomicU64);
     impl Drop for ActiveStreamGuard<'_> {
@@ -292,6 +343,7 @@ async fn authorize(
     target: SocketAddr,
     remote_endpoint_id: &str,
     body: &[u8],
+    accepts_application_capability: bool,
 ) -> std::result::Result<MachineApplicationTarget, MachineFailureCode> {
     let mut socket = TcpStream::connect(target)
         .await
@@ -362,7 +414,8 @@ async fn authorize(
             // Duplicate (or comma-folded) application-port headers are
             // ambiguous and fail closed before any application connection.
             return Err(MachineFailureCode::AdmissionRejected);
-        } else if name.eq_ignore_ascii_case(IROH_MACHINE_APPLICATION_CAPABILITY_HEADER)
+        } else if accepts_application_capability
+            && name.eq_ignore_ascii_case(IROH_MACHINE_APPLICATION_CAPABILITY_HEADER)
             && application_capability.replace(value).is_some()
         {
             return Err(MachineFailureCode::AdmissionRejected);
@@ -445,6 +498,23 @@ fn capabilities_equal(left: &[u8], right: &[u8]) -> bool {
         == 0
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MachineTunnelPurpose {
+    FiniteTransfer,
+    WorkspaceSync,
+    ProviderBroker,
+}
+
+impl MachineTunnelPurpose {
+    const fn requires_local_capability(self) -> bool {
+        !matches!(self, Self::FiniteTransfer)
+    }
+
+    const fn accepts_one_local_stream(self) -> bool {
+        matches!(self, Self::WorkspaceSync)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct MachineTunnelConfig {
     pub endpoint_id: String,
@@ -457,6 +527,13 @@ pub struct MachineTunnelConfig {
     /// derived separately from the verified handshake flow.
     pub cap_profile: IrohCapProfile,
 }
+
+/// Supplies the admission handshake for one newly accepted local stream.
+/// The provider is invoked after the local capability is authenticated and
+/// before a QUIC stream is opened. Dropping its future cancels that one
+/// connection without changing tunnel custody.
+pub type MachineHandshakeProvider =
+    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Result<String>> + Send>> + Send + Sync>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MachineTunnelStatus {
@@ -485,19 +562,21 @@ pub struct MachineTunnel {
     local_addr: SocketAddr,
     connection: iroh::endpoint::Connection,
     remote_endpoint_id: String,
-    local_capability: String,
+    local_capability: Option<String>,
     task: JoinHandle<()>,
     watcher_task: JoinHandle<()>,
     shutdown: watch::Sender<bool>,
     state: Arc<TunnelState>,
 }
 
-/// Fetch-facing loopback lease over the capability-gated machine listener.
+/// Qualified provider-broker/readiness HTTP adapter over the capability-gated
+/// machine listener.
 ///
-/// The public listener accepts ordinary HTTP/TCP bytes. Its Rust-owned bridge
-/// connects to the private machine listener and writes the ephemeral local
-/// capability before copying application bytes. The capability and payload
-/// never cross a language binding.
+/// The public listener accepts framed HTTP/1.1 requests. Its Rust-owned bridge
+/// validates and removes the loopback capability from every request, connects
+/// to the private machine listener, and writes the inner listener capability
+/// before streaming request bodies and application responses. Neither local
+/// capability crosses the Iroh stream or a language binding.
 pub struct MachineHttpTunnel {
     local_addr: SocketAddr,
     local_capability: String,
@@ -506,67 +585,344 @@ pub struct MachineHttpTunnel {
     shutdown: watch::Sender<bool>,
 }
 
-async fn read_capability_gated_http_request(
-    socket: &mut TcpStream,
+#[derive(Debug, Clone, Copy)]
+enum HttpRequestBodyFraming {
+    None,
+    ContentLength(u64),
+    Chunked,
+}
+
+struct CapabilityGatedHttpRequestHead {
+    sanitized: Vec<u8>,
+    body_framing: HttpRequestBodyFraming,
+}
+
+fn invalid_http_request() -> Error {
+    Error::new(
+        ErrorKind::InvalidData,
+        "invalid capability-gated HTTP request",
+    )
+}
+
+async fn read_capability_gated_http_request_head<R>(
+    socket: &mut R,
+    buffered: &mut Vec<u8>,
     expected_capability: &[u8],
-) -> std::io::Result<Option<Vec<u8>>> {
-    let mut request = Vec::with_capacity(1024);
+) -> std::io::Result<Option<CapabilityGatedHttpRequestHead>>
+where
+    R: AsyncRead + Unpin,
+{
     let mut chunk = [0u8; 1024];
-    loop {
-        if request.len() >= MAX_ADMISSION_RESPONSE_BYTES {
-            return Ok(None);
+    let header_end = loop {
+        if let Some(index) = buffered.windows(4).position(|window| window == b"\r\n\r\n") {
+            let header_end = index + 4;
+            if header_end > MAX_MACHINE_HTTP_HEAD_BYTES {
+                return Err(invalid_http_request());
+            }
+            break header_end;
         }
-        let read = socket.read(&mut chunk).await?;
+        if buffered.len() >= MAX_MACHINE_HTTP_HEAD_BYTES {
+            return Err(invalid_http_request());
+        }
+        let remaining = MAX_MACHINE_HTTP_HEAD_BYTES - buffered.len();
+        let read_capacity = remaining.min(chunk.len());
+        let read = socket.read(&mut chunk[..read_capacity]).await?;
         if read == 0 {
-            return Ok(None);
+            return if buffered.is_empty() {
+                Ok(None)
+            } else {
+                Err(Error::new(
+                    ErrorKind::UnexpectedEof,
+                    "HTTP request ended before its header",
+                ))
+            };
         }
-        request.extend_from_slice(&chunk[..read]);
-        if request.windows(4).any(|window| window == b"\r\n\r\n") {
-            break;
-        }
-    }
-    let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n") else {
-        return Ok(None);
+        buffered.extend_from_slice(&chunk[..read]);
     };
-    let Some(request_line_end) = request[..header_end]
+    let request: Vec<u8> = buffered.drain(..header_end).collect();
+    let header_fields_end = request.len() - 4;
+    let Some(request_line_end) = request[..header_fields_end]
         .windows(2)
         .position(|window| window == b"\r\n")
     else {
-        return Ok(None);
+        return Err(invalid_http_request());
     };
     let mut capability_line: Option<(usize, usize)> = None;
+    let mut content_length: Option<u64> = None;
+    let mut transfer_encoding: Option<&[u8]> = None;
     let mut line_start = request_line_end + 2;
-    while line_start <= header_end {
-        let Some(relative_end) = request[line_start..header_end + 2]
+    while line_start <= header_fields_end {
+        let Some(relative_end) = request[line_start..header_fields_end + 2]
             .windows(2)
             .position(|window| window == b"\r\n")
         else {
-            break;
+            return Err(invalid_http_request());
         };
         let line_end = line_start + relative_end;
         let line = &request[line_start..line_end];
         if let Some(colon) = line.iter().position(|byte| *byte == b':') {
             let name = line[..colon].trim_ascii_start().trim_ascii_end();
+            let value = line[colon + 1..].trim_ascii_start().trim_ascii_end();
             if name.eq_ignore_ascii_case(IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER.as_bytes()) {
                 if capability_line.is_some() {
-                    return Ok(None);
+                    return Err(invalid_http_request());
                 }
-                let supplied = line[colon + 1..].trim_ascii_start().trim_ascii_end();
-                if !capabilities_equal(supplied, expected_capability) {
-                    return Ok(None);
+                if !capabilities_equal(value, expected_capability) {
+                    return Err(invalid_http_request());
                 }
                 capability_line = Some((line_start, line_end + 2));
+            } else if name.eq_ignore_ascii_case(b"content-length") {
+                if content_length.is_some() || value.is_empty() {
+                    return Err(invalid_http_request());
+                }
+                let mut parsed = 0u64;
+                for byte in value {
+                    if !byte.is_ascii_digit() {
+                        return Err(invalid_http_request());
+                    }
+                    parsed = parsed
+                        .checked_mul(10)
+                        .and_then(|current| current.checked_add(u64::from(*byte - b'0')))
+                        .ok_or_else(invalid_http_request)?;
+                }
+                content_length = Some(parsed);
+            } else if name.eq_ignore_ascii_case(b"transfer-encoding") {
+                if transfer_encoding.replace(value).is_some() {
+                    return Err(invalid_http_request());
+                }
             }
+        } else if !line.is_empty() {
+            return Err(invalid_http_request());
         }
         line_start = line_end + 2;
     }
     let Some((capability_start, capability_end)) = capability_line else {
-        return Ok(None);
+        return Err(invalid_http_request());
+    };
+    let body_framing = match (content_length, transfer_encoding) {
+        (Some(_), Some(_)) => return Err(invalid_http_request()),
+        (Some(length), None) => HttpRequestBodyFraming::ContentLength(length),
+        (None, Some(value)) => {
+            let codings: Vec<&[u8]> = value
+                .split(|byte| *byte == b',')
+                .map(|coding| coding.trim_ascii_start().trim_ascii_end())
+                .collect();
+            if codings.is_empty()
+                || codings.iter().any(|coding| coding.is_empty())
+                || !codings
+                    .last()
+                    .is_some_and(|coding| coding.eq_ignore_ascii_case(b"chunked"))
+                || codings[..codings.len() - 1]
+                    .iter()
+                    .any(|coding| coding.eq_ignore_ascii_case(b"chunked"))
+            {
+                return Err(invalid_http_request());
+            }
+            HttpRequestBodyFraming::Chunked
+        }
+        (None, None) => HttpRequestBodyFraming::None,
     };
     let mut sanitized = Vec::with_capacity(request.len() - (capability_end - capability_start));
     sanitized.extend_from_slice(&request[..capability_start]);
     sanitized.extend_from_slice(&request[capability_end..]);
-    Ok(Some(sanitized))
+    Ok(Some(CapabilityGatedHttpRequestHead {
+        sanitized,
+        body_framing,
+    }))
+}
+
+async fn read_crlf_line<R>(socket: &mut R, buffered: &mut Vec<u8>) -> std::io::Result<Vec<u8>>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut chunk = [0u8; 1024];
+    loop {
+        if let Some(index) = buffered.windows(2).position(|window| window == b"\r\n") {
+            return Ok(buffered.drain(..index + 2).collect());
+        }
+        if buffered.len() >= MAX_MACHINE_HTTP_HEAD_BYTES {
+            return Err(invalid_http_request());
+        }
+        let remaining = MAX_MACHINE_HTTP_HEAD_BYTES - buffered.len();
+        let read_capacity = remaining.min(chunk.len());
+        let read = socket.read(&mut chunk[..read_capacity]).await?;
+        if read == 0 {
+            return Err(Error::new(
+                ErrorKind::UnexpectedEof,
+                "HTTP request ended before its framed body",
+            ));
+        }
+        buffered.extend_from_slice(&chunk[..read]);
+    }
+}
+
+async fn read_exact_buffered<R>(
+    socket: &mut R,
+    buffered: &mut Vec<u8>,
+    target: &mut [u8],
+) -> std::io::Result<()>
+where
+    R: AsyncRead + Unpin,
+{
+    let buffered_length = buffered.len().min(target.len());
+    target[..buffered_length].copy_from_slice(&buffered[..buffered_length]);
+    buffered.drain(..buffered_length);
+    if buffered_length < target.len() {
+        socket.read_exact(&mut target[buffered_length..]).await?;
+    }
+    Ok(())
+}
+
+async fn forward_exact_buffered<R, W>(
+    socket: &mut R,
+    destination: &mut W,
+    buffered: &mut Vec<u8>,
+    mut remaining: u64,
+) -> std::io::Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    if !buffered.is_empty() && remaining > 0 {
+        let length = buffered
+            .len()
+            .min(usize::try_from(remaining).unwrap_or(usize::MAX));
+        destination.write_all(&buffered[..length]).await?;
+        buffered.drain(..length);
+        remaining -= length as u64;
+    }
+    let mut chunk = [0u8; 16 * 1024];
+    while remaining > 0 {
+        let length = chunk
+            .len()
+            .min(usize::try_from(remaining).unwrap_or(usize::MAX));
+        let read = socket.read(&mut chunk[..length]).await?;
+        if read == 0 {
+            return Err(Error::new(
+                ErrorKind::UnexpectedEof,
+                "HTTP request ended before its framed body",
+            ));
+        }
+        destination.write_all(&chunk[..read]).await?;
+        remaining -= read as u64;
+    }
+    Ok(())
+}
+
+fn parse_chunk_size(line: &[u8]) -> std::io::Result<u64> {
+    let encoded = line
+        .strip_suffix(b"\r\n")
+        .ok_or_else(invalid_http_request)?;
+    let size = encoded
+        .split(|byte| *byte == b';')
+        .next()
+        .unwrap_or_default()
+        .trim_ascii_start()
+        .trim_ascii_end();
+    if size.is_empty() {
+        return Err(invalid_http_request());
+    }
+    let mut parsed = 0u64;
+    for byte in size {
+        let digit = match byte {
+            b'0'..=b'9' => u64::from(*byte - b'0'),
+            b'a'..=b'f' => u64::from(*byte - b'a' + 10),
+            b'A'..=b'F' => u64::from(*byte - b'A' + 10),
+            _ => return Err(invalid_http_request()),
+        };
+        parsed = parsed
+            .checked_mul(16)
+            .and_then(|current| current.checked_add(digit))
+            .ok_or_else(invalid_http_request)?;
+    }
+    Ok(parsed)
+}
+
+fn is_local_capability_header(line: &[u8]) -> bool {
+    let line = line.strip_suffix(b"\r\n").unwrap_or(line);
+    line.iter()
+        .position(|byte| *byte == b':')
+        .is_some_and(|colon| {
+            line[..colon]
+                .trim_ascii_start()
+                .trim_ascii_end()
+                .eq_ignore_ascii_case(IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER.as_bytes())
+        })
+}
+
+async fn forward_chunked_http_body<R, W>(
+    socket: &mut R,
+    destination: &mut W,
+    buffered: &mut Vec<u8>,
+) -> std::io::Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    loop {
+        let size_line = read_crlf_line(socket, buffered).await?;
+        let chunk_size = parse_chunk_size(&size_line)?;
+        destination.write_all(&size_line).await?;
+        if chunk_size > 0 {
+            forward_exact_buffered(socket, destination, buffered, chunk_size).await?;
+            let mut delimiter = [0u8; 2];
+            read_exact_buffered(socket, buffered, &mut delimiter).await?;
+            if delimiter != *b"\r\n" {
+                return Err(invalid_http_request());
+            }
+            destination.write_all(&delimiter).await?;
+            continue;
+        }
+
+        let mut trailer_bytes = 0usize;
+        loop {
+            let trailer = read_crlf_line(socket, buffered).await?;
+            trailer_bytes = trailer_bytes
+                .checked_add(trailer.len())
+                .filter(|length| *length <= MAX_MACHINE_HTTP_HEAD_BYTES)
+                .ok_or_else(invalid_http_request)?;
+            if trailer == b"\r\n" {
+                destination.write_all(&trailer).await?;
+                return Ok(());
+            }
+            if !is_local_capability_header(&trailer) {
+                destination.write_all(&trailer).await?;
+            }
+        }
+    }
+}
+
+async fn forward_capability_gated_http_requests<R, W>(
+    socket: &mut R,
+    destination: &mut W,
+    expected_capability: &[u8],
+    mut buffered: Vec<u8>,
+    mut request: CapabilityGatedHttpRequestHead,
+) -> std::io::Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    loop {
+        destination.write_all(&request.sanitized).await?;
+        match request.body_framing {
+            HttpRequestBodyFraming::None => {}
+            HttpRequestBodyFraming::ContentLength(length) => {
+                forward_exact_buffered(socket, destination, &mut buffered, length).await?;
+            }
+            HttpRequestBodyFraming::Chunked => {
+                forward_chunked_http_body(socket, destination, &mut buffered).await?;
+            }
+        }
+        let Some(next_request) =
+            read_capability_gated_http_request_head(socket, &mut buffered, expected_capability)
+                .await?
+        else {
+            destination.shutdown().await?;
+            return Ok(());
+        };
+        request = next_request;
+    }
 }
 
 impl MachineHttpTunnel {
@@ -574,6 +930,25 @@ impl MachineHttpTunnel {
         endpoint: &crate::IrohEndpoint,
         config: MachineTunnelConfig,
     ) -> Result<Self> {
+        Self::start_inner(endpoint, config, None).await
+    }
+
+    pub async fn start_with_handshake_provider(
+        endpoint: &crate::IrohEndpoint,
+        config: MachineTunnelConfig,
+        handshake_provider: MachineHandshakeProvider,
+    ) -> Result<Self> {
+        Self::start_inner(endpoint, config, Some(handshake_provider)).await
+    }
+
+    async fn start_inner(
+        endpoint: &crate::IrohEndpoint,
+        config: MachineTunnelConfig,
+        handshake_provider: Option<MachineHandshakeProvider>,
+    ) -> Result<Self> {
+        if validate_handshake(&config.handshake_json)? != MachineTunnelPurpose::ProviderBroker {
+            return Err(IrohError::InvalidDescriptor);
+        }
         // Bind the public listener before starting the inner machine tunnel.
         // After `MachineTunnel::start` returns there must be no cancellation
         // point before both owned task handles are assembled into `Self`, or
@@ -585,9 +960,12 @@ impl MachineHttpTunnel {
         let local_addr = listener
             .local_addr()
             .map_err(|_| IrohError::LoopbackBindFailed)?;
-        let tunnel = MachineTunnel::start(endpoint, config).await?;
+        let tunnel = MachineTunnel::start_inner(endpoint, config, handshake_provider).await?;
         let private_addr = tunnel.local_addr;
-        let local_capability = tunnel.local_capability.clone();
+        let local_capability = tunnel
+            .local_capability
+            .clone()
+            .expect("provider-broker tunnels always require a local capability");
         let capability = Arc::<[u8]>::from(local_capability.as_bytes());
         let (shutdown, mut shutdown_rx) = watch::channel(false);
         let task = tokio::spawn(async move {
@@ -599,14 +977,36 @@ impl MachineHttpTunnel {
                         let Ok((mut application, _)) = accepted else { break };
                         let capability = Arc::clone(&capability);
                         streams.spawn(async move {
+                            let mut buffered = Vec::with_capacity(1024);
                             let Ok(Ok(Some(initial_request))) = tokio::time::timeout(
                                 MACHINE_CONTROL_TIMEOUT,
-                                read_capability_gated_http_request(&mut application, &capability),
+                                read_capability_gated_http_request_head(
+                                    &mut application,
+                                    &mut buffered,
+                                    &capability,
+                                ),
                             ).await else { return };
                             let Ok(mut secured) = TcpStream::connect(private_addr).await else { return };
                             if secured.write_all(&capability).await.is_err() { return; }
-                            if secured.write_all(&initial_request).await.is_err() { return; }
-                            let _ = tokio::io::copy_bidirectional(&mut application, &mut secured).await;
+                            let (mut application_read, mut application_write) = application.split();
+                            let (mut secured_read, mut secured_write) = secured.split();
+                            let requests = forward_capability_gated_http_requests(
+                                &mut application_read,
+                                &mut secured_write,
+                                &capability,
+                                buffered,
+                                initial_request,
+                            );
+                            let responses = tokio::io::copy(&mut secured_read, &mut application_write);
+                            tokio::pin!(requests);
+                            tokio::pin!(responses);
+                            let request_result = tokio::select! {
+                                result = &mut requests => Some(result),
+                                _ = &mut responses => None,
+                            };
+                            if matches!(request_result, Some(Ok(()))) {
+                                let _ = responses.await;
+                            }
                         });
                     }
                     Some(_) = streams.join_next(), if !streams.is_empty() => {}
@@ -658,8 +1058,16 @@ impl MachineTunnel {
         endpoint: &crate::IrohEndpoint,
         config: MachineTunnelConfig,
     ) -> Result<Self> {
+        Self::start_inner(endpoint, config, None).await
+    }
+
+    async fn start_inner(
+        endpoint: &crate::IrohEndpoint,
+        config: MachineTunnelConfig,
+        handshake_provider: Option<MachineHandshakeProvider>,
+    ) -> Result<Self> {
         validate_loopback_bind_addr(config.bind_addr)?;
-        let single_stream = validate_handshake(&config.handshake_json)?;
+        let purpose = validate_handshake(&config.handshake_json)?;
         if config.cap_profile != IrohCapProfile::MachineBulk {
             return Err(IrohError::EndpointConfigConflict);
         }
@@ -682,8 +1090,8 @@ impl MachineTunnel {
                     .with_transport_config(config.cap_profile.transport_config()?),
             )
             .await
-            .map_err(|_| IrohError::TransportClosed)?;
-        let connection = connecting.await.map_err(|_| IrohError::TransportClosed)?;
+            .map_err(IrohError::from)?;
+        let connection = connecting.await.map_err(IrohError::from)?;
         // The authenticated transport identity — not the requested descriptor
         // copy — is the only honest remote identity this tunnel reports. A
         // mismatch fails the start closed with the shared
@@ -697,13 +1105,24 @@ impl MachineTunnel {
             .local_addr()
             .map_err(|_| IrohError::LoopbackBindFailed)?;
         let handshake = Arc::<[u8]>::from(config.handshake_json.into_bytes());
-        let local_capability = generate_local_capability()?;
-        let pump_local_capability = Arc::<[u8]>::from(local_capability.as_bytes());
+        let local_capability = if purpose.requires_local_capability() {
+            Some(generate_local_capability()?)
+        } else {
+            None
+        };
+        let pump_local_capability = purpose.requires_local_capability().then(|| {
+            Arc::<[u8]>::from(
+                local_capability
+                    .as_deref()
+                    .expect("capability-gated purpose has a local capability")
+                    .as_bytes(),
+            )
+        });
         let state = Arc::new(TunnelState {
             connection_active: AtomicBool::new(true),
             streams_opened: AtomicU64::new(0),
             streams_active: AtomicU64::new(0),
-            single_stream,
+            single_stream: purpose.accepts_one_local_stream(),
             local_stream_claimed: AtomicBool::new(false),
             last_failure: Mutex::new(None),
         });
@@ -731,7 +1150,8 @@ impl MachineTunnel {
                             loop_connection.clone(),
                             socket,
                             Arc::clone(&handshake),
-                            Arc::clone(&pump_local_capability),
+                            handshake_provider.clone(),
+                            pump_local_capability.clone(),
                             Arc::clone(&loop_state),
                         ));
                     }
@@ -757,8 +1177,8 @@ impl MachineTunnel {
     pub fn local_port(&self) -> u16 {
         self.local_addr.port()
     }
-    pub fn local_capability(&self) -> &str {
-        &self.local_capability
+    pub fn local_capability(&self) -> Option<&str> {
+        self.local_capability.as_deref()
     }
     pub fn status(&self) -> MachineTunnelStatus {
         MachineTunnelStatus {
@@ -790,7 +1210,8 @@ async fn pump_local(
     connection: iroh::endpoint::Connection,
     mut socket: TcpStream,
     handshake: Arc<[u8]>,
-    local_capability: Arc<[u8]>,
+    handshake_provider: Option<MachineHandshakeProvider>,
+    local_capability: Option<Arc<[u8]>>,
     state: Arc<TunnelState>,
 ) {
     struct ActiveStream(Arc<TunnelState>);
@@ -800,16 +1221,18 @@ async fn pump_local(
         }
     }
     let _active = ActiveStream(state);
-    let mut supplied_capability = [0u8; MACHINE_LOCAL_CAPABILITY_HEX_LENGTH];
-    let capability_result = tokio::time::timeout(
-        MACHINE_CONTROL_TIMEOUT,
-        socket.read_exact(&mut supplied_capability),
-    )
-    .await;
-    if !matches!(capability_result, Ok(Ok(_)))
-        || !capabilities_equal(&supplied_capability, &local_capability)
-    {
-        return;
+    if let Some(local_capability) = local_capability {
+        let mut supplied_capability = [0u8; MACHINE_LOCAL_CAPABILITY_HEX_LENGTH];
+        let capability_result = tokio::time::timeout(
+            MACHINE_CONTROL_TIMEOUT,
+            socket.read_exact(&mut supplied_capability),
+        )
+        .await;
+        if !matches!(capability_result, Ok(Ok(_)))
+            || !capabilities_equal(&supplied_capability, &local_capability)
+        {
+            return;
+        }
     }
     if _active.0.single_stream
         && _active
@@ -820,6 +1243,21 @@ async fn pump_local(
     {
         return;
     }
+    let handshake = if let Some(provider) = handshake_provider {
+        let Ok(Ok(handshake)) = tokio::time::timeout(MACHINE_CONTROL_TIMEOUT, provider()).await
+        else {
+            return;
+        };
+        if !matches!(
+            validate_handshake(&handshake),
+            Ok(MachineTunnelPurpose::ProviderBroker)
+        ) {
+            return;
+        }
+        Arc::<[u8]>::from(handshake.into_bytes())
+    } else {
+        handshake
+    };
     _active.0.streams_opened.fetch_add(1, Ordering::Relaxed);
     let Ok((mut send, mut recv)) = connection.open_bi().await else {
         if let Ok(mut last) = _active.0.last_failure.lock() {
@@ -858,7 +1296,7 @@ async fn pump_local(
     pump_bidirectional(&mut socket_read, &mut socket_write, &mut recv, &mut send).await;
 }
 
-fn validate_handshake(value: &str) -> Result<bool> {
+fn validate_handshake(value: &str) -> Result<MachineTunnelPurpose> {
     if value.is_empty() || value.len() > MAX_MACHINE_HANDSHAKE_BYTES {
         return Err(IrohError::ResourceLimit);
     }
@@ -867,5 +1305,63 @@ fn validate_handshake(value: &str) -> Result<bool> {
     if !parsed.is_object() {
         return Err(IrohError::InvalidDescriptor);
     }
-    Ok(parsed.get("flow").and_then(serde_json::Value::as_str) == Some("workspace_sync"))
+    // Provider-broker handshakes deliberately use a sibling application
+    // envelope (`kind: provider_broker`) rather than the same-account
+    // transfer `flow` union. They still use the machine/1 multi-stream
+    // carrier; the TypeScript admission owner performs the signed grant and
+    // current resource checks. Keep this native check structural only.
+    if let Some(kind) = parsed.get("kind").and_then(serde_json::Value::as_str) {
+        if matches!(kind, "provider_broker" | "provider_broker_readiness") {
+            return Ok(MachineTunnelPurpose::ProviderBroker);
+        }
+        return Err(IrohError::InvalidDescriptor);
+    }
+    match parsed.get("flow").and_then(serde_json::Value::as_str) {
+        Some("finite_transfer") => Ok(MachineTunnelPurpose::FiniteTransfer),
+        Some("workspace_sync") => Ok(MachineTunnelPurpose::WorkspaceSync),
+        Some(_) | None => Err(IrohError::InvalidDescriptor),
+    }
+}
+
+#[cfg(test)]
+mod handshake_tests {
+    use super::{validate_handshake, MachineTunnelPurpose};
+
+    #[test]
+    fn accepts_provider_broker_handshakes_as_multi_stream_carriers() {
+        assert_eq!(
+            validate_handshake(r#"{"v":1,"kind":"provider_broker","authority":{}}"#)
+                .expect("provider broker handshake should be structurally accepted"),
+            MachineTunnelPurpose::ProviderBroker,
+        );
+    }
+
+    #[test]
+    fn classifies_finite_transfer_and_workspace_sync_without_conflating_local_semantics() {
+        assert_eq!(
+            validate_handshake(r#"{"v":1,"flow":"finite_transfer"}"#)
+                .expect("finite transfer handshake"),
+            MachineTunnelPurpose::FiniteTransfer,
+        );
+        assert_eq!(
+            validate_handshake(r#"{"v":1,"flow":"workspace_sync"}"#)
+                .expect("workspace sync handshake"),
+            MachineTunnelPurpose::WorkspaceSync,
+        );
+        assert!(validate_handshake(r#"{"v":1}"#).is_err());
+    }
+
+    #[test]
+    fn runner_broker_readiness_reuses_the_provider_broker_capability_gated_http_purpose() {
+        assert_eq!(
+            validate_handshake(r#"{"v":1,"kind":"provider_broker_readiness","authority":{}}"#)
+                .expect("runner broker readiness handshake"),
+            MachineTunnelPurpose::ProviderBroker,
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_machine_handshake_kinds() {
+        assert!(validate_handshake(r#"{"v":1,"kind":"unknown"}"#).is_err());
+    }
 }

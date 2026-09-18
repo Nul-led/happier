@@ -16,7 +16,7 @@ test('archive extraction keeps every format bound to one opened source handle', 
   const source = await readFile(new URL('../src/archiveExtraction.ts', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /createReadStream\(params\.archivePath/);
   assert.doesNotMatch(source, /yauzl\.open\(\s*params\.archivePath/);
-  assert.equal((source.match(/openArchiveSource\(/g) ?? []).length, 3);
+  assert.equal((source.match(/openArchiveSource\(/g) ?? []).length, 4);
 });
 
 function writeTarString(header, offset, length, value) {

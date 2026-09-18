@@ -38,18 +38,17 @@ import {
  *   → setAccountServiceEndpoint (the selected sign-in service owner binds the
  *     exact endpoint + stable identity; never a ServerProfile or focused Home)
  *   → provisionAuthenticatedHomeLink (authenticated Home link PUT through
- *     resolveDirectoryHomeTransport/HomeEnrollmentTransport, then Account
+ *     resolveHomeEnrollmentTransport, then Account
  *     Service directory Home PUT; the first published Home becomes preferred
  *     server-side as a consequence of that PUT)
- *   → refreshAccountHomeDirectory → enrollPreferredDirectoryHome
- *   → continueHomeLoginEnrollment → resolveDirectoryHomeTransport
+ *   → refreshAccountHomeDirectory → completeAccountServicePostAuth → enrollDirectoryHome
+ *   → continueHomeLoginEnrollment → resolveHomeEnrollmentTransport
  *   → frozen one-shot redeemHomeLoginAssertion → approval_required
  *   → homeDeviceApprovalClient list/decision through the real Home routes
- *   → resumePendingPreferredHomeEnrollment → strict authorized response
+ *   → resumePendingDirectoryHomeEnrollment → strict authorized response
  *   → sealed-token open → adoptHomeProfileWithCredentials (explicit target
  *     credential write + Lane 04 non-focusing adoption)
- *   → finalizePreferredHomeEnrollmentEntryIntent: `connect_service` (the
- *     Settings caller) never changes focus
+ *   → the enrollment intent finalizer: Settings enrollment never changes focus
  *
  * Requester and approver load separate production module graphs and use distinct
  * storage scopes, matching two client processes without reproducing any client
@@ -59,9 +58,9 @@ import {
  *     in-memory backing. Credential assertions compare shape/values in memory
  *     and never log token bytes.
  *   - react-native/expo host modules stubbed by that same canonical setup.
- * The Welcome-only `enter_preferred_home` branch is exercised by the loaded
- * browser E2E because its canonical switch owner lazy-loads the React Native/
- * Expo application graph, which this Node module-isolation harness cannot load.
+ * The Welcome `enter/automatic` branch is exercised by the loaded browser E2E
+ * because its canonical switch owner lazy-loads the React Native/Expo
+ * application graph, which this Node module-isolation harness cannot load.
  * Everything else is real: Account Service, Home A, Home B processes, the fake
  * GitHub OAuth boundary, and all assertion/redemption/approval wire traffic.
  * No DTO or protocol logic is reproduced in this file.
@@ -145,7 +144,8 @@ async function loadProductionModules() {
         adoptWithCredentials: await import('@/sync/domains/server/adoptHomeProfile'),
         refreshDirectory: await import('@/sync/ops/accountDirectory/refreshAccountHomeDirectory'),
         provisionHomeLink: await import('@/sync/ops/accountDirectory/provisionAuthenticatedHomeLink'),
-        enrollment: await import('@/sync/ops/accountDirectory/enrollPreferredDirectoryHome'),
+        postAuth: await import('@/sync/ops/accountDirectory/completeAccountServicePostAuth'),
+        enrollment: await import('@/sync/ops/accountDirectory/enrollDirectoryHome'),
     };
 }
 
@@ -193,6 +193,7 @@ describe('core e2e: Account Directory Home enrollment through the production cal
     let requesterClient!: ProductionClient;
     let approverClient!: ProductionClient;
     let directoryCapability!: DirectoryCapability;
+    let directoryService!: Parameters<ProductionModules['postAuth']['completeAccountServicePostAuth']>[0]['service'];
     let previousStorageScope: string | undefined;
 
     let accountServiceBaseUrl = '';
@@ -313,6 +314,7 @@ describe('core e2e: Account Directory Home enrollment through the production cal
             force: true,
         });
         expect(directoryProbe.status).toBe('ready');
+        if (directoryProbe.status !== 'ready') throw new Error('unreachable');
         expect(directoryProbe.serverIdentityId).toBe('srv_accountDirectoryComposedCallerA1');
         accountServiceIdentity = directoryProbe.serverIdentityId!.trim();
         directoryCapability = modules.directorySession.parseAccountDirectoryCapability(
@@ -321,6 +323,13 @@ describe('core e2e: Account Directory Home enrollment through the production cal
         expect(directoryCapability.homeDirectory).toBe(true);
         expect(directoryCapability.homeEnrollment).toBe(true);
         expect(directoryCapability.homeLoginAssertion.keyId).toEqual(expect.any(String));
+        directoryService = {
+            endpointUrl: accountServiceBaseUrl,
+            serverIdentityId: accountServiceIdentity,
+            canonicalServerUrl: accountServiceBaseUrl,
+            capability: directoryCapability,
+            snapshot: directoryProbe,
+        };
 
         const homeAProbe = await modules.serverFeatures.probeServerFeaturesAtUrl({
             endpointUrl: homeABaseUrl,
@@ -394,6 +403,25 @@ describe('core e2e: Account Directory Home enrollment through the production cal
             credentials: { token: approverHomeBToken },
         };
 
+        // The trusted, already-enrolled client observes its own Home through the
+        // production authenticated feature observation (the same caller the
+        // enrollment observation uses). A fresh Home publishes no public
+        // connection descriptor until its durable descriptor continuity has been
+        // committed by an authenticated publication read, so this real
+        // current-connection observation is what makes the requester's
+        // first-contact enrollment observation decidable.
+        for (let observationAttempt = 0; observationAttempt < 2; observationAttempt += 1) {
+            const ownHomeObservation = await approverModules.serverFeatures
+                .observeAuthenticatedServerFeaturesFresh({
+                    request: approvalTarget.transport.createRequest({
+                        serverId: homeBIdentity,
+                        credentials: { token: approverHomeBToken },
+                    }),
+                });
+            expect(ownHomeObservation.status).toBe('ready');
+            expect(ownHomeObservation.serverIdentityId).toBe(homeBIdentity);
+        }
+
         // --- Directory facts: account A signs in; the full-account OAuth first
         // creates the Account Service account, then the restricted Directory
         // credential for the continuation is stored in its dedicated namespace.
@@ -402,11 +430,13 @@ describe('core e2e: Account Directory Home enrollment through the production cal
             accountServiceBaseUrl,
             proof: privacyKit.encodeBase64(randomBytes(32)),
         });
-        const meResponse = await fetchJson<unknown>(`${accountServiceBaseUrl}/v1/account-directory/me`, {
-            headers: bearer(accountAFullToken),
-        });
-        expect(meResponse.status).toBe(200);
-        accountAAccountId = AccountDirectoryMeResponseV1Schema.parse(meResponse.data).accountId;
+        // Directory routes admit only the restricted account_directory credential;
+        // the ordinary full-account OAuth credential is denied there (Lane 02).
+        const fullTokenOnDirectoryMe = await fetchJson<unknown>(
+            `${accountServiceBaseUrl}/v1/account-directory/me`,
+            { headers: bearer(accountAFullToken) },
+        );
+        expect([401, 403]).toContain(fullTokenOnDirectoryMe.status);
 
         directoryToken = await acquireGitHubOAuthToken({
             accountServiceBaseUrl,
@@ -417,6 +447,11 @@ describe('core e2e: Account Directory Home enrollment through the production cal
                 canonicalServerUrl: accountServiceBaseUrl,
             },
         });
+        const meResponse = await fetchJson<unknown>(`${accountServiceBaseUrl}/v1/account-directory/me`, {
+            headers: bearer(directoryToken),
+        });
+        expect(meResponse.status).toBe(200);
+        accountAAccountId = AccountDirectoryMeResponseV1Schema.parse(meResponse.data).accountId;
         directoryTarget = { endpoint: accountServiceBaseUrl, serverIdentityId: accountServiceIdentity };
         const storedApproverDirectory = await approverModules.tokenStorage.TokenStorage
             .accountDirectoryAuthCredentials
@@ -499,28 +534,31 @@ describe('core e2e: Account Directory Home enrollment through the production cal
             serverUrl: activeBefore.serverUrl,
         });
 
-        // Settings-style enrollment: authenticated Settings connects the
-        // service with `connect_service`, which must never change focus.
-        const enrollment = await requesterModules.enrollment.enrollPreferredDirectoryHome(session, {
-            entryIntent: 'connect_service',
+        // Settings-style enrollment uses the production post-auth coordinator
+        // with an enroll intent, which must never change focus.
+        const enrollment = await requesterModules.postAuth.completeAccountServicePostAuth({
+            service: directoryService,
+            session,
+            intent: { kind: 'enroll', homeServerIdentityId: homeBIdentity },
         });
-        expect(enrollment.kind).toBe('approval_required');
+        expect(enrollment.kind, `enrollment result: ${JSON.stringify(enrollment)}`).toBe('approval_required');
         if (enrollment.kind !== 'approval_required') throw new Error('unreachable');
         expect(enrollment.homeServerIdentityId).toBe(homeBIdentity);
-        expect(enrollment.approvalId).toEqual(expect.any(String));
         expect(enrollment.expiresAtMs).toBeGreaterThan(Date.now());
-        firstApprovalId = enrollment.approvalId;
 
         // Pending state is published for Lane 05 scheduling; no token exists.
-        const pending = requesterModules.enrollment.getPendingPreferredHomeEnrollment();
-        expect(pending?.approvalId).toBe(firstApprovalId);
-        expect(pending?.homeServerIdentityId).toBe(homeBIdentity);
-        expect(pending?.entryIntent).toBe('connect_service');
+        const pending = requesterModules.enrollment.getPendingDirectoryHomeEnrollment();
+        expect(pending?.kind).toBe('approval_required');
+        if (pending?.kind !== 'approval_required') throw new Error('unreachable');
+        expect(pending.approvalId).toEqual(expect.any(String));
+        firstApprovalId = pending.approvalId;
+        expect(pending.homeServerIdentityId).toBe(homeBIdentity);
+        expect(pending.entryIntent).toEqual({ kind: 'enroll', homeServerIdentityId: homeBIdentity });
 
         // --- The separate trusted Home B client lists the request. Its module
         // singleton cannot observe the requester's continuation state. ---
         useProductionClient(approverClient);
-        expect(approverModules.enrollment.getPendingPreferredHomeEnrollment()).toBeNull();
+        expect(approverModules.enrollment.getPendingDirectoryHomeEnrollment()).toBeNull();
         const listedBeforeDecision = await approverModules.approvalClient.listHomeDeviceApprovals(approvalTarget);
         expect(listedBeforeDecision.ok).toBe(true);
         if (!listedBeforeDecision.ok) throw new Error('unreachable');
@@ -542,9 +580,16 @@ describe('core e2e: Account Directory Home enrollment through the production cal
 
         // --- Lane 05 resume: same assertion + approval id, strict authorized response ---
         useProductionClient(requesterClient);
-        const resumed = await requesterModules.enrollment.resumePendingPreferredHomeEnrollment();
-        expect(resumed).toEqual({ kind: 'enrolled', homeServerIdentityId: homeBIdentity });
-        expect(requesterModules.enrollment.getPendingPreferredHomeEnrollment()).toBeNull();
+        const resumed = await requesterModules.enrollment.resumePendingDirectoryHomeEnrollment();
+        // The Home credential commit succeeded; the default-E2EE Home then reports
+        // the exact A12 material stage instead of claiming token-only is ready.
+        expect(resumed).toEqual({
+            kind: 'home_material_required',
+            homeServerIdentityId: homeBIdentity,
+            reason: 'missing_material',
+            intent: { kind: 'enroll', homeServerIdentityId: homeBIdentity },
+        });
+        expect(requesterModules.enrollment.getPendingDirectoryHomeEnrollment()).toBeNull();
 
         // --- Non-focusing adoption and explicit target credential write ---
         expect(requesterModules.serverProfiles.listServerProfiles().filter(
@@ -646,30 +691,40 @@ describe('core e2e: Account Directory Home enrollment through the production cal
         const retryRefresh = await requesterModules.refreshDirectory.refreshAccountHomeDirectory(retrySession);
         expect(retryRefresh).toMatchObject({ status: 'ready' });
         expect(retryRefresh.preferredHomeServerIdentityId).toBe(homeBIdentity);
-        const retryEnrollment = await requesterModules.enrollment.enrollPreferredDirectoryHome(retrySession, {
-            entryIntent: 'connect_service',
+        const retryEnrollment = await requesterModules.postAuth.completeAccountServicePostAuth({
+            service: directoryService,
+            session: retrySession,
+            intent: { kind: 'enroll', homeServerIdentityId: homeBIdentity },
         });
         expect(retryEnrollment).toMatchObject({ kind: 'approval_required' });
         if (retryEnrollment.kind !== 'approval_required') throw new Error('unreachable');
-        expect(retryEnrollment.approvalId).not.toBe(firstApprovalId);
+        const retryPending = requesterModules.enrollment.getPendingDirectoryHomeEnrollment();
+        expect(retryPending?.kind).toBe('approval_required');
+        if (retryPending?.kind !== 'approval_required') throw new Error('unreachable');
+        expect(retryPending.approvalId).toEqual(expect.any(String));
+        expect(retryPending.approvalId).not.toBe(firstApprovalId);
 
         useProductionClient(approverClient);
         const retryListed = await approverModules.approvalClient.listHomeDeviceApprovals(approvalTarget);
         expect(retryListed.ok).toBe(true);
         if (!retryListed.ok) throw new Error('unreachable');
-        expect(retryListed.items.map((item) => item.approvalId)).toEqual([retryEnrollment.approvalId]);
+        expect(retryListed.items.map((item) => item.approvalId)).toEqual([retryPending.approvalId]);
 
         const rejected = await approverModules.approvalClient.decideHomeDeviceApproval(
             approvalTarget,
-            retryEnrollment.approvalId,
+            retryPending.approvalId,
             'reject',
         );
         expect(rejected).toMatchObject({ ok: true, status: 'rejected' });
 
         useProductionClient(requesterClient);
-        const resumedAfterReject = await requesterModules.enrollment.resumePendingPreferredHomeEnrollment();
-        expect(resumedAfterReject).toEqual({ kind: 'rejected' });
-        expect(requesterModules.enrollment.getPendingPreferredHomeEnrollment()).toBeNull();
+        const resumedAfterReject = await requesterModules.enrollment.resumePendingDirectoryHomeEnrollment();
+        expect(resumedAfterReject).toMatchObject({
+            kind: 'failure',
+            stage: 'enroll',
+            code: { source: 'home', code: 'rejected' },
+        });
+        expect(requesterModules.enrollment.getPendingDirectoryHomeEnrollment()).toBeNull();
 
         // Rejection issued no second credential: the enrolled token from the
         // positive round is still the only Home B credential in storage.

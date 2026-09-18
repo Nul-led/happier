@@ -3,6 +3,12 @@ import { dirname } from 'node:path';
 
 import { runManagedChildCommand } from '../../../scripts/testing/process/managedChildLifecycle.mjs';
 import { sweepStaleProcessOwnershipLeases } from './sweepProcessOwnershipLeases.mjs';
+import {
+  appendHeartbeatDiagnostic,
+  initializeHeartbeatDiagnostic,
+  readCgroupMemorySnapshot,
+  resolveOomKillDelta,
+} from './heartbeatDiagnostic.mjs';
 
 export { installParentDeathCleanupWatchdog, resolveSignalExitCode } from '../../../scripts/testing/process/managedChildLifecycle.mjs';
 
@@ -126,6 +132,15 @@ export async function runHeartbeatWrappedCommand(params) {
   // This prevents a previous crashed wrapper from destabilizing the next run.
   await sweepStaleProcessOwnershipLeases().catch(() => {});
   const commandMetadata = safeCommandMetadata(params);
+  const initialMemory = params.diagnosticPath ? await readCgroupMemorySnapshot() : null;
+  if (params.diagnosticPath) {
+    await initializeHeartbeatDiagnostic(params.diagnosticPath, {
+      event: 'start',
+      command: commandMetadata,
+      pid: process.pid,
+      cgroupMemory: initialMemory,
+    });
+  }
   // eslint-disable-next-line no-console
   console.log(`[tests] starting: ${commandMetadata.tool} (${commandMetadata.argumentCount} arguments; config=${commandMetadata.configured ? 'set' : 'unset'})`);
 
@@ -154,8 +169,16 @@ export async function runHeartbeatWrappedCommand(params) {
     exitCleanupGraceMs: 1_000,
     maxRuntimeMs: wrapperTimeoutMs,
     parentWatchdogPollMs: Number.parseInt(process.env.HAPPIER_TEST_PARENT_WATCHDOG_MS ?? '1000', 10),
-    onProcessSignal: () => {
+    onProcessSignal: async (signal) => {
       clearHeartbeat();
+      if (params.diagnosticPath) {
+        await appendHeartbeatDiagnostic(params.diagnosticPath, {
+          event: 'process-signal',
+          signal,
+          pid: process.pid,
+          parentPid: process.ppid,
+        });
+      }
     },
     onMaxRuntime: (maxRuntimeMs) => {
       clearHeartbeat();
@@ -180,12 +203,35 @@ export async function runHeartbeatWrappedCommand(params) {
   await sweepStaleProcessOwnershipLeases().catch(() => {});
 
   if (!result.ok) {
+    if (params.diagnosticPath) {
+      await appendHeartbeatDiagnostic(params.diagnosticPath, {
+        event: 'spawn-error',
+        message: result.error.message,
+      });
+    }
     // eslint-disable-next-line no-console
     console.error(`[tests] failed to start ${commandMetadata.tool}`);
     process.exit(1);
   }
 
   const exitCode = result.timedOut === true ? 124 : params.resolveExitCode(result);
+  const finalMemory = params.diagnosticPath ? await readCgroupMemorySnapshot() : null;
+  const oomKillDelta = resolveOomKillDelta(initialMemory, finalMemory);
+  if (params.diagnosticPath) {
+    await appendHeartbeatDiagnostic(params.diagnosticPath, {
+      event: 'exit',
+      code: exitCode,
+      childCode: result.code,
+      signal: result.signal,
+      elapsedSeconds: elapsedSeconds(startedAt),
+      cgroupMemory: finalMemory,
+      oomKillDelta,
+    });
+  }
+  if (oomKillDelta !== null && oomKillDelta > 0) {
+    // eslint-disable-next-line no-console
+    console.error(`[tests] cgroup reported ${oomKillDelta} OOM-killed process(es) during ${commandMetadata.tool}`);
+  }
   // eslint-disable-next-line no-console
   console.log(`[tests] completed in ${elapsedSeconds(startedAt)}s with code ${exitCode}`);
   process.exit(exitCode);

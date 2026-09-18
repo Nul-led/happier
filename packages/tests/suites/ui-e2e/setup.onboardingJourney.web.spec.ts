@@ -7,51 +7,12 @@ import { resolveUiWebBeforeAllTimeoutMs, startUiWeb, type StartedUiWeb } from '.
 import { registerMachineIdentity } from '../../src/testkit/machineIdentity';
 import { gotoCommittedWithRetries, normalizeLoopbackBaseUrl, waitForAuthenticatedHomeUi } from '../../src/testkit/uiE2e/pageNavigation';
 import { secretBearingBrowserCapturePolicy } from '../../src/testkit/uiE2e/secretBearingBrowserCapture';
+import { collectBrowserDiagnostics } from '../../src/testkit/uiE2e/browserDiagnostics';
 
 const run = createRunDirs({ runLabel: 'ui-e2e' });
 const browserDiagnosticsByPage = new WeakMap<Page, () => string>();
 
 test.use(secretBearingBrowserCapturePolicy);
-
-function collectBrowserDiagnostics(page: Page): () => string {
-    const pageConsole: string[] = [];
-    const pageErrors: string[] = [];
-    const requestFailures: string[] = [];
-    const responseErrors: string[] = [];
-
-    page.on('console', (message) => pageConsole.push(`[${message.type()}] ${message.text()}`));
-    page.on('pageerror', (error) => pageErrors.push(String(error)));
-    page.on('requestfailed', (request) => {
-        const failure = request.failure();
-        requestFailures.push(`${request.method()} ${request.url()} ${failure ? `-> ${failure.errorText}` : ''}`.trim());
-    });
-    page.on('response', (response) => {
-        if (response.status() >= 400) {
-            responseErrors.push(`${response.status()} ${response.request().method()} ${response.url()}`);
-        }
-    });
-
-    return () => [
-        '# Browser diagnostics',
-        '',
-        '## Console',
-        '',
-        pageConsole.length ? pageConsole.join('\n') : '(none)',
-        '',
-        '## Page errors',
-        '',
-        pageErrors.length ? pageErrors.join('\n') : '(none)',
-        '',
-        '## Request failures',
-        '',
-        requestFailures.length ? requestFailures.join('\n') : '(none)',
-        '',
-        '## Response errors',
-        '',
-        responseErrors.length ? responseErrors.join('\n') : '(none)',
-        '',
-    ].join('\n');
-}
 
 test.describe('ui e2e: web onboarding journey', () => {
     test.use({ storageState: { cookies: [], origins: [] } });
@@ -110,7 +71,7 @@ test.describe('ui e2e: web onboarding journey', () => {
     });
 
     test.beforeEach(async ({ page }) => {
-        browserDiagnosticsByPage.set(page, collectBrowserDiagnostics(page));
+        browserDiagnosticsByPage.set(page, collectBrowserDiagnostics({ page }));
     });
 
     test.afterEach(async ({ page }, testInfo) => {

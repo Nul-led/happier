@@ -1,34 +1,17 @@
-import { randomBytes } from 'node:crypto';
-
 import {
-    SESSION_METADATA_LAYOUT_VERSION_V1,
-    SessionOwnerMetadataEnvelopeV1Schema,
-    createPlainSessionOwnerMetadataEnvelopeV1,
-    createSessionOwnerMetadataV1,
     openEncryptedDataKeyEnvelopeV1,
     openSessionOwnerMetadataEnvelopeV1,
     projectSessionOwnerCompatibilityViewV1,
-    projectSessionSharedMetadataV1,
-    readRuntimeDescriptorV1FromMetadata,
-    normalizeSessionHandoffWorkspaceRootPath,
-    sealSessionOwnerMetadataEnvelopeV1,
-    writeRuntimeDescriptorV1ToMetadata,
     type AccountScopedCryptoMaterial,
 } from '@happier-dev/protocol';
 
-import { decryptDataKeyBase64, encryptDataKeyBase64 } from './rpcCrypto';
-import { decryptLegacyBase64, encryptLegacyBase64 } from './messageCrypto';
+import { decryptDataKeyBase64 } from './rpcCrypto';
+import { decryptLegacyBase64 } from './messageCrypto';
 import {
     fetchSessionV2,
     fetchSessionsV2,
-    patchSessionMetadataEnvelopeTupleV1,
-    patchSessionMetadataWithRetry,
 } from './sessions';
 import { unwrapSerializedJsonValue } from './unwrapSerializedJsonValue';
-
-type SessionHandoffTransportStrategy = 'direct_peer' | 'server_routed_stream';
-type SessionStorageMode = 'persisted' | 'direct';
-type ProviderId = 'claude' | 'codex' | 'opencode';
 
 type SessionMetadataAccountAccess =
     | Readonly<{
@@ -47,72 +30,6 @@ function asRecord(value: unknown): Record<string, unknown> | null {
         return null;
     }
     return value as Record<string, unknown>;
-}
-
-function normalizeTrimmedString(value: unknown): string | null {
-    if (typeof value !== 'string') {
-        return null;
-    }
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : null;
-}
-
-function resolveVendorResumeIdField(providerId: ProviderId): 'claudeSessionId' | 'codexSessionId' | 'opencodeSessionId' {
-    switch (providerId) {
-        case 'claude':
-            return 'claudeSessionId';
-        case 'codex':
-            return 'codexSessionId';
-        case 'opencode':
-            return 'opencodeSessionId';
-    }
-}
-
-function clearClaudeMachineLocalMetadata(metadata: Record<string, unknown>): void {
-    delete metadata.claudeTranscriptPath;
-    delete metadata.claudeLastCheckpointId;
-    delete metadata.claudeLastAssistantUuid;
-}
-
-function resolveRemoteSessionId(metadata: Record<string, unknown>, providerId: ProviderId): string {
-    const vendorResumeIdField = resolveVendorResumeIdField(providerId);
-    const vendorResumeId = normalizeTrimmedString(metadata[vendorResumeIdField]);
-    if (vendorResumeId) {
-        return vendorResumeId;
-    }
-
-    const directSession = asRecord(metadata.directSessionV1);
-    const externalHistoryImport = asRecord(metadata.externalHistoryImportV1);
-    return (
-        normalizeTrimmedString(directSession?.remoteSessionId)
-        ?? normalizeTrimmedString(externalHistoryImport?.remoteSessionId)
-        ?? ''
-    );
-}
-
-export function resolveSessionHandoffBackTargetRootPath(params: Readonly<{
-    metadata: Record<string, unknown>;
-    requestedTargetMachineId: string;
-}>): string | null {
-    const hintedTargetRootPath = normalizeSessionHandoffWorkspaceRootPath(
-        params.metadata.workspaceReplicationHandoffBackTargetRootPath,
-    );
-    if (hintedTargetRootPath) {
-        return hintedTargetRootPath;
-    }
-
-    const handoff = asRecord(params.metadata.handoffV1);
-    if (!handoff) {
-        return null;
-    }
-
-    const priorSourceMachineId = normalizeTrimmedString(handoff.sourceMachineId);
-    const requestedTargetMachineId = normalizeTrimmedString(params.requestedTargetMachineId);
-    if (!priorSourceMachineId || priorSourceMachineId !== requestedTargetMachineId) {
-        return null;
-    }
-
-    return normalizeSessionHandoffWorkspaceRootPath(handoff.sourceWorkspaceRootPath);
 }
 
 async function readDecryptedSessionMetadataV2(params: Readonly<{
@@ -280,187 +197,4 @@ export async function fetchSessionMetadataV2(params: Readonly<{
 }> & SessionMetadataAccountAccess): Promise<Record<string, unknown>> {
     const result = await readDecryptedSessionMetadataV2(params);
     return result.metadata;
-}
-
-export function buildPatchedSessionHandoffMetadata(metadataBefore: Record<string, unknown>, params: Readonly<{
-    targetMachineId: string;
-    targetWorkspaceRootPath: string;
-    providerId: ProviderId;
-    sessionStorageAfter: SessionStorageMode;
-    completedAtMs: number;
-}>): Record<string, unknown> {
-    const nextMetadata: Record<string, unknown> = {
-        ...metadataBefore,
-        machineId: params.targetMachineId,
-        path: params.targetWorkspaceRootPath,
-        flavor: params.providerId,
-    };
-
-    const vendorResumeIdField = resolveVendorResumeIdField(params.providerId);
-    const remoteSessionId = resolveRemoteSessionId(metadataBefore, params.providerId);
-    if (remoteSessionId) {
-        nextMetadata[vendorResumeIdField] = remoteSessionId;
-    }
-
-    if (params.providerId === 'claude') {
-        clearClaudeMachineLocalMetadata(nextMetadata);
-    }
-
-    const directSessionBefore = asRecord(metadataBefore.directSessionV1);
-    const externalHistoryImportBefore = asRecord(metadataBefore.externalHistoryImportV1);
-    const directSessionRuntimeDescriptorV1 = readRuntimeDescriptorV1FromMetadata(directSessionBefore);
-
-    if (params.sessionStorageAfter === 'direct') {
-        nextMetadata.directSessionV1 = writeRuntimeDescriptorV1ToMetadata({
-            v: 1,
-            providerId: params.providerId,
-            machineId: params.targetMachineId,
-            remoteSessionId,
-            source: directSessionBefore?.source ?? externalHistoryImportBefore?.source,
-            linkedAtMs: params.completedAtMs,
-        }, directSessionRuntimeDescriptorV1);
-        delete nextMetadata.externalHistoryImportV1;
-    } else {
-        nextMetadata.externalHistoryImportV1 = {
-            v: 1,
-            providerId: params.providerId,
-            remoteSessionId,
-            importedAtMs: params.completedAtMs,
-            source: directSessionBefore?.source ?? externalHistoryImportBefore?.source,
-        };
-        delete nextMetadata.directSessionV1;
-    }
-
-    return nextMetadata;
-}
-
-export async function patchSessionHandoffMetadataV1(params: Readonly<{
-    baseUrl: string;
-    token: string;
-    sessionId: string;
-    providerId: ProviderId;
-    sourceMachineId: string;
-    targetMachineId: string;
-    sourceWorkspaceRootPath: string;
-    targetWorkspaceRootPath: string;
-    sessionStorageBefore: SessionStorageMode;
-    sessionStorageAfter: SessionStorageMode;
-    transportStrategy: SessionHandoffTransportStrategy;
-    completedAtMs?: number;
-}> & SessionMetadataAccountAccess): Promise<void> {
-    const {
-        sessionBefore,
-        metadata,
-        storedMetadata,
-        selectedSecret,
-        selectedUsesDataKeyVariant,
-        accountEncryptionMaterial,
-        agentState,
-    } = await readDecryptedSessionMetadataV2({
-        baseUrl: params.baseUrl,
-        token: params.token,
-        sessionId: params.sessionId,
-        includeAgentState: true,
-        ...(params.accountEncryptionMode === 'plain'
-            ? { accountEncryptionMode: 'plain' as const }
-            : {
-                machineKeys: params.machineKeys,
-                accountEncryptionMaterials: params.accountEncryptionMaterials,
-            }),
-    });
-    const completedAtMs = params.completedAtMs ?? Date.now();
-    const metadataBefore = sessionBefore.metadataLayoutVersion === 1
-        ? metadata
-        : storedMetadata;
-    const nextMetadata = buildPatchedSessionHandoffMetadata(metadataBefore, {
-        targetMachineId: params.targetMachineId,
-        targetWorkspaceRootPath: params.targetWorkspaceRootPath,
-        providerId: params.providerId,
-        sessionStorageAfter: params.sessionStorageAfter,
-        completedAtMs,
-    });
-    nextMetadata.handoffV1 = {
-        v: 1,
-        sourceMachineId: params.sourceMachineId,
-        targetMachineId: params.targetMachineId,
-        providerId: params.providerId,
-        sessionStorageBefore: params.sessionStorageBefore,
-        sessionStorageAfter: params.sessionStorageAfter,
-        transportStrategy: params.transportStrategy,
-        completedAtMs,
-        sourceWorkspaceRootPath: params.sourceWorkspaceRootPath,
-        targetWorkspaceRootPath: params.targetWorkspaceRootPath,
-    };
-
-    if (sessionBefore.metadataLayoutVersion === 1) {
-        const ownerMetadata = createSessionOwnerMetadataV1({ metadata: nextMetadata });
-        if (!ownerMetadata.ok) {
-            throw new Error(
-                `Cannot patch unsupported Session owner metadata (${params.sessionId}; fields=${ownerMetadata.unsupportedFields.join(',')})`,
-            );
-        }
-        const sharedMetadata = projectSessionSharedMetadataV1({
-            metadata: nextMetadata,
-            agentState,
-        });
-        const accountEncryptionMode = params.accountEncryptionMode ?? 'e2ee';
-        const ownerMetadataEnvelope = accountEncryptionMode === 'plain'
-            ? createPlainSessionOwnerMetadataEnvelopeV1(ownerMetadata.ownerMetadata)
-            : accountEncryptionMaterial
-                ? sealSessionOwnerMetadataEnvelopeV1({
-                    material: accountEncryptionMaterial,
-                    ownerMetadata: ownerMetadata.ownerMetadata,
-                    randomBytes: (length) => Uint8Array.from(randomBytes(length)),
-                })
-                : null;
-        if (!ownerMetadataEnvelope) {
-            throw new Error(`Cannot patch Session owner metadata without Account E2EE material (${params.sessionId})`);
-        }
-
-        const sealSessionContent = (value: unknown): string => {
-            if (sessionBefore.encryptionMode === 'plain') {
-                return JSON.stringify(value);
-            }
-            if (!selectedSecret) {
-                throw new Error(`Cannot patch handoff metadata without an encrypted Session data key (${params.sessionId})`);
-            }
-            return selectedUsesDataKeyVariant
-                ? encryptDataKeyBase64(value, selectedSecret)
-                : encryptLegacyBase64(value, selectedSecret);
-        };
-        await patchSessionMetadataEnvelopeTupleV1({
-            baseUrl: params.baseUrl,
-            token: params.token,
-            sessionId: params.sessionId,
-            patch: {
-                mode: 'owner',
-                metadataLayoutVersion: SESSION_METADATA_LAYOUT_VERSION_V1,
-                expectedOwnerMetadata: SessionOwnerMetadataEnvelopeV1Schema.parse(sessionBefore.ownerMetadata),
-                sharedMetadata: {
-                    ciphertext: sealSessionContent(sharedMetadata),
-                    expectedVersion: sessionBefore.metadataVersion,
-                },
-                ownerMetadata: ownerMetadataEnvelope,
-                agentState: {
-                    ciphertext: agentState === null ? null : sealSessionContent(agentState),
-                    expectedVersion: sessionBefore.agentStateVersion,
-                },
-            },
-        });
-        return;
-    }
-
-    if (!selectedSecret) {
-        throw new Error(`Cannot patch handoff metadata without an encrypted Session data key (${params.sessionId})`);
-    }
-
-    await patchSessionMetadataWithRetry({
-        baseUrl: params.baseUrl,
-        token: params.token,
-        sessionId: params.sessionId,
-        ciphertext: selectedUsesDataKeyVariant
-            ? encryptDataKeyBase64(nextMetadata, selectedSecret)
-            : encryptLegacyBase64(nextMetadata, selectedSecret),
-        expectedVersion: sessionBefore.metadataVersion,
-    });
 }

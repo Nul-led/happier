@@ -12,24 +12,13 @@ import {
 } from './errors';
 
 describe('classifyIrohHomeCarrierFailure', () => {
-  it('allows independently trusted HTTPS only for native availability and reachability failures', () => {
-    for (const code of [
-      'unavailable',
-      'transport',
-      'home_unreachable',
-      'transport_timeout',
-      'transport_closed',
-    ] as const) {
-      expect(classifyIrohHomeCarrierFailure(new IrohError(code, code))).toEqual({
-        fallbackAllowed: true,
-        failureClass: 'carrier-unavailable',
-      });
-    }
+  it('allows independently trusted HTTPS only for pre-acquisition host/native unavailability', () => {
+    expect(classifyIrohHomeCarrierFailure(new IrohError('unavailable', 'unavailable'))).toEqual({
+      fallbackAllowed: true,
+      failureClass: 'carrier-unavailable',
+    });
     for (const error of [
       new Error(IROH_HOME_TUNNEL_SUSPENDED_ERROR),
-      new Error(`${IROH_HOME_TUNNEL_PROBE_FAILED_ERROR}:health-unavailable`),
-      new Error(`${IROH_HOME_TUNNEL_PROBE_FAILED_ERROR}:probe-timeout`),
-      { name: 'IrohNativeOperationError', code: 'transport_timeout' },
     ]) {
       expect(classifyIrohHomeCarrierFailure(error)).toEqual({
         fallbackAllowed: true,
@@ -47,6 +36,11 @@ describe('classifyIrohHomeCarrierFailure', () => {
       { error: new IrohError('endpoint_config_conflict', 'config conflict'), failureClass: 'endpoint-config' },
       { error: new IrohError('loopback_bind_failed', 'bind failed'), failureClass: 'endpoint-config' },
       { error: new IrohError('resource_limit', 'resource limit'), failureClass: 'endpoint-config' },
+      { error: new IrohError('transport', 'transport failure'), failureClass: 'carrier-unavailable' },
+      { error: new IrohError('home_unreachable', 'Home unreachable'), failureClass: 'carrier-unavailable' },
+      { error: new IrohError('transport_timeout', 'transport timeout'), failureClass: 'carrier-unavailable' },
+      { error: new IrohError('transport_closed', 'transport closed'), failureClass: 'carrier-unavailable' },
+      { error: { name: 'IrohNativeOperationError', code: 'transport_timeout' }, failureClass: 'carrier-unavailable' },
       { error: new IrohError('relay_auth_failed', 'relay denied'), failureClass: 'identity-auth' },
       { error: new IrohError('invalid_preamble', 'invalid preamble'), failureClass: 'protocol' },
       { error: new IrohError('unsupported_alpn', 'unsupported ALPN'), failureClass: 'protocol' },
@@ -54,6 +48,8 @@ describe('classifyIrohHomeCarrierFailure', () => {
       { error: new IrohError('unknown', 'unknown'), failureClass: 'unclassified' },
       { error: new Error(`${IROH_HOME_TUNNEL_PROBE_FAILED_ERROR}:auth-failed`), failureClass: 'identity-auth' },
       { error: new Error(`${IROH_HOME_TUNNEL_PROBE_FAILED_ERROR}:identity-mismatch`), failureClass: 'identity-auth' },
+      { error: new Error(`${IROH_HOME_TUNNEL_PROBE_FAILED_ERROR}:health-unavailable`), failureClass: 'verification-incomplete' },
+      { error: new Error(`${IROH_HOME_TUNNEL_PROBE_FAILED_ERROR}:probe-timeout`), failureClass: 'verification-incomplete' },
       { error: new Error(`${IROH_HOME_TUNNEL_PROBE_FAILED_ERROR}:features-unavailable`), failureClass: 'verification-incomplete' },
       { error: new Error(IROH_HOME_TUNNEL_INVALID_ENDPOINT_ERROR), failureClass: 'descriptor-integrity' },
       { error: new Error(IROH_HOME_TUNNEL_STALE_GENERATION_ERROR), failureClass: 'stale-target' },

@@ -49,7 +49,7 @@ const MACHINE_PROBE_PATH = '/__browser-iroh-machine-probe';
 const HOLD_PATH = '/hold';
 /** Bound for one browser open that must NOT complete (wrong relay, held response). */
 const MUST_NOT_COMPLETE_MS = 8_000;
-/** Deterministic browser identity: A7.2 forbids minting one per load. */
+/** Deterministic test identity for this one ephemeral worker-equivalent endpoint lifetime. */
 const BROWSER_SEED = Array.from({ length: 32 }, (_, index) => (index * 7 + 11) % 251);
 /**
  * A second deterministic identity for the implicit-release check, which runs
@@ -325,7 +325,7 @@ async function main() {
     });
     await page.goto(`http://127.0.0.1:${pagePort}/`, { waitUntil: 'load' });
 
-    // 5a. Bind the one persistent browser endpoint and report its measured
+    // 5a. Bind the one ephemeral browser endpoint and report its measured
     //     init/creation facts. The probe stays live on `window` so the native
     //     inbound-rejection checks below run against a real browser endpoint.
     const bound = await page.evaluate(

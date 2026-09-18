@@ -2,9 +2,11 @@ import { createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { lookupSha256 } from './checksums.js';
 import { requestBytes, requestText } from './http.js';
-import { verifyMinisign } from './minisign.js';
+import {
+  resolveVerifiedReleaseArtifactDigest,
+  verifyReleaseArtifactDigest,
+} from './releaseArtifactVerification.js';
 
 type ReleaseAsset = Readonly<{ name: string; url: string }>;
 
@@ -23,7 +25,7 @@ async function fetchBytes(url: string, { userAgent = 'happier-release-runtime' }
   return await requestBytes({ url, headers: { 'user-agent': userAgent } });
 }
 
-function sha256Hex(bytes: Buffer) {
+function sha256Hex(bytes: Uint8Array) {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
@@ -47,18 +49,34 @@ export async function downloadVerifiedReleaseAssetBundle(params: Readonly<{
 
   await mkdir(destDir, { recursive: true });
 
+  // Byte acquisition and the file sink are this adapter's job; the signature,
+  // checksum and digest decision belongs to the shared cross-runtime core. The
+  // trusted digest is established before the archive is fetched, so an unsigned
+  // or unknown asset is never downloaded on an untrusted list's say-so.
   const checksumsText = await fetchText(bundle.checksums.url, { userAgent });
   const sigFile = await fetchText(bundle.checksumsSig.url, { userAgent });
-  const ok = verifyMinisign({ message: Buffer.from(checksumsText, 'utf-8'), pubkeyFile, sigFile });
-  if (!ok) {
-    throw new Error('[download] signature verification failed for checksums file');
+  const resolved = resolveVerifiedReleaseArtifactDigest({
+    artifactName: bundle.archive.name,
+    checksumsText,
+    checksumsSignatureFile: sigFile,
+    minisignPublicKeyFile: pubkeyFile,
+  });
+  if (!resolved.ok) {
+    if (resolved.reason === 'checksums_signature_invalid') {
+      throw new Error('[download] signature verification failed for checksums file');
+    }
+    throw new Error(`[checksums] sha256 not found for ${resolved.artifactName}`);
   }
 
-  const expected = lookupSha256({ checksumsText, filename: bundle.archive.name });
   const bytes = await fetchBytes(bundle.archive.url, { userAgent });
-  const actual = sha256Hex(bytes);
-  if (actual !== expected) {
-    throw new Error(`[download] checksum verification failed for ${bundle.archive.name}`);
+  const verified = verifyReleaseArtifactDigest({
+    artifactName: resolved.artifactName,
+    expectedSha256: resolved.sha256,
+    artifactBytes: bytes,
+    computeSha256Hex: sha256Hex,
+  });
+  if (!verified.ok) {
+    throw new Error(`[download] checksum verification failed for ${verified.artifactName}`);
   }
 
   const archivePath = join(destDir, bundle.archive.name);

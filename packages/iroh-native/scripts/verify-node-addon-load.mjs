@@ -3,6 +3,8 @@
 // Node, Bun, and a Bun-compiled executable; --package-root points Node/Bun at
 // an extracted release payload while a compiled smoke beside node_modules
 // exercises the loader's production default discovery.
+import { statSync } from "node:fs";
+import { performance } from "node:perf_hooks";
 import { loadIrohNodeNative } from "../dist/nodeNative.js";
 
 const packageRootFlag = process.argv.indexOf("--package-root");
@@ -12,14 +14,18 @@ const packageRoot = packageRootFlag >= 0
 if (packageRootFlag >= 0 && !packageRoot) {
   throw new Error("--package-root requires a value");
 }
+const addonLoadStartedAt = performance.now();
 const loaded = loadIrohNodeNative(packageRoot);
+const addonLoadMilliseconds = performance.now() - addonLoadStartedAt;
 if (!loaded.available) {
   throw new Error(loaded.message);
 }
 const native = loaded.native;
 
 // Real loopback endpoint lifecycle (relay disabled: no external traffic).
+const endpointStartupStartedAt = performance.now();
 const created = await native.createEndpoint({ relayPolicy: "disabled" });
+const endpointStartupMilliseconds = performance.now() - endpointStartupStartedAt;
 const status = await native.getEndpointStatus(created.endpointHandle);
 if (!status?.endpointId || !Array.isArray(status.directAddresses)) {
   throw new Error(`endpoint status missing identity/addresses: ${JSON.stringify(status)}`);
@@ -29,4 +35,10 @@ const afterShutdown = await native.getEndpointStatus(created.endpointHandle);
 if (afterShutdown !== null) throw new Error("endpoint remained active after shutdown");
 
 const runtime = process.versions.bun ? `bun ${process.versions.bun}` : `node ${process.versions.node}`;
-process.stdout.write(`loaded ${loaded.addonPath} in ${runtime} (endpoint ${status.endpointId})\n`);
+process.stdout.write(
+  `loaded ${loaded.addonPath} in ${runtime} (endpoint ${status.endpointId})\n${JSON.stringify({
+    addonBytes: statSync(loaded.addonPath).size,
+    addonLoadMilliseconds: Number(addonLoadMilliseconds.toFixed(3)),
+    endpointStartupMilliseconds: Number(endpointStartupMilliseconds.toFixed(3)),
+  })}\n`,
+);

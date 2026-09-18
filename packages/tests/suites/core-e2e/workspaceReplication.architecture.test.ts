@@ -115,6 +115,62 @@ async function readProductionSourceFiles(rootRelativePaths: readonly string[]): 
 }
 
 describe('workspace replication architecture closures', () => {
+  it('keeps the Claude handoff journeys on the current V3 Action contract', async () => {
+    const root = repoRootDir();
+    const journeyPaths = [
+      'packages/tests/suites/core-e2e/session.handoff.claude.directPeer.feat.sessions.handoff.slow.e2e.test.ts',
+      'packages/tests/suites/core-e2e/session.handoff.claude.serverRouted.feat.sessions.handoff.slow.e2e.test.ts',
+    ] as const;
+    const retiredTokens = [
+      'workspaceReplicationManifestTransferPublication',
+      'workspaceReplicationSourceRootPath',
+      'workspaceReplicationHandoffBackTargetRootPath',
+      'workspaceReplicationReverseSourceRootPath',
+      'workspaceReplicationReverseTargetRootPath',
+    ] as const;
+
+    for (const journeyPath of journeyPaths) {
+      const source = await readFile(join(root, journeyPath), 'utf8');
+      const expectedTransportStrategy = journeyPath.includes('.directPeer.')
+        ? 'direct_peer'
+        : 'server_routed_stream';
+      expect(source, journeyPath).toContain('RPC_METHODS.DAEMON_SESSION_HANDOFF_START_V3');
+      expect(source, journeyPath).toContain('accountServerId: sourceSeed.serverId');
+      expect(source, journeyPath).toContain('accountServerId: targetSeed.serverId');
+      expect(source, journeyPath).toContain('targetPath: targetWorkspaceDir');
+      expect(source, journeyPath).toContain('targetPath: sourceWorkspaceDir');
+      expect(source, journeyPath).toContain(`transportStrategy: '${expectedTransportStrategy}'`);
+      expect(
+        source.match(/DAEMON_SESSION_HANDOFF_(?:START|PREPARE_TARGET|PREPARE_TARGET_RESULT_GET|STATUS_GET|COMMIT|ABORT)(?!_V3)/gu),
+        journeyPath,
+      ).toBeNull();
+      for (const token of retiredTokens) {
+        expect(source, journeyPath).not.toContain(token);
+      }
+    }
+
+    const serverRoutedSource = await readFile(join(root, journeyPaths[1]), 'utf8');
+    const approvalJourney = serverRoutedSource.match(
+      /it\('uses the persisted Action approval receipt[\s\S]*?\n\s*it\('/u,
+    )?.[0] ?? '';
+    expect(approvalJourney).toContain('createCliActionExecutorFromCredentials');
+    expect(approvalJourney).toMatch(/actionExecutor\.execute\(\s*['"]session\.handoff['"]/u);
+    expect(approvalJourney).toContain('serverId: sourceSeed.serverId');
+    expect(approvalJourney).toContain('targetPath: targetWorkspaceDir');
+    expect(approvalJourney).toContain("surface: 'ui'");
+    expect(approvalJourney).not.toContain("surface: 'cli'");
+    expect(approvalJourney).toContain('RPC_METHODS.APPROVAL_REQUEST_DECIDE');
+    expect(approvalJourney).toContain('SessionHandoffActionResultV1Schema.safeParse');
+    expect(approvalJourney).not.toContain('RPC_METHODS.DAEMON_SESSION_HANDOFF_START_V3');
+
+    const metadataTestkitPath = 'packages/tests/src/testkit/sessionHandoffMetadata.ts';
+    const metadataTestkit = await readFile(join(root, metadataTestkitPath), 'utf8');
+    expect(metadataTestkit, metadataTestkitPath).not.toContain('resolveSessionHandoffBackTargetRootPath');
+    expect(metadataTestkit, metadataTestkitPath).not.toContain('buildPatchedSessionHandoffMetadata');
+    expect(metadataTestkit, metadataTestkitPath).not.toContain('workspaceReplication');
+    expect(metadataTestkit, metadataTestkitPath).not.toContain('handoffV1');
+  });
+
   it('keeps the direct-peer handoff runtime free of inline/base64 bulk payload assembly', async () => {
     const sources = await readProductionSourceFiles([
       'apps/cli/src/session/handoff/prepare',

@@ -1,3 +1,4 @@
+import { setTimeout as delay } from 'node:timers/promises';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 
@@ -90,15 +91,12 @@ function isRetryableRequestError(error: unknown): boolean {
   return /timed out|socket hang up/i.test(message);
 }
 
-async function sleep(ms: number): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 async function requestBufferWithNode(params: Readonly<{
   url: string;
   headers?: HeaderMap;
   redirectCount?: number;
   timeoutMs?: number;
+  signal?: AbortSignal;
 }>): Promise<Buffer> {
   const redirectCount = params.redirectCount ?? 0;
   if (redirectCount > MAX_REDIRECTS) {
@@ -112,6 +110,7 @@ async function requestBufferWithNode(params: Readonly<{
       params.url,
       {
         method: 'GET',
+        signal: params.signal,
         headers: params.headers,
       },
       (res) => {
@@ -131,6 +130,7 @@ async function requestBufferWithNode(params: Readonly<{
             headers: nextHeaders,
             redirectCount: redirectCount + 1,
             timeoutMs: params.timeoutMs,
+            signal: params.signal,
           }).then(resolve, reject);
           return;
         }
@@ -162,9 +162,11 @@ export async function requestBytes(params: Readonly<{
   url: string;
   headers?: HeaderMap;
   timeoutMs?: number;
+  signal?: AbortSignal;
   retryAttempts?: number;
   retryDelayMs?: number;
 }>): Promise<Buffer> {
+  params.signal?.throwIfAborted();
   const url = String(params.url ?? '').trim();
   if (!url) throw new Error('[http] url is required');
   if (url.startsWith('data:')) {
@@ -178,13 +180,15 @@ export async function requestBytes(params: Readonly<{
         url,
         headers: params.headers,
         timeoutMs: params.timeoutMs,
+        signal: params.signal,
       });
     } catch (error) {
+      params.signal?.throwIfAborted();
       if (attempt >= retryAttempts || !isRetryableRequestError(error)) {
         throw error;
       }
       if (retryDelayMs > 0) {
-        await sleep(retryDelayMs);
+        await delay(retryDelayMs, undefined, { signal: params.signal });
       }
     }
   }
@@ -195,6 +199,7 @@ export async function requestText(params: Readonly<{
   url: string;
   headers?: HeaderMap;
   timeoutMs?: number;
+  signal?: AbortSignal;
   retryAttempts?: number;
   retryDelayMs?: number;
 }>): Promise<string> {
@@ -206,6 +211,7 @@ export async function requestJson<T>(params: Readonly<{
   url: string;
   headers?: HeaderMap;
   timeoutMs?: number;
+  signal?: AbortSignal;
   retryAttempts?: number;
   retryDelayMs?: number;
 }>): Promise<T> {

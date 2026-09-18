@@ -46,6 +46,14 @@ export type IrohNodeLifecycleBoundary = Readonly<{
     releaseHomeTunnel: (tunnelId: string) => Promise<void>;
     getTunnelStatus: (tunnelId: string) => Promise<Record<string, unknown> | null>;
     shutdownEndpoint?: (request: { endpointHandle: string }) => Promise<void>;
+    startMachineTunnel: (request: {
+        endpointHandle: string;
+        endpointId: string;
+        directAddresses?: readonly string[];
+        relayUrls?: readonly string[];
+        handshakeJson: string;
+        capProfile: 'machineBulk';
+    }) => Promise<{ machineTunnelId: string; localPort: number; localCapability?: string }>;
     startMachineHttpTunnel: (request: {
         endpointHandle: string;
         endpointId: string;
@@ -65,6 +73,12 @@ export type DesktopIrohTunnelLease = Readonly<{
     carrier: 'iroh';
     observedPath: 'direct' | 'relay' | 'unknown';
     startedAtMs: number;
+}>;
+
+export type DesktopIrohMachineTunnelLease = Readonly<{
+    leaseId: string;
+    localPort: number;
+    localCapability?: string;
 }>;
 
 export type ElectronIrohTunnelServiceDependencies = Readonly<{
@@ -101,6 +115,7 @@ function readNativeBoundary(candidate: unknown): IrohNodeLifecycleBoundary | nul
         || typeof record.releaseHomeTunnel !== 'function'
         || typeof record.getTunnelStatus !== 'function'
         || typeof record.createEndpoint !== 'function'
+        || typeof record.startMachineTunnel !== 'function'
         || typeof record.startMachineHttpTunnel !== 'function'
         || typeof record.stopMachineTunnel !== 'function'
     ) {
@@ -292,37 +307,40 @@ export class ElectronIrohTunnelService {
         return { available: (await this.#nativeOrNull()) !== null };
     }
 
-    async startMachineHttpTunnel(request: unknown): Promise<{ leaseId: string; localOrigin: string; localCapability: string }> {
-        if (typeof request !== 'object' || request === null) throw nativeError('invalid-request', 'request is required');
-        const record = request as Record<string, unknown>;
-        if (typeof record.endpointId !== 'string' || typeof record.handshakeJson !== 'string') {
-            throw nativeError('invalid-request', 'endpointId and handshakeJson are required');
-        }
-        const native = await this.#requireNative();
-        const configuration = readApplicationEndpointConfiguration(record);
-        const endpoint = await this.#ensureApplicationEndpoint(configuration);
-        const started = await native.startMachineHttpTunnel({
+    async startMachineTunnel(request: unknown): Promise<DesktopIrohMachineTunnelLease> {
+        const { native, endpoint, record } = await this.#prepareMachineTunnel(request);
+        return projectMachineTunnelLease(await native.startMachineTunnel({
             endpointHandle: endpoint.endpointHandle,
-            endpointId: record.endpointId,
+            endpointId: record.endpointId as string,
             ...(Array.isArray(record.directAddresses) ? { directAddresses: record.directAddresses as string[] } : {}),
             ...(Array.isArray(record.relayUrls) ? { relayUrls: record.relayUrls as string[] } : {}),
-            handshakeJson: record.handshakeJson,
+            handshakeJson: record.handshakeJson as string,
+            capProfile: 'machineBulk',
+        }));
+    }
+
+    async startMachineHttpTunnel(request: unknown): Promise<{ leaseId: string; localOrigin: string; localCapability: string }> {
+        const { native, endpoint, record } = await this.#prepareMachineTunnel(request);
+        const started = await native.startMachineHttpTunnel({
+            endpointHandle: endpoint.endpointHandle,
+            endpointId: record.endpointId as string,
+            ...(Array.isArray(record.directAddresses) ? { directAddresses: record.directAddresses as string[] } : {}),
+            ...(Array.isArray(record.relayUrls) ? { relayUrls: record.relayUrls as string[] } : {}),
+            handshakeJson: record.handshakeJson as string,
             capProfile: 'machineBulk',
         });
-        if (!Number.isInteger(started.localPort) || started.localPort < 1 || started.localPort > 65_535) {
-            throw nativeError('transport-unavailable', 'malformed native machine HTTP lease');
-        }
-        if (!/^[0-9a-f]{64}$/u.test(started.localCapability)) {
+        const lease = projectMachineTunnelLease(started);
+        if (lease.localCapability === undefined) {
             throw nativeError('transport-unavailable', 'malformed native machine HTTP capability');
         }
         return {
-            leaseId: started.machineTunnelId,
-            localOrigin: `http://127.0.0.1:${started.localPort}`,
-            localCapability: started.localCapability,
+            leaseId: lease.leaseId,
+            localOrigin: `http://127.0.0.1:${lease.localPort}`,
+            localCapability: lease.localCapability,
         };
     }
 
-    async stopMachineHttpTunnel(leaseId: string): Promise<void> {
+    async stopMachineTunnel(leaseId: string): Promise<void> {
         const native = await this.#requireNative();
         await native.stopMachineTunnel(leaseId);
     }
@@ -398,6 +416,21 @@ export class ElectronIrohTunnelService {
         return endpoint;
     }
 
+    async #prepareMachineTunnel(request: unknown): Promise<{
+        native: IrohNodeLifecycleBoundary;
+        endpoint: { endpointHandle: string; endpointId: string };
+        record: Record<string, unknown>;
+    }> {
+        if (typeof request !== 'object' || request === null) throw nativeError('invalid-request', 'request is required');
+        const record = request as Record<string, unknown>;
+        if (typeof record.endpointId !== 'string' || typeof record.handshakeJson !== 'string') {
+            throw nativeError('invalid-request', 'endpointId and handshakeJson are required');
+        }
+        const native = await this.#requireNative();
+        const endpoint = await this.#ensureApplicationEndpoint(readApplicationEndpointConfiguration(record));
+        return { native, endpoint, record };
+    }
+
     #canonicalEndpointKeyPath(): string {
         return join(this.#dependencies.userDataPath(), ...IROH_ENDPOINT_KEY_RELPATH);
     }
@@ -416,4 +449,28 @@ export class ElectronIrohTunnelService {
         if (!native) throw nativeError('unavailable', 'Iroh native lifecycle is unavailable');
         return native;
     }
+}
+
+function projectMachineTunnelLease(started: {
+    machineTunnelId: string;
+    localPort: number;
+    localCapability?: string;
+}): DesktopIrohMachineTunnelLease {
+    if (
+        typeof started.machineTunnelId !== 'string'
+        || started.machineTunnelId.trim().length === 0
+        || !Number.isInteger(started.localPort)
+        || started.localPort < 1
+        || started.localPort > 65_535
+    ) {
+        throw nativeError('transport-unavailable', 'malformed native machine lease');
+    }
+    if (started.localCapability !== undefined && !/^[0-9a-f]{64}$/u.test(started.localCapability)) {
+        throw nativeError('transport-unavailable', 'malformed native machine capability');
+    }
+    return {
+        leaseId: started.machineTunnelId,
+        localPort: started.localPort,
+        ...(started.localCapability === undefined ? {} : { localCapability: started.localCapability }),
+    };
 }

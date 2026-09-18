@@ -250,8 +250,8 @@ describe('Iroh native lifecycle adapter', () => {
       const getTunnelStatus = vi.fn()
         .mockResolvedValueOnce({ active: true, connectionActive: true, observedPath: 'direct' })
         .mockResolvedValueOnce({ active: true, connectionActive: true, observedPath: 'relay' })
-        .mockResolvedValueOnce({ active: false, connectionActive: false, observedPath: 'relay' })
-        .mockResolvedValueOnce(null);
+        // Rust retains the tunnel entry after Connection::closed completes.
+        .mockResolvedValue({ active: true, connectionActive: false, observedPath: 'relay' });
       const adapter = createIrohNativeAdapter(nativeHarness({ getTunnelStatus }), { statusPollIntervalMs: 100 });
       const lease = await adapter.ensureHomeTunnel({
         homeServerIdentityId: 'srv_home_a',
@@ -266,7 +266,6 @@ describe('Iroh native lifecycle adapter', () => {
       expect(events).toEqual([
         expect.objectContaining({ type: 'ready', tunnelHandle: 'l1', status: 'ready', observedPath: 'direct' }),
         expect.objectContaining({ type: 'path_changed', tunnelHandle: 'l1', status: 'ready', observedPath: 'relay' }),
-        expect.objectContaining({ type: 'degraded', tunnelHandle: 'l1', status: 'degraded', observedPath: 'relay' }),
         expect.objectContaining({ type: 'closed', tunnelHandle: 'l1', status: 'closed' }),
       ]);
       for (const event of events) {
@@ -276,7 +275,7 @@ describe('Iroh native lifecycle adapter', () => {
       }
       unsubscribe();
       await vi.advanceTimersByTimeAsync(200);
-      expect(getTunnelStatus).toHaveBeenCalledTimes(4);
+      expect(getTunnelStatus).toHaveBeenCalledTimes(3);
       expect(getTunnelStatus).toHaveBeenCalledWith('l1');
     } finally {
       vi.useRealTimers();

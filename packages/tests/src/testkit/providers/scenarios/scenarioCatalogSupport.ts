@@ -1,7 +1,14 @@
 import type { ProviderScenario, ProviderUnderTest } from '../types';
 
-export function assertProviderId(provider: ProviderUnderTest, expected: ProviderUnderTest['id']): void {
-  if (provider.id !== expected) throw new Error(`Scenario is only supported for provider ${expected} (got ${provider.id})`);
+export function assertProviderId(
+  provider: ProviderUnderTest,
+  ...expected: readonly [ProviderUnderTest['id'], ...ProviderUnderTest['id'][]]
+): void {
+  if (!expected.includes(provider.id)) {
+    throw new Error(
+      `Scenario is only supported for provider ${expected.join(' or ')} (got ${provider.id})`,
+    );
+  }
 }
 
 export function isOpenCodeFamilyProvider(provider: ProviderUnderTest): boolean {

@@ -1,3 +1,4 @@
+import { setTimeout as delay } from 'node:timers/promises';
 import { requestJson } from './http.js';
 
 type FetchImpl = typeof fetch;
@@ -18,17 +19,15 @@ function buildGitHubLatestReleaseUrl(githubRepo: string) {
 
 function createHttpError(message: string, status: number) {
   const err = new Error(message);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (err as any).status = status;
+  (err as Error & { status: number }).status = status;
   return err;
 }
 
-function readHttpStatus(error: unknown): number | null {
+export function readGitHubReleaseHttpStatus(error: unknown): number | null {
   const statusFromField =
     typeof error === 'object' && error != null && 'status' in error
       ? Number(
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (error as any).status,
+          (error as { status?: unknown }).status,
         )
       : NaN;
   if (Number.isInteger(statusFromField) && statusFromField >= 100 && statusFromField <= 599) {
@@ -47,7 +46,7 @@ function normalizeGitHubRequestError(params: Readonly<{
   context: string;
   error: unknown;
 }>): Error {
-  const status = readHttpStatus(params.error) ?? 500;
+  const status = readGitHubReleaseHttpStatus(params.error) ?? 500;
   const message = params.error instanceof Error ? params.error.message : String(params.error);
   return createHttpError(`${params.context}: ${message}`, status);
 }
@@ -58,9 +57,11 @@ export async function fetchGitHubReleaseByTag(params: Readonly<{
   userAgent?: string;
   githubToken?: string;
   fetchImpl?: FetchImpl;
+  signal?: AbortSignal;
   transientNotFoundAttempts?: number;
   retryDelayMs?: number;
 }>): Promise<unknown> {
+  params.signal?.throwIfAborted();
   const userAgent = String(params.userAgent ?? '').trim() || 'happier-release-runtime';
   const token = String(params.githubToken ?? '').trim();
   const url = buildGitHubReleaseTagUrl(params.githubRepo, params.tag);
@@ -75,20 +76,21 @@ export async function fetchGitHubReleaseByTag(params: Readonly<{
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
       if (params.fetchImpl) {
-        const response = await params.fetchImpl(url, { headers });
+        const response = await params.fetchImpl(url, { headers, signal: params.signal });
         if (!response.ok) {
           throw createHttpError(`[github] failed to resolve release tag ${params.tag} (${response.status})`, response.status);
         }
         return response.json();
       }
-      return await requestJson({ url, headers });
+      return await requestJson({ url, headers, signal: params.signal });
     } catch (error) {
+      params.signal?.throwIfAborted();
       const normalized = normalizeGitHubRequestError({
         context: `[github] failed to resolve release tag ${params.tag}`,
         error,
       });
-      if (readHttpStatus(normalized) !== 404 || attempt >= attempts) throw normalized;
-      if (retryDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+      if (readGitHubReleaseHttpStatus(normalized) !== 404 || attempt >= attempts) throw normalized;
+      if (retryDelayMs > 0) await delay(retryDelayMs, undefined, { signal: params.signal });
     }
   }
   throw createHttpError(`[github] failed to resolve release tag ${params.tag}`, 404);
@@ -99,7 +101,9 @@ export async function fetchGitHubLatestRelease(params: Readonly<{
   userAgent?: string;
   githubToken?: string;
   fetchImpl?: FetchImpl;
+  signal?: AbortSignal;
 }>): Promise<unknown> {
+  params.signal?.throwIfAborted();
   const userAgent = String(params.userAgent ?? '').trim() || 'happier-release-runtime';
   const token = String(params.githubToken ?? '').trim();
   const url = buildGitHubLatestReleaseUrl(params.githubRepo);
@@ -111,12 +115,13 @@ export async function fetchGitHubLatestRelease(params: Readonly<{
 
   if (params.fetchImpl) {
     try {
-      const response = await params.fetchImpl(url, { headers });
+      const response = await params.fetchImpl(url, { headers, signal: params.signal });
       if (!response.ok) {
         throw createHttpError(`[github] failed to resolve latest release (${response.status})`, response.status);
       }
       return response.json();
     } catch (error) {
+      params.signal?.throwIfAborted();
       throw normalizeGitHubRequestError({
         context: '[github] failed to resolve latest release',
         error,
@@ -124,8 +129,9 @@ export async function fetchGitHubLatestRelease(params: Readonly<{
     }
   }
   try {
-    return await requestJson({ url, headers });
+    return await requestJson({ url, headers, signal: params.signal });
   } catch (error) {
+    params.signal?.throwIfAborted();
     throw normalizeGitHubRequestError({
       context: '[github] failed to resolve latest release',
       error,
@@ -139,6 +145,7 @@ export async function fetchFirstGitHubReleaseByTags(params: Readonly<{
   userAgent?: string;
   githubToken?: string;
   fetchImpl?: FetchImpl;
+  signal?: AbortSignal;
 }>): Promise<Readonly<{ tag: string; release: unknown }>> {
   const tags = Array.isArray(params.tags) ? params.tags : [];
   for (const tag of tags) {
@@ -150,18 +157,12 @@ export async function fetchFirstGitHubReleaseByTags(params: Readonly<{
         userAgent: params.userAgent,
         githubToken: params.githubToken,
         fetchImpl: params.fetchImpl,
+        signal: params.signal,
         transientNotFoundAttempts: 1,
       });
       return { tag, release };
     } catch (e) {
-      const status =
-        typeof e === 'object' && e != null && 'status' in e
-          ? Number(
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              (e as any).status,
-            )
-          : NaN;
-      if (status === 404) continue;
+      if (readGitHubReleaseHttpStatus(e) === 404) continue;
       throw e;
     }
   }

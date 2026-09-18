@@ -616,9 +616,9 @@ impl IrohEndpoint {
         // and closed, never with ambient infrastructure as a fallback.
         let relay_selection = RelaySelection::resolve(&config.relay_policy, &config.relay_urls)?;
         #[cfg(target_arch = "wasm32")]
-        // The browser has no filesystem key store and must not mint a fresh
-        // identity per load: A7.2 requires one persistent application/profile
-        // endpoint, so the caller always supplies the persisted seed.
+        // The browser has no filesystem key store. Its SharedWorker owner
+        // supplies one ephemeral seed for the worker lifetime; this boundary
+        // takes explicit custody and zeroizes the seed after deriving the key.
         let secret_key = match &config.key_seed {
             Some(seed) => seed.secret_key(),
             None => return Err(IrohError::EndpointConfigConflict),
@@ -1002,7 +1002,14 @@ struct ManagedEndpoint {
 #[derive(Default)]
 pub struct EndpointManager {
     endpoints: Mutex<HashMap<EndpointIdentity, ManagedEndpoint>>,
+    acquire_locks: Mutex<HashMap<EndpointIdentity, std::sync::Arc<tokio::sync::Mutex<()>>>>,
     next_ephemeral: Mutex<u64>,
+    #[cfg(test)]
+    bind_attempts: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    acquire_barrier: Mutex<Option<std::sync::Arc<tokio::sync::Barrier>>>,
+    #[cfg(test)]
+    bind_start_barrier: Mutex<Option<std::sync::Arc<tokio::sync::Barrier>>>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1052,6 +1059,49 @@ impl EndpointManager {
             existing_endpoint.apply_compatible_config(config).await?;
             return Ok(existing_endpoint);
         }
+        #[cfg(test)]
+        {
+            let barrier = self
+                .acquire_barrier
+                .lock()
+                .map_err(|_| IrohError::TransportClosed)?
+                .clone();
+            if let Some(barrier) = barrier {
+                barrier.wait().await;
+            }
+        }
+        let acquire_lock = {
+            let mut acquire_locks = self
+                .acquire_locks
+                .lock()
+                .map_err(|_| IrohError::TransportClosed)?;
+            acquire_locks
+                .entry(identity.clone())
+                .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        };
+        let _acquire_guard = acquire_lock.lock().await;
+        // The first waiter may have completed the physical bind while this
+        // acquire waited. Reconcile this caller's compatible relay facts onto
+        // that one endpoint instead of binding a disposable duplicate.
+        if let Some((_, existing_endpoint)) = self.get(&identity) {
+            existing_endpoint.apply_compatible_config(config).await?;
+            return Ok(existing_endpoint);
+        }
+        #[cfg(test)]
+        {
+            let barrier = self
+                .bind_start_barrier
+                .lock()
+                .map_err(|_| IrohError::TransportClosed)?
+                .clone();
+            if let Some(barrier) = barrier {
+                barrier.wait().await;
+            }
+        }
+        #[cfg(test)]
+        self.bind_attempts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let bound = std::sync::Arc::new(IrohEndpoint::bind(config).await?);
         let endpoint = {
             let mut endpoints = self.lock_endpoints()?;
@@ -1074,6 +1124,23 @@ impl EndpointManager {
             endpoint.apply_compatible_config(config).await?;
         }
         Ok(endpoint)
+    }
+
+    #[cfg(test)]
+    fn bind_attempt_count(&self) -> usize {
+        self.bind_attempts.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    fn synchronize_next_acquires(&self, participants: usize) {
+        *self.acquire_barrier.lock().expect("acquire barrier lock") =
+            Some(std::sync::Arc::new(tokio::sync::Barrier::new(participants)));
+    }
+
+    #[cfg(test)]
+    fn synchronize_next_bind_starts(&self, participants: usize) {
+        *self.bind_start_barrier.lock().expect("bind barrier lock") =
+            Some(std::sync::Arc::new(tokio::sync::Barrier::new(participants)));
     }
 
     /// Status of the shared endpoint for an identity, if one is bound.
@@ -2445,5 +2512,79 @@ mod tests {
         ephemeral_a.shutdown().await;
         ephemeral_b.shutdown().await;
         let _ = fs::remove_dir_all(&key_root);
+    }
+
+    #[tokio::test]
+    async fn endpoint_manager_singleflights_concurrent_first_acquire_per_identity() {
+        let manager = EndpointManager::new();
+        manager.synchronize_next_acquires(2);
+        let key_root = std::env::temp_dir().join(format!(
+            "happier-iroh-manager-singleflight-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let key_path = key_root.join("identity").join("endpoint.key");
+        let config = EndpointConfig {
+            key_path: Some(key_path),
+            relay_policy: RelayPolicy::Disabled,
+            ..EndpointConfig::default()
+        };
+
+        let (first, second) = tokio::join!(manager.acquire(&config), manager.acquire(&config));
+        let first = first.unwrap();
+        let second = second.unwrap();
+
+        assert!(std::sync::Arc::ptr_eq(&first, &second));
+        assert_eq!(
+            manager.bind_attempt_count(),
+            1,
+            "one identity must perform exactly one physical endpoint bind"
+        );
+        first.shutdown().await;
+        let _ = std::fs::remove_dir_all(key_root);
+    }
+
+    #[tokio::test]
+    async fn endpoint_manager_keeps_concurrent_first_acquires_independent_by_identity() {
+        let manager = EndpointManager::new();
+        manager.synchronize_next_bind_starts(2);
+        let key_root = std::env::temp_dir().join(format!(
+            "happier-iroh-manager-independent-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let first_config = EndpointConfig {
+            key_path: Some(key_root.join("first").join("endpoint.key")),
+            relay_policy: RelayPolicy::Disabled,
+            ..EndpointConfig::default()
+        };
+        let second_config = EndpointConfig {
+            key_path: Some(key_root.join("second").join("endpoint.key")),
+            relay_policy: RelayPolicy::Disabled,
+            ..EndpointConfig::default()
+        };
+
+        let (first, second) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(
+                manager.acquire(&first_config),
+                manager.acquire(&second_config)
+            )
+        })
+        .await
+        .expect("unrelated endpoint identities must not share one acquisition lock");
+        let first = first.unwrap();
+        let second = second.unwrap();
+
+        assert_ne!(first.id(), second.id());
+        assert_eq!(manager.bind_attempt_count(), 2);
+        first.shutdown().await;
+        second.shutdown().await;
+        let _ = std::fs::remove_dir_all(key_root);
     }
 }

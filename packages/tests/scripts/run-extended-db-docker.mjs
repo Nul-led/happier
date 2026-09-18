@@ -17,7 +17,7 @@ function usage() {
 Run Happier extended DB tests with an auto-provisioned Docker database.
 
 Usage:
-  node packages/tests/scripts/run-extended-db-docker.mjs --db postgres|mysql [--mode e2e|contract|extended] [--keep]
+  node packages/tests/scripts/run-extended-db-docker.mjs --db postgres|mysql [--mode e2e|contract|extended|session-system-record-upgrade] [--contract-file <server-relative-test-file>] [--keep]
 
 Examples:
   node packages/tests/scripts/run-extended-db-docker.mjs --db postgres --mode e2e
@@ -119,7 +119,7 @@ export function parseArgs(argv) {
       out.keep = true;
       continue;
     }
-    if (a === '--db' || a === '--mode' || a === '--name') {
+    if (a === '--db' || a === '--mode' || a === '--name' || a === '--contract-file') {
       const v = args[++i];
       if (!v) throw new Error(`Missing value for ${a}`);
       out[a.slice(2)] = v;
@@ -152,8 +152,13 @@ export async function main(argv = process.argv) {
     usage();
     return 2;
   }
-  if (mode !== 'e2e' && mode !== 'contract' && mode !== 'extended') {
-    console.error(`Invalid --mode. Expected e2e|contract|extended, got: ${String(mode)}`);
+  if (
+    mode !== 'e2e'
+    && mode !== 'contract'
+    && mode !== 'extended'
+    && mode !== 'session-system-record-upgrade'
+  ) {
+    console.error(`Invalid --mode. Expected e2e|contract|extended|session-system-record-upgrade, got: ${String(mode)}`);
     usage();
     return 2;
   }
@@ -229,7 +234,7 @@ export async function main(argv = process.argv) {
     const { host, port } = parseDockerPortLine(portLine);
     const databaseUrl = buildDatabaseUrlForContainer({ db, host, port });
 
-    const steps = buildExtendedDbCommandPlan({ db, mode, databaseUrl });
+    const steps = buildExtendedDbCommandPlan({ db, mode, databaseUrl, contractFile: parsed['contract-file'] });
     for (const step of steps) {
       const invocation = resolveExtendedDbYarnInvocation(step.args);
       const env = { ...process.env, ...step.env };

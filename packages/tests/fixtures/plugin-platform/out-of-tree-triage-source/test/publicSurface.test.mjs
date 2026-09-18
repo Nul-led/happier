@@ -76,6 +76,10 @@ test('QB-01: every shipped fixture module imports only published entry points', 
 
     const allowedPackages = new Set([
         '@happier-dev/plugin-sdk',
+        // The published UI entry point. It carries the declarative-document
+        // media type and builder the detail body needs, and both are declared
+        // realm `any`, so a daemon-side document producer may use them.
+        '@happier-dev/plugin-sdk/ui',
         '@happier-dev/triage-protocol/v1',
     ]);
     const imported = [];
@@ -102,7 +106,11 @@ test('QB-01: every shipped fixture module imports only published entry points', 
     // above is a real boundary rather than a vacuous one.
     assert.deepEqual(
         [...allowedPackages].filter((name) => imported.includes(name)),
-        ['@happier-dev/plugin-sdk', '@happier-dev/triage-protocol/v1'],
+        [
+            '@happier-dev/plugin-sdk',
+            '@happier-dev/plugin-sdk/ui',
+            '@happier-dev/triage-protocol/v1',
+        ],
     );
 });
 

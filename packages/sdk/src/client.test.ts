@@ -1,4 +1,14 @@
 import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
+import { formatAccountApiTokenCredentialV1 } from '@happier-dev/protocol/auth/accountApiTokens';
+import { wrapApiTokenEncryptionAccessV1 } from '@happier-dev/protocol';
+import { encodeBase64 } from '@happier-dev/protocol/crypto/base64';
+import {
+  EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES_V2,
+  ExternalActionRequestEnvelopeV2Schema,
+  getActionSpec,
+  openExternalActionRequestV2,
+  prepareExternalActionResponseV2,
+} from '@happier-dev/protocol/actions';
 
 type MockUndiciRequestOptions = RequestInit & Readonly<{
   dispatcher?: unknown;
@@ -27,6 +37,7 @@ const undiciRequest = vi.hoisted(() => vi.fn(async (
     statusCode: response.status,
     headers,
     body: {
+      destroy: vi.fn(),
       async *[Symbol.asyncIterator](): AsyncGenerator<Uint8Array> {
         yield bytes;
       },
@@ -100,6 +111,648 @@ function isHappierSessionInitialInputError(
 }
 
 describe('Happier SDK client', () => {
+  it('protects a later session.list query and opens its marked awareness result', async () => {
+    const material = { type: 'dataKey' as const, machineKey: Uint8Array.from({ length: 32 }, (_, i) => i + 1) };
+    const context = { serverIdentityId: 'srv_sdk', accountId: 'account-1',
+      tokenId: '123e4567-e89b-42d3-a456-426614174000',
+      contentPublicKey: 'B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9/AsrhtHHw=' };
+    const wrappingSecret = new Uint8Array(32).fill(7);
+    const bearer = `hap_v1_${context.tokenId}_${encodeBase64(new Uint8Array(32).fill(8), 'base64url')}`;
+    const encryptionAccess = wrapApiTokenEncryptionAccessV1({ context, wrappingSecret,
+      contentPrivateKey: material.machineKey, randomBytes: (length) => new Uint8Array(length).fill(3) });
+    const token = formatAccountApiTokenCredentialV1({ bearer,
+      wrappingSecret: encodeBase64(wrappingSecret, 'base64url'), serverIdentityId: context.serverIdentityId,
+      accountId: context.accountId, contentPublicKey: context.contentPublicKey });
+    const input = {
+      query: {
+        v: 1 as const,
+        storage: 'active' as const,
+        includeInactive: false,
+        scope: 'assigned_to_me' as const,
+        attention: 'needs_my_attention' as const,
+        includeAttention: true,
+        audiences: [{ kind: 'team' as const, teamId: 'private-team-sentinel' }],
+        tagIds: ['private-tag-sentinel'],
+        attentionCursor: 'cursor_v1_private-later-page-sentinel',
+        limit: 17,
+      },
+      view: 'awareness' as const,
+    };
+    expect(getActionSpec('session.list').inputSchema.safeParse({
+      ...input,
+      queryVersion: 1,
+    }).success).toBe(false);
+    const result = {
+      view: 'awareness',
+      projectionVersion: 1,
+      sessions: [{
+        v: 1,
+        sessionId: 'private-result-sentinel',
+        lifecycle: 'active',
+        runtime: 'working',
+        freshness: 'live',
+        operational: { primary: 'working', reasons: ['working'] },
+        encryption: 'plain',
+        availability: 'complete',
+      }],
+      nextCursor: null,
+      hasNext: false,
+      attentionNextCursor: null,
+      attentionHasNext: false,
+    };
+    const protectedBodies: string[] = [];
+    const fetch = vi.fn(async (url: URL | RequestInfo, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get('authorization')).toBe(`Bearer ${bearer}`);
+      const path = new URL(String(url)).pathname;
+      if (path.endsWith('/encryption-access')) {
+        return response({ v: 1, accountId: context.accountId, tokenId: context.tokenId, encryptionAccess });
+      }
+      const body = String(init?.body ?? '');
+      protectedBodies.push(body);
+      const request = ExternalActionRequestEnvelopeV2Schema.parse(JSON.parse(body));
+      const binding = { serverIdentityId: context.serverIdentityId, accountId: context.accountId,
+        credentialId: context.tokenId, actionId: 'session.list', requestId: request.requestId,
+        target: { kind: 'machine' as const, machineId: 'machine-1' } };
+      expect(openExternalActionRequestV2({ envelope: request, binding, material })?.input).toEqual(input);
+      const prepared = prepareExternalActionResponseV2({ binding, request, material,
+        randomBytes: (length) => new Uint8Array(length).fill(4), executedMachineId: 'machine-1',
+        execution: { ok: true, result } });
+      protectedBodies.push(prepared.body);
+      return response(prepared.response);
+    });
+    vi.stubGlobal('fetch', fetch);
+
+    const client = connect({ endpoint: 'http://daemon', token });
+    try {
+      await expect(client.machine('machine-1').actions.session.list(input)).resolves.toEqual(result);
+      expect(protectedBodies.join('')).not.toContain('sentinel');
+      expect(protectedBodies.join('')).not.toContain(token);
+      expect(fetch).toHaveBeenCalledTimes(2);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('rejects an unmarked predecessor session.list query success without consuming its rows', async () => {
+    const fetch = vi.fn(async (_url: URL | RequestInfo, init?: RequestInit) => responseForRequest(init, {
+      v: 1,
+      actionId: 'session.list',
+      execution: {
+        ok: true,
+        result: {
+          sessions: [{ id: 'unfiltered-predecessor-row' }],
+          nextCursor: null,
+          hasNext: false,
+        },
+      },
+    }));
+    vi.stubGlobal('fetch', fetch);
+    const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
+    try {
+      await expect(client.actions.session.list({
+        query: {
+          v: 1, storage: 'active', includeInactive: false, scope: 'my_work', attention: 'any',
+          audiences: [], tagIds: [],
+        },
+      })).rejects.toMatchObject({ code: 'session_list_query_update_required' });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('keeps strict session.list proof bound to the query sent before transport settles', async () => {
+    let settleResponse: (() => void) | undefined;
+    const fetch = vi.fn(async (_url: URL | RequestInfo, init?: RequestInit) => await new Promise<Response>((resolve) => {
+      settleResponse = () => resolve(responseForRequest(init, {
+        v: 1,
+        actionId: 'session.list',
+        execution: {
+          ok: true,
+          result: {
+            sessions: [{ id: 'unfiltered-predecessor-row' }],
+            nextCursor: null,
+            hasNext: false,
+          },
+        },
+      }));
+    }));
+    vi.stubGlobal('fetch', fetch);
+    const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
+    const input: PublicActionInputById['session.list'] = {
+      query: {
+        v: 1, storage: 'active', includeInactive: false, scope: 'my_work', attention: 'any',
+        audiences: [], tagIds: [],
+      },
+    };
+    try {
+      const execution = client.actions.session.list(input);
+      await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+      delete input.query;
+      settleResponse?.();
+      await expect(execution).rejects.toMatchObject({ code: 'session_list_query_update_required' });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('rejects a marker-only strict-query summary without consuming its rows', async () => {
+    const fetch = vi.fn(async (_url: URL | RequestInfo, init?: RequestInit) => responseForRequest(init, {
+      v: 1,
+      actionId: 'session.list',
+      execution: {
+        ok: true,
+        result: {
+          sessions: [{ id: 'pairless-query-row' }],
+          nextCursor: null,
+          hasNext: false,
+          queryVersion: 1,
+        },
+      },
+    }));
+    vi.stubGlobal('fetch', fetch);
+    const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
+    try {
+      await expect(client.actions.session.list({
+        query: {
+          v: 1, storage: 'active', includeInactive: false, scope: 'my_work', attention: 'any',
+          audiences: [], tagIds: [],
+        },
+      })).rejects.toMatchObject({ code: 'session_list_query_update_required' });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('preserves the strict filtered-listing unavailable result as a typed Action error', async () => {
+    const details = {
+      error: 'not_found' as const,
+      code: 'filtered_session_listing_unavailable' as const,
+      reason: 'following' as const,
+    };
+    const fetch = vi.fn(async (_url: URL | RequestInfo, init?: RequestInit) => responseForRequest(init, {
+      v: 1,
+      actionId: 'session.list',
+      execution: {
+        ok: false,
+        errorCode: details.code,
+        error: details.code,
+        details,
+      },
+    }));
+    vi.stubGlobal('fetch', fetch);
+    const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
+    try {
+      await expect(client.actions.session.list({
+        query: {
+          v: 1, storage: 'active', includeInactive: false, scope: 'following', attention: 'any',
+          audiences: [], tagIds: [],
+        },
+      })).rejects.toMatchObject({
+        code: 'filtered_session_listing_unavailable',
+        message: 'filtered_session_listing_unavailable',
+        details,
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('accepts a marked awareness result with both continuation families intact', async () => {
+    const fetch = vi.fn(async (_url: URL | RequestInfo, init?: RequestInit) => responseForRequest(init, {
+      v: 1,
+      actionId: 'session.list',
+      execution: {
+        ok: true,
+        result: {
+          view: 'awareness',
+          projectionVersion: 1,
+          sessions: [],
+          nextCursor: null,
+          hasNext: false,
+          attentionNextCursor: 'cursor_v1_attention_next',
+          attentionHasNext: true,
+        },
+      },
+    }));
+    vi.stubGlobal('fetch', fetch);
+    const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
+    try {
+      await expect(client.actions.session.list({
+        query: {
+          v: 1, storage: 'active', includeInactive: false, scope: 'my_work', attention: 'any',
+          audiences: [], tagIds: [],
+        },
+      })).resolves.toMatchObject({
+        view: 'awareness',
+        nextCursor: null,
+        hasNext: false,
+        attentionNextCursor: 'cursor_v1_attention_next',
+        attentionHasNext: true,
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('rejects a marked awareness result with an orphaned attention continuation', async () => {
+    const fetch = vi.fn(async (_url: URL | RequestInfo, init?: RequestInit) => responseForRequest(init, {
+      v: 1,
+      actionId: 'session.list',
+      execution: {
+        ok: true,
+        result: {
+          view: 'awareness', projectionVersion: 1, sessions: [], nextCursor: null, hasNext: false,
+          attentionHasNext: true,
+        },
+      },
+    }));
+    vi.stubGlobal('fetch', fetch);
+    const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
+    try {
+      await expect(client.actions.session.list({
+        query: {
+          v: 1, storage: 'active', includeInactive: false, scope: 'my_work', attention: 'any',
+          audiences: [], tagIds: [],
+        },
+      })).rejects.toMatchObject({ code: 'session_list_query_update_required' });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('keeps an unmarked predecessor session.list success valid when no query was requested', async () => {
+    const result = {
+      sessions: [{ id: 'legacy-visible-row', active: false, presence: 'offline', updatedAt: 1 }],
+      nextCursor: null,
+    };
+    const fetch = vi.fn(async (_url: URL | RequestInfo, init?: RequestInit) => responseForRequest(init, {
+      v: 1,
+      actionId: 'session.list',
+      execution: { ok: true, result },
+    }));
+    vi.stubGlobal('fetch', fetch);
+    const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
+    try {
+      await expect(client.actions.session.list({})).resolves.toEqual(result);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('treats an explicitly undefined session.list query as the legacy no-query request', async () => {
+    const result = {
+      sessions: [{ id: 'legacy-visible-row', active: false, presence: 'offline', updatedAt: 1 }],
+      nextCursor: null,
+    };
+    const transmittedInputs: unknown[] = [];
+    const fetch = vi.fn(async (_url: URL | RequestInfo, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body)) as Readonly<{ input?: unknown }>;
+      transmittedInputs.push(request.input);
+      return responseForRequest(init, {
+        v: 1,
+        actionId: 'session.list',
+        execution: { ok: true, result },
+      });
+    });
+    vi.stubGlobal('fetch', fetch);
+    const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
+    try {
+      await expect(client.actions.session.list({ query: undefined })).resolves.toEqual(result);
+      expect(transmittedInputs).toEqual([{}]);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('protects child Action input and complete errors while keeping metadata bearer-only', async () => {
+    const material = { type: 'dataKey' as const, machineKey: Uint8Array.from({ length: 32 }, (_, i) => i + 1) };
+    const context = { serverIdentityId: 'srv_sdk', accountId: 'account-1',
+      tokenId: '123e4567-e89b-42d3-a456-426614174000',
+      contentPublicKey: 'B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9/AsrhtHHw=' };
+    const wrappingSecret = new Uint8Array(32).fill(7);
+    const bearer = `hap_v1_${context.tokenId}_${encodeBase64(new Uint8Array(32).fill(8), 'base64url')}`;
+    const encryptionAccess = wrapApiTokenEncryptionAccessV1({ context, wrappingSecret,
+      contentPrivateKey: material.machineKey, randomBytes: (length) => new Uint8Array(length).fill(3) });
+    const token = formatAccountApiTokenCredentialV1({ bearer,
+      wrappingSecret: encodeBase64(wrappingSecret, 'base64url'), serverIdentityId: context.serverIdentityId,
+      accountId: context.accountId, contentPublicKey: context.contentPublicKey });
+    const captured: string[] = [];
+    const fetch = vi.fn(async (url: URL | RequestInfo, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get('authorization')).toBe(`Bearer ${bearer}`);
+      captured.push(String(init?.body ?? ''));
+      const path = new URL(String(url)).pathname;
+      if (path.endsWith('/encryption-access')) return response({ v: 1, accountId: context.accountId,
+        tokenId: context.tokenId, encryptionAccess });
+      const request = ExternalActionRequestEnvelopeV2Schema.parse(JSON.parse(String(init?.body)));
+      const binding = { serverIdentityId: context.serverIdentityId, accountId: context.accountId,
+        credentialId: context.tokenId, actionId: 'session.message.send',
+        requestId: request.requestId, target: { kind: 'machine' as const, machineId: 'machine-1' } };
+      expect(openExternalActionRequestV2({ envelope: request, binding, material })?.input)
+        .toMatchObject({ message: 'private-input-sentinel' });
+      const prepared = prepareExternalActionResponseV2({ binding, request, material,
+        randomBytes: (length) => new Uint8Array(length).fill(4), executedMachineId: 'machine-1',
+        execution: { ok: false, errorCode: 'conflict', error: 'private-error-sentinel',
+          details: { document: 'private-document-sentinel' } } });
+      captured.push(prepared.body);
+      return response(prepared.response);
+    });
+    vi.stubGlobal('fetch', fetch);
+    const client = connect({ endpoint: 'http://daemon', token });
+    try {
+      await expect(client.machine('machine-1').sessions.get('session-1').send('private-input-sentinel'))
+        .rejects.toMatchObject({ code: 'conflict', message: 'private-error-sentinel',
+          details: { document: 'private-document-sentinel' } });
+      expect(captured.join('')).not.toContain('sentinel');
+      expect(captured.join('')).not.toContain(token);
+      expect(fetch).toHaveBeenCalledTimes(2);
+    } finally { await client.close(); }
+  });
+
+  it('reports the protected response ceiling without exposing an unauthenticated response body', async () => {
+    const material = { type: 'dataKey' as const, machineKey: Uint8Array.from({ length: 32 }, (_, i) => i + 1) };
+    const context = { serverIdentityId: 'srv_sdk', accountId: 'account-1',
+      tokenId: '123e4567-e89b-42d3-a456-426614174000',
+      contentPublicKey: 'B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9/AsrhtHHw=' };
+    const wrappingSecret = new Uint8Array(32).fill(7);
+    const bearer = `hap_v1_${context.tokenId}_${encodeBase64(new Uint8Array(32).fill(8), 'base64url')}`;
+    const encryptionAccess = wrapApiTokenEncryptionAccessV1({ context, wrappingSecret,
+      contentPrivateKey: material.machineKey, randomBytes: (length) => new Uint8Array(length).fill(3) });
+    const token = formatAccountApiTokenCredentialV1({ bearer,
+      wrappingSecret: encodeBase64(wrappingSecret, 'base64url'), serverIdentityId: context.serverIdentityId,
+      accountId: context.accountId, contentPublicKey: context.contentPublicKey });
+    const fetch = vi.fn(async (url: URL | RequestInfo) => {
+      if (new URL(String(url)).pathname.endsWith('/encryption-access')) {
+        return response({ v: 1, accountId: context.accountId, tokenId: context.tokenId, encryptionAccess });
+      }
+      return new Response('{"private":"plaintext-sentinel"}', {
+        headers: { 'content-length': String(EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES_V2 + 1) },
+      });
+    });
+    vi.stubGlobal('fetch', fetch);
+
+    const client = connect({ endpoint: 'http://daemon', token });
+    try {
+      await expect(client.machine('machine-1').actions.execute(
+        'action.spec.get',
+        { id: 'session.message.send' },
+      )).rejects.toMatchObject({
+        code: 'response_too_large',
+        details: { maxSerializedBytes: EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES_V2 },
+      });
+    } finally { await client.close(); }
+  });
+
+  it('preserves a complete encrypted approval outcome at the public SDK boundary', async () => {
+    const material = { type: 'dataKey' as const, machineKey: Uint8Array.from({ length: 32 }, (_, i) => i + 1) };
+    const context = { serverIdentityId: 'srv_sdk', accountId: 'account-1',
+      tokenId: '123e4567-e89b-42d3-a456-426614174000',
+      contentPublicKey: 'B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9/AsrhtHHw=' };
+    const wrappingSecret = new Uint8Array(32).fill(7);
+    const bearer = `hap_v1_${context.tokenId}_${encodeBase64(new Uint8Array(32).fill(8), 'base64url')}`;
+    const encryptionAccess = wrapApiTokenEncryptionAccessV1({ context, wrappingSecret,
+      contentPrivateKey: material.machineKey, randomBytes: (length) => new Uint8Array(length).fill(3) });
+    const token = formatAccountApiTokenCredentialV1({ bearer,
+      wrappingSecret: encodeBase64(wrappingSecret, 'base64url'), serverIdentityId: context.serverIdentityId,
+      accountId: context.accountId, contentPublicKey: context.contentPublicKey });
+    const target = { kind: 'machine' as const, machineId: 'machine-1' };
+    const fetch = vi.fn(async (url: URL | RequestInfo, init?: RequestInit) => {
+      if (new URL(String(url)).pathname.endsWith('/encryption-access')) {
+        return response({ v: 1, accountId: context.accountId, tokenId: context.tokenId, encryptionAccess });
+      }
+      const request = ExternalActionRequestEnvelopeV2Schema.parse(JSON.parse(String(init?.body)));
+      const binding = { serverIdentityId: context.serverIdentityId, accountId: context.accountId,
+        credentialId: context.tokenId, actionId: 'action.spec.get', requestId: request.requestId, target };
+      return response(prepareExternalActionResponseV2({ binding, request, material,
+        randomBytes: (length) => new Uint8Array(length).fill(4), executedMachineId: target.machineId,
+        execution: { ok: true, result: { kind: 'approval_request_created',
+          artifactId: 'private-approval-artifact', actionId: binding.actionId } } }).response);
+    });
+    vi.stubGlobal('fetch', fetch);
+
+    const client = connect({ endpoint: 'http://daemon', token });
+    try {
+      await expect(client.actions.execute('action.spec.get', { id: 'session.message.send' }, {
+        target, requestId: 'approval-request-id',
+      })).resolves.toEqual({ kind: 'approval_request_created',
+        artifactId: 'private-approval-artifact', actionId: 'action.spec.get' });
+    } finally { await client.close(); }
+  });
+
+  it('binds run sends and exact sidechain history through canonical Actions', async () => {
+    const calls: Array<{ actionId: string; input: unknown; target: unknown; requestId?: string }> = [];
+    const fetch = vi.fn(async (url: URL | RequestInfo, init?: RequestInit) => {
+      const actionId = decodeURIComponent(new URL(String(url)).pathname.split('/').at(-1) ?? '');
+      const body = JSON.parse(String(init?.body));
+      calls.push({ actionId, input: body.input, target: body.target, requestId: body.requestId });
+      return responseForRequest(init, { v: 1, actionId, execution: { ok: true, result:
+        actionId === 'execution.run.get' ? { run: { sidechainId: 'sidechain-1' } }
+          : actionId === 'session.transcript.get' ? { items: [] } : { status: 'outcomeUnknown' },
+      } });
+    });
+    vi.stubGlobal('fetch', fetch);
+    const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
+    const run = client.sessions.get('session-1').runs.get('run-1');
+    await expect(run.sendAndWait('hello', { localId: 'input-1' })).resolves.toEqual({ status: 'outcomeUnknown' });
+    await run.history({ limit: 5 }, { requestId: 'history-1', target: { kind: 'machine', machineId: 'machine-1' } });
+    expect(calls.map(({ actionId }) => actionId)).toEqual([
+      'session.message.send', 'execution.run.get', 'session.transcript.get',
+    ]);
+    expect(calls[0]).toMatchObject({ input: { sessionId: 'session-1', message: 'hello', localId: 'input-1',
+      recipient: { kind: 'execution_run', runId: 'run-1' }, wait: true }, target: { kind: 'session', sessionId: 'session-1' } });
+    expect(calls[1]).toEqual({ actionId: 'execution.run.get', input: { sessionId: 'session-1', runId: 'run-1' },
+      target: { kind: 'machine', machineId: 'machine-1' }, requestId: undefined });
+    expect(calls[2]).toEqual({ actionId: 'session.transcript.get', input: {
+      sessionId: 'session-1', scope: 'sidechain', sidechainId: 'sidechain-1', limit: 5,
+    }, target: { kind: 'machine', machineId: 'machine-1' }, requestId: 'history-1' });
+    await client.close();
+  });
+
+  it('projects run send, terminal wait and stop onto their canonical Actions without extra reads', async () => {
+    const calls: Array<{ actionId: string; input: unknown }> = [];
+    const fetch = vi.fn(async (url: URL | RequestInfo, init?: RequestInit) => {
+      const actionId = decodeURIComponent(new URL(String(url)).pathname.split('/').at(-1) ?? '');
+      calls.push({ actionId, input: JSON.parse(String(init?.body)).input });
+      return responseForRequest(init, { v: 1, actionId, execution: { ok: true, result: { status: 'ok' } } });
+    });
+    vi.stubGlobal('fetch', fetch);
+    const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
+    const run = client.sessions.get('session-1').runs.get('run-1');
+
+    await run.send('hello');
+    await run.wait({ timeoutSeconds: 30 });
+    await run.stop();
+
+    expect(calls).toEqual([
+      { actionId: 'session.message.send', input: {
+        sessionId: 'session-1', message: 'hello',
+        recipient: { kind: 'execution_run', runId: 'run-1' }, wait: false,
+      } },
+      { actionId: 'execution.run.wait', input: { sessionId: 'session-1', runId: 'run-1', timeoutSeconds: 30 } },
+      { actionId: 'execution.run.stop', input: { sessionId: 'session-1', runId: 'run-1' } },
+    ]);
+    // The bound Session handle never reaches the retained detached-run Action.
+    expect(calls.some(({ actionId }) => actionId === 'execution.run.send')).toBe(false);
+    await client.close();
+  });
+
+  it('preserves the operation-scoped target update requirement without falling back to detached run send', async () => {
+    const calls: string[] = [];
+    const fetch = vi.fn(async (url: URL | RequestInfo, init?: RequestInit) => {
+      const actionId = decodeURIComponent(new URL(String(url)).pathname.split('/').at(-1) ?? '');
+      calls.push(actionId);
+      return responseForRequest(init, {
+        v: 1,
+        actionId,
+        execution: {
+          ok: false,
+          errorCode: 'session_input_target_update_required',
+          error: 'session_input_target_update_required',
+        },
+      });
+    });
+    vi.stubGlobal('fetch', fetch);
+    const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
+
+    await expect(client.sessions.get('session-1').runs.get('run-1').send('hello'))
+      .rejects.toMatchObject({
+        name: 'HappierActionError',
+        code: 'session_input_target_update_required',
+      });
+    expect(calls).toEqual(['session.message.send']);
+    await client.close();
+  });
+
+  it('keeps the handle identity even when an untyped caller supplies conflicting fields', async () => {
+    const calls: Array<{ actionId: string; input: Record<string, unknown> }> = [];
+    const fetch = vi.fn(async (url: URL | RequestInfo, init?: RequestInit) => {
+      const actionId = decodeURIComponent(new URL(String(url)).pathname.split('/').at(-1) ?? '');
+      calls.push({ actionId, input: JSON.parse(String(init?.body)).input });
+      return responseForRequest(init, { v: 1, actionId, execution: { ok: true, result: { status: 'ok' } } });
+    });
+    vi.stubGlobal('fetch', fetch);
+    const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
+    const run = client.sessions.get('session-1').runs.get('run-1');
+
+    await run.send('hello', {
+      sessionId: 'other-session', recipient: { kind: 'execution_run', runId: 'other-run' }, wait: true,
+    } as never);
+
+    expect(calls[0]?.input).toMatchObject({
+      sessionId: 'session-1', recipient: { kind: 'execution_run', runId: 'run-1' }, wait: false,
+    });
+    await client.close();
+  });
+
+  it('rejects host-only and unknown fields before a bound run send reaches transport', async () => {
+    const fetch = vi.fn(async () => response({ v: 1, actionId: 'session.message.send', execution: { ok: true, result: {} } }));
+    vi.stubGlobal('fetch', fetch);
+    const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
+    const run = client.sessions.get('session-1').runs.get('run-1');
+
+    // Type-level omission cannot constrain plain JavaScript, so the canonical
+    // public schema — not the wire — is what refuses a smuggled field.
+    for (const smuggled of [
+      { source: { sourceRef: 'plugin-owned' } },
+      { attachments: [] },
+      { idempotencyKey: 'plugin-owned-identity' },
+      { authority: 'present_user' },
+      { unknownField: true },
+    ]) {
+      await expect(run.send('hello', smuggled as never)).rejects.toMatchObject({
+        name: 'HappierActionError', code: 'invalid_parameters',
+      });
+    }
+    expect(fetch).not.toHaveBeenCalled();
+    await client.close();
+  });
+
+  it('rejects unknown bound run wait fields before transport', async () => {
+    const fetch = vi.fn(async () => response({ v: 1, actionId: 'execution.run.wait', execution: { ok: true, result: {} } }));
+    vi.stubGlobal('fetch', fetch);
+    const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
+
+    await expect(client.sessions.get('session-1').runs.get('run-1')
+      .wait({ unknownField: true } as never))
+      .rejects.toMatchObject({ name: 'HappierActionError', code: 'invalid_parameters' });
+    expect(fetch).not.toHaveBeenCalled();
+    await client.close();
+  });
+
+  it('rejects host-only and unknown parent Session fields before transport', async () => {
+    const fetch = vi.fn(async () => response({
+      v: 1,
+      actionId: 'session.message.send',
+      execution: { ok: true, result: {} },
+    }));
+    vi.stubGlobal('fetch', fetch);
+    const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
+    const session = client.sessions.get('session-1');
+
+    for (const input of [
+      { source: { sourceRef: 'plugin-owned' } },
+      { attachments: [] },
+      { idempotencyKey: 'plugin-owned-identity' },
+      { unknownField: true },
+    ]) {
+      await expect(session.sendAndWait('hello', input as never))
+        .rejects.toMatchObject({ name: 'HappierActionError', code: 'invalid_parameters' });
+    }
+    await expect(session.waitForIdle({ unknownField: true } as never))
+      .rejects.toMatchObject({ name: 'HappierActionError', code: 'invalid_parameters' });
+    await expect(session.history({ unknownField: true } as never))
+      .rejects.toMatchObject({ name: 'HappierActionError', code: 'invalid_parameters' });
+    expect(fetch).not.toHaveBeenCalled();
+    await client.close();
+  });
+
+  it('refuses a transcript projection on a bound run history read without selecting one silently', async () => {
+    const fetch = vi.fn(async () => response({ v: 1, actionId: 'execution.run.get', execution: { ok: true, result: { run: { sidechainId: 'sidechain-1' } } } }));
+    vi.stubGlobal('fetch', fetch);
+    const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
+
+    await expect(client.sessions.get('session-1').runs.get('run-1')
+      .history({ projection: 'externalShareableV1' } as never))
+      .rejects.toMatchObject({ name: 'HappierActionError', code: 'invalid_parameters' });
+    expect(fetch).not.toHaveBeenCalled();
+    await client.close();
+  });
+
+  it('reports missing run sidechain correspondence as a typed domain failure', async () => {
+    const actionIds: string[] = [];
+    const fetch = vi.fn(async (url: URL | RequestInfo, init?: RequestInit) => {
+      const actionId = decodeURIComponent(new URL(String(url)).pathname.split('/').at(-1) ?? '');
+      actionIds.push(actionId);
+      return responseForRequest(init, { v: 1, actionId, execution: { ok: true, result: { run: {} } } });
+    });
+    vi.stubGlobal('fetch', fetch);
+    const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
+
+    await expect(client.sessions.get('session-1').runs.get('run-1').history())
+      .rejects.toMatchObject({
+        name: 'HappierActionError', code: 'execution_run_correspondence_unavailable',
+      });
+    expect(actionIds).toEqual(['execution.run.get']);
+    await client.close();
+  });
+
+  it('never falls back to a main-scope transcript read when run correspondence fails', async () => {
+    const actionIds: string[] = [];
+    const fetch = vi.fn(async (url: URL | RequestInfo, init?: RequestInit) => {
+      const actionId = decodeURIComponent(new URL(String(url)).pathname.split('/').at(-1) ?? '');
+      actionIds.push(actionId);
+      return responseForRequest(init, { v: 1, actionId, execution: actionId === 'execution.run.get'
+        ? { ok: false, errorCode: 'not_found', error: 'no such run' }
+        : { ok: true, result: { items: [] } } });
+    });
+    vi.stubGlobal('fetch', fetch);
+    const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
+
+    await expect(client.sessions.get('session-1').runs.get('run-1').history())
+      .rejects.toMatchObject({ code: 'not_found' });
+    expect(actionIds).toEqual(['execution.run.get']);
+    await client.close();
+  });
+
   afterEach(() => {
     vi.unstubAllGlobals();
     undiciRequest.mockClear();
@@ -226,6 +879,55 @@ describe('Happier SDK client', () => {
         method: 'POST',
         headers: expect.objectContaining({ authorization: 'Bearer ' + TEST_ALT_API_TOKEN }),
         body: JSON.stringify({ v: 1, input: {} }),
+      }),
+    );
+  });
+
+  it('executes the generated Lane 01 Team client through the canonical public Action route', async () => {
+    const archivedTeam = {
+      id: 'team-1',
+      name: 'Platform',
+      description: null,
+      logo: null,
+      archivedAt: 10,
+      recovery: null,
+      policy: {
+        v: 1,
+        sessionCreationPolicy: 'private_default',
+        externalSharingPolicy: 'allowed',
+        defaultSessionHistoryAccess: 'from_membership',
+        admissionMode: 'invite_only',
+        authenticationPolicy: null,
+        authenticationPolicyStatus: 'available',
+      },
+      viewerRole: 'owner',
+      capabilities: {},
+      admission: { historyChoice: { admin: 'choice', member: 'choice', guest: 'hidden' } },
+    };
+    const fetch = vi.fn(async (_url: URL | RequestInfo, init?: RequestInit) => responseForRequest(init, {
+      v: 1,
+      actionId: 'teams.archive',
+      execution: { ok: true, result: archivedTeam },
+    }));
+    vi.stubGlobal('fetch', fetch);
+
+    const client = connect({ endpoint: 'http://home.test', token: TEST_API_TOKEN });
+    await expect(client.actions.teams.archive({ v: 1, teamId: 'team-1' }, {
+      requestId: 'lane01-archive-1',
+      target: { kind: 'machine', machineId: 'machine-1' },
+    })).resolves.toEqual(archivedTeam);
+
+    expect(fetch).toHaveBeenCalledWith(
+      new URL('http://home.test/v1/actions/teams.archive'),
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({ authorization: `Bearer ${TEST_API_TOKEN}` }),
+        body: JSON.stringify({
+          v: 1,
+          requestId: 'lane01-archive-1',
+          target: { kind: 'machine', machineId: 'machine-1' },
+          input: { v: 1, teamId: 'team-1' },
+        }),
       }),
     );
   });
@@ -610,6 +1312,127 @@ describe('Happier SDK client', () => {
       target: { kind: 'machine', machineId: 'machine-7' },
       input: spawnInput,
     });
+  });
+
+  it('publishes all six Machine Pool methods without changing caller-owned retry identities', async () => {
+    const calls: Array<{ actionId: string; input: unknown }> = [];
+    const fetch = vi.fn(async (url: URL | RequestInfo, init?: RequestInit) => {
+      const actionId = decodeURIComponent(new URL(String(url)).pathname.split('/').at(-1) ?? '');
+      const input = JSON.parse(String(init?.body)).input;
+      calls.push({ actionId, input });
+      return responseForRequest(init, { v: 1, actionId, execution: { ok: true, result: {} } });
+    });
+    vi.stubGlobal('fetch', fetch);
+
+    const poolId = '99d55938-f860-4af8-8023-01fecec86f35';
+    const create = { poolId, name: 'Fast', description: 'Home-readable', members: [] };
+    const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
+    await client.actions.machines.pools.list({});
+    await client.actions.machines.pools.get({ poolId });
+    await client.actions.machines.pools.create(create);
+    await client.actions.machines.pools.create(create);
+    await client.actions.machines.pools.update({ ...create, expectedRevision: 4 });
+    await client.actions.machines.pools.delete({ poolId, expectedRevision: 4 });
+    await client.actions.machines.pools.resolve({ poolId, requestKey: 'selection-1' });
+
+    expect(calls).toEqual([
+      { actionId: 'machines.pools.list', input: {} },
+      { actionId: 'machines.pools.get', input: { poolId } },
+      { actionId: 'machines.pools.create', input: create },
+      { actionId: 'machines.pools.create', input: create },
+      { actionId: 'machines.pools.update', input: { ...create, expectedRevision: 4 } },
+      { actionId: 'machines.pools.delete', input: { poolId, expectedRevision: 4 } },
+      { actionId: 'machines.pools.resolve', input: { poolId, requestKey: 'selection-1' } },
+    ]);
+  });
+
+  it('publishes both directory removal preview and the approved removal execution leaf', async () => {
+    const calls: Array<{ actionId: string; input: unknown }> = [];
+    const fetch = vi.fn(async (url: URL | RequestInfo, init?: RequestInit) => {
+      const actionId = decodeURIComponent(new URL(String(url)).pathname.split('/').at(-1) ?? '');
+      const input = JSON.parse(String(init?.body)).input;
+      calls.push({ actionId, input });
+      return responseForRequest(init, { v: 1, actionId, execution: { ok: true, result: {} } });
+    });
+    vi.stubGlobal('fetch', fetch);
+
+    const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
+    await client.actions.identity.providers.remove.preview({
+      owner: { kind: 'home' }, id: 'provider-1', expectedRevision: 1,
+    });
+    await client.actions.teams.identity.connections.remove.preview({
+      v: 1, teamId: 'team-1', connectionId: 'connection-1', expectedRevision: 1,
+    });
+    await client.actions.teams.directory.sources.remove.preview({
+      v: 1, teamId: 'team-1', sourceId: 'source-1',
+    });
+    await client.actions.teams.directory.sources.remove.execute({
+      v: 1, teamId: 'team-1', sourceId: 'source-1',
+    });
+
+    expect(calls).toEqual([
+      { actionId: 'identity.providers.remove.preview', input: {
+        owner: { kind: 'home' }, id: 'provider-1', expectedRevision: 1,
+      } },
+      { actionId: 'teams.identity.connections.remove.preview', input: {
+        v: 1, teamId: 'team-1', connectionId: 'connection-1', expectedRevision: 1,
+      } },
+      { actionId: 'teams.directory.sources.remove.preview', input: {
+        v: 1, teamId: 'team-1', sourceId: 'source-1',
+      } },
+      { actionId: 'teams.directory.sources.remove', input: {
+        v: 1, teamId: 'team-1', sourceId: 'source-1',
+      } },
+    ]);
+    await client.close();
+  });
+
+  it('publishes every bounded Lane 03 identity handoff through the generated public Action ABI', async () => {
+    const calls: Array<{ actionId: string; input: unknown }> = [];
+    const fetch = vi.fn(async (url: URL | RequestInfo, init?: RequestInit) => {
+      const actionId = decodeURIComponent(new URL(String(url)).pathname.split('/').at(-1) ?? '');
+      const input = JSON.parse(String(init?.body)).input;
+      calls.push({ actionId, input });
+      return responseForRequest(init, { v: 1, actionId, execution: { ok: true, result: {} } });
+    });
+    vi.stubGlobal('fetch', fetch);
+
+    const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
+    const providerOwner = { kind: 'team' as const, teamId: 'team-1' };
+    await client.actions.identity.providers.test.start({
+      owner: providerOwner, id: 'provider-1', expectedRevision: 3, expectedSecurityRevision: 2,
+    });
+    await client.actions.identity.providers.test.consume({
+      owner: providerOwner, id: 'provider-1', resultHandle: 'provider-result',
+    });
+    await client.actions.teams.identity.connections.test.start({
+      v: 1, teamId: 'team-1', connectionId: 'connection-1', expectedRevision: 3,
+    });
+    await client.actions.teams.identity.connections.test.consume({
+      v: 1, teamId: 'team-1', connectionId: 'connection-1', resultHandle: 'connection-result',
+    });
+    await client.actions.teams.identity.workos.adminPortalLink.create({
+      v: 1, teamId: 'team-1', connectionId: 'connection-1', intent: 'sso',
+    });
+
+    expect(calls).toEqual([
+      { actionId: 'identity.providers.test.start', input: {
+        owner: providerOwner, id: 'provider-1', expectedRevision: 3, expectedSecurityRevision: 2,
+      } },
+      { actionId: 'identity.providers.test.consume', input: {
+        owner: providerOwner, id: 'provider-1', resultHandle: 'provider-result',
+      } },
+      { actionId: 'teams.identity.connections.test.start', input: {
+        v: 1, teamId: 'team-1', connectionId: 'connection-1', expectedRevision: 3,
+      } },
+      { actionId: 'teams.identity.connections.test.consume', input: {
+        v: 1, teamId: 'team-1', connectionId: 'connection-1', resultHandle: 'connection-result',
+      } },
+      { actionId: 'teams.identity.workos.adminPortalLink.create', input: {
+        v: 1, teamId: 'team-1', connectionId: 'connection-1', intent: 'sso',
+      } },
+    ]);
+    await client.close();
   });
 
   it('maps compact machine-bound session creation and accepts already-admitted input', async () => {
@@ -1295,19 +2118,19 @@ describe('Happier SDK client', () => {
   it('preserves Action failures as typed SDK errors', async () => {
     vi.stubGlobal('fetch', vi.fn(async (_url: URL | RequestInfo, init?: RequestInit) => responseForRequest(init, {
       v: 1,
-      actionId: 'account.apiTokens.create',
+      actionId: 'account.security.get',
       execution: {
         ok: false,
-        errorCode: 'present_user_required',
-        error: 'A present user is required',
+        errorCode: 'action_failed',
+        error: 'Account security is unavailable',
       },
     })));
 
     const client = connect({ endpoint: 'http://server', token: TEST_API_TOKEN });
-    const failure = client.actions.execute('account.apiTokens.create', { label: 'automation' });
+    const failure = client.actions.execute('account.security.get', {});
     await expect(failure).rejects.toMatchObject({
-      code: 'present_user_required',
-      message: 'A present user is required',
+      code: 'action_failed',
+      message: 'Account security is unavailable',
     });
   });
 

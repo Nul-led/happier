@@ -18,6 +18,7 @@ import android.os.Build
 import android.util.Base64
 import java.io.ByteArrayOutputStream
 import java.util.UUID
+import expo.modules.kotlin.Promise
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 
@@ -219,6 +220,7 @@ class HappierAudioStreamNativeModule : Module() {
   private var foregroundServiceContext: Context? = null
   private var foregroundServiceStartRequestId: String? = null
   private var foregroundServiceStartGeneration: Int = 0
+  private var foregroundServiceStartCompletion: ((Result<Unit>) -> Unit)? = null
   private var voiceForegroundServiceActive = false
   private val audioSessionOwnership = AudioSessionOwnershipGate()
   private val captureStartAdmission = AudioCaptureStartAdmission(audioSessionOwnership)
@@ -390,23 +392,34 @@ class HappierAudioStreamNativeModule : Module() {
    * it does not own conversation state, provider choice, or session teardown.
    */
   @Synchronized
-  private fun synchronizeVoiceForegroundService(context: Context, mode: String, input: Boolean, generation: Int) {
+  private fun synchronizeVoiceForegroundService(
+    context: Context,
+    mode: String,
+    input: Boolean,
+    generation: Int,
+    onSettled: (Result<Unit>) -> Unit,
+  ) {
     if (requiresVoiceForegroundService(mode, input)) {
       // A service start is aggregate process state. If the coordinator applies
       // a newer generation while Android is still starting it, any failure
       // belongs to that newest configuration rather than the retired request.
       foregroundServiceStartGeneration = generation
-      if (!voiceForegroundServiceActive && foregroundServiceStartRequestId == null) {
+      if (voiceForegroundServiceActive) {
+        onSettled(Result.success(Unit))
+      } else if (foregroundServiceStartRequestId == null) {
         requireMicrophonePermission(context)
         val requestId = UUID.randomUUID().toString()
         foregroundServiceStartRequestId = requestId
         foregroundServiceContext = context
+        foregroundServiceStartCompletion = onSettled
         HappierVoiceAudioForegroundService.start(context, requestId) { result ->
-          synchronized(this@HappierAudioStreamNativeModule) {
-            if (foregroundServiceStartRequestId != requestId) return@synchronized
+          val completion = synchronized(this@HappierAudioStreamNativeModule) {
+            if (foregroundServiceStartRequestId != requestId) return@synchronized null
             val settledGeneration = foregroundServiceStartGeneration
             foregroundServiceStartRequestId = null
             foregroundServiceStartGeneration = 0
+            val pendingCompletion = foregroundServiceStartCompletion
+            foregroundServiceStartCompletion = null
             if (result.isSuccess) {
               voiceForegroundServiceActive = true
             } else {
@@ -422,12 +435,15 @@ class HappierAudioStreamNativeModule : Module() {
                 settledGeneration,
               )
             }
+            pendingCompletion
           }
+          completion?.invoke(result)
         }
       }
       return
     }
     stopVoiceForegroundService()
+    onSettled(Result.success(Unit))
   }
 
   @Synchronized
@@ -442,8 +458,11 @@ class HappierAudioStreamNativeModule : Module() {
     }
     foregroundServiceStartRequestId = null
     foregroundServiceStartGeneration = 0
+    val pendingCompletion = foregroundServiceStartCompletion
+    foregroundServiceStartCompletion = null
     voiceForegroundServiceActive = false
     foregroundServiceContext = null
+    pendingCompletion?.invoke(Result.failure(IllegalStateException("foreground_service_start_cancelled")))
   }
 
   private fun configureAudioSession(params: Map<String, Any>): Map<String, Any> {
@@ -465,7 +484,6 @@ class HappierAudioStreamNativeModule : Module() {
     audioManager = manager
     audioSessionGeneration = generation
     audioSessionOwnership.markConfigured()
-    synchronizeVoiceForegroundService(context, mode, input, generation)
     manager.mode = if (mode == "conversation") AudioManager.MODE_IN_COMMUNICATION else AudioManager.MODE_NORMAL
     if (output) {
       requestAudioFocus(manager, generation)
@@ -957,8 +975,28 @@ class HappierAudioStreamNativeModule : Module() {
       if (audioSessionOwnership.isConfigured) emitAudioSessionEvent("lifecycle_changed", mapOf("state" to "background"))
     }
 
-    AsyncFunction("configureAudioSession") { params: Map<String, Any> ->
-      return@AsyncFunction configureAudioSession(params)
+    AsyncFunction("configureAudioSession") { params: Map<String, Any>, promise: Promise ->
+      try {
+        val configuration = configureAudioSession(params)
+        @Suppress("UNCHECKED_CAST")
+        val requested = params["configuration"] as? Map<String, Any>
+          ?: throw IllegalArgumentException("configuration_required")
+        val mode = requested["mode"] as? String ?: "dictation"
+        val input = requested["input"] as? Boolean ?: false
+        val generation = (params["generation"] as? Number)?.toInt() ?: 0
+        val context = appContext.reactContext?.applicationContext
+          ?: throw IllegalStateException("react_context_unavailable")
+        synchronizeVoiceForegroundService(context, mode, input, generation) { result ->
+          result.fold(
+            onSuccess = { promise.resolve(configuration) },
+            onFailure = { error ->
+              promise.reject("foreground_service_start_failed", error.message, error)
+            },
+          )
+        }
+      } catch (error: Throwable) {
+        promise.reject("audio_session_configuration_failed", error.message, error)
+      }
     }
 
     AsyncFunction("restoreAudioSession") { params: Map<String, Any> ->

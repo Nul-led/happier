@@ -301,10 +301,22 @@ async fn home_tunnel_moves_bytes_through_real_acceptor_over_one_reused_connectio
     assert_eq!(tunnel.status().streams_opened, 3);
     assert!(tunnel.status().connection_active);
 
+    // Remote QUIC death does not remove the retained local tunnel handle.
+    // Native polling must observe this terminal connection fact even before
+    // the application releases that handle during recovery.
+    server.shutdown().await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while tunnel.status().connection_active {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("remote shutdown must publish terminal connection status");
+    assert!(tunnel.local_origin().is_ok());
+
     tunnel.stop();
     acceptor.stop();
     client.shutdown().await;
-    server.shutdown().await;
     _target.abort();
 }
 
@@ -984,6 +996,33 @@ async fn unregistered_and_unknown_alpns_get_no_application_access() {
     _target.abort();
 }
 
+/// A real TLS no_application_protocol alert must remain a protocol refusal,
+/// not ordinary reachability failure eligible for another Home carrier.
+#[tokio::test]
+async fn home_tunnel_preserves_incompatible_alpn_negotiation_failure() {
+    let server = IrohEndpoint::bind(&direct_endpoint_config()).await.unwrap();
+    server
+        .endpoint()
+        .set_alpns(vec![b"happier/other/9".to_vec()]);
+    let direct_addr = server.endpoint().addr().ip_addrs().next().copied().unwrap();
+    let client = IrohEndpoint::bind(&direct_endpoint_config()).await.unwrap();
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        HomeTunnel::start(
+            &client,
+            home_tunnel_config(server.id().to_string(), direct_addr),
+        ),
+    )
+    .await
+    .expect("incompatible ALPN handshake must settle");
+    let failure = result
+        .err()
+        .expect("incompatible ALPN cannot publish a Home tunnel");
+    client.shutdown().await;
+    server.shutdown().await;
+    assert_eq!(failure, IrohError::UnsupportedAlpn);
+}
+
 /// Pre-application custody at the endpoint: connections the dispatcher has
 /// accepted but not yet handed to a consumer are its own bounded resource. When
 /// the hand-over stalls, the accept side must backpressure instead of retaining
@@ -1260,11 +1299,12 @@ async fn duplicate_registration_fails_typed_and_stop_releases_for_restart() {
 mod relay_fixture {
     use super::*;
     use crate::{
-        IrohCapProfile, MachineAcceptor, MachineAcceptorConfig, MachineHttpTunnel,
-        MachineTunnelConfig, RelaySelection, IROH_MACHINE_APPLICATION_PORT_HEADER,
-        IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER,
+        IrohCapProfile, MachineAcceptor, MachineAcceptorConfig, MachineHandshakeProvider,
+        MachineHttpTunnel, MachineTunnelConfig, RelaySelection,
+        IROH_MACHINE_APPLICATION_PORT_HEADER, IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER,
     };
     use iroh::Watcher;
+    use std::sync::Arc;
 
     /// Bounded diagnostic windows: generous for a loopback relay, small enough
     /// that a regression fails fast at the exact stalled boundary.
@@ -1441,6 +1481,9 @@ mod relay_fixture {
             assert!(request.contains(&format!(
                 "X-Happier-Iroh-Remote-Endpoint-Id: {expected_remote}\r\n"
             )));
+            assert!(
+                request.ends_with(r#"{"v":1,"kind":"provider_broker","witness":"fresh-relay"}"#)
+            );
             // The trusted local admission response selects the application
             // loopback port for the admitted stream.
             let response = format!("HTTP/1.1 204 No Content\r\nX-Happier-Iroh-Remote-Endpoint-Id: {expected_remote}\r\n{IROH_MACHINE_APPLICATION_PORT_HEADER}: {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", app_target.port());
@@ -1448,18 +1491,26 @@ mod relay_fixture {
         });
         let acceptor =
             MachineAcceptor::start(&server, MachineAcceptorConfig { admission_target }).unwrap();
+        let provider: MachineHandshakeProvider = Arc::new(|| {
+            Box::pin(async {
+                Ok(r#"{"v":1,"kind":"provider_broker","witness":"fresh-relay"}"#.to_owned())
+            })
+        });
         let tunnel = tokio::time::timeout(
             TUNNEL_CONNECT_TIMEOUT,
-            MachineHttpTunnel::start(
+            MachineHttpTunnel::start_with_handshake_provider(
                 &client,
                 MachineTunnelConfig {
                     endpoint_id: server.id().to_string(),
                     bind_addr: "127.0.0.1:0".parse().unwrap(),
                     direct_addresses: vec![],
                     relay_urls: vec![relay_url.clone()],
-                    handshake_json: r#"{"v":1,"operationId":"relay-machine"}"#.to_owned(),
+                    handshake_json:
+                        r#"{"v":1,"kind":"provider_broker","operationId":"relay-machine"}"#
+                            .to_owned(),
                     cap_profile: IrohCapProfile::MachineBulk,
                 },
+                provider,
             ),
         )
         .await

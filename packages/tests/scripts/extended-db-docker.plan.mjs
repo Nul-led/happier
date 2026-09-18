@@ -103,15 +103,23 @@ export function buildDatabaseUrlForContainer({ db, host, port }) {
   throw new Error(`Unsupported db: ${String(db)}`);
 }
 
-export function buildExtendedDbCommandPlan({ db, mode, databaseUrl }) {
+export function buildExtendedDbCommandPlan({ db, mode, databaseUrl, contractFile = undefined }) {
   if (db !== 'postgres' && db !== 'mysql') {
     throw new Error(`Unsupported db: ${String(db)}`);
   }
-  if (mode !== 'e2e' && mode !== 'contract' && mode !== 'extended') {
+  if (
+    mode !== 'e2e'
+    && mode !== 'contract'
+    && mode !== 'extended'
+    && mode !== 'session-system-record-upgrade'
+  ) {
     throw new Error(`Unsupported mode: ${String(mode)}`);
   }
   if (!databaseUrl || !String(databaseUrl).trim()) {
     throw new Error('Missing databaseUrl');
+  }
+  if (contractFile !== undefined && (mode === 'e2e' || typeof contractFile !== 'string' || !contractFile.trim() || contractFile.startsWith('-'))) {
+    throw new Error('A contract file filter requires contract or extended mode and a test file path');
   }
 
   /** @type {Array<{kind: string, command: string, args: string[], env: Record<string, string>}>} */
@@ -141,6 +149,14 @@ export function buildExtendedDbCommandPlan({ db, mode, databaseUrl }) {
     },
   };
 
+  const providerEnv = {
+    HAPPIER_DB_PROVIDER: db,
+    DATABASE_URL: String(databaseUrl),
+    ...(db === 'postgres'
+      ? { HAPPIER_TEST_POSTGRES_DATABASE_URL: String(databaseUrl) }
+      : { HAPPIER_TEST_MYSQL_DATABASE_URL: String(databaseUrl) }),
+  };
+
   const migrateStep =
     db === 'mysql'
       ? {
@@ -148,25 +164,22 @@ export function buildExtendedDbCommandPlan({ db, mode, databaseUrl }) {
           command: 'yarn',
           args: ['-s', 'workspace', resolveServerAppWorkspaceName(), 'migrate:mysql:deploy'],
           env: {
-            DATABASE_URL: String(databaseUrl),
+            ...providerEnv,
             HAPPIER_DB_MIGRATION_APPROVAL: '20260729102000_add_voice_conversation_grant_provenance',
           },
         }
       : {
           kind: 'migrate',
           command: 'yarn',
-          args: ['-s', 'workspace', resolveServerAppWorkspaceName(), 'prisma', 'migrate', 'deploy'],
-          env: { DATABASE_URL: String(databaseUrl) },
+          args: ['-s', 'workspace', resolveServerAppWorkspaceName(), 'migrate:full:deploy'],
+          env: providerEnv,
         };
 
   const contractStep = {
     kind: 'contract',
     command: 'yarn',
-    args: ['workspace', resolveServerAppWorkspaceName(), 'test:db-contract'],
-    env: {
-      HAPPIER_DB_PROVIDER: db,
-      DATABASE_URL: String(databaseUrl),
-    },
+    args: ['workspace', resolveServerAppWorkspaceName(), 'test:db-contract', ...(contractFile === undefined ? [] : [contractFile])],
+    env: providerEnv,
   };
 
   const mysqlVoiceIdentityUpgradeContractStep = {
@@ -178,6 +191,41 @@ export function buildExtendedDbCommandPlan({ db, mode, databaseUrl }) {
       DATABASE_URL: String(databaseUrl),
     },
   };
+
+  if (mode === 'session-system-record-upgrade') {
+    const fixtureStep = (operation) => ({
+      kind: `session-system-record-upgrade-${operation}`,
+      command: 'yarn',
+      args: [
+        '-s',
+        'workspace',
+        resolveServerAppWorkspaceName(),
+        'test:session-system-record-upgrade-fixture',
+        operation,
+      ],
+      env: providerEnv,
+    });
+    const canonicalMigration = {
+      ...migrateStep,
+      env: migrateStep.env,
+    };
+    return [
+      fixtureStep('seed'),
+      { ...canonicalMigration, kind: 'session-system-record-migrate-first' },
+      { ...canonicalMigration, kind: 'session-system-record-migrate-second' },
+      fixtureStep('verify'),
+      {
+        ...contractStep,
+        kind: 'session-system-record-board-contract',
+        args: [
+          'workspace',
+          resolveServerAppWorkspaceName(),
+          'test:db-contract',
+          'sources/app/session/systemRecords/sessionSystemRecords.dbcontract.spec.ts',
+        ],
+      },
+    ];
+  }
 
   if (mode === 'e2e') return [prebuildCliSharedStep, prebuildCliStep, e2eStep];
   if (mode === 'contract') {

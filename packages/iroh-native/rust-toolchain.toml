@@ -1,0 +1,12 @@
+[toolchain]
+# The Iroh native and WASM carriers are compiled by Gradle's `preBuild` task and
+# the CocoaPods `prepare_command`, which call `cargo` directly from this package
+# — no pipeline step wraps them. Pinning the channel here is what makes those
+# builds use the release compiler on every image.
+#
+# Keep in sync with `apps/ui/rust-toolchain.toml`; `ensure-rust-toolchain.test.mjs`
+# holds them equal. Targets stay out of this file deliberately: the mobile and
+# browser targets are added by the pipeline that needs them, so a server or CLI
+# build does not download five cross-compilation standard libraries it never uses.
+channel = "1.94.1"
+profile = "minimal"

@@ -21,10 +21,11 @@
   ],
   "scripts": {
     "manifest": "node scripts/write-manifest.mjs",
-    "test": "npm run test:public && npm run test:runtime && npm run test:census && npm run test:installed",
+    "test": "npm run test:public && npm run test:runtime && npm run test:accounts && npm run test:census",
     "test:public": "node --test test/publicSurface.test.mjs",
     "test:runtime": "node --test test/sourceAbiConformance.test.mjs",
+    "test:accounts": "node --test test/connectedAccountAuthoring.test.mjs",
     "test:census": "node --test test/publicContractCensus.test.mjs",
-    "test:installed": "node --test test/installedTarballProof.test.mjs"
+    "test:release-package": "node --test test/installedTarballProof.test.mjs"
   }
 }

@@ -239,7 +239,45 @@ describeWhenNative('Iroh Node lifecycle binding over the shared native runtime',
     await expect(addon.getEndpointStatus(clientEndpoint.endpointHandle)).resolves.toBeNull();
   });
 
-  it('moves ordinary fetch-facing bytes through the lifecycle-only machine HTTP tunnel', { timeout: 90_000 }, async () => {
+  it('moves finite-transfer HTTP bytes through one capability-free native listener', { timeout: 90_000 }, async () => {
+    const addon = requireNative();
+    echo = await startEchoServer();
+    keyDir = await mkdtemp(join(tmpdir(), 'happier-iroh-machine-binding-'));
+    const serverEndpoint = await addon.createEndpoint({ keyPath: join(keyDir, 'server.key'), relayPolicy: 'disabled', capProfile: 'machineBulk' });
+    const clientEndpoint = await addon.createEndpoint({ keyPath: join(keyDir, 'client.key'), relayPolicy: 'disabled', capProfile: 'machineBulk' });
+    admission = await startAdmissionServer(clientEndpoint.endpointId, echo.port);
+    await addon.startMachineAcceptor({
+      endpointHandle: serverEndpoint.endpointHandle,
+      admissionPort: admission.port,
+    });
+    const serverStatus = await addon.getEndpointStatus(serverEndpoint.endpointHandle);
+    const directAddress = serverStatus?.directAddresses[0];
+    if (!directAddress) throw new Error('machine endpoint direct address missing');
+    const handshakeJson = JSON.stringify({ v: 1, flow: 'finite_transfer' });
+    const tunnel = await addon.startMachineTunnel({
+      endpointHandle: clientEndpoint.endpointHandle,
+      endpointId: serverEndpoint.endpointId,
+      directAddresses: [directAddress],
+      handshakeJson,
+    });
+    expect(tunnel.localPort).toBeGreaterThan(0);
+    expect(tunnel).not.toHaveProperty('localCapability');
+    expect(tunnel.remoteEndpointId).toBe(serverEndpoint.endpointId);
+    const request = 'POST /echo HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 21\r\nConnection: close\r\n\r\nfinite-transfer-bytes';
+    await echoOverPort(tunnel.localPort, request);
+    expect(admission.requests).toHaveLength(1);
+    expect(admission.requests[0]).toContain(`X-Happier-Iroh-Remote-Endpoint-Id: ${clientEndpoint.endpointId}\r\n`);
+    expect(admission.requests[0]?.endsWith(handshakeJson)).toBe(true);
+    const status = await addon.getMachineTunnelStatus(tunnel.machineTunnelId);
+    expect(status?.streamsOpened).toBe(1);
+    await addon.stopMachineTunnel(tunnel.machineTunnelId);
+    expect(await expectOriginDown(`http://127.0.0.1:${tunnel.localPort}`)).toBe(true);
+    await addon.stopMachineAcceptor({ endpointHandle: serverEndpoint.endpointHandle });
+    await addon.shutdownEndpoint({ endpointHandle: clientEndpoint.endpointHandle });
+    await addon.shutdownEndpoint({ endpointHandle: serverEndpoint.endpointHandle });
+  });
+
+  it('keeps the provider HTTP adapter capability-protected', { timeout: 90_000 }, async () => {
     const addon = requireNative();
     echo = await startEchoServer();
     keyDir = await mkdtemp(join(tmpdir(), 'happier-iroh-machine-binding-'));
@@ -255,7 +293,7 @@ describeWhenNative('Iroh Node lifecycle binding over the shared native runtime',
     const serverStatus = await addon.getEndpointStatus(serverEndpoint.endpointHandle);
     const directAddress = serverStatus?.directAddresses[0];
     if (!directAddress) throw new Error('machine endpoint direct address missing');
-    const handshakeJson = JSON.stringify({ v: 1, operationId: 'node-machine-operation' });
+    const handshakeJson = JSON.stringify({ v: 1, kind: 'provider_broker' });
     const tunnel = await addon.startMachineHttpTunnel({
       endpointHandle: clientEndpoint.endpointHandle,
       endpointId: serverEndpoint.endpointId,
@@ -284,6 +322,35 @@ describeWhenNative('Iroh Node lifecycle binding over the shared native runtime',
     await addon.shutdownEndpoint({ endpointHandle: serverEndpoint.endpointHandle });
   });
 
+  it('requests distinct fresh handshakes for later provider HTTP connections', { timeout: 90_000 }, async () => {
+    const addon = requireNative();
+    echo = await startEchoServer();
+    keyDir = await mkdtemp(join(tmpdir(), 'happier-iroh-machine-binding-'));
+    const serverEndpoint = await addon.createEndpoint({ keyPath: join(keyDir, 'server.key'), relayPolicy: 'disabled', capProfile: 'machineBulk' });
+    const clientEndpoint = await addon.createEndpoint({ keyPath: join(keyDir, 'client.key'), relayPolicy: 'disabled', capProfile: 'machineBulk' });
+    admission = await startAdmissionServer(clientEndpoint.endpointId, echo.port);
+    await addon.startMachineAcceptor({ endpointHandle: serverEndpoint.endpointHandle, admissionPort: admission.port });
+    const serverStatus = await addon.getEndpointStatus(serverEndpoint.endpointHandle);
+    const directAddress = serverStatus?.directAddresses[0];
+    if (!directAddress) throw new Error('machine endpoint direct address missing');
+    let witness = 0;
+    const tunnel = await addon.startMachineHttpTunnel({
+      endpointHandle: clientEndpoint.endpointHandle,
+      endpointId: serverEndpoint.endpointId,
+      directAddresses: [directAddress],
+      handshakeJson: JSON.stringify({ v: 1, kind: 'provider_broker', witness: 0 }),
+      handshakeProvider: async () => JSON.stringify({ v: 1, kind: 'provider_broker', witness: ++witness }),
+    });
+    await echoOverPort(tunnel.localPort, 'first-connection', tunnel.localCapability);
+    await echoOverPort(tunnel.localPort, 'second-connection', tunnel.localCapability);
+    expect(admission.requests.map((request) => JSON.parse(request.split('\r\n\r\n')[1] ?? '{}').witness))
+      .toEqual([1, 2]);
+    await addon.stopMachineTunnel(tunnel.machineTunnelId);
+    await addon.stopMachineAcceptor({ endpointHandle: serverEndpoint.endpointHandle });
+    await addon.shutdownEndpoint({ endpointHandle: clientEndpoint.endpointHandle });
+    await addon.shutdownEndpoint({ endpointHandle: serverEndpoint.endpointHandle });
+  });
+
   it('rejects the stream without any application contact when admission omits the application port', { timeout: 90_000 }, async () => {
     const addon = requireNative();
     echo = await startEchoServer();
@@ -304,14 +371,13 @@ describeWhenNative('Iroh Node lifecycle binding over the shared native runtime',
       endpointHandle: clientEndpoint.endpointHandle,
       endpointId: serverEndpoint.endpointId,
       directAddresses: [directAddress],
-      handshakeJson: JSON.stringify({ v: 1, operationId: 'node-machine-missing-port' }),
+      handshakeJson: JSON.stringify({ v: 1, flow: 'finite_transfer' }),
     });
     const connectionsBefore = echo.connections.count;
     await new Promise<void>((resolve, reject) => {
       const socket = connect(tunnel.localPort, '127.0.0.1');
       socket.setTimeout(20_000);
       socket.on('connect', () => {
-        socket.write(tunnel.localCapability);
         socket.write('must-not-reach-app');
       });
       socket.on('data', () => reject(new Error('stream admitted without an application-port selection')));

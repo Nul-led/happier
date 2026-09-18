@@ -26,6 +26,8 @@
     "examples/basic/tsconfig.json",
     "examples/comprehensive/README.md",
     "examples/comprehensive/index.ts",
+    "examples/external-plugin/README.md",
+    "examples/external-plugin/index.ts",
     "package.json",
     "README.md",
     "API.md",

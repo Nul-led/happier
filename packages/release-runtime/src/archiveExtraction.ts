@@ -12,6 +12,8 @@ import * as tar from 'tar';
 import type { TarOptionsWithAliasesAsyncNoFile } from 'tar';
 import * as yauzl from 'yauzl';
 
+import { assertArchiveSymlinkTargetsAreContained } from './archiveSymlinkContainment.js';
+
 const WINDOWS_INVALID_PATH_CHARACTER = /[\u0000-\u001f<>:"|?*]/u;
 const WINDOWS_RESERVED_PATH_SEGMENT = /^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/iu;
 const MAX_TAR_METADATA_ENTRY_BYTES = 1024 * 1024;
@@ -19,9 +21,6 @@ const MAX_TAR_METADATA_ENTRY_BYTES = 1024 * 1024;
 // (4096 on Linux, 1024 on macOS). The target is read fully into memory before the link is created,
 // so this is the bound that keeps that read proportionate to what a real target can be.
 const MAX_SYMLINK_TARGET_BYTES = 4096;
-// Resolution follows links declared by the SAME archive, so a cycle (`a -> b`, `b -> a`) would
-// otherwise never terminate. Matches the SYMLOOP_MAX that kernels apply for the same reason.
-const MAX_SYMLINK_RESOLUTION_HOPS = 40;
 
 export type ArchiveExtractionLimits = Readonly<{
   maxArchiveBytes: number;
@@ -165,7 +164,7 @@ type ArchiveAbortContext = Readonly<{
 
 function createArchiveAbortContext(params: Readonly<{
   externalSignal?: AbortSignal;
-  timeoutMs: number;
+  timeoutMs: number | null;
 }>): ArchiveAbortContext {
   if (params.externalSignal?.aborted) {
     throw new Error('[release-runtime] archive extraction was aborted');
@@ -180,16 +179,18 @@ function createArchiveAbortContext(params: Readonly<{
   };
   const onExternalAbort = () => abort(new Error('[release-runtime] archive extraction was aborted'));
   params.externalSignal?.addEventListener('abort', onExternalAbort, { once: true });
-  const timeout = setTimeout(
-    () => abort(new Error('[release-runtime] archive extraction timed out')),
-    params.timeoutMs,
-  );
-  timeout.unref?.();
+  const timeout = params.timeoutMs === null
+    ? null
+    : setTimeout(
+        () => abort(new Error('[release-runtime] archive extraction timed out')),
+        params.timeoutMs,
+      );
+  timeout?.unref?.();
 
   return {
     abort,
     dispose: () => {
-      clearTimeout(timeout);
+      if (timeout !== null) clearTimeout(timeout);
       params.externalSignal?.removeEventListener('abort', onExternalAbort);
     },
     signal: controller.signal,
@@ -323,91 +324,6 @@ function createArchiveEntryValidator(
     explicitEntryKindsByPortablePath.set(collisionKey, kind);
     return portablePath;
   };
-}
-
-function splitPortableSymlinkTarget(rawTarget: string, linkPath: string): readonly string[] {
-  if (rawTarget.length === 0) {
-    throw new Error(`[release-runtime] archive symlink has an empty target: ${linkPath}`);
-  }
-  if (rawTarget.includes('\u0000')) {
-    throw new Error(`[release-runtime] archive symlink target contains a NUL byte: ${linkPath}`);
-  }
-  if (rawTarget.includes('\\')) {
-    throw new Error(
-      `[release-runtime] archive symlink target has a non-portable separator: ${linkPath} -> ${rawTarget}`,
-    );
-  }
-  if (rawTarget.startsWith('/') || /^[a-z]:/iu.test(rawTarget)) {
-    throw new Error(
-      `[release-runtime] archive symlink target is absolute: ${linkPath} -> ${rawTarget}`,
-    );
-  }
-  return rawTarget.split('/');
-}
-
-/**
- * Containment rule for one symlink target, resolved the way the kernel resolves a path.
- *
- * Lexical containment of each link IN ISOLATION is not sufficient: `a/b/hop -> ../..` lands exactly
- * on the root, and `a/b/escape -> hop/../../x` is lexically contained too, yet following `hop`
- * first and only then applying `..` lands ABOVE the root. So `..` is resolved against the
- * accumulated stack and any component that the same archive declares as a symlink is FOLLOWED,
- * bounded by `MAX_SYMLINK_RESOLUTION_HOPS`. If the stack is ever popped past empty, the target
- * escapes and the archive is rejected.
- *
- * Lookups are case-folded to match the case-insensitive collision key the path validator already
- * enforces, so a target written in a different case cannot dodge the link graph on a
- * case-insensitive filesystem.
- */
-function assertArchiveSymlinkTargetIsContained(params: Readonly<{
-  linkPath: string;
-  rawTarget: string;
-  targetsByFoldedPath: ReadonlyMap<string, string>;
-}>): void {
-  const resolvedSegments = params.linkPath.split('/');
-  resolvedSegments.pop();
-  let pendingSegments: string[] = [...splitPortableSymlinkTarget(params.rawTarget, params.linkPath)];
-  let followedLinks = 0;
-
-  while (pendingSegments.length > 0) {
-    const segment = pendingSegments.shift()!;
-    if (segment === '' || segment === '.') continue;
-    if (segment === '..') {
-      if (resolvedSegments.length === 0) {
-        throw new Error(
-          `[release-runtime] archive symlink target leaves the extraction root: ${params.linkPath} -> ${params.rawTarget}`,
-        );
-      }
-      resolvedSegments.pop();
-      continue;
-    }
-    resolvedSegments.push(segment);
-    const nestedTarget = params.targetsByFoldedPath.get(resolvedSegments.join('/').toLowerCase());
-    if (nestedTarget === undefined) continue;
-    followedLinks += 1;
-    if (followedLinks > MAX_SYMLINK_RESOLUTION_HOPS) {
-      throw new Error(
-        `[release-runtime] archive symlink target does not resolve: ${params.linkPath} -> ${params.rawTarget}`,
-      );
-    }
-    resolvedSegments.pop();
-    pendingSegments = [
-      ...splitPortableSymlinkTarget(nestedTarget, params.linkPath),
-      ...pendingSegments,
-    ];
-  }
-}
-
-function assertArchiveSymlinkTargetsAreContained(
-  targetsByPortablePath: ReadonlyMap<string, string>,
-): void {
-  const targetsByFoldedPath = new Map<string, string>();
-  for (const [portablePath, rawTarget] of targetsByPortablePath) {
-    targetsByFoldedPath.set(portablePath.toLowerCase(), rawTarget);
-  }
-  for (const [linkPath, rawTarget] of targetsByPortablePath) {
-    assertArchiveSymlinkTargetIsContained({ linkPath, rawTarget, targetsByFoldedPath });
-  }
 }
 
 type TarArchiveEntry = Readonly<{
@@ -560,6 +476,24 @@ type ValidatedZipArchiveEntry = ZipArchiveEntry & Readonly<{
   path: string | null;
 }>;
 
+export type ClosedZipArchiveEntry = Readonly<{
+  kind: 'directory' | 'file' | 'symlink';
+  mode: number;
+  path: string;
+  sizeBytes: number;
+}>;
+
+export type InspectedZipArchiveEntry = ClosedZipArchiveEntry & Readonly<{
+  compressedSizeBytes: number;
+  compressionMethod: number;
+  crc32: number;
+}>;
+
+export type ClosedZipArchiveLayout = Readonly<{
+  archiveSizeBytes: number;
+  entries: readonly ClosedZipArchiveEntry[];
+}>;
+
 class OpenFileZipReader extends yauzl.RandomAccessReader {
   readonly #archiveFile: FileHandle;
 
@@ -690,7 +624,7 @@ function decodeZipEntryFileName(entry: RawYauzlEntry): ZipArchiveEntry {
 function createZipEntryValidator(params: Readonly<{
   allowedEntryRoots?: readonly string[];
   abortContext: ArchiveAbortContext;
-  budget: ArchiveBudget;
+  budget?: ArchiveBudget;
 }>): (entry: ZipArchiveEntry) => ValidatedZipArchiveEntry {
   const validatePath = createArchiveEntryValidator(params.allowedEntryRoots);
   return (entry) => {
@@ -706,6 +640,8 @@ function createZipEntryValidator(params: Readonly<{
     if (
       !Number.isSafeInteger(entry.compressedSize)
       || entry.compressedSize < 0
+      || !Number.isSafeInteger(entry.uncompressedSize)
+      || entry.uncompressedSize < 0
       || !Number.isSafeInteger(entry.relativeOffsetOfLocalHeader)
       || entry.relativeOffsetOfLocalHeader < 0
     ) {
@@ -742,7 +678,7 @@ function createZipEntryValidator(params: Readonly<{
       }
       // A symlink takes a name and an inode exactly like a file, and its target string is its
       // expanded payload, so it is accounted as one rather than as a free directory.
-      params.budget.account('file', entry.uncompressedSize);
+      params.budget?.account('file', entry.uncompressedSize);
       return {
         ...entry,
         kind: 'symlink',
@@ -754,7 +690,7 @@ function createZipEntryValidator(params: Readonly<{
       throw new Error(`[release-runtime] archive entry type is not supported: special file, device, FIFO or socket (${entry.fileName})`);
     }
     const kind = isDirectory ? 'directory' : 'file';
-    params.budget.account(kind, isDirectory ? 0 : entry.uncompressedSize);
+    params.budget?.account(kind, isDirectory ? 0 : entry.uncompressedSize);
     return {
       ...entry,
       kind,
@@ -937,6 +873,7 @@ async function readValidatedZipEntries(params: Readonly<{
   archiveBytes: number;
   archiveFile: FileHandle;
   validateEntry: (entry: ZipArchiveEntry) => ValidatedZipArchiveEntry;
+  maxEntries?: number;
 }>): Promise<readonly ValidatedZipArchiveEntry[]> {
   const entries: ValidatedZipArchiveEntry[] = [];
   await new Promise<void>((resolvePromise, rejectPromise) => {
@@ -997,6 +934,9 @@ async function readValidatedZipEntries(params: Readonly<{
         zipFile.once('error', settle);
         zipFile.on('entry', (entry: yauzl.Entry) => {
           try {
+            if (params.maxEntries !== undefined && entries.length >= params.maxEntries) {
+              throw new Error('[release-runtime] ZIP archive contains more entries than its closed layout permits');
+            }
             entries.push(params.validateEntry(
               decodeZipEntryFileName(entry as unknown as RawYauzlEntry),
             ));
@@ -1012,6 +952,149 @@ async function readValidatedZipEntries(params: Readonly<{
   });
   params.abortContext.throwIfAborted();
   return entries;
+}
+
+function projectInspectedZipEntry(entry: ValidatedZipArchiveEntry): InspectedZipArchiveEntry | null {
+  if (entry.path === null) return null;
+  return {
+    compressedSizeBytes: entry.compressedSize,
+    compressionMethod: entry.compressionMethod,
+    crc32: entry.crc32,
+    kind: entry.kind,
+    mode: entry.mode,
+    path: entry.path,
+    sizeBytes: entry.uncompressedSize,
+  };
+}
+
+function assertClosedZipEntriesMatch(
+  actual: readonly ValidatedZipArchiveEntry[],
+  expected: readonly ClosedZipArchiveEntry[],
+): void {
+  const projected = actual.flatMap((entry) => {
+    const value = projectInspectedZipEntry(entry);
+    return value === null ? [] : [value];
+  });
+  if (projected.length !== expected.length) {
+    throw new Error('[release-runtime] ZIP archive does not match its closed entry census');
+  }
+  for (let index = 0; index < projected.length; index += 1) {
+    const left = projected[index]!;
+    const right = expected[index]!;
+    if (
+      left.path !== right.path
+      || left.kind !== right.kind
+      || left.mode !== right.mode
+      || left.sizeBytes !== right.sizeBytes
+    ) {
+      throw new Error('[release-runtime] ZIP archive does not match its closed entry census');
+    }
+  }
+}
+
+/**
+ * Validates the central-directory and matching local-header census for a caller whose product
+ * contract already fixes the exact entry count and allowed roots. It does not decompress payloads;
+ * the returned finite facts must be passed back as `closedZipLayout` so the ordinary extractor
+ * retains CRC, size, range, path, mode, link, and publication checks without generic magic caps.
+ */
+export async function inspectClosedZipArchiveEntries(params: Readonly<{
+  allowedEntryRoots?: readonly string[];
+  archivePath: string;
+  archiveSizeBytes: number;
+  expectedEntryCount: number;
+  signal?: AbortSignal;
+}>): Promise<readonly InspectedZipArchiveEntry[]> {
+  if (!Number.isSafeInteger(params.archiveSizeBytes) || params.archiveSizeBytes < 1) {
+    throw new Error('[release-runtime] closed ZIP archive size must be a positive safe integer');
+  }
+  if (!Number.isSafeInteger(params.expectedEntryCount) || params.expectedEntryCount < 1) {
+    throw new Error('[release-runtime] closed ZIP entry count must be a positive safe integer');
+  }
+  const limits = mergeArchiveExtractionLimits({ maxArchiveBytes: params.archiveSizeBytes });
+  const { archiveFile, archiveBytes } = await openArchiveSource(params.archivePath, limits);
+  if (archiveBytes !== params.archiveSizeBytes) {
+    await archiveFile.close().catch(() => undefined);
+    throw new Error('[release-runtime] ZIP archive size does not match its authenticated size');
+  }
+  const abortContext = createArchiveAbortContext({
+    externalSignal: params.signal,
+    timeoutMs: null,
+  });
+  try {
+    const validateEntry = createZipEntryValidator({
+      allowedEntryRoots: params.allowedEntryRoots,
+      abortContext,
+    });
+    const entries = await readValidatedZipEntries({
+      abortContext,
+      archiveBytes,
+      archiveFile,
+      maxEntries: params.expectedEntryCount,
+      validateEntry,
+    });
+    if (entries.length !== params.expectedEntryCount) {
+      throw new Error('[release-runtime] ZIP archive entry count does not match its closed layout');
+    }
+    const centralDirectory = await readZipCentralDirectory({ abortContext, archiveBytes, archiveFile });
+    const ranges: Array<ValidatedZipEntryRange & Readonly<{ fileName: string }>> = [];
+    for (const entry of entries) {
+      ranges.push({
+        ...(await readZipEntryDataOffset({
+          abortContext,
+          archiveBytes,
+          archiveFile,
+          centralDirectoryOffset: centralDirectory.offset,
+          entry,
+        })),
+        fileName: entry.fileName,
+      });
+    }
+    ranges.sort((left, right) => left.rangeStart - right.rangeStart);
+    for (let index = 1; index < ranges.length; index += 1) {
+      if (ranges[index]!.rangeStart < ranges[index - 1]!.rangeEnd) {
+        throw new Error('[release-runtime] ZIP local header and payload ranges overlap');
+      }
+    }
+    return entries.flatMap((entry) => {
+      const projected = projectInspectedZipEntry(entry);
+      return projected === null ? [] : [projected];
+    });
+  } finally {
+    abortContext.dispose();
+    await archiveFile.close().catch(() => undefined);
+  }
+}
+
+function deriveClosedZipArchiveLimits(layout: ClosedZipArchiveLayout): ArchiveExtractionLimits {
+  if (!Number.isSafeInteger(layout.archiveSizeBytes) || layout.archiveSizeBytes < 1 || layout.entries.length < 1) {
+    throw new Error('[release-runtime] closed ZIP layout is invalid');
+  }
+  let fileCount = 0;
+  let maxFileBytes = 0;
+  let expandedBytes = 0;
+  for (const entry of layout.entries) {
+    if (!Number.isSafeInteger(entry.sizeBytes) || entry.sizeBytes < 0) {
+      throw new Error('[release-runtime] closed ZIP entry size is invalid');
+    }
+    if (entry.kind !== 'directory') {
+      fileCount += 1;
+      maxFileBytes = Math.max(maxFileBytes, entry.sizeBytes);
+      expandedBytes += entry.sizeBytes;
+      if (!Number.isSafeInteger(expandedBytes)) {
+        throw new Error('[release-runtime] closed ZIP expanded size is invalid');
+      }
+    }
+  }
+  return {
+    maxArchiveBytes: layout.archiveSizeBytes,
+    maxEntries: layout.entries.length,
+    maxFiles: fileCount,
+    maxFileBytes,
+    maxExpandedBytes: expandedBytes,
+    maxCompressionRatio: Math.max(1, Math.ceil(expandedBytes / layout.archiveSizeBytes)),
+    timeoutMs: DEFAULT_ARCHIVE_EXTRACTION_LIMITS.timeoutMs,
+  };
 }
 
 type ZipCentralDirectory = Readonly<{
@@ -1521,6 +1604,7 @@ async function extractZipArchiveToDirectory(params: Readonly<{
   archiveFile: FileHandle;
   extractDir: string;
   limits: ArchiveExtractionLimits;
+  expectedEntries?: readonly ClosedZipArchiveEntry[];
 }>): Promise<void> {
   const budget = createArchiveBudget({
     archiveBytes: params.archiveBytes,
@@ -1537,6 +1621,7 @@ async function extractZipArchiveToDirectory(params: Readonly<{
     archiveFile: params.archiveFile,
     validateEntry,
   });
+  if (params.expectedEntries) assertClosedZipEntriesMatch(entries, params.expectedEntries);
   const centralDirectory = await readZipCentralDirectory({
       abortContext: params.abortContext,
       archiveBytes: params.archiveBytes,
@@ -1597,6 +1682,8 @@ export async function extractArchivePayloadToDirectory(params: Readonly<{
   allowedEntryRoots?: readonly string[];
   archivePath: string;
   archiveName: string;
+  /** Exact facts from `inspectClosedZipArchiveEntries` or an authenticated release manifest. */
+  closedZipLayout?: ClosedZipArchiveLayout;
   extractDir: string;
   limits?: Partial<ArchiveExtractionLimits>;
   signal?: AbortSignal;
@@ -1614,13 +1701,25 @@ export async function extractArchivePayloadToDirectory(params: Readonly<{
     throw new Error(`[release-runtime] unsupported archive type: ${params.archiveName}`);
   }
 
-  const limits = mergeArchiveExtractionLimits(params.limits);
+  if (params.closedZipLayout && archiveType !== 'zip') {
+    throw new Error('[release-runtime] closed ZIP layout is only valid for ZIP archives');
+  }
+  if (params.closedZipLayout && params.limits) {
+    throw new Error('[release-runtime] closed ZIP layout cannot be combined with generic limits');
+  }
+  const limits = params.closedZipLayout
+    ? deriveClosedZipArchiveLimits(params.closedZipLayout)
+    : mergeArchiveExtractionLimits(params.limits);
   const { archiveFile, archiveBytes } = await openArchiveSource(params.archivePath, limits);
+  if (params.closedZipLayout && archiveBytes !== params.closedZipLayout.archiveSizeBytes) {
+    await archiveFile.close().catch(() => undefined);
+    throw new Error('[release-runtime] ZIP archive size does not match its authenticated size');
+  }
   let abortContext: ArchiveAbortContext;
   try {
     abortContext = createArchiveAbortContext({
       externalSignal: params.signal,
-      timeoutMs: limits.timeoutMs,
+      timeoutMs: params.closedZipLayout ? null : limits.timeoutMs,
     });
   } catch (error) {
     await archiveFile.close().catch(() => undefined);
@@ -1645,6 +1744,7 @@ export async function extractArchivePayloadToDirectory(params: Readonly<{
         archiveFile,
         extractDir: stagingDir,
         limits,
+        expectedEntries: params.closedZipLayout?.entries,
       });
     } else {
       await extractTarArchiveToDirectory({

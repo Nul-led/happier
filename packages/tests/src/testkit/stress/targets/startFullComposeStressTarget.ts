@@ -471,8 +471,6 @@ export async function startFullComposeStressTarget(
       workerReplicas: params.config.compose.workerReplicas,
       frontDoorMode,
       dbConnectionLimit: params.config.compose.dbConnectionLimit,
-      authLoginEligibilityAccountSnapshotCacheTtlMs:
-        params.config.compose.authLoginEligibilityAccountSnapshotCacheTtlMs,
       gatewayWorkerConnections: params.config.compose.gatewayWorkerConnections,
       gatewayWorkerRlimitNoFile: params.config.compose.gatewayWorkerRlimitNoFile,
       metricsEnabled: params.config.compose.metricsEnabled,

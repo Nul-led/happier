@@ -799,9 +799,23 @@ test.describe('ui e2e: transcript viewport invariants', () => {
     const isOlderPageRequest = (url: string): boolean =>
       url.includes(`/v1/sessions/${sessionId}/messages?`) && url.includes('beforeSeq=');
 
-    // Delay older-page responses so the in-flight window (and the loading overlay) is observable.
+    let holdUserTriggeredOlderResponses = false;
+    const heldOlderResponseReleases: Array<() => void> = [];
+    const releaseAllHeldOlderResponses = () => {
+      holdUserTriggeredOlderResponses = false;
+      for (const release of heldOlderResponseReleases) release();
+    };
+    page.once('close', releaseAllHeldOlderResponses);
+
+    // Keep each user-triggered response in flight until its loading overlay has been observed.
+    // A fixed delay races the request observer on loaded runners and can inspect the UI only after
+    // the response has already settled and the correctly transient overlay has disappeared.
     await page.route((url) => isOlderPageRequest(url.href), async (route) => {
-      await new Promise((r) => setTimeout(r, 700));
+      if (holdUserTriggeredOlderResponses) {
+        await new Promise<void>((resolve) => {
+          heldOlderResponseReleases.push(resolve);
+        });
+      }
       await route.fallback();
     });
 
@@ -836,6 +850,7 @@ test.describe('ui e2e: transcript viewport invariants', () => {
     olderRequestCount = 0;
     olderRequestsSettled = 0;
     maxConcurrentOlderRequests = inFlightOlderRequests;
+    holdUserTriggeredOlderResponses = true;
     const beforeMetrics = await requireTranscriptScrollMetrics(page);
 
     // Scenario premise: at least one older page must still be unloaded, or the wheel below can
@@ -868,12 +883,14 @@ test.describe('ui e2e: transcript viewport invariants', () => {
     await expect
       .poll(() => olderRequestCount, { timeout: 60_000 })
       .toBeGreaterThan(0);
+    await expect.poll(() => heldOlderResponseReleases.length, { timeout: 5_000 }).toBeGreaterThan(0);
 
     // Invariant H: a user-triggered older load in flight shows the loading indicator.
     await expect(
       page.getByTestId('transcript-older-load-progress-overlay'),
       'invariant H: older-load progress overlay must be visible while the load is in flight',
     ).toBeVisible({ timeout: 5_000 });
+    heldOlderResponseReleases[0]?.();
 
     await expect.poll(() => olderRequestsSettled, { timeout: 60_000 }).toBeGreaterThanOrEqual(1);
     await expect
@@ -893,10 +910,13 @@ test.describe('ui e2e: transcript viewport invariants', () => {
     // user movement. This rejects the reproduced "first page looked stable, second page lost the
     // row while scrollTop stayed zero" failure.
     await expect.poll(() => olderRequestCount, { timeout: 60_000 }).toBeGreaterThanOrEqual(2);
+    await expect.poll(() => heldOlderResponseReleases.length, { timeout: 5_000 }).toBeGreaterThanOrEqual(2);
     await expect(
       page.getByTestId('transcript-older-load-progress-overlay'),
       'invariant H: progress overlay must remain observable for the second sequential older load',
     ).toBeVisible({ timeout: 5_000 });
+    heldOlderResponseReleases[1]?.();
+    holdUserTriggeredOlderResponses = false;
     await expect.poll(() => olderRequestsSettled, { timeout: 60_000 }).toBeGreaterThanOrEqual(2);
     await expect
       .poll(async () => (await requireTranscriptScrollMetrics(page)).scrollHeight, { timeout: 60_000 })

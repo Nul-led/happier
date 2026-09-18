@@ -196,9 +196,6 @@ export function readStressConfig(): StressConfig {
       frontDoorMode: readFrontDoorMode(profileConfig.compose.frontDoorMode ?? 'gateway'),
       loadGenerationMode: readLoadGenerationMode(profileConfig.compose.loadGenerationMode ?? 'host'),
       dbConnectionLimit: readOptionalInt(['HAPPIER_STRESS_COMPOSE_DB_CONNECTION_LIMIT']) ?? profileConfig.compose.dbConnectionLimit,
-      authLoginEligibilityAccountSnapshotCacheTtlMs:
-        readOptionalInt(['HAPPIER_STRESS_COMPOSE_AUTH_LOGIN_ELIGIBILITY_ACCOUNT_SNAPSHOT_CACHE_TTL_MS'])
-        ?? profileConfig.compose.authLoginEligibilityAccountSnapshotCacheTtlMs,
       apiHeapDiagnosticSignal:
         (readString(['HAPPIER_STRESS_COMPOSE_API_HEAP_DIAGNOSTIC_SIGNAL']) as NodeJS.Signals | undefined)
         ?? profileConfig.compose.apiHeapDiagnosticSignal,

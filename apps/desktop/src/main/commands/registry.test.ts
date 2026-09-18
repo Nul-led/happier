@@ -71,8 +71,14 @@ function createHarness() {
                 return { active: false, connectionActive: false, observedPath: 'relay' };
             },
             getApplicationEndpoint: async () => ({ endpointId: 'a'.repeat(64) }),
+            startMachineTunnel: async (request) => {
+                irohStarts.push(request);
+                return { leaseId: 'machine-raw-lease-1', localPort: 48122 };
+            },
             startMachineHttpTunnel: async () => ({ leaseId: 'machine-lease-1', localOrigin: 'http://127.0.0.1:48123' }),
-            stopMachineHttpTunnel: async () => {},
+            stopMachineTunnel: async (leaseId) => {
+                irohStops.push(leaseId);
+            },
         },
         systemTasks: {
             start: async (specJson) => {
@@ -167,6 +173,26 @@ test('an unimplemented product command is reported as not-implemented, never as 
         `${NOT_IMPLEMENTED_ERROR_PREFIX}: desktop_browser_open_view`,
     );
     assert.equal(isNotImplementedError(`${NOT_IMPLEMENTED_ERROR_PREFIX}: desktop_browser_open_view`), true);
+});
+
+test('finite machine tunnel command routes to the opaque raw listener contract', async () => {
+    const { registry, context, irohStarts, irohStops } = createHarness();
+    const request = {
+        endpointId: 'a'.repeat(64),
+        handshakeJson: JSON.stringify({ v: 1, flow: 'finite_transfer' }),
+    };
+
+    assert.deepEqual(await runCommand(registry, 'iroh_start_machine_tunnel', { request }, context), {
+        kind: 'implemented',
+        value: { leaseId: 'machine-raw-lease-1', localPort: 48122 },
+    });
+    assert.deepEqual(irohStarts, [request]);
+
+    assert.deepEqual(await runCommand(registry, 'iroh_stop_machine_tunnel', { leaseId: 'machine-raw-lease-1' }, context), {
+        kind: 'implemented',
+        value: null,
+    });
+    assert.deepEqual(irohStops, ['machine-raw-lease-1']);
 });
 
 test('Personal Home desktop commands are implemented through the shared Electron host registry', async () => {

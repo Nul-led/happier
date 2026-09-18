@@ -97,6 +97,77 @@ test('downloadVerifiedReleaseAssetBundle downloads archive and verifies checksum
   }
 });
 
+test('downloadVerifiedReleaseAssetBundle never fetches the archive for an untrusted checksums file', async () => {
+  const tmp = await mkdtemp(join(tmpdir(), 'happier-release-runtime-verified-unsigned-'));
+  const originalFetch = globalThis.fetch;
+  const fetched = [];
+  try {
+    globalThis.fetch = async (url) => {
+      fetched.push(String(url));
+      throw new Error('the archive must not be fetched before the checksums file is trusted');
+    };
+    const { pubkeyFile } = createMinisignKeyPair();
+    const attacker = createMinisignKeyPair();
+    const archiveName = 'happier-server-v1.2.3-linux-x64.tar.gz';
+    const checksumsText = `${'0'.repeat(64)} ${archiveName}\n`;
+    const sigFile = signMinisignMessage({
+      message: Buffer.from(checksumsText, 'utf-8'),
+      keyId: attacker.keyId,
+      privateKey: attacker.privateKey,
+    });
+
+    const bundle = {
+      version: '1.2.3',
+      archive: { name: archiveName, url: 'https://releases.invalid/happier-server-v1.2.3-linux-x64.tar.gz' },
+      checksums: { name: 'checksums.txt', url: `data:text/plain,${encodeURIComponent(checksumsText)}` },
+      checksumsSig: { name: 'checksums.txt.minisig', url: `data:text/plain,${encodeURIComponent(sigFile)}` },
+    };
+
+    await assert.rejects(
+      () => downloadVerifiedReleaseAssetBundle({ bundle, destDir: tmp, pubkeyFile }),
+      /signature verification failed for checksums file/,
+    );
+    assert.deepEqual(fetched, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('downloadVerifiedReleaseAssetBundle reports a signed checksums file that omits the archive', async () => {
+  const tmp = await mkdtemp(join(tmpdir(), 'happier-release-runtime-verified-missing-'));
+  const originalFetch = globalThis.fetch;
+  const fetched = [];
+  try {
+    globalThis.fetch = async (url) => {
+      fetched.push(String(url));
+      throw new Error('the archive must not be fetched when no trusted digest exists');
+    };
+    const { pubkeyFile, keyId, privateKey } = createMinisignKeyPair();
+    const checksumsText = `${'0'.repeat(64)} happier-server-v1.2.3-darwin-arm64.tar.gz\n`;
+    const sigFile = signMinisignMessage({ message: Buffer.from(checksumsText, 'utf-8'), keyId, privateKey });
+
+    const bundle = {
+      version: '1.2.3',
+      archive: {
+        name: 'happier-server-v1.2.3-linux-x64.tar.gz',
+        url: 'https://releases.invalid/happier-server-v1.2.3-linux-x64.tar.gz',
+      },
+      checksums: { name: 'checksums.txt', url: `data:text/plain,${encodeURIComponent(checksumsText)}` },
+      checksumsSig: { name: 'checksums.txt.minisig', url: `data:text/plain,${encodeURIComponent(sigFile)}` },
+    };
+
+    await assert.rejects(
+      () => downloadVerifiedReleaseAssetBundle({ bundle, destDir: tmp, pubkeyFile }),
+      /sha256 not found for happier-server-v1\.2\.3-linux-x64\.tar\.gz/,
+    );
+    assert.deepEqual(fetched, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test('downloadVerifiedReleaseAssetBundle rejects checksum mismatches', async () => {
   const tmp = await mkdtemp(join(tmpdir(), 'happier-release-runtime-verified-bad-'));
   try {

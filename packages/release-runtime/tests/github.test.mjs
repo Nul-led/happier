@@ -47,6 +47,24 @@ test('fetchGitHubReleaseByTag calls GitHub tag endpoint and returns JSON', async
   assert.match(String(stub.calls[0].init.headers['user-agent'] ?? ''), /test-agent/);
 });
 
+test('fetchGitHubReleaseByTag forwards cancellation to the release HTTP boundary', async () => {
+  const url = 'https://api.github.com/repos/happier-dev/happier/releases/tags/runner-v0.3.0';
+  const routeMap = new Map([
+    [url, { ok: true, status: 200, json: { tag_name: 'runner-v0.3.0', assets: [] } }],
+  ]);
+  const stub = createFetchStub(routeMap);
+  const controller = new AbortController();
+
+  await fetchGitHubReleaseByTag({
+    githubRepo: 'happier-dev/happier',
+    tag: 'runner-v0.3.0',
+    fetchImpl: stub.fetch,
+    signal: controller.signal,
+  });
+
+  assert.equal(stub.calls[0].init.signal, controller.signal);
+});
+
 test('fetchGitHubReleaseByTag throws with status for non-ok responses', async () => {
   const url = 'https://api.github.com/repos/happier-dev/happier/releases/tags/missing';
   const routeMap = new Map([

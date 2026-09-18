@@ -1,4 +1,11 @@
 export { isHappierActionApprovalRequestCreated } from './approval.js';
+export type {
+  HappierSessionExecutionRun,
+  HappierSessionExecutionRuns,
+  HappierSessionExecutionRunSendInput,
+  HappierSessionExecutionRunHistoryInput,
+  HappierSessionExecutionRunWaitInput,
+} from './fluent/sessionExecutionRuns.js';
 export {
   connect,
   type HappierActions,

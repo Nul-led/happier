@@ -171,6 +171,41 @@
     },
     {
       "specifier": ".",
+      "exportName": "HappierSessionExecutionRun",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierSessionExecutionRun"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierSessionExecutionRunHistoryInput",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierSessionExecutionRunHistoryInput"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierSessionExecutionRunSendInput",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierSessionExecutionRunSendInput"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierSessionExecutionRunWaitInput",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierSessionExecutionRunWaitInput"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierSessionExecutionRuns",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierSessionExecutionRuns"
+    },
+    {
+      "specifier": ".",
       "exportName": "HappierSessionInitialInputError",
       "kind": "value",
       "declarationModule": "dist/index.d.ts",

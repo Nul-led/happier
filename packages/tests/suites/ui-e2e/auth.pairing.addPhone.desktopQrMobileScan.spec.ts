@@ -448,12 +448,11 @@ async function runEnrollmentScenario(params: Readonly<{
 
 /**
  * Welcome entry (J09-05/F-QR-01 enter_home direction): a fresh unauthenticated client with no
- * stored Home credential consumes a scanned Home B V2 invite. The scanned invite reaches the
- * app through the production deep-link redirect target that `redirectSystemPath` builds for a
- * scanned V2 invite (`/restore?pairingLink=…&entryIntent=enter_home`); the camera
- * capture and OS deep-link dispatch in front of that route are the only boundaries a headless
- * browser cannot inject. The journey must end with the persisted focused Home identity on B,
- * not merely shell navigation.
+ * stored Home credential consumes a scanned Home B V2 invite. The headless browser uses the
+ * restore scanner's real manual-entry fallback, which shares the production scan callback and
+ * creates the same one-shot secret-free route handoff as a camera scan. Physical camera capture
+ * and OS dispatch remain a separate live gate. The journey must end with the persisted focused
+ * Home identity on B, not merely shell navigation.
  */
 async function runWelcomeEntryScenario(params: Readonly<{
   browser: Browser;
@@ -480,7 +479,7 @@ async function runWelcomeEntryScenario(params: Readonly<{
     const joiningPage = await joiningContext.newPage();
     const trustedHomeBPage = await trustedContext.newPage();
     const joiningDiagnostics = collectBrowserDiagnostics(joiningPage);
-    // Installed before the deep-link navigation: initial pairing-link processing can mount and
+    // Installed before the scanner navigation: initial pairing-link processing can mount and
     // unmount a control before any post-load `evaluate` would exist, so the observer must run
     // ahead of app code on this page.
     const readJoiningForbiddenUi = await installForbiddenDirectQrUiObserver(joiningPage);
@@ -493,9 +492,29 @@ async function runWelcomeEntryScenario(params: Readonly<{
 
     await gotoDomContentLoadedWithRetries(
       joiningPage,
-      `${params.uiBaseUrl}/restore?pairingLink=${encodeURIComponent(pairingLinkRaw)}&entryIntent=enter_home`,
+      `${params.uiBaseUrl}/restore?entryIntent=enter_home`,
       180_000,
     );
+    const pairingLinkDisclosure = joiningPage.getByTestId('restore-pairing-link-details');
+    await expect(pairingLinkDisclosure).toHaveCount(1, { timeout: 120_000 });
+    await pairingLinkDisclosure.click();
+    await joiningPage.getByTestId('restore-enter-pairing-link').click();
+    await expect(joiningPage.getByTestId('pairing-link-entry-form')).toHaveCount(1, { timeout: 30_000 });
+    await joiningPage.getByTestId('restore-pairing-link-input').fill(pairingLinkRaw);
+    await joiningPage.getByTestId('restore-pairing-link-submit').click();
+
+    await expect(joiningPage).toHaveURL(/\/restore\?pairingHandoff=[A-Za-z0-9_-]+&entryIntent=enter_home/u, {
+      timeout: 30_000,
+    });
+    const handoffRoute = new URL(joiningPage.url());
+    expect(handoffRoute.searchParams.has('pairingHandoff')).toBe(true);
+    expect(handoffRoute.searchParams.has('pairingLink')).toBe(false);
+    expect(handoffRoute.searchParams.has('qrSecretBase64Url')).toBe(false);
+    expect(joiningPage.url()).not.toContain(pairingLinkRaw);
+    const pairingPayload = new URL(pairingLinkRaw).searchParams.get('payload') ?? '';
+    const pairingInvite = parseHomeQrInviteV2Payload(pairingPayload, { nowMs: Date.now() });
+    expect(pairingInvite).not.toBeNull();
+    expect(joiningPage.url()).not.toContain(pairingInvite?.qrSecretBase64Url ?? 'missing-qr-secret');
 
     try {
       await expect.poll(

@@ -1384,9 +1384,6 @@ await server.connect(new StdioServerTransport());
     if (provider.protocol !== 'acp') {
       throw new Error(`acp_set_model_dynamic only supports ACP providers (got ${provider.protocol})`);
     }
-    if (!['opencode', 'kilo', 'auggie', 'codex'].includes(provider.id)) {
-      throw new Error(`acp_set_model_dynamic requires dynamic model providers (got ${provider.id})`);
-    }
 
     const outputRel = 'e2e-set-model-dynamic.json';
     const base = makeAcpReadInWorkspaceScenario({
@@ -2763,34 +2760,35 @@ await server.connect(new StdioServerTransport());
   },
 
   permission_surface_execute: (provider) => {
-    assertProviderId(provider, 'codex');
+    assertProviderId(provider, 'codex', 'devin');
     const pid = acpProviderId(provider);
     const base = makeAcpPermissionExecuteWritesWorkspaceFileScenario({
       providerId: pid,
       id: 'permission_surface_execute',
       title: 'permissions: execute surfaces a permission-request trace (approve)',
-      filename: 'codex-permission-e2e.txt',
-      content: 'CODEX_EXEC_PERMISSION_OK',
+      filename: `${provider.id}-permission-e2e.txt`,
+      content: `${provider.id.toUpperCase()}_EXEC_PERMISSION_OK`,
       decision: 'approve',
     });
 
     return {
       ...base,
-      // Force default permission mode so codex-acp runs with approval prompts enabled.
+      // Force the default permission mode so the Agent runs with approval prompts
+      // enabled: Devin's `default` deliberately passes no permission override.
       messageMeta: { permissionMode: 'default', permissionModeUpdatedAt: Date.now() },
       maxTraceEvents: { toolCalls: 2, toolResults: 2, permissionRequests: 2 },
     };
   },
 
   permission_abort_execute: (provider) => {
-    assertProviderId(provider, 'codex');
+    assertProviderId(provider, 'codex', 'devin');
     const pid = acpProviderId(provider);
     const base = makeAcpPermissionExecuteWritesWorkspaceFileScenario({
       providerId: pid,
       id: 'permission_abort_execute',
       title: 'permissions: denying execute prevents the command from running',
-      filename: 'codex-abort-e2e.txt',
-      content: 'CODEX_ABORT_OK',
+      filename: `${provider.id}-abort-e2e.txt`,
+      content: `${provider.id.toUpperCase()}_ABORT_OK`,
       decision: 'deny',
     });
 
@@ -3165,7 +3163,7 @@ await server.connect(new StdioServerTransport());
 
   mcp_change_title: (provider) => {
     const pid = acpProviderId(provider);
-    const title = provider.id === 'grok' ? 'GROK_MCP_TITLE_E2E' : 'KILO_MCP_TITLE_E2E';
+    const title = `${provider.id.toUpperCase()}_MCP_TITLE_E2E`;
     const maxToolEvents = provider.id === 'grok' ? 2 : 1;
     return {
       id: 'mcp_change_title',

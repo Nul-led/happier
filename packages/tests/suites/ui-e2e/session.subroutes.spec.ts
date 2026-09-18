@@ -170,6 +170,7 @@ test.describe('ui e2e: session subroutes', () => {
     await page.getByTestId('session-header-avatar').click();
     await expect(page).toHaveURL(new RegExp(`/session/${sessionId}/info$`));
     await expect(page.getByTestId('session-info-screen')).toHaveCount(1, { timeout: 60_000 });
+    await expect(page.getByTestId('session-info-execution-machine')).toBeVisible({ timeout: 60_000 });
 
     await reloadCreatedSessionFromNewSessionComposer({ page, session });
 

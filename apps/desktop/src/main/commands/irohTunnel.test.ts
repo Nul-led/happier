@@ -17,6 +17,7 @@ function createNativeFake() {
         shutdown: [] as string[],
         status: [] as string[],
         machineStart: [] as unknown[],
+        machineRawStart: [] as unknown[],
         machineStop: [] as string[],
     };
     const native = {
@@ -56,6 +57,15 @@ function createNativeFake() {
         startMachineHttpTunnel: async (request: unknown) => {
             calls.machineStart.push(request);
             return { machineTunnelId: 'machine-lease-1', localPort: 46012, localCapability: 'a'.repeat(64) };
+        },
+        startMachineTunnel: async (request: { handshakeJson: string }) => {
+            calls.machineRawStart.push(request);
+            const flow = (JSON.parse(request.handshakeJson) as { flow?: string }).flow;
+            return {
+                machineTunnelId: `machine-${flow ?? 'unknown'}-lease`,
+                localPort: flow === 'finite_transfer' ? 46013 : 46014,
+                ...(flow === 'workspace_sync' ? { localCapability: 'b'.repeat(64) } : {}),
+            };
         },
         stopMachineTunnel: async (leaseId: string) => {
             calls.machineStop.push(leaseId);
@@ -309,6 +319,48 @@ test('renderer request facts are validated fail closed before the native call', 
         (error: Error) => error.message.startsWith('iroh_native_error:invalid-request:'),
     );
     assert.deepEqual(calls.start, []);
+});
+
+test('finite machine tunnel exposes one opaque loopback origin without a local capability', async () => {
+    const { native, calls } = createNativeFake();
+    const service = createService(native);
+    const handshakeJson = JSON.stringify({ v: 1, flow: 'finite_transfer' });
+
+    const lease = await service.startMachineTunnel({
+        endpointId: ENDPOINT_ID,
+        handshakeJson,
+        policy: 'automatic',
+        relayUrls: ['https://relay.example.test'],
+    });
+
+    assert.deepEqual(calls.machineRawStart, [{
+        endpointHandle: CANONICAL_KEY_PATH,
+        endpointId: ENDPOINT_ID,
+        relayUrls: ['https://relay.example.test'],
+        handshakeJson,
+        capProfile: 'machineBulk',
+    }]);
+    assert.deepEqual(lease, {
+        leaseId: 'machine-finite_transfer-lease',
+        localPort: 46013,
+    });
+    assert.equal('localCapability' in lease, false);
+});
+
+test('protected raw workspace and provider HTTP tunnels retain their local capabilities', async () => {
+    const { native } = createNativeFake();
+    const service = createService(native);
+    const workspace = await service.startMachineTunnel({
+        endpointId: ENDPOINT_ID,
+        handshakeJson: JSON.stringify({ v: 1, flow: 'workspace_sync' }),
+    });
+    const provider = await service.startMachineHttpTunnel({
+        endpointId: ENDPOINT_ID,
+        handshakeJson: JSON.stringify({ v: 1, purpose: 'provider_broker' }),
+    });
+
+    assert.equal(workspace.localCapability, 'b'.repeat(64));
+    assert.equal(provider.localCapability, 'a'.repeat(64));
 });
 
 test('the desktop iroh seam stays lifecycle-only: no byte or payload APIs at invoke seams', () => {

@@ -1,15 +1,18 @@
 import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 
-import { computeWorkspaceSyncPolicyDigest } from '@happier-dev/protocol';
+import {
+  computeWorkspaceSyncPolicyDigest,
+  SessionHandoffActionResultV1Schema,
+  type SessionHandoffActionResultV1,
+} from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 import { createTestAuth } from '../../src/testkit/auth';
 import { seedCliAuthForTestAccount } from '../../src/testkit/cliAuth';
 import { startTestDaemon, type StartedDaemon } from '../../src/testkit/daemon/daemon';
 import { daemonControlPostJson } from '../../src/testkit/daemon/controlServerClient';
-import { normalizeSpawnSessionRequestBody } from '../../src/testkit/daemon/normalizeSpawnSessionRequestBody';
 import { fakeClaudeFixturePath } from '../../src/testkit/fakeClaude';
 import { fetchJson } from '../../src/testkit/http';
 import { startServerLight, type StartedServer } from '../../src/testkit/process/serverLight';
@@ -17,8 +20,6 @@ import { createRunDirs } from '../../src/testkit/runDir';
 import { fakeClaudeLogContainsUserText, postPlainUiTextMessage } from '../../src/testkit/sessionHandoffUiMessages';
 import {
   fetchSessionMetadataV2,
-  patchSessionHandoffMetadataV1,
-  resolveSessionHandoffBackTargetRootPath,
 } from '../../src/testkit/sessionHandoffMetadata';
 import { createUserScopedSocketCollector, type SocketCollector } from '../../src/testkit/socketClient';
 import { createDataKeyRpcClient, unwrapDataKeyRpcResult } from '../../src/testkit/syntheticAgent/rpcClient';
@@ -38,89 +39,31 @@ const workspaceContentPolicy = {
   ...workspaceContentPolicyBase,
   policyDigest: computeWorkspaceSyncPolicyDigest(workspaceContentPolicyBase),
 };
-const copyOnceWorkspaceAction = { kind: 'copy_once', contentPolicy: workspaceContentPolicy } as const;
-const keepSyncedWorkspaceAction = {
+const twoWayWorkspaceAction = {
   kind: 'create_relationship',
-  mode: 'keep_synced',
+  mode: 'keep_both_in_sync',
   contentPolicy: workspaceContentPolicy,
   flushBeforeCommit: true,
 } as const;
 
-type HandoffStartResult = Readonly<{
-  handoffId: string;
-  endpointCandidates: readonly Readonly<{ kind: string; url: string; expiresAt: number }>[];
-  targetPath: string;
-  handoffMetadataV2?: unknown;
-  agentBundle?: unknown;
-}>;
-
-type HandoffStartResponse = HandoffStartResult | Readonly<{ ok: false; error?: unknown; errorCode?: unknown }>;
-
-type HandoffPrepareResult = Readonly<{
-  handoffId: string;
-  status: Readonly<{
-    handoffId: string;
-    status: string;
-    phase: string;
-    jobId?: string;
-    transportStrategy?: 'direct_peer' | 'server_routed_stream';
-    progress?: Readonly<{
-      checkpoint: string;
-      planned: Readonly<{
-        totalFiles?: number;
-        totalBytes?: number;
-        added?: number;
-        changed?: number;
-        removed?: number;
-      }>;
-      transferred: Readonly<{
-        files?: number;
-        bytes?: number;
-        blobs?: number;
-      }>;
-      current?: Readonly<{
-        relativePath?: string;
-        digest?: string;
-        phaseDetail?: string;
-      }>;
-    }>;
-    workspacePreflightSummary?: Readonly<{
-      addedPathsCount: number;
-      changedPathsCount: number;
-      removedPathsCount: number;
-      totalBytes?: number;
-    }>;
-  }>;
-  resume?: Readonly<{
-    directory: string;
-    agent: 'claude' | 'codex' | 'opencode';
-    resume: string;
-    transcriptStorage: 'persisted' | 'direct';
-    approvedNewDirectoryCreation: true;
-    environmentVariables?: Record<string, string>;
-  }>;
-}>;
-
-type HandoffStatusResult = Readonly<{
-  handoffId: string;
-  status: Readonly<{
-    handoffId: string;
-    status: string;
-    phase: string;
-    jobId?: string;
-    transportStrategy?: 'direct_peer' | 'server_routed_stream';
-    lastErrorMessage?: string;
-  }>;
-}>;
-
-function requirePreparedResume(
-  result: HandoffPrepareResult,
-  context: string,
-): NonNullable<HandoffPrepareResult['resume']> {
-  if (!result.resume) {
-    throw new Error(`Missing resume payload for ${context}`);
+async function executeSessionHandoffAction(params: Readonly<{
+  machineRpc: ReturnType<typeof createDataKeyRpcClient>;
+  sourceMachineId: string;
+  input: Record<string, unknown> & Readonly<{ accountServerId: string }>;
+  context: string;
+}>): Promise<SessionHandoffActionResultV1> {
+  const raw = unwrapDataKeyRpcResult(
+    await params.machineRpc.call(
+      `${params.sourceMachineId}:${RPC_METHODS.DAEMON_SESSION_HANDOFF_START_V3}`,
+      params.input,
+    ),
+    params.context,
+  );
+  const parsed = SessionHandoffActionResultV1Schema.safeParse(raw);
+  if (!parsed.success) {
+    throw new Error(`Expected current terminal session handoff Action result for ${params.context}`);
   }
-  return result.resume;
+  return parsed.data;
 }
 
 type SessionSnapshotRow = Readonly<{
@@ -198,129 +141,15 @@ async function fetchSessionSnapshot(params: Readonly<{
   return response.data;
 }
 
-async function waitForReadyHandoffPrepareResult(params: Readonly<{
-  machineRpc: ReturnType<typeof createDataKeyRpcClient>;
-  machineId: string;
-  handoffId: string;
-  initialResult: HandoffPrepareResult;
-  context: string;
-}>): Promise<HandoffPrepareResult> {
-  const readInnerRpcErrorCode = (value: unknown): string | null => {
-    if (!value || typeof value !== 'object') {
-      return null;
-    }
-    const candidate = value as { ok?: unknown; errorCode?: unknown; error?: unknown };
-    if (candidate.ok !== false) {
-      return null;
-    }
-    if (typeof candidate.errorCode === 'string' && candidate.errorCode.trim().length > 0) {
-      return candidate.errorCode;
-    }
-    if (typeof candidate.error === 'string' && candidate.error.trim().length > 0) {
-      return candidate.error;
-    }
-    return 'rpc_failed';
-  };
-
-  if (params.initialResult.resume && params.initialResult.status.status === 'ready_for_cutover') {
-    return params.initialResult;
-  }
-
-  let readyResult: HandoffPrepareResult | null = null;
-  await waitFor(async () => {
-    const polledRaw = unwrapDataKeyRpcResult(
-      await params.machineRpc.call(`${params.machineId}:${RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET_RESULT_GET}`, {
-        handoffId: params.handoffId,
-      }),
-      `${params.context} result get`,
-    );
-    const polledErrorCode = readInnerRpcErrorCode(polledRaw);
-    const status = unwrapDataKeyRpcResult(
-      await params.machineRpc.call(`${params.machineId}:${RPC_METHODS.DAEMON_SESSION_HANDOFF_STATUS_GET}`, {
-        handoffId: params.handoffId,
-      }),
-      `${params.context} status get`,
-    ) as HandoffStatusResult;
-    if (polledErrorCode && polledErrorCode !== 'not_found' && polledErrorCode !== 'awaiting_recovery') {
-      const lastError = typeof status.status.lastErrorMessage === 'string' && status.status.lastErrorMessage.trim().length > 0
-        ? `; lastErrorMessage: ${status.status.lastErrorMessage}`
-        : '';
-      throw new Error(`${params.context} result get failed: ${polledErrorCode}${lastError}`);
-    }
-    if (status.status.status === 'failed' || status.status.status === 'aborted') {
-      const lastError = typeof status.status.lastErrorMessage === 'string' && status.status.lastErrorMessage.trim().length > 0
-        ? `; lastErrorMessage: ${status.status.lastErrorMessage}`
-        : '';
-      throw new Error(`${params.context} entered terminal status ${status.status.status}${lastError}`);
-    }
-
-    const polled = polledErrorCode ? null : polledRaw as HandoffPrepareResult;
-    if (polled && polled.resume && polled.status.status === 'ready_for_cutover') {
-      readyResult = polled;
-      return true;
-    }
-    return false;
-  }, {
-    timeoutMs: 30_000,
-    intervalMs: 100,
-    context: `${params.context} ready for cutover`,
-  });
-
-  if (!readyResult) {
-    throw new Error(`Expected ready handoff prepare result for ${params.handoffId}`);
-  }
-
-  return readyResult;
-}
-
-function sessionChildEnv(params: Readonly<{
-  homeDir: string;
-  serverBaseUrl: string;
-  fakeClaudePath: string;
-  fakeClaudeLogPath: string;
-  extraEnvironmentVariables?: Record<string, string> | undefined;
-}>): Record<string, string> {
-  return {
-    HAPPIER_HOME_DIR: params.homeDir,
-    HAPPIER_SERVER_URL: params.serverBaseUrl,
-    HAPPIER_WEBAPP_URL: params.serverBaseUrl,
-    HAPPIER_VARIANT: 'dev',
-    HAPPIER_DISABLE_CAFFEINATE: '1',
-    HAPPIER_CLAUDE_PATH: params.fakeClaudePath,
-    HAPPIER_E2E_FAKE_CLAUDE_LOG: params.fakeClaudeLogPath,
-    ...(params.extraEnvironmentVariables ?? {}),
-  };
-}
-
-function requireObject(value: unknown, context: string): Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error(`Expected object for ${context}`);
-  }
-  return value as Record<string, unknown>;
-}
-
-function requireHandoffMetadataV2(result: HandoffStartResult, context: string): Record<string, unknown> {
-  return requireObject(result.handoffMetadataV2, `handoffMetadataV2 for ${context}`);
-}
-
 function requireAbsoluteWorkspaceRoot(value: unknown, context: string): string {
   if (typeof value !== 'string') {
     throw new Error(`Expected absolute workspace root string for ${context}`);
   }
   const trimmed = value.trim();
-  if (!trimmed.startsWith('/')) {
+  if (!isAbsolute(trimmed)) {
     throw new Error(`Expected absolute workspace root for ${context}`);
   }
   return trimmed;
-}
-
-function requireHandoffStartOk(result: HandoffStartResponse, context: string): HandoffStartResult {
-  if ((result as any)?.ok === false) {
-    const errorCode = typeof (result as any).errorCode === 'string' ? (result as any).errorCode : '';
-    const error = typeof (result as any).error === 'string' ? (result as any).error : '';
-    throw new Error(`${context} failed: ${errorCode || error || 'unknown-error'}`);
-  }
-  return result as HandoffStartResult;
 }
 
 describe('core e2e: session handoff via direct peer', () => {
@@ -354,16 +183,17 @@ describe('core e2e: session handoff via direct peer', () => {
     const sourceHomeDir = resolve(join(testDir, 'source-home'));
     const targetHomeDir = resolve(join(testDir, 'target-home'));
     const sourceWorkspaceDir = resolve(join(testDir, 'workspace-source'));
+    const targetWorkspaceDir = resolve(join(testDir, 'workspace-target'));
     const sourceClaudeConfigDir = resolve(join(testDir, 'source-claude-config'));
     const sourceClaudeProjectDir = resolve(join(sourceClaudeConfigDir, 'projects', 'proj-handoff-direct'));
     const sourceClaudeSessionFile = resolve(join(sourceClaudeProjectDir, 'sess-handoff-direct.jsonl'));
     const targetClaudeConfigDir = resolve(join(targetHomeDir, '.claude'));
-    const sourceFakeClaudeLog = resolve(join(testDir, 'fake-claude-source.jsonl'));
     const targetFakeClaudeLog = resolve(join(testDir, 'fake-claude-target.jsonl'));
     const fakeClaudePath = fakeClaudeFixturePath();
     await mkdir(sourceHomeDir, { recursive: true });
     await mkdir(targetHomeDir, { recursive: true });
     await mkdir(sourceWorkspaceDir, { recursive: true });
+    await mkdir(targetWorkspaceDir, { recursive: true });
     await mkdir(sourceClaudeProjectDir, { recursive: true });
     await mkdir(targetClaudeConfigDir, { recursive: true });
     await mkdir(sourceDaemonDir, { recursive: true });
@@ -494,108 +324,52 @@ describe('core e2e: session handoff via direct peer', () => {
       throw new Error('Missing linked session id from direct session source');
     }
 
-    const started = requireHandoffStartOk(unwrapDataKeyRpcResult(
-      await sourceMachineRpc.call(`${sourceSeed.machineId}:${RPC_METHODS.DAEMON_SESSION_HANDOFF_START}`, {
+    const started = await executeSessionHandoffAction({
+      machineRpc: sourceMachineRpc,
+      sourceMachineId: sourceSeed.machineId,
+      input: {
         sessionId,
         sourceMachineId: sourceSeed.machineId,
         targetMachineId: targetSeed.machineId,
         sessionStorageMode: 'direct',
+        targetPath: targetWorkspaceDir,
         preferredTransportStrategies: ['direct_peer'],
         negotiatedTransportStrategy: 'direct_peer',
-        workspaceAction: copyOnceWorkspaceAction,
-      }),
-      'source handoff start',
-    ) as HandoffStartResponse, 'source handoff start');
-
-    expect(started).toEqual(expect.objectContaining({
-      handoffId: expect.any(String),
-      targetPath: expect.any(String),
-      endpointCandidates: expect.any(Array),
-    }));
-    expect(started.agentBundle).toBeUndefined();
-    const handoffMetadataV2 = requireHandoffMetadataV2(started, 'source handoff start');
-    expect(requireObject(handoffMetadataV2.agentBundleTransferPublication, 'agentBundleTransferPublication')).toEqual(expect.objectContaining({
-      transferId: expect.any(String),
-      sizeBytes: expect.any(Number),
-      manifestHash: expect.any(String),
-    }));
-    expect(requireObject(handoffMetadataV2.workspaceReplicationManifestTransferPublication, 'workspaceReplicationManifestTransferPublication')).toEqual(expect.objectContaining({
-      transferId: expect.any(String),
-    }));
-    await waitFor(async () => (await listDaemonSessions(sourceDaemon!)).includes(sessionId) === false, {
-      timeoutMs: 90_000,
-      intervalMs: 100,
-      context: 'source daemon session removed immediately after direct-peer handoff start cutover',
+        workspaceAction: twoWayWorkspaceAction,
+        accountServerId: sourceSeed.serverId,
+      },
+      context: 'source direct-peer session handoff Action',
     });
+    expect(started.status).toEqual(expect.objectContaining({
+      status: 'completed',
+      transportStrategy: 'direct_peer',
+    }));
+    expect(started.workspace).toEqual(expect.objectContaining({
+      kind: 'relationship',
+      relationshipId: expect.any(String),
+      created: true,
+    }));
+    if (started.workspace.kind !== 'relationship') {
+      throw new Error('Expected direct-peer handoff to create a workspace relationship');
+    }
 
-    const prepared = await waitForReadyHandoffPrepareResult({
-      machineRpc: targetMachineRpc,
-      machineId: targetSeed.machineId,
-      handoffId: started.handoffId,
-      initialResult: unwrapDataKeyRpcResult(
-        await targetMachineRpc.call(`${targetSeed.machineId}:${RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET}`, {
-          handoffId: started.handoffId,
-          sourceMachineId: sourceSeed.machineId,
-          targetMachineId: targetSeed.machineId,
-          negotiatedTransportStrategy: 'direct_peer',
-          allowServerRoutedFallback: false,
-          sourceSessionStorageMode: 'direct',
-          targetPath: started.targetPath,
-          endpointCandidates: started.endpointCandidates,
-          handoffMetadataV2,
-          workspaceAction: copyOnceWorkspaceAction,
-        }),
-        'target handoff prepare',
-      ) as HandoffPrepareResult,
-      context: 'target handoff prepare',
+    const targetMetadata = await fetchSessionMetadataV2({
+      baseUrl: server.baseUrl,
+      token: auth.token,
+      sessionId,
+      machineKeys: [auth.accountMachineKey],
     });
-    const preparedResume = requirePreparedResume(prepared, 'target handoff prepare');
-    expect(prepared.status.transportStrategy).toBe('direct_peer');
-    expect(preparedResume.agent).toBe('claude');
-    expect(preparedResume.transcriptStorage).toBe('direct');
-    const targetProjectId = resolveClaudeProjectId(preparedResume.directory);
+    const targetWorkspaceRootPath = requireAbsoluteWorkspaceRoot(targetMetadata.path, 'target Session metadata path');
+    expect(targetWorkspaceRootPath).toBe(targetWorkspaceDir);
+    const targetProjectId = resolveClaudeProjectId(targetWorkspaceRootPath);
     const targetImportedTranscriptPath = resolve(
       join(targetClaudeConfigDir, 'projects', targetProjectId, 'sess-handoff-direct.jsonl'),
     );
     await expect(readFile(targetImportedTranscriptPath, 'utf8')).resolves.toContain('source direct reply');
-    await expect(readFile(resolve(join(preparedResume.directory, 'README.md')), 'utf8')).resolves.toBe('session handoff test\n');
-    await expect(readFile(resolve(join(preparedResume.directory, 'deleted-after-first-handoff.txt')), 'utf8')).resolves.toBe(
+    await expect(readFile(resolve(join(targetWorkspaceRootPath, 'README.md')), 'utf8')).resolves.toBe('session handoff test\n');
+    await expect(readFile(resolve(join(targetWorkspaceRootPath, 'deleted-after-first-handoff.txt')), 'utf8')).resolves.toBe(
       'delete me after first handoff\n',
     );
-
-    const targetSpawnResult = await daemonControlPostJson<{ success?: boolean; sessionId?: string }>({
-      port: targetDaemon.state.httpPort,
-      path: '/spawn-session',
-      controlToken: targetDaemon.state.controlToken,
-      body: normalizeSpawnSessionRequestBody({
-        directory: preparedResume.directory,
-        agent: preparedResume.agent,
-        existingSessionId: sessionId,
-        resume: preparedResume.resume,
-        transcriptStorage: preparedResume.transcriptStorage,
-        environmentVariables: sessionChildEnv({
-          homeDir: targetHomeDir,
-          serverBaseUrl: server.baseUrl,
-          fakeClaudePath,
-          fakeClaudeLogPath: targetFakeClaudeLog,
-          extraEnvironmentVariables: preparedResume.environmentVariables,
-        }),
-      }),
-      timeoutMs: 90_000,
-    });
-    expect(targetSpawnResult.status).toBe(200);
-    expect(targetSpawnResult.data.success).toBe(true);
-    expect(targetSpawnResult.data.sessionId).toBe(sessionId);
-
-    const committed = unwrapDataKeyRpcResult(
-      await sourceMachineRpc.call(`${sourceSeed.machineId}:${RPC_METHODS.DAEMON_SESSION_HANDOFF_COMMIT}`, {
-        handoffId: started.handoffId,
-      }),
-      'source handoff commit',
-    ) as Readonly<{ status: Readonly<{ status: string; phase: string }> }>;
-
-    expect(committed.status.status).toBe('completed');
-    expect(committed.status.phase).toBe('finalizing');
     await waitFor(async () => (await listDaemonSessions(sourceDaemon!)).includes(sessionId) === false, {
       timeoutMs: 90_000,
       intervalMs: 100,
@@ -618,34 +392,9 @@ describe('core e2e: session handoff via direct peer', () => {
       intervalMs: 250,
       context: 'server session active after handoff',
     });
-    const originalSourceWorkspaceRootPath = requireAbsoluteWorkspaceRoot(
-      handoffMetadataV2.workspaceReplicationSourceRootPath,
-      'source handoff start workspaceReplicationSourceRootPath',
-    );
-    await patchSessionHandoffMetadataV1({
-      baseUrl: server.baseUrl,
-      token: auth.token,
-      sessionId,
-      machineKeys: [auth.accountMachineKey],
-      providerId: 'claude',
-      sourceMachineId: sourceSeed.machineId,
-      targetMachineId: targetSeed.machineId,
-      sourceWorkspaceRootPath: originalSourceWorkspaceRootPath,
-      targetWorkspaceRootPath: preparedResume.directory,
-      sessionStorageBefore: 'direct',
-      sessionStorageAfter: 'direct',
-      transportStrategy: 'direct_peer',
-    });
-
-    const patchedMetadata = await fetchSessionMetadataV2({
-      baseUrl: server.baseUrl,
-      token: auth.token,
-      sessionId,
-      machineKeys: [auth.accountMachineKey],
-    });
-    expect(patchedMetadata).toEqual(expect.objectContaining({
+    expect(targetMetadata).toEqual(expect.objectContaining({
       machineId: targetSeed.machineId,
-      path: preparedResume.directory,
+      path: targetWorkspaceRootPath,
       flavor: 'claude',
       claudeSessionId: expect.any(String),
       directSessionV1: expect.objectContaining({
@@ -653,147 +402,52 @@ describe('core e2e: session handoff via direct peer', () => {
         machineId: targetSeed.machineId,
         remoteSessionId: expect.any(String),
       }),
-      handoffV1: expect.objectContaining({
-        transportStrategy: 'direct_peer',
-      }),
     }));
-    expect(patchedMetadata.claudeTranscriptPath).toBeUndefined();
-    expect(patchedMetadata.externalHistoryImportV1).toBeUndefined();
+    expect(targetMetadata.claudeTranscriptPath).toBeUndefined();
+    expect(targetMetadata.externalHistoryImportV1).toBeUndefined();
     expect(
-      (patchedMetadata.directSessionV1 as Readonly<{ remoteSessionId?: unknown }> | undefined)?.remoteSessionId,
-    ).toBe(patchedMetadata.claudeSessionId);
+      (targetMetadata.directSessionV1 as Readonly<{ remoteSessionId?: unknown }> | undefined)?.remoteSessionId,
+    ).toBe(targetMetadata.claudeSessionId);
 
-    // Persist the reverse-direction baseline before creating the durable handoff-back relationship.
-    unwrapDataKeyRpcResult(
-      await sourceMachineRpc.call(`${sourceSeed.machineId}:${RPC_METHODS.DAEMON_SESSION_HANDOFF_COMMIT}`, {
-        handoffId: started.handoffId,
-        mode: 'source_cleanup',
-        workspaceReplicationReverseSourceRootPath: preparedResume.directory,
-        workspaceReplicationReverseTargetRootPath: originalSourceWorkspaceRootPath,
-      }),
-      'source handoff source cleanup',
-    );
-    await writeFile(resolve(join(preparedResume.directory, 'README.md')), 'session handoff test after second pass\n', 'utf8');
-    await writeFile(resolve(join(preparedResume.directory, 'added-after-first-handoff.txt')), 'added after first handoff\n', 'utf8');
-    await rm(resolve(join(preparedResume.directory, 'deleted-after-first-handoff.txt')));
+    await writeFile(resolve(join(targetWorkspaceRootPath, 'README.md')), 'session handoff test after second pass\n', 'utf8');
+    await writeFile(resolve(join(targetWorkspaceRootPath, 'added-after-first-handoff.txt')), 'added after first handoff\n', 'utf8');
+    await rm(resolve(join(targetWorkspaceRootPath, 'deleted-after-first-handoff.txt')));
     await waitForDaemonSessionWebhookMarker({
       happyHomeDir: targetHomeDir,
       sessionId,
       machineId: targetSeed.machineId,
     });
 
-    const secondStarted = requireHandoffStartOk(unwrapDataKeyRpcResult(
-      await targetMachineRpc.call(`${targetSeed.machineId}:${RPC_METHODS.DAEMON_SESSION_HANDOFF_START}`, {
+    const secondStarted = await executeSessionHandoffAction({
+      machineRpc: targetMachineRpc,
+      sourceMachineId: targetSeed.machineId,
+      input: {
         sessionId,
         sourceMachineId: targetSeed.machineId,
         targetMachineId: sourceSeed.machineId,
         sessionStorageMode: 'direct',
+        targetPath: sourceWorkspaceDir,
         preferredTransportStrategies: ['direct_peer'],
         negotiatedTransportStrategy: 'direct_peer',
-        workspaceAction: keepSyncedWorkspaceAction,
-      }),
-      'target handoff-back start',
-    ) as HandoffStartResponse, 'target handoff-back start');
+        workspaceAction: {
+          kind: 'relationship',
+          relationshipId: started.workspace.relationshipId,
+          flushBeforeCommit: true,
+        },
+        accountServerId: targetSeed.serverId,
+      },
+      context: 'target direct-peer session handoff-back Action',
+    });
     expect(secondStarted.handoffId).not.toBe(started.handoffId);
-    const secondHandoffMetadataV2 = requireHandoffMetadataV2(secondStarted, 'target handoff-back start');
-    expect(requireObject(secondHandoffMetadataV2.agentBundleTransferPublication, 'agentBundleTransferPublication')).toEqual(expect.objectContaining({
-      transferId: expect.any(String),
-      sizeBytes: expect.any(Number),
-      manifestHash: expect.any(String),
+    expect(secondStarted.status).toEqual(expect.objectContaining({
+      status: 'completed',
+      transportStrategy: 'direct_peer',
     }));
-    const secondHandoffBackTargetRootPath = requireAbsoluteWorkspaceRoot(
-      resolveSessionHandoffBackTargetRootPath({
-        metadata: patchedMetadata,
-        requestedTargetMachineId: sourceSeed.machineId,
-      }),
-      'target handoff-back start resolved workspaceReplicationHandoffBackTargetRootPath',
-    );
-    expect(secondHandoffBackTargetRootPath).toBe(originalSourceWorkspaceRootPath);
-    expect(requireObject(secondHandoffMetadataV2.workspaceReplicationManifestTransferPublication, 'workspaceReplicationManifestTransferPublication')).toEqual(expect.objectContaining({
-      transferId: expect.any(String),
+    expect(secondStarted.workspace).toEqual(expect.objectContaining({
+      kind: 'relationship',
+      relationshipId: started.workspace.relationshipId,
+      created: false,
     }));
-    const secondPrepared = await waitForReadyHandoffPrepareResult({
-      machineRpc: sourceMachineRpc,
-      machineId: sourceSeed.machineId,
-      handoffId: secondStarted.handoffId,
-      initialResult: unwrapDataKeyRpcResult(
-        await sourceMachineRpc.call(`${sourceSeed.machineId}:${RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET}`, {
-          handoffId: secondStarted.handoffId,
-          sourceMachineId: targetSeed.machineId,
-          targetMachineId: sourceSeed.machineId,
-          negotiatedTransportStrategy: 'direct_peer',
-          // The handoff-back round still prefers direct peer, but it must be able to recover
-          // through the server-routed channel when the peer is not immediately reachable.
-          allowServerRoutedFallback: true,
-          sourceSessionStorageMode: 'direct',
-          targetPath: secondHandoffBackTargetRootPath,
-          endpointCandidates: secondStarted.endpointCandidates,
-          handoffMetadataV2: secondHandoffMetadataV2,
-          workspaceAction: keepSyncedWorkspaceAction,
-        }),
-        'source handoff-back prepare',
-      ) as HandoffPrepareResult,
-      context: 'source handoff-back prepare',
-    });
-    const secondPreparedResume = requirePreparedResume(secondPrepared, 'source handoff-back prepare');
-    expect(secondPrepared.status.workspacePreflightSummary).toEqual(expect.objectContaining({
-      addedPathsCount: expect.any(Number),
-      changedPathsCount: expect.any(Number),
-      removedPathsCount: expect.any(Number),
-      totalBytes: expect.any(Number),
-    }));
-    expect(secondPrepared.status.progress).toEqual(expect.objectContaining({
-      checkpoint: 'import_session',
-      planned: expect.objectContaining({
-        totalFiles: expect.any(Number),
-        added: expect.any(Number),
-        changed: expect.any(Number),
-        removed: expect.any(Number),
-      }),
-      transferred: expect.objectContaining({
-        files: expect.any(Number),
-        bytes: expect.any(Number),
-      }),
-      current: expect.objectContaining({
-        phaseDetail: 'ready_for_cutover',
-      }),
-    }));
-
-    const sourceRespawnResult = await daemonControlPostJson<{ success?: boolean; sessionId?: string }>({
-      port: sourceDaemon.state.httpPort,
-      path: '/spawn-session',
-      controlToken: sourceDaemon.state.controlToken,
-      body: normalizeSpawnSessionRequestBody({
-        directory: secondPreparedResume.directory,
-        agent: secondPreparedResume.agent,
-        existingSessionId: sessionId,
-        resume: secondPreparedResume.resume,
-        transcriptStorage: secondPreparedResume.transcriptStorage,
-        environmentVariables: sessionChildEnv({
-          homeDir: sourceHomeDir,
-          serverBaseUrl: server.baseUrl,
-          fakeClaudePath,
-          fakeClaudeLogPath: sourceFakeClaudeLog,
-          extraEnvironmentVariables: secondPreparedResume.environmentVariables,
-        }),
-      }),
-      timeoutMs: 30_000,
-    });
-    expect(sourceRespawnResult.status).toBe(200);
-    expect(sourceRespawnResult.data.success).toBe(true);
-    expect(sourceRespawnResult.data.sessionId).toBe(sessionId);
-    await waitForDaemonSessionWebhookMarker({
-      happyHomeDir: sourceHomeDir,
-      sessionId,
-      machineId: sourceSeed.machineId,
-    });
-    const secondCommitted = unwrapDataKeyRpcResult(
-      await targetMachineRpc.call(`${targetSeed.machineId}:${RPC_METHODS.DAEMON_SESSION_HANDOFF_COMMIT}`, {
-        handoffId: secondStarted.handoffId,
-      }),
-      'target handoff-back commit',
-    ) as Readonly<{ status: Readonly<{ status: string; phase: string }> }>;
-    expect(secondCommitted.status.status).toBe('completed');
 
     await waitFor(async () => (await listDaemonSessions(targetDaemon!)).includes(sessionId) === false, {
       timeoutMs: 30_000,
@@ -805,13 +459,13 @@ describe('core e2e: session handoff via direct peer', () => {
       intervalMs: 100,
       context: 'source daemon session active after handoff-back resume',
     });
-    await expect(readFile(resolve(join(secondPreparedResume.directory, 'README.md')), 'utf8')).resolves.toBe(
+    await expect(readFile(resolve(join(sourceWorkspaceDir, 'README.md')), 'utf8')).resolves.toBe(
       'session handoff test after second pass\n',
     );
-    await expect(readFile(resolve(join(secondPreparedResume.directory, 'added-after-first-handoff.txt')), 'utf8')).resolves.toBe(
+    await expect(readFile(resolve(join(sourceWorkspaceDir, 'added-after-first-handoff.txt')), 'utf8')).resolves.toBe(
       'added after first handoff\n',
     );
-    await expect(readFile(resolve(join(secondPreparedResume.directory, 'deleted-after-first-handoff.txt')), 'utf8')).rejects.toThrow();
+    await expect(readFile(resolve(join(sourceWorkspaceDir, 'deleted-after-first-handoff.txt')), 'utf8')).rejects.toThrow();
   }, 420_000);
 
   it('does not let a late plaintext UI message execute on the source once direct-peer cutover has started', async () => {
@@ -932,7 +586,6 @@ describe('core e2e: session handoff via direct peer', () => {
     });
 
     const sourceMachineRpc = createDataKeyRpcClient(ui, auth.accountMachineKey);
-    const targetMachineRpc = createDataKeyRpcClient(ui, auth.accountMachineKey);
 
     const machineIds = await waitForMachineIds({
       baseUrl: server.baseUrl,
@@ -985,23 +638,20 @@ describe('core e2e: session handoff via direct peer', () => {
       context: 'source fake Claude receives the pre-cutover prompt',
     });
 
-    const started = unwrapDataKeyRpcResult(
-      await sourceMachineRpc.call(`${sourceSeed.machineId}:${RPC_METHODS.DAEMON_SESSION_HANDOFF_START}`, {
+    const handoffResultPromise = executeSessionHandoffAction({
+      machineRpc: sourceMachineRpc,
+      sourceMachineId: sourceSeed.machineId,
+      input: {
         sessionId,
         sourceMachineId: sourceSeed.machineId,
         targetMachineId: targetSeed.machineId,
         sessionStorageMode: 'direct',
         preferredTransportStrategies: ['direct_peer'],
         negotiatedTransportStrategy: 'direct_peer',
-      }),
-      'source handoff start for late cutover proof',
-    ) as HandoffStartResult;
-    const lateCutoverMetadataV2 = requireHandoffMetadataV2(started, 'source handoff start for late cutover proof');
-    expect(requireObject(lateCutoverMetadataV2.agentBundleTransferPublication, 'agentBundleTransferPublication')).toEqual(expect.objectContaining({
-      transferId: expect.any(String),
-      sizeBytes: expect.any(Number),
-      manifestHash: expect.any(String),
-    }));
+        accountServerId: sourceSeed.serverId,
+      },
+      context: 'source direct-peer handoff Action for late cutover proof',
+    });
 
     await waitFor(async () => (await listDaemonSessions(sourceDaemon!)).includes(sessionId) === false, {
       timeoutMs: 30_000,
@@ -1027,59 +677,8 @@ describe('core e2e: session handoff via direct peer', () => {
       context: 'late prompt never reaches the stopped source session after cutover start',
     });
 
-    const prepared = await waitForReadyHandoffPrepareResult({
-      machineRpc: targetMachineRpc,
-      machineId: targetSeed.machineId,
-      handoffId: started.handoffId,
-      initialResult: unwrapDataKeyRpcResult(
-        await targetMachineRpc.call(`${targetSeed.machineId}:${RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET}`, {
-          handoffId: started.handoffId,
-          sourceMachineId: sourceSeed.machineId,
-          targetMachineId: targetSeed.machineId,
-          negotiatedTransportStrategy: 'direct_peer',
-          allowServerRoutedFallback: false,
-          sourceSessionStorageMode: 'direct',
-          targetPath: started.targetPath,
-          endpointCandidates: started.endpointCandidates,
-          handoffMetadataV2: lateCutoverMetadataV2,
-        }),
-        'target handoff prepare for late cutover proof',
-      ) as HandoffPrepareResult,
-      context: 'target handoff prepare for late cutover proof',
-    });
-    const lateCutoverPreparedResume = requirePreparedResume(prepared, 'target handoff prepare for late cutover proof');
-
-    const targetSpawnResult = await daemonControlPostJson<{ success?: boolean; sessionId?: string }>({
-      port: targetDaemon.state.httpPort,
-      path: '/spawn-session',
-      controlToken: targetDaemon.state.controlToken,
-      body: normalizeSpawnSessionRequestBody({
-        directory: lateCutoverPreparedResume.directory,
-        agent: lateCutoverPreparedResume.agent,
-        existingSessionId: sessionId,
-        resume: lateCutoverPreparedResume.resume,
-        transcriptStorage: lateCutoverPreparedResume.transcriptStorage,
-        environmentVariables: sessionChildEnv({
-          homeDir: targetHomeDir,
-          serverBaseUrl: server.baseUrl,
-          fakeClaudePath,
-          fakeClaudeLogPath: targetFakeClaudeLog,
-          extraEnvironmentVariables: lateCutoverPreparedResume.environmentVariables,
-        }),
-      }),
-      timeoutMs: 30_000,
-    });
-    expect(targetSpawnResult.status).toBe(200);
-    expect(targetSpawnResult.data.success).toBe(true);
-    expect(targetSpawnResult.data.sessionId).toBe(sessionId);
-
-    const committed = unwrapDataKeyRpcResult(
-      await sourceMachineRpc.call(`${sourceSeed.machineId}:${RPC_METHODS.DAEMON_SESSION_HANDOFF_COMMIT}`, {
-        handoffId: started.handoffId,
-      }),
-      'source handoff commit for late cutover proof',
-    ) as Readonly<{ status: Readonly<{ status: string; phase: string }> }>;
-    expect(committed.status.status).toBe('completed');
+    const completed = await handoffResultPromise;
+    expect(completed.status).toEqual(expect.objectContaining({ status: 'completed' }));
 
     await waitFor(() => fakeClaudeLogContainsUserText(targetFakeClaudeLog, latePrompt), {
       timeoutMs: 120_000,
@@ -1199,14 +798,15 @@ describe('core e2e: session handoff via direct peer', () => {
     }
 
     const started = unwrapDataKeyRpcResult(
-      await sourceMachineRpc.call(`${sourceSeed.machineId}:${RPC_METHODS.DAEMON_SESSION_HANDOFF_START}`, {
+      await sourceMachineRpc.call(`${sourceSeed.machineId}:${RPC_METHODS.DAEMON_SESSION_HANDOFF_START_V3}`, {
         sessionId,
         sourceMachineId: sourceSeed.machineId,
         targetMachineId: 'machine_target_unused',
         sessionStorageMode: 'direct',
         preferredTransportStrategies: ['direct_peer'],
         negotiatedTransportStrategy: 'direct_peer',
-        workspaceAction: copyOnceWorkspaceAction,
+        workspaceAction: { kind: 'copy_once', contentPolicy: workspaceContentPolicy },
+        accountServerId: sourceSeed.serverId,
       }),
       'source handoff start for unsafe workspace transfer',
     ) as Readonly<{

@@ -4,30 +4,7 @@ import { basename } from 'node:path';
 import { gotoDomContentLoadedWithPathFallback } from './pageNavigation';
 import { toTestIdSafeValue } from './testIdSafeValue';
 
-export function collectBrowserDiagnostics(params: Readonly<{ page: Page }>): () => string {
-    const pageConsole: string[] = [];
-    const pageErrors: string[] = [];
-    const requestFailures: string[] = [];
-    const responseErrors: string[] = [];
-
-    params.page.on('console', (message) => pageConsole.push(`[${message.type()}] ${message.text()}`));
-    params.page.on('pageerror', (error) => pageErrors.push(String(error)));
-    params.page.on('requestfailed', (request) => {
-        const failure = request.failure();
-        requestFailures.push(`${request.method()} ${request.url()} ${failure ? `-> ${failure.errorText}` : ''}`.trim());
-    });
-    params.page.on('response', (response) => {
-        const status = response.status();
-        if (status >= 400) responseErrors.push(`${status} ${response.request().method()} ${response.url()}`);
-    });
-
-    return () =>
-        `# Browser diagnostics\n\n`
-        + `## Console\n\n${pageConsole.length ? pageConsole.join('\n') : '(none)'}\n\n`
-        + `## Page errors\n\n${pageErrors.length ? pageErrors.join('\n') : '(none)'}\n\n`
-        + `## Request failures\n\n${requestFailures.length ? requestFailures.join('\n') : '(none)'}\n\n`
-        + `## Response errors\n\n${responseErrors.length ? responseErrors.join('\n') : '(none)'}\n`;
-}
+export { collectBrowserDiagnostics } from './browserDiagnostics';
 
 export function workspaceDetailsPaneLocator(page: Page): Locator {
     return page.getByTestId('workspace-details-panel-root');

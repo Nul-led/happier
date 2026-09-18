@@ -1,3 +1,5 @@
+import { getReleaseProductArchiveFormat } from './releaseProducts.js';
+
 type RawAsset = {
   name?: unknown;
   browser_download_url?: unknown;
@@ -11,6 +13,21 @@ function normalizeAsset(asset: RawAsset) {
 }
 
 const VERSION_RE = '\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?';
+
+export function resolveReleaseArtifactArchiveName({
+  product,
+  version,
+  os,
+  arch,
+}: Readonly<{
+  product: string;
+  version: string;
+  os: string;
+  arch: string;
+}>): string {
+  const extension = getReleaseProductArchiveFormat(product) === 'zip' ? '.zip' : '.tar.gz';
+  return `${product}-v${version}-${os}-${arch}${extension}`;
+}
 
 export function resolveReleaseAssetBundle({
   assets,
@@ -47,9 +64,11 @@ export function resolveReleaseAssetBundle({
   const checksumsSigName = `${checksumsName}.minisig`;
   const base = `${product}-v${version}-${os}-${arch}`;
   const zipName = `${base}.zip`;
-  const tgzName = `${base}.tar.gz`;
+  const tgzName = resolveReleaseArtifactArchiveName({ product, version, os, arch });
   const archiveName =
-    os.toLowerCase() === 'windows' && preferZipOnWindows && byName.has(zipName)
+    getReleaseProductArchiveFormat(product) === 'zip'
+      ? resolveReleaseArtifactArchiveName({ product, version, os, arch })
+      : os.toLowerCase() === 'windows' && preferZipOnWindows && byName.has(zipName)
       ? zipName
       : tgzName;
 
