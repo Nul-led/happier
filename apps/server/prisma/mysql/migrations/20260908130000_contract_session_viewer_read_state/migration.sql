@@ -1,0 +1,7 @@
+-- Compatibility prepare marker only.
+--
+-- AccountSessionReadState is the sole current viewer-read authority, but the
+-- released 0.2 server can still write the legacy Session columns during a
+-- rolling replacement. Keep those inert columns and their generated index
+-- until the approved quiesce/drain/verification boundary has proven that no
+-- old writer remains. A later append-only migration owns the actual contract.

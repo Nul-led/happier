@@ -12,7 +12,7 @@ CREATE TABLE "AccountEncryptionTransitionAutomationStageState" (
 
     CONSTRAINT "AccountEncryptionTransitionAutomationStageState_pkey"
         PRIMARY KEY ("transitionId"),
-    CONSTRAINT "AccountEncryptionTransitionAutomationStageState_transitionId_fkey"
+    CONSTRAINT "AccountEncryptionTransitionAutomationStageState_transition_fkey"
         FOREIGN KEY ("transitionId") REFERENCES "AccountEncryptionTransition"("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "AccountEncryptionTransitionAutomationStageState_counts_check"
         CHECK (

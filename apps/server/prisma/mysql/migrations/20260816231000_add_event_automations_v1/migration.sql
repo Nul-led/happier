@@ -359,12 +359,12 @@ CREATE TABLE `AutomationEventSourceCatalogStatus` (
     `accountId` VARCHAR(191) NOT NULL,
     -- Primary-key member: a case-insensitive collation would fold two distinct
     -- author plugin IDs into one catalog-status row per scope.
-    `eventPluginId` VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    `eventPluginId` VARCHAR(256) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     `reporterMachineId` VARCHAR(191) NOT NULL,
     `reporterMachineInstallationId` VARCHAR(191) NOT NULL,
-    `reporterMaterializationId` VARCHAR(256) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    `reporterMaterializationId` VARCHAR(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
     `reporterImmutableGenerationId` VARCHAR(256) NOT NULL,
-    `scopeKey` VARCHAR(191) NOT NULL,
+    `scopeKey` VARCHAR(40) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     `observedRevision` BIGINT NOT NULL,
     `adoptedRevision` BIGINT NULL,
     `state` ENUM('current', 'reconciling', 'reconciliationLate') NOT NULL,

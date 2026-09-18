@@ -1,9 +1,11 @@
 -- Add the Account Service's directory metadata and Home-side issuer links.
-ALTER TABLE `Account` ADD COLUMN `preferredHomeServerIdentityId` VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL;
+-- Exact opaque Home and issuer identities require NO PAD comparison so values
+-- that differ only by trailing spaces cannot address the same row.
+ALTER TABLE `Account` ADD COLUMN `preferredHomeServerIdentityId` VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NULL;
 
 CREATE TABLE `AccountHomeDirectoryEntry` (
     `accountId` VARCHAR(191) NOT NULL,
-    `homeServerIdentityId` VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    `homeServerIdentityId` VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL,
     `canonicalServerUrl` VARCHAR(512) NOT NULL,
     `label` VARCHAR(191) NOT NULL,
     `connectionDescriptor` JSON NOT NULL,
@@ -20,8 +22,8 @@ FOREIGN KEY (`accountId`) REFERENCES `Account`(`id`) ON DELETE CASCADE ON UPDATE
 
 CREATE TABLE `AccountDirectoryLink` (
     `accountId` VARCHAR(191) NOT NULL,
-    `issuerServerIdentityId` VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
-    `issuerSubjectId` VARCHAR(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    `issuerServerIdentityId` VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL,
+    `issuerSubjectId` VARCHAR(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL,
     `issuerSigningKeyId` VARCHAR(191) NOT NULL,
     `issuerSigningPublicKey` LONGBLOB NOT NULL,
     `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),

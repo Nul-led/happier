@@ -10,7 +10,7 @@ CREATE TABLE "AccountEncryptionTransitionAutomationStageState" (
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" DATETIME NOT NULL,
 
-    CONSTRAINT "AccountEncryptionTransitionAutomationStageState_transitionId_fkey"
+    CONSTRAINT "AccountEncryptionTransitionAutomationStageState_transition_fkey"
         FOREIGN KEY ("transitionId") REFERENCES "AccountEncryptionTransition"("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "AccountEncryptionTransitionAutomationStageState_counts_check"
         CHECK (

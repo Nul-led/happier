@@ -7,6 +7,9 @@ CREATE TABLE `KeyChallengeV2` (
     `audienceOrigin` VARCHAR(191) NOT NULL,
     `audienceServerIdentityId` VARCHAR(191) NULL,
     `expectedAccountId` VARCHAR(191) NULL,
+    `operationKind` VARCHAR(191) NULL,
+    `operationDigest` VARCHAR(191) NULL,
+    `verifiedNativeMethodId` VARCHAR(191) NULL,
     `consumedAt` DATETIME(3) NULL,
 
     INDEX `KeyChallengeV2_expiresAt_idx`(`expiresAt`),
@@ -15,6 +18,8 @@ CREATE TABLE `KeyChallengeV2` (
 
 -- AlterTable
 ALTER TABLE `Account` ADD COLUMN `tokenEpoch` INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE `TerminalAuthRequest` ADD COLUMN `authenticationEvidence` JSON NULL,
+    ADD COLUMN `approvalTokenEpoch` INTEGER NULL;
 
 -- CreateTable
 CREATE TABLE `AccountApiToken` (
@@ -22,6 +27,8 @@ CREATE TABLE `AccountApiToken` (
     `accountId` VARCHAR(191) NOT NULL,
     `displayPrefix` VARCHAR(191) NOT NULL,
     `secretDigest` VARCHAR(191) NOT NULL,
+    `encryptionAccess` JSON NULL,
+    `authenticationEvidence` JSON NULL,
     `label` VARCHAR(256) NOT NULL,
     `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `lastUsedAt` DATETIME(3) NULL,
