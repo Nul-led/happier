@@ -1,0 +1,14 @@
+{
+  "v": 1,
+  "id": "antigravity",
+  "enableEnvVar": "HAPPIER_E2E_PROVIDER_ANTIGRAVITY",
+  "protocol": "acp",
+  "traceProvider": "antigravity",
+  "auth": { "mode": "host", "host": { "envUnset": [] } },
+  "cli": {
+    "subcommand": "agy",
+    "extraArgs": [],
+    "env": { "HAPPIER_VARIANT": "dev" },
+    "envFrom": { "HAPPIER_ANTIGRAVITY_PATH": "HAPPIER_E2E_PROVIDER_ANTIGRAVITY_BIN" }
+  }
+}

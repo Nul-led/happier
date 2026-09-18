@@ -1,0 +1,17 @@
+{
+  "v": 1,
+  "tiers": {
+    "smoke": ["acp_probe_capabilities"],
+    "extended": [
+      "acp_probe_models",
+      "acp_resume_load_session",
+      "acp_resume_fresh_session_imports_history",
+      "acp_set_model_dynamic",
+      "abort_turn_then_continue",
+      "read_known_file",
+      "permission_surface_execute",
+      "permission_abort_execute",
+      "mcp_change_title"
+    ]
+  }
+}

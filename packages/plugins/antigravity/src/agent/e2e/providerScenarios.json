@@ -1,0 +1,7 @@
+{
+  "v": 1,
+  "tiers": {
+    "smoke": ["acp_probe_capabilities"],
+    "extended": ["acp_resume_load_session"]
+  }
+}

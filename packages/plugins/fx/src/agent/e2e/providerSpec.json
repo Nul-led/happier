@@ -1,0 +1,10 @@
+{
+  "v": 1,
+  "id": "fx",
+  "enableEnvVar": "HAPPIER_E2E_PROVIDER_FX",
+  "protocol": "acp",
+  "traceProvider": "fx",
+  "requiredBinaries": [{ "bin": "fx", "envOverride": "HAPPIER_E2E_PROVIDER_FX_BIN", "requireExists": true }],
+  "auth": { "mode": "host", "host": { "envUnset": [] } },
+  "cli": { "subcommand": "fx", "extraArgs": [], "env": { "HAPPIER_VARIANT": "dev" }, "envFrom": { "HAPPIER_FX_PATH": "HAPPIER_E2E_PROVIDER_FX_BIN" } }
+}

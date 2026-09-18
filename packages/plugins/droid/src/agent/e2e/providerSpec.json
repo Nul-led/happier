@@ -1,0 +1,10 @@
+{
+  "v": 1,
+  "id": "droid",
+  "enableEnvVar": "HAPPIER_E2E_PROVIDER_DROID",
+  "protocol": "acp",
+  "traceProvider": "droid",
+  "requiredBinaries": [{ "bin": "droid", "envOverride": "HAPPIER_E2E_PROVIDER_DROID_BIN", "requireExists": true }],
+  "auth": { "mode": "host", "host": { "envUnset": [] } },
+  "cli": { "subcommand": "droid", "extraArgs": [], "env": { "HAPPIER_VARIANT": "dev" }, "envFrom": { "HAPPIER_DROID_PATH": "HAPPIER_E2E_PROVIDER_DROID_BIN" } }
+}
