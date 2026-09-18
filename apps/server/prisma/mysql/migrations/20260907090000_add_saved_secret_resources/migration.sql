@@ -7,7 +7,7 @@ CREATE INDEX `SavedSecretResource_owner_updated_idx` ON `SavedSecretResource`(`o
 CREATE INDEX `SavedSecretAccountGrant_accountId_resourceId_idx` ON `SavedSecretAccountGrant`(`accountId`,`resourceId`);
 CREATE INDEX `SavedSecretTeamGrant_teamId_resourceId_idx` ON `SavedSecretTeamGrant`(`teamId`,`resourceId`);
 CREATE INDEX `SavedSecretGroupGrant_teamGroupId_resourceId_idx` ON `SavedSecretGroupGrant`(`teamGroupId`,`resourceId`);
-CREATE INDEX `SavedSecretResourceKeyEnvelope_recipientAccountId_resourceId_idx` ON `SavedSecretResourceKeyEnvelope`(`recipientAccountId`,`resourceId`);
+CREATE INDEX `SSRKE_recipient_resource_idx` ON `SavedSecretResourceKeyEnvelope`(`recipientAccountId`,`resourceId`);
 ALTER TABLE `SavedSecretResource` ADD CONSTRAINT `SavedSecretResource_ownerAccountId_fkey` FOREIGN KEY (`ownerAccountId`) REFERENCES `Account`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
 ALTER TABLE `SavedSecretAccountGrant` ADD CONSTRAINT `SavedSecretAccountGrant_resourceId_fkey` FOREIGN KEY (`resourceId`) REFERENCES `SavedSecretResource`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
 ALTER TABLE `SavedSecretAccountGrant` ADD CONSTRAINT `SavedSecretAccountGrant_accountId_fkey` FOREIGN KEY (`accountId`) REFERENCES `Account`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;

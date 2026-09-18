@@ -7,4 +7,4 @@ CREATE INDEX "SavedSecretResource_owner_updated_idx" ON "SavedSecretResource" ("
 CREATE INDEX "SavedSecretAccountGrant_accountId_resourceId_idx" ON "SavedSecretAccountGrant" ("accountId","resourceId");
 CREATE INDEX "SavedSecretTeamGrant_teamId_resourceId_idx" ON "SavedSecretTeamGrant" ("teamId","resourceId");
 CREATE INDEX "SavedSecretGroupGrant_teamGroupId_resourceId_idx" ON "SavedSecretGroupGrant" ("teamGroupId","resourceId");
-CREATE INDEX "SavedSecretResourceKeyEnvelope_recipientAccountId_resourceId_idx" ON "SavedSecretResourceKeyEnvelope" ("recipientAccountId","resourceId");
+CREATE INDEX "SSRKE_recipient_resource_idx" ON "SavedSecretResourceKeyEnvelope" ("recipientAccountId","resourceId");

@@ -791,7 +791,7 @@ model SavedSecretResourceKeyEnvelope {
     recipient Account @relation("SavedSecretResourceKeyEnvelopeRecipient", fields: [recipientAccountId], references: [id], onDelete: Cascade)
 
     @@id([resourceId, recipientAccountId])
-    @@index([recipientAccountId, resourceId])
+    @@index([recipientAccountId, resourceId], map: "SSRKE_recipient_resource_idx")
 }
 
 model TeamGroupMembership {
